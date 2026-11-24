@@ -270,7 +270,7 @@ pub(crate) fn wrapping_key(
         String::from_utf8(unsealed.value().to_vec())
             .map_err(|_| KmError::Conflict("the unsealed wrapping key is not hex text".into()))?,
     );
-    let key = Zeroizing::new(super::store_hex(&hex)?);
+    let key = Zeroizing::new(super::store::hex(&hex)?);
     if key.len() != 32 {
         return Err(KmError::Conflict(format!("token wrapping key is {} bytes, expected 32", key.len()).into()));
     }
@@ -287,9 +287,9 @@ pub(crate) fn wrapping_key(
 pub(crate) fn unwrap_objauth(wrapping_key: &[u8], wrapped: &str) -> Result<Zeroizing<Vec<u8>>> {
     let bad = || KmError::Conflict("CKA_TPM2_OBJAUTH_ENC is not <iv>:<tag>:<ct>".into());
     let mut parts = wrapped.split(':');
-    let iv = super::store_hex(parts.next().ok_or_else(bad)?)?;
-    let tag = super::store_hex(parts.next().ok_or_else(bad)?)?;
-    let ct = super::store_hex(parts.next().ok_or_else(bad)?)?;
+    let iv = super::store::hex(parts.next().ok_or_else(bad)?)?;
+    let tag = super::store::hex(parts.next().ok_or_else(bad)?)?;
+    let ct = super::store::hex(parts.next().ok_or_else(bad)?)?;
     if parts.next().is_some() || iv.len() != 12 || tag.len() != 16 {
         return Err(bad());
     }
@@ -501,11 +501,25 @@ pub(crate) fn material_of(public: &Public) -> Result<Material> {
 /// `Conflict` when the blob is truncated (a size prefix past its end); `Unsupported` for a
 /// `nameAlg` that is not SHA-256/384/512.
 pub(crate) fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
-    use sha2::Digest;
     let truncated = || KmError::Conflict("the store's public blob is truncated".into());
     let size = u16::from_be_bytes(*pub_blob.first_chunk::<2>().ok_or_else(truncated)?) as usize;
-    let tpmt = pub_blob.get(2..2 + size).ok_or_else(truncated)?;
-    let name_alg = u16::from_be_bytes(tpmt.get(2..4).and_then(|s| s.try_into().ok()).ok_or_else(truncated)?);
+    tpmt_name(pub_blob.get(2..2 + size).ok_or_else(truncated)?)
+}
+
+/// The Name of a marshaled `TPMT_PUBLIC`, `nameAlg ‖ H(TPMT_PUBLIC)`: the one computation behind
+/// [`recompute_name`] and the credential's `name_of` (review 2026-11-23 B-23).
+///
+/// # Errors
+///
+/// `Conflict` when the bytes are too short to name an algorithm; `Unsupported` for a `nameAlg`
+/// that is not SHA-256/384/512.
+pub(crate) fn tpmt_name(tpmt: &[u8]) -> Result<Vec<u8>> {
+    use sha2::Digest;
+    let name_alg = u16::from_be_bytes(
+        tpmt.get(2..4)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| KmError::Conflict("a public area too short to name its nameAlg".into()))?,
+    );
     let hash = match name_alg {
         0x000B => sha2::Sha256::digest(tpmt).to_vec(),
         0x000C => sha2::Sha384::digest(tpmt).to_vec(),
@@ -1010,7 +1024,7 @@ mod tests {
     const PUB_BLOB: &str = "00560023000b000600720000001000100003001000204fabc9186000e8016add3f0bd535700c7b7cab33c93f6c65271254321d58e4c200207a0468724ee74b1cf1496b782172a37bd56f583e4866963a76640c74a7891e90";
 
     fn pub_blob() -> Vec<u8> {
-        crate::attest::store_hex(PUB_BLOB).unwrap()
+        crate::attest::store::hex(PUB_BLOB).unwrap()
     }
 
     /// A secret key's HMAC commitment is computed again in the TPM by its hash's TPM name;

@@ -2,13 +2,14 @@
 //! Module-specific behaviour goes through the selected [`Provider`].
 
 use crate::provider::{
-    AttestCtx, AttestationCap, Attested, Create, Declared, Destroy, Generation, Half, Provider, Registry, SessionKey,
-    Template, keygen_mechanism,
+    AttestCtx, AttestationCap, Attested, Create, Declared, Destroy, Generation, Half, Provider, SessionKey, Template,
+    Topic, keygen_mechanism,
 };
+use crate::registry::Registry;
 use crate::templates;
 use cakeys_core::Msg;
 use cakeys_core::attrs;
-use cakeys_core::config::{AttrValue, Binding, Locator, Mode, ObjectCfg, SpecCfg, TokenCfg};
+use cakeys_core::config::{AttrValue, Binding, Locator, Mode, Object, ObjectCfg, SpecCfg, TokenCfg};
 pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
 use cakeys_core::id::{self, BlockCipher, Commit, Curve, HmacHash, Scheme};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
@@ -29,20 +30,32 @@ use zeroize::Zeroizing;
 mod generate;
 mod host;
 mod identity;
+mod library;
+mod login;
+mod measure;
 mod policy;
 mod possession;
 mod public;
+mod rv;
+mod types;
 mod uri;
 
 pub use generate::{BY_NAME, CreateNote, PUBLIC_MADE_PRIVATE, with_public_default_dropped};
 pub use host::accepts_public_keys;
-pub use identity::{commit_kind, commit_mechanism};
+pub use identity::commit_mechanism;
+use library::{Library, Logins, library, module_info};
+pub use login::has_admin;
+use login::{Pin, PinState, read_pin, session};
 pub use policy::bool_attr;
 pub use possession::{
     Derived, OAEP, ProofSide, derive_any, digest_info, is_policy_default, oaep_of, oaep_params, proof_refusal, show,
     template_refusal,
 };
 pub use public::{public_key_attrs, public_object_attrs};
+pub use rv::{SO_LOGIN, read_attribute, rv_is, rv_name, rv_of, rv_value, rv_value_name};
+use rv::{ck, if_readable};
+use types::managed_class;
+pub use types::{class_of, hmac_key_gen, key_type_of, secret_key_gen};
 use uri::pct_all;
 pub use uri::{PinRef, locator_attrs, pin_ref, provider_pem, with_query};
 
@@ -60,52 +73,6 @@ pub enum Access {
     /// allows it, since AWS `CloudHSM` refuses even a session object in a read-only session
     /// (`CKR_SESSION_READ_ONLY` \[run\]); read-only on a write-protected token.
     Scratch,
-}
-
-/// The PIN counters `C_GetTokenInfo` reports (M2): a login on the final try or a locked PIN is
-/// refused before it is attempted, so a wrong PIN file never spends the last retry (PIV allows
-/// few).
-#[derive(Debug, Clone, Copy, Default)]
-struct PinState {
-    user: Pin,
-    so: Pin,
-}
-
-/// One PIN's counters.
-#[derive(Debug, Clone, Copy, Default)]
-struct Pin {
-    locked: bool,
-    final_try: bool,
-    /// A login failed since the last success, but retries remain: a warning, never a refusal.
-    count_low: bool,
-}
-
-impl Pin {
-    /// Refuse a login as `who` (user or SO) the counters say must not be tried.
-    fn guard(self, token: &str, who: &str) -> Result<()> {
-        let Pin { locked, final_try, .. } = self;
-        if locked {
-            return Err(KmError::Unavailable(
-                format!(
-                    "token '{token}': the {who} PIN is locked (CKF_{}_PIN_LOCKED); unlock it with the vendor's tools",
-                    who.to_uppercase()
-                )
-                .into(),
-            ));
-        }
-        if final_try {
-            return Err(KmError::Unavailable(
-                format!(
-                    "token '{token}': one {who} PIN try is left before it locks (CKF_{}_PIN_FINAL_TRY); cakeys will \
-                 not spend it on a PIN file that may be wrong — log in once by hand with the right PIN to reset \
-                 the counter",
-                    who.to_uppercase()
-                )
-                .into(),
-            ));
-        }
-        Ok(())
-    }
 }
 
 /// An open token: its module and the session cakeys works in, with the provider that handles
@@ -144,6 +111,9 @@ pub struct Token {
     pub cfg: TokenCfg,
     /// The PIN counters at open, checked before every login (M2).
     pins: PinState,
+    /// An SO login of this token was refused: the counters read at open no longer say what is
+    /// left, so the credential is not tried again (review 2026-11-23 B-11).
+    so_refused: std::sync::atomic::AtomicBool,
     /// The user credential, already read for login, kept for what needs it again: the
     /// context-specific login of a `CKA_ALWAYS_AUTHENTICATE` proof, the TPM attestation path
     /// (it unseals the token's wrapping key with it) and logging the user back in after an SO
@@ -155,95 +125,6 @@ pub struct Token {
     /// Last: fields drop in declaration order, so the session is closed before the module is
     /// finalized.
     library: Arc<Library>,
-}
-
-/// An initialized module library, shared by every `Token` of the module open at once, and
-/// finalized when the last of them is dropped (cryptoki 0.12 never finalizes): a module library
-/// may stay loaded after its last handle is gone (`SoftHSM` does), and another of its tokens
-/// opened later in the process would then fail `C_Initialize` with
-/// `CKR_CRYPTOKI_ALREADY_INITIALIZED`.
-///
-/// Finalized, the module stays mapped until the process exits: a module's own threads may still
-/// be winding down when `C_Finalize` returns, and unloading under them crashes the process after
-/// its work is done (libkmsp11's gRPC threads \[run\], about one run in twenty, exit 139 in place of
-/// the run's own code). Opening the module again maps the same library and initializes it anew.
-///
-/// The second field is its key in [`LIBRARIES`].
-struct Library(Pkcs11, String);
-
-impl Drop for Library {
-    /// Finalized under the registry lock, its entry then removed: until it is, another thread's
-    /// [`library`] for the module waits ([`settled`]) rather than initializing it again before
-    /// this `C_Finalize` (refused, `CKR_CRYPTOKI_ALREADY_INITIALIZED`) or having it torn down
-    /// by this one (token/mod.rs F5). No `Library` is dropped while the lock is held (`library`
-    /// only upgrades, waits and inserts), so this cannot deadlock.
-    fn drop(&mut self) {
-        let mut open = LIBRARIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _ = self.0.clone().finalize();
-        std::mem::forget(self.0.clone());
-        if open.get(&self.1).is_some_and(|w| w.strong_count() == 0) {
-            open.remove(&self.1);
-        }
-        FINALIZED.notify_all();
-    }
-}
-
-/// The registry of initialized libraries: by key, the library a token holds.
-type Libraries<T> = BTreeMap<String, std::sync::Weak<T>>;
-
-/// The libraries this process initialized, by module path: a token of a module another open
-/// token already initialized (the two sides of a move between tokens of one module) shares its
-/// library rather than initializing it a second time.
-static LIBRARIES: std::sync::Mutex<Libraries<Library>> = std::sync::Mutex::new(BTreeMap::new());
-
-/// Signalled when a library's entry leaves [`LIBRARIES`], finalized.
-static FINALIZED: std::sync::Condvar = std::sync::Condvar::new();
-
-/// The library under `key` that a token still holds; `None` when there is none. One whose last
-/// holder is finalizing it is waited for (`finalized` signals its removal): its module can be
-/// initialized again only after that.
-fn settled<'a, T>(
-    mut open: std::sync::MutexGuard<'a, Libraries<T>>,
-    finalized: &std::sync::Condvar,
-    key: &str,
-) -> (std::sync::MutexGuard<'a, Libraries<T>>, Option<Arc<T>>) {
-    loop {
-        match open.get(key).map(std::sync::Weak::upgrade) {
-            Some(Some(live)) => return (open, Some(live)),
-            Some(None) => open = finalized.wait(open).unwrap_or_else(std::sync::PoisonError::into_inner),
-            None => return (open, None),
-        }
-    }
-}
-
-/// The initialized library of `module`: the one an open token holds, else newly loaded and
-/// initialized.
-fn library(module: &str) -> Result<Arc<Library>> {
-    // By the file a path names, as the loader maps it: two spellings of one module (relative
-    // and absolute, a symlink) are one library, which a second `C_Initialize` would refuse. A
-    // bare name is the loader's own search, and stays as written.
-    let key = module
-        .contains('/')
-        .then(|| std::fs::canonicalize(module).ok()?.into_os_string().into_string().ok())
-        .flatten()
-        .unwrap_or_else(|| module.to_owned());
-    let open = LIBRARIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (open, found) = settled(open, &FINALIZED, &key);
-    if let Some(library) = found {
-        return Ok(library);
-    }
-    let ctx = Pkcs11::new(module).map_err(ck(&format!("loading {module}")))?;
-    // Loaded, by the file the loader mapped: a bare name and a path to that file are one library
-    // too (token/mod.rs F3). Found open, `ctx` goes uninitialized: only its loader reference.
-    let key = loaded_path(module).unwrap_or(key);
-    let (mut open, found) = settled(open, &FINALIZED, &key);
-    if let Some(library) = found {
-        return Ok(library);
-    }
-    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).map_err(ck("C_Initialize"))?;
-    let library = Arc::new(Library(ctx, key.clone()));
-    open.insert(key, Arc::downgrade(&library));
-    Ok(library)
 }
 
 /// The mechanisms a token may rely on: what the module lists, less what the resolved stack
@@ -283,127 +164,6 @@ fn sorted_names(mechanisms: &[MechanismType]) -> Vec<String> {
     let mut names: Vec<String> = mechanisms.iter().map(ToString::to_string).collect();
     names.sort();
     names
-}
-
-/// The `CKR_*` name of a module's failure: cryptoki's `Display` is the spec's prose, which
-/// changes with the binding, so a message (and a profile row's evidence) names the return value
-/// by its constant: cryptoki's name for it with `rv-value`, else one derived from the variant;
-/// `CKR 0x…` for a vendor-defined value or one cryptoki has no variant for.
-#[must_use]
-pub fn rv_name(e: &CkError) -> String {
-    match e {
-        CkError::Pkcs11(rv, _) => rv_error_name(*rv),
-        other => other.to_string(),
-    }
-}
-
-/// The `CKR_*` constant an `RvError` stands for: cryptoki's own name for it (`RvError::name`,
-/// upstream/rust-cryptoki/0003, with `rv-value`), else one derived from the variant
-/// (`GeneralError` -> `CKR_GENERAL_ERROR`), which `names_agree` holds equal; `CKR 0x…` for a
-/// vendor-defined value or one cryptoki has no variant for.
-fn rv_error_name(rv: RvError) -> String {
-    match rv {
-        RvError::VendorDefined(v) | RvError::UnknownErrorCode(v) => format!("CKR {v:#x}"),
-        #[cfg(feature = "rv-value")]
-        rv => rv.name().map_or_else(|| derived_name(rv), str::to_owned),
-        #[cfg(not(feature = "rv-value"))]
-        rv => derived_name(rv),
-    }
-}
-
-/// The return value behind cryptoki's `RvError`: `CK_RV::from` (upstream/rust-cryptoki/0003,
-/// with `rv-value`). Without it, only the value a vendor-defined or unknown error carries.
-#[must_use]
-pub fn rv_value(rv: RvError) -> Option<cryptoki_sys::CK_RV> {
-    match rv {
-        RvError::VendorDefined(v) | RvError::UnknownErrorCode(v) => Some(v),
-        #[cfg(feature = "rv-value")]
-        rv => Some(rv.into()),
-        #[cfg(not(feature = "rv-value"))]
-        _ => None,
-    }
-}
-
-/// A name from `RvError`'s variant (`GeneralError` -> `CKR_GENERAL_ERROR`): every variant is
-/// named after its constant.
-fn derived_name(rv: RvError) -> String {
-    let mut out = String::from("CKR");
-    for c in format!("{rv:?}").chars() {
-        if c.is_ascii_uppercase() {
-            out.push('_');
-        }
-        out.push(c.to_ascii_uppercase());
-    }
-    out
-}
-
-/// The return value of a failed module call, for [`KmError::with_rv`]: what code matches on
-/// (ISSUES.md Q3), where the message names it for people.
-#[must_use]
-pub fn rv_of(e: &CkError) -> Option<u64> {
-    match e {
-        CkError::Pkcs11(rv, _) => rv_value(*rv),
-        _ => None,
-    }
-}
-
-/// Whether the return value an error carries (`KmError::rv`, `Msg::rv`) is `want`.
-#[must_use]
-pub fn rv_is(rv: Option<u64>, want: RvError) -> bool {
-    rv.is_some_and(|v| Rv::from(v) == Rv::Error(want))
-}
-
-/// The `CKR_*` name of a return value an error carries; `CKR 0x…` for one with no name.
-#[must_use]
-pub fn rv_value_name(v: u64) -> String {
-    match Rv::from(v) {
-        Rv::Ok => "CKR_OK".to_owned(),
-        Rv::Error(rv) => rv_error_name(rv),
-    }
-}
-
-/// What an SO login that fails says first: a module step that needs the Security Officer
-/// cannot run, and the probe stops there instead of recording a row.
-pub const SO_LOGIN: &str = "C_Login (SO)";
-
-fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
-    move |e| KmError::Unavailable(format!("{context}: {e}").into()).with_rv(rv_of(&e))
-}
-
-/// Whether `e` says the device, the token or the session failed, rather than anything of the
-/// object or attribute asked for. Matched on cryptoki's error, not on [`rv_of`], which a build
-/// without `rv-value` leaves empty.
-fn device_failed(e: &CkError) -> bool {
-    matches!(
-        e,
-        CkError::Pkcs11(
-            RvError::DeviceError
-                | RvError::DeviceMemory
-                | RvError::DeviceRemoved
-                | RvError::HostMemory
-                | RvError::GeneralError
-                | RvError::TokenNotPresent
-                | RvError::TokenNotRecognized
-                | RvError::SessionClosed
-                | RvError::SessionHandleInvalid
-                | RvError::CryptokiNotInitialized
-                | RvError::FunctionCanceled,
-            _
-        )
-    )
-}
-
-/// An optional attribute read: `None` where the object lacks the attribute or the module
-/// refuses to read it (ykcs11 refuses `CKA_PUBLIC_KEY_INFO` with `CKR_ARGUMENTS_BAD`, a build
-/// may not name a mechanism). A failure of the device, token or session ([`device_failed`]) is
-/// still unavailable (16), never read as the attribute's absence: a policy flag left out read
-/// as a changed key (14), a public key object's point as another key (13) (review D7).
-fn if_readable<T>(read: std::result::Result<Option<T>, CkError>) -> Result<Option<T>> {
-    match read {
-        Ok(v) => Ok(v),
-        Err(e) if device_failed(&e) => Err(ck("C_GetAttributeValue")(e)),
-        Err(_) => Ok(None),
-    }
 }
 
 /// A session object cakeys made for one step (a derived secret, a key-encryption key, a
@@ -504,7 +264,7 @@ impl Token {
             .flatten()
             .map(|i| (i.min_key_size() as u64, i.max_key_size() as u64));
         let mechanisms = usable_mechanisms(&advertised, &profiles)?;
-        let (session, pin) = session(ctx, slot, name, cfg, access, write_protected, pins)?;
+        let (session, pin) = session(ctx, &module_guard.2, slot, name, cfg, access, write_protected, pins)?;
         Ok(Token {
             name: name.to_owned(),
             label: cfg.token_label.clone(),
@@ -519,6 +279,7 @@ impl Token {
             logged_in: pin.is_some(),
             cfg: cfg.clone(),
             pins,
+            so_refused: std::sync::atomic::AtomicBool::new(false),
             pin,
             provider,
             chain_time,
@@ -526,34 +287,16 @@ impl Token {
         })
     }
 
-    /// The token as a probe measures it: no module profile decides anything here — not its
-    /// rows, nor what it subtracts from or adds to the mechanism list — so every operation asks
-    /// the module itself, and an answer the profile would have given is tried instead. The
-    /// layers between cakeys and the module stay: they are not the module.
-    ///
-    /// # Errors
-    ///
-    /// `Validation` when the active profile set has no baseline.
-    pub fn unprofiled(mut self) -> Result<Token> {
-        self.profiles.module = None;
-        self.mechanisms = usable_mechanisms(&self.listed, &self.profiles)?;
-        // What the provider runs its own way although the module does not list it: the
-        // verbs have it through the profile's `add` the probe records, so the probe's proofs
-        // try it too (AWS CloudHSM's Ed25519 [run]).
-        for m in self.provider.stand_ins() {
-            if !self.mechanisms.contains(&m) {
-                self.mechanisms.push(m);
-            }
-        }
-        Ok(self)
+    /// An `Unsupported` error carrying the return value `msg` carries, and no advice.
+    pub fn unsupported(&self, msg: impl Into<Msg>) -> KmError {
+        KmError::Unsupported(msg.into())
     }
 
-    /// An `Unsupported` error carrying the provider's advice, if it has any, and the return
-    /// value `msg` carries.
-    pub fn unsupported(&self, msg: impl Into<Msg>) -> KmError {
+    /// [`Self::unsupported`], with the provider's advice on `about` if it has any.
+    pub fn unsupported_for(&self, about: Topic, msg: impl Into<Msg>) -> KmError {
         let msg = msg.into();
         let rv = msg.rv();
-        match self.provider.hint() {
+        match self.provider.hint(about) {
             Some(h) => KmError::Unsupported(format!("{msg} (hint for {}: {h})", self.provider.name()).into()),
             None => KmError::Unsupported(msg),
         }
@@ -648,82 +391,6 @@ impl Token {
         Ok(Some(self.provider.key_type(kt, params.as_deref())))
     }
 
-    /// The usable mechanisms, by `CKM_*` name.
-    pub fn mechanism_names(&self) -> Vec<String> {
-        sorted_names(&self.mechanisms)
-    }
-
-    /// What `C_GetMechanismList` returned, by name, sorted, repetitions kept: the drift baseline
-    /// the probe records as a profile's `advertise` list (D2).
-    #[must_use]
-    pub fn advertised(&self) -> Vec<String> {
-        sorted_names(&self.listed)
-    }
-
-    /// Whether `C_GetMechanismList` listed `m`, whatever the profiles subtract.
-    #[must_use]
-    pub fn lists(&self, m: MechanismType) -> bool {
-        self.listed.contains(&m)
-    }
-
-    /// What `C_GetMechanismInfo` reports for `m`: the key-size range (bits for RSA and EC, bytes
-    /// for the symmetric ones, as the module counts them) and the names of the operations it
-    /// flags. A claim, never evidence.
-    #[must_use]
-    pub fn mechanism_info(&self, m: MechanismType) -> Option<(usize, usize, Vec<&'static str>)> {
-        let i = self.library.0.get_mechanism_info(self.slot, m).ok()?;
-        let flags = [
-            ("hardware", i.hardware()),
-            ("encrypt", i.encrypt()),
-            ("decrypt", i.decrypt()),
-            ("sign", i.sign()),
-            ("verify", i.verify()),
-            ("generate", i.generate()),
-            ("generate-key-pair", i.generate_key_pair()),
-            ("wrap", i.wrap()),
-            ("unwrap", i.unwrap()),
-            ("derive", i.derive()),
-        ];
-        Some((i.min_key_size(), i.max_key_size(), flags.into_iter().filter(|(_, on)| *on).map(|(n, _)| n).collect()))
-    }
-
-    /// [`Self::mechanism_info`] of every mechanism the module lists, by name, each once.
-    #[must_use]
-    pub fn mechanism_infos(&self) -> Vec<(String, usize, usize, Vec<&'static str>)> {
-        let mut seen = std::collections::BTreeSet::new();
-        self.listed
-            .iter()
-            .filter(|m| seen.insert(m.to_string()))
-            .filter_map(|m| self.mechanism_info(*m).map(|(min, max, flags)| (m.to_string(), min, max, flags)))
-            .collect()
-    }
-
-    /// What `C_GetTokenInfo` reports of the token's state and limits, as `name -> value` claims
-    /// (`[claims]` in a profile): the flags that are set, the session and PIN limits.
-    #[must_use]
-    pub fn token_claims(&self) -> Vec<(String, String)> {
-        let Ok(t) = self.library.0.get_token_info(self.slot) else { return Vec::new() };
-        let flags = [
-            ("write-protected", t.write_protected()),
-            ("rng", t.rng()),
-            ("login-required", t.login_required()),
-            ("clock-on-token", t.clock_on_token()),
-            ("protected-authentication-path", t.protected_authentication_path()),
-            ("dual-crypto-operations", t.dual_crypto_operations()),
-            ("token-initialized", t.token_initialized()),
-            ("so-pin-count-low", t.so_pin_count_low()),
-            ("so-pin-final-try", t.so_pin_final_try()),
-            ("error-state", t.error_state()),
-        ];
-        let set: Vec<&str> = flags.into_iter().filter(|(_, on)| *on).map(|(n, _)| n).collect();
-        vec![
-            ("token.flags".into(), set.join(", ")),
-            ("token.max-sessions".into(), format!("{:?}", t.max_session_count())),
-            ("token.max-rw-sessions".into(), format!("{:?}", t.max_rw_session_count())),
-            ("token.pin-length".into(), format!("{}-{}", t.min_pin_length(), t.max_pin_length())),
-        ]
-    }
-
     /// The provider's attestation capability for `object`'s class, when the spec opted in:
     /// `None` when this module attests nothing (or not this class).
     pub fn attestation_cap(&self, object: &ObjectCfg) -> Option<AttestationCap> {
@@ -766,7 +433,11 @@ impl Token {
             provision,
             chain_time: self.chain_time,
         };
-        self.provider.attest(&ctx)
+        let cap = self
+            .provider
+            .attestation()
+            .ok_or_else(|| KmError::Unsupported(format!("{} exposes no attestation", self.provider.name()).into()))?;
+        (cap.attest)(&ctx)
     }
 
     /// Every object of `class` under the locator.
@@ -839,7 +510,9 @@ impl Token {
             ],
         )?;
         self.as_so("marking the transport key trusted", || {
-            self.session.create_object(&template).map_err(|e| self.unsupported(trusted_copy_refused(&self.name, &e)))
+            self.session
+                .create_object(&template)
+                .map_err(|e| self.unsupported_for(Topic::Create, trusted_copy_refused(&self.name, &e)))
         })
     }
 
@@ -945,103 +618,12 @@ impl Token {
     fn attr_if_readable(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<Attribute>> {
         if_readable(self.session.get_attributes(h, &[t]).map(|a| a.into_iter().next()))
     }
-
-    /// Run `step` in a Security Officer session (`soCredentialFile`/`soCredentialEnv`), for modules that
-    /// create and destroy objects only as SO, then return to the user session. Login state is
-    /// per token, so the user is logged out first. The admin credential is read here, never at
-    /// open, and zeroized when the step ends.
-    ///
-    /// # Errors
-    ///
-    /// `Unsupported` without an admin credential configured; `Unavailable` when the SO login,
-    /// the logout or the return to the user session fails, or the PIN counters refuse a login;
-    /// else whatever `step` returns.
-    pub fn as_so<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
-        let so = read_so_credential(&self.name, &self.cfg)?.ok_or_else(|| {
-            self.unsupported(format!(
-                "{what} on '{}' needs a Security Officer session: set tokens.{}.soCredentialFile or soCredentialEnv",
-                self.name, self.name
-            ))
-        })?;
-        self.pins.so.guard(&self.name, "SO")?;
-        if self.logged_in {
-            self.session.logout().map_err(ck("C_Logout"))?;
-        }
-        let out = match self.session.login(UserType::So, Some(&AuthPin::new(so.as_str().to_owned().into()))) {
-            Ok(()) => {
-                let out = step();
-                let logout = self.session.logout().map_err(ck("C_Logout (SO)"));
-                so_outcome(what, &self.name, out, logout)
-            }
-            Err(e) => Err(KmError::Unavailable(
-                format!(
-                    "{SO_LOGIN} with soCredentialFile/soCredentialEnv: {rv}; it must hold the module's admin \
-                 credential (the SO PIN; ykcs11: the PIV management key in hex, or the PIN on a \
-                 device whose management key is PIN-protected)",
-                    rv = rv_name(&e)
-                )
-                .into(),
-            )
-            .with_rv(rv_of(&e))),
-        };
-        drop(so);
-        if !self.logged_in {
-            return out;
-        }
-        let back = match self.pin.as_deref() {
-            None => Err(KmError::Unavailable("no user PIN to log back in with".into())),
-            Some(pin) => match self.session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
-                Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => Ok(()),
-                Err(e) => Err(KmError::Unavailable(format!("C_Login (back to the user): {}", rv_name(&e)).into())
-                    .with_rv(rv_of(&e))),
-            },
-        };
-        so_outcome(what, &self.name, out, back)
-    }
-}
-
-/// What [`Token::as_so`] answers once the session is put back (`after`: the SO logout, then the
-/// user's login): the step's own result first. A step that failed is reported as it failed,
-/// never as the session trouble after it; a step that succeeded and a session that could not be
-/// restored is an error that says the step was done, so a caller never takes a key it made (or
-/// a trusted copy) for one that was not.
-fn so_outcome<T>(what: &str, token: &str, step: Result<T>, after: Result<()>) -> Result<T> {
-    match (step, after) {
-        (Ok(v), Ok(())) => Ok(v),
-        (Err(e), _) => Err(e),
-        (Ok(_), Err(e)) => {
-            let rv = e.rv();
-            Err(KmError::Unavailable(
-                format!(
-                    "{what} on '{token}' was done, but the session could not be restored afterwards ({e}): \
-                     what it made or changed is on the token"
-                )
-                .into(),
-            )
-            .with_rv(rv))
-        }
-    }
 }
 
 /// Why `token` would not create the trusted copy of a transport key: the module's refusal `e`,
 /// its return value kept for code to match on (Q3).
 fn trusted_copy_refused(token: &str, e: &CkError) -> Msg {
     Msg::from(format!("token '{token}' will not create a CKA_TRUSTED RSA public key: {e}")).with_rv(rv_of(e))
-}
-
-/// What a module says about itself (`C_GetInfo`), and the file the loader mapped for `module` with
-/// its hash: the lock's module provenance.
-fn module_info(ctx: &Pkcs11, module: String) -> Result<ModuleInfo> {
-    let lib = ctx.get_library_info().map_err(ck("C_GetInfo"))?;
-    let path = loaded_path(&module).unwrap_or(module);
-    Ok(ModuleInfo {
-        hash: std::fs::read(&path).ok().map(|bytes| id::sri(&bytes)),
-        path,
-        description: lib.library_description().trim().to_owned(),
-        manufacturer: lib.manufacturer_id().trim().to_owned(),
-        version: lib.library_version().to_string(),
-        cryptoki: lib.cryptoki_version().to_string(),
-    })
 }
 
 /// The one slot whose token is labelled `label`, with what `C_GetTokenInfo` says of it.
@@ -1104,245 +686,10 @@ fn find_slot(ctx: &Pkcs11, label: &str, serial: Option<&str>, module_path: &str)
     }
 }
 
-/// The file the dynamic loader mapped for `module`, symlinks resolved — what the lock records as
-/// provenance, whatever named it: a bare file name (the loader's library search), a
-/// `/run/current-system` symlink or a store path. Asked of the loader itself (`dladdr` on the
-/// module's `C_GetFunctionList`), so it is the file whose code runs. `None` if it cannot tell.
-#[expect(unsafe_code, reason = "dlopen(RTLD_NOLOAD)/dlsym/dladdr only look up the loaded module")]
-fn loaded_path(module: &str) -> Option<String> {
-    let name = std::ffi::CString::new(module).ok()?;
-    // SAFETY: a valid NUL-terminated name; RTLD_NOLOAD returns the library `Pkcs11::new` already
-    // loaded (adding a reference, released below) and never loads or initializes anything.
-    let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD) };
-    if handle.is_null() {
-        return None;
-    }
-    // SAFETY: `handle` is a live handle and the symbol name NUL-terminated; the address is only
-    // looked up, never called.
-    let symbol = unsafe { libc::dlsym(handle, c"C_GetFunctionList".as_ptr()) };
-    // SAFETY: an all-zero `Dl_info` is valid (null pointers); `dladdr` fills it for `symbol`.
-    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
-    // SAFETY: as above; `dli_fname` is a NUL-terminated string owned by the loader, copied out
-    // before the handle is released (and the module stays loaded through cryptoki's handle).
-    let file = (!symbol.is_null() && unsafe { libc::dladdr(symbol, &raw mut info) } != 0 && !info.dli_fname.is_null())
-        .then(|| unsafe { std::ffi::CStr::from_ptr(info.dli_fname) }.to_string_lossy().into_owned());
-    // SAFETY: releases only the reference taken above.
-    unsafe { libc::dlclose(handle) };
-    std::fs::canonicalize(file?).ok()?.into_os_string().into_string().ok()
-}
-
-/// Open the session `access` asks for (M1) and log in as the user when a PIN is configured —
-/// unless the counters say the login must not be tried (M2).
-fn session(
-    ctx: &Pkcs11,
-    slot: cryptoki::slot::Slot,
-    name: &str,
-    cfg: &TokenCfg,
-    access: Access,
-    write_protected: bool,
-    pins: PinState,
-) -> Result<(Session, Option<Zeroizing<String>>)> {
-    let session = match access {
-        Access::Read => ctx.open_ro_session(slot).map_err(ck("C_OpenSession (read-only)"))?,
-        Access::Write if write_protected => {
-            return Err(KmError::Unsupported(
-                format!(
-                    "token '{name}' is write-protected (CKF_WRITE_PROTECTED): it can be read, never created on or \
-                 deleted from"
-                )
-                .into(),
-            ));
-        }
-        Access::Scratch if write_protected => ctx.open_ro_session(slot).map_err(ck("C_OpenSession (read-only)"))?,
-        Access::Write | Access::Scratch => ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?,
-    };
-    let pin = read_pin(name, cfg)?;
-    if let Some(pin) = pin.as_deref() {
-        pins.user.guard(name, "user")?;
-        match session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
-            Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
-            Err(e) => return Err(KmError::Unavailable(format!("C_Login: {}", rv_name(&e)).into()).with_rv(rv_of(&e))),
-        }
-    }
-    Ok((session, pin))
-}
-
-/// The user PIN (`pinEnv`, else `pinFile`, its `$NAME` resolved now).
-fn read_pin(name: &str, cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
-    // `pinEnv` wins: an unset `pinFile` variable is no error then.
-    let file = if cfg.pin_env.is_some() { None } else { cfg.pin_path(name, &|var| std::env::var(var).ok())? };
-    cakeys_core::secret::read("PIN", cfg.pin_env.as_deref(), file.as_deref())
-}
-
-/// Whether keys.toml gives the token an admin (Security Officer) credential, which [`Token::as_so`]
-/// reads.
-#[must_use]
-pub fn has_admin(cfg: &TokenCfg) -> bool {
-    cfg.so_credential_file.is_some() || cfg.so_credential_env.is_some()
-}
-
-/// The admin credential (`soCredentialEnv`, else `soCredentialFile`), read only for an SO step. The format
-/// is the module's: ykcs11 takes the PIV management key in hex, or the PIN on devices whose
-/// management key is PIN-protected.
-fn read_so_credential(name: &str, cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
-    let file = if cfg.so_credential_env.is_some() {
-        None
-    } else {
-        cfg.so_credential_path(name, &|var| std::env::var(var).ok())?
-    };
-    cakeys_core::secret::read("SO credential", cfg.so_credential_env.as_deref(), file.as_deref())
-}
-
-/// The `cryptoki` class of a configured object.
-#[must_use]
-pub fn class_of(object: &ObjectCfg) -> ObjectClass {
-    match object.class {
-        Class::PrivateKey => ObjectClass::PRIVATE_KEY,
-        Class::SecretKey => ObjectClass::SECRET_KEY,
-        Class::PublicKey => ObjectClass::PUBLIC_KEY,
-        Class::Certificate => ObjectClass::CERTIFICATE,
-        Class::Data => ObjectClass::DATA,
-    }
-}
-
-/// The configured class a token reports, if cakeys manages it.
-fn managed_class(class: ObjectClass) -> Option<Class> {
-    Class::ALL.iter().copied().find(|c| class_of(&ObjectCfg::new(*c, None)) == class)
-}
-
-/// The configured curve, after load-time canonicalization.
-///
-/// # Errors
-///
-/// Whatever `ObjectCfg::curve` rejects: `Validation` when the object names no curve,
-/// `Unsupported` for one without a `RustCrypto` crate.
-pub fn curve_of(object: &ObjectCfg) -> Result<Curve> {
-    object.curve()
-}
-
-/// The `cryptoki` key type of a configured key (`ObjectCfg::checked_key_type`).
-///
-/// # Errors
-///
-/// Whatever `checked_key_type` rejects: `Unsupported` for a class/key-type pairing cakeys
-/// does not manage (and `Validation` when an EC or Edwards key names no curve).
-pub fn key_type_of(object: &ObjectCfg) -> Result<KeyType> {
-    Ok(match object.checked_key_type()? {
-        Kt::Ec => KeyType::EC,
-        Kt::EcEdwards => KeyType::EC_EDWARDS,
-        Kt::Rsa => KeyType::RSA,
-        Kt::GenericSecret => KeyType::GENERIC_SECRET,
-        Kt::Aes => KeyType::AES,
-        Kt::Des3 => KeyType::DES3,
-        Kt::Sha1Hmac => KeyType::SHA_1_HMAC,
-        kt @ Kt::Sha224Hmac => hmac_key_type(kt, KeyType::SHA224_HMAC, 0x2e)?,
-        Kt::Sha256Hmac => KeyType::SHA256_HMAC,
-        kt @ Kt::Sha384Hmac => hmac_key_type(kt, KeyType::SHA384_HMAC, 0x2c)?,
-        kt @ Kt::Sha512Hmac => hmac_key_type(kt, KeyType::SHA512_HMAC, 0x2d)?,
-    })
-}
-
-/// The generation of a hash-bound HMAC key type: PKCS#11 3.0's `CKM_SHA*_KEY_GEN` for the type
-/// (`CKM_GENERIC_SECRET_KEY_GEN` makes `CKK_GENERIC_SECRET` keys only; `SoftHSM` and kryoptic
-/// refuse it for an HMAC type). `None` for any other key type. By core's key type: cryptoki's
-/// constants for these types collide without the Nix build's patch.
-#[must_use]
-pub fn hmac_key_gen(kt: Kt) -> Option<Mechanism<'static>> {
-    Some(match kt {
-        Kt::Sha1Hmac => Mechanism::Sha1KeyGen,
-        Kt::Sha224Hmac => Mechanism::Sha224KeyGen,
-        Kt::Sha256Hmac => Mechanism::Sha256KeyGen,
-        Kt::Sha384Hmac => Mechanism::Sha384KeyGen,
-        Kt::Sha512Hmac => Mechanism::Sha512KeyGen,
-        _ => return None,
-    })
-}
-
-/// The mechanism that generates a secret key of type `kt`: its own `CKM_SHA*_KEY_GEN` for a
-/// hash-bound HMAC type ([`hmac_key_gen`]), `CKM_DES3_KEY_GEN`, `CKM_AES_KEY_GEN`, else
-/// `CKM_GENERIC_SECRET_KEY_GEN`. What `create` runs and the probe measures.
-#[must_use]
-pub fn secret_key_gen(kt: Kt) -> Mechanism<'static> {
-    hmac_key_gen(kt).unwrap_or(match kt {
-        Kt::Aes => Mechanism::AesKeyGen,
-        Kt::Des3 => Mechanism::Des3KeyGen,
-        _ => Mechanism::GenericSecretKeyGen,
-    })
-}
-
-/// cryptoki 0.12.1 (and main) gives `SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC` (0x2b), so such
-/// keys could be neither created nor told apart. The Nix build patches it
-/// (nix/patches/cryptoki-hmac-key-types.patch); refuse rather than misidentify without the patch.
-/// Named by core's key type `name`: cryptoki's own names the type it collides with.
-fn hmac_key_type(name: Kt, kt: KeyType, raw: std::os::raw::c_ulong) -> Result<KeyType> {
-    if std::os::raw::c_ulong::from(kt) == raw {
-        Ok(kt)
-    } else {
-        Err(KmError::Unsupported(
-            format!(
-                "{name}: this build's cryptoki maps it to CKK_SHA256_HMAC; build with \
-             nix/patches/cryptoki-hmac-key-types.patch applied"
-            )
-            .into(),
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use cryptoki::context::Function;
-
-    /// `as_so` reports the step first (token/mod.rs F2): a step that succeeded is never dropped
-    /// for a failed logout or re-login without saying it was done, and a step that failed is
-    /// never hidden behind the session trouble after it.
-    #[test]
-    fn the_so_step_is_reported_before_the_session_trouble() {
-        let trouble = || Err(KmError::Unavailable("C_Logout (SO): CKR_DEVICE_ERROR".into()));
-        assert_eq!(so_outcome("generating a key", "piv", Ok(7), Ok(())).unwrap(), 7);
-        let done = so_outcome("generating a key", "piv", Ok(7), trouble()).unwrap_err();
-        assert!(
-            matches!(&done, KmError::Unavailable(m) if m.contains("generating a key on 'piv' was done")
-                && m.contains("CKR_DEVICE_ERROR")),
-            "{done}"
-        );
-        let failed =
-            so_outcome::<()>("generating a key", "piv", Err(KmError::Unsupported("refused".into())), trouble());
-        assert!(matches!(failed, Err(KmError::Unsupported(m)) if *m == *"refused"));
-    }
-
-    /// A lookup that finds a library whose last holder is finalizing it waits until its entry is
-    /// gone (token/mod.rs F5): the module is initialized anew only after that `C_Finalize`. A
-    /// library still held is shared; none is none.
-    #[test]
-    fn a_library_being_finalized_is_waited_for() {
-        let open = Arc::new(std::sync::Mutex::new(Libraries::<u8>::new()));
-        let finalized = Arc::new(std::sync::Condvar::new());
-        let held = Arc::new(7);
-        let dying = Arc::new(8);
-        open.lock().unwrap().insert("held".into(), Arc::downgrade(&held));
-        open.lock().unwrap().insert("dying".into(), Arc::downgrade(&dying));
-        assert_eq!(settled(open.lock().unwrap(), &finalized, "held").1.as_deref(), Some(&7));
-        assert!(settled(open.lock().unwrap(), &finalized, "none").1.is_none());
-        // The last holder is gone, its finalize not done: the lookup waits for the removal.
-        drop(dying);
-        let removed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let lookup = {
-            let (open, finalized, removed) = (Arc::clone(&open), Arc::clone(&finalized), Arc::clone(&removed));
-            std::thread::spawn(move || {
-                let (_open, found) = settled(open.lock().unwrap(), &finalized, "dying");
-                (found.is_none(), removed.load(std::sync::atomic::Ordering::SeqCst))
-            })
-        };
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        {
-            let mut libraries = open.lock().unwrap();
-            removed.store(true, std::sync::atomic::Ordering::SeqCst);
-            libraries.remove("dying");
-            finalized.notify_all();
-        }
-        assert_eq!(lookup.join().unwrap(), (true, true), "returned before the finalize was done");
-    }
 
     /// Every layer's subtraction applies, the binding layer's too when no module profile is
     /// resolved (token/mod.rs F7): a generic module loses what the binding cannot do, as a
@@ -1360,42 +707,12 @@ mod tests {
     }
 
     /// The module's refusal of a trusted copy keeps its return value (token/mod.rs F4), which
-    /// `Token::unsupported` carries past a provider's hint. A vendor value: one every build
-    /// carries, `rv-value` or not.
+    /// `Token::unsupported` carries past a provider's hint.
     #[test]
     fn a_refused_trusted_copy_keeps_its_return_value() {
         let e = CkError::Pkcs11(RvError::VendorDefined(0x8000_0001), Function::CreateObject);
         let m = trusted_copy_refused("hsm", &e);
         assert_eq!(m.rv(), Some(0x8000_0001));
         assert!(m.contains("token 'hsm' will not create a CKA_TRUSTED RSA public key"), "{m}");
-    }
-
-    /// Every return value cryptoki has a variant for converts back to itself, and cryptoki's
-    /// name for it is the one derived from the variant: a build with `rv-value` and one without
-    /// name every module failure alike, so no committed profile's `CKR_*` changes.
-    #[cfg(feature = "rv-value")]
-    #[test]
-    fn names_agree() {
-        for v in 1..0x1000 {
-            let Rv::Error(rv) = Rv::from(v) else { continue };
-            assert_eq!(rv_value(rv), Some(v), "{v:#x}");
-            if let Some(name) = rv.name() {
-                assert_eq!(name, derived_name(rv), "{v:#x}");
-                assert_eq!(rv_value_name(v), name);
-            }
-        }
-    }
-
-    #[test]
-    fn values_without_a_variant_go_by_their_value() {
-        let vendor = CkError::Pkcs11(RvError::VendorDefined(0x8000_0001), Function::Initialize);
-        assert_eq!(rv_name(&vendor), "CKR 0x80000001");
-        // A value no constant has.
-        assert_eq!(rv_value_name(0x20f), "CKR 0x20f");
-        // CKR_TOKEN_NOT_INITIALIZED (PKCS#11 3.2): a variant only the patch adds.
-        let expected = if cfg!(feature = "rv-value") { "CKR_TOKEN_NOT_INITIALIZED" } else { "CKR 0x208" };
-        assert_eq!(rv_value_name(0x208), expected);
-        assert_eq!(rv_value_name(0x30), "CKR_DEVICE_ERROR");
-        assert_eq!(rv_value_name(0), "CKR_OK");
     }
 }

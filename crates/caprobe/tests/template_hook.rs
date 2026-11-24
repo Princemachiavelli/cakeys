@@ -9,10 +9,11 @@
 //!
 //! Needs the reference suite's `CAKEYS_TEST_MODULE`; skipped without it.
 //!
-//! One test, and one `caprobe::main_from` call, per process: `main_from` activates the
-//! process's profile set, which a second activation refuses (review `template_hook.rs` F2). The
-//! control is a run of the binary for that reason. A second in-process test here needs
-//! `main_from` to take an already active set first (caprobe's lib.rs).
+//! The control is a run of the binary, not a second in-process `caprobe::main_from`: the
+//! profile set is built once per process, and a later call reuses it only for the same profile
+//! directories (caprobe's lib.rs), so the control keeps its own process and stays independent
+//! of the run under test. (Review `template_hook.rs` F2 forced this when a second activation
+//! was refused; since `main_from` reuses the set, it is a choice.)
 
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;

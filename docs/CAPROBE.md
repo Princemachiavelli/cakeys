@@ -45,8 +45,8 @@ ykcs11/2.7. Only the Nix-built binary carries the patched cryptoki the probe nee
 | What a module shows through PKCS#11 | usable mechanisms; OAEP hashes actually implemented (SoftHSM: SHA-1 only [run]); generatable curves (kryoptic: no secp256k1 [run]); unwrap-template rules; SO-login needs; delete semantics | profile data |
 | Behaviour outside PKCS#11, or that must be rewritten | tpm2's P-521 point repair; PIV attestation and its pinned roots; `TPM2_Certify`; `tpm2_ptool` | provider code |
 
-The `Provider` hooks that rewrite behaviour or reach outside the module (`repair`, `stand_in`, `template`, `create`, `destroy`, `attest`,
-`check_options`, `import_plaintext`, `bound_keys`, `generation`) stay code. A
+The `Provider` hooks that rewrite behaviour or reach outside the module (`ec_point`, `key_type`, `policy_flag`, `stand_in`, `template`, `create`, `destroy`, `attestation`,
+`check_options`, `plaintext_import`, `bound_keys`, `generation`) stay code. A
 vendor whose module needs no fix-ups needs no Rust. When no code provider claims a module, the
 module profile whose `[match] manufacturer` it reports names its provider by family
 (`provider::Data`). `softhsm` and `kryoptic` are such data providers, and
@@ -324,8 +324,8 @@ generated, never edited, and pinned like the baseline:
 - **RSA sizes**: an observed size decides; outside the reported range is no; between two that
   generated, with no size tried between them refused, is yes; otherwise unknown (a TPM
   generates only its discrete sizes: swtpm's 1024 yes, 1536 no leaves 1280 unknown).
-- **The diff** compares the match keys, `advertise`, `reported`, `subtract`, `add`, `restrict` and every
-  probed capability row (answer and `via`); without `--write-probes`, only what a read-only probe sees.
+- **The diff** compares the match keys, `advertise`, `reported`, `subtract`, `add`, `restrict`,
+  `[untested]` (each mechanism's reason) and every probed capability row (answer and `via`); without `--write-probes`, only what a read-only probe sees.
 - **Only the Nix-built binary may write or diff a profile**: an unpatched binding hides
   mechanisms it cannot name (kryoptic's `CKM_AES_KEY_WRAP_KWP` [run]).
 
@@ -345,8 +345,9 @@ generated, never edited, and pinned like the baseline:
 
 ## Tests
 
-- **Algebra and the baseline**: modes, intersection, by-class queries; the baseline regenerates
-  byte for byte; frozen spellings are pinned. `checks.profiles` runs the pinned `supports` cases
+- **Algebra and the baseline**: modes, intersection, by-class queries; the baseline the vendored
+  headers generate equals the committed one, compared parsed (`CAKEYS_UPDATE_BASELINE=1`
+  rewrites it); frozen spellings are pinned. `checks.profiles` runs the pinned `supports` cases
   against the built binary, including an unpatched binding modelled through `--profiles`.
 - **Conformance**, in every Nix build's check phase: a fresh probe of SoftHSM, kryoptic and
   tpm2-pkcs11-on-swtpm conforms to its committed profile and regenerates it byte for byte; the

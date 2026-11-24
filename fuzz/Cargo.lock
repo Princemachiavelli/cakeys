@@ -230,6 +230,7 @@ dependencies = [
  "cakeys-kmsp11",
  "cakeys-pkcs11",
  "cakeys-profile",
+ "clap",
  "serde",
  "serde_json",
 ]
@@ -304,6 +305,7 @@ dependencies = [
  "der",
  "getrandom",
  "libc",
+ "p11-names",
  "rsa",
  "x509-cert",
  "zeroize",
@@ -365,6 +367,7 @@ dependencies = [
  "cakeys-pkcs11",
  "cakeys-profile",
  "clap",
+ "clap_complete",
  "cryptoki",
  "der",
  "getrandom",
@@ -391,6 +394,7 @@ dependencies = [
  "cakeys-pkcs11",
  "cakeys-profile",
  "clap",
+ "clap_complete",
  "cryptoki",
  "getrandom",
  "serde_json",
@@ -455,6 +459,18 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+]
+
+[[package]]
+name = "clap_complete"
+version = "4.6.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a35200383f20018d41c14d1ab19c1727c697f544492143f7d93aa39f0187848"
+dependencies = [
+ "clap",
+ "clap_lex",
+ "is_executable",
+ "shlex",
 ]
 
 [[package]]
@@ -932,6 +948,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "is_executable"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82cb6a9f675da968c63b6208c641b9dca58fc0133ae53375736b1767b0cab8bd"
+dependencies = [
+ "windows-sys",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1072,6 +1097,13 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "p11-names"
+version = "0.1.0"
+dependencies = [
+ "cryptoki-sys",
+]
 
 [[package]]
 name = "p256"

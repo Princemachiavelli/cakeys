@@ -317,7 +317,8 @@ fn a_substitution_of_nothing_is_the_plans_mistake() {
     assert_eq!(w.code(&["create", "--spec", "k", "--token", "ref"]), 0);
     let o = w
         .km_env(&["check", "--spec", "k", "--token", "ref"], &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)]);
-    assert_ne!(code(&o), 0, "{}", stderr(&o));
+    // The shim's CKR_GENERAL_ERROR, unavailable like any failed call (docs/FAULT_SHIM.md).
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
     assert!(stderr(&o).contains("p11-fault: use_label: no object labelled no-such-key"), "{}", stderr(&o));
     assert_eq!(fired(&trace), [] as [serde_json::Value; 0], "a rule that substituted nothing is traced as fired");
 }
@@ -482,7 +483,8 @@ fn a_creation_that_fails_after_the_write_is_undone() {
     let left = || open_session(&real, "kmtest", "1234").labelled("fault-late-error").len();
     let create = ["create", "--spec", "k", "--token", "ref"];
     let o = w.km_env(&create, &[("P11_FAULT_PLAN", &plan_path), ("P11_FAULT_TRACE", &trace)]);
-    assert_ne!(code(&o), 0, "{}", stderr(&o));
+    // The module's CKR_DEVICE_ERROR, handed back after the undo.
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
     assert_eq!(fired(&trace).len(), 1, "the generation, once");
     assert!(stderr(&o).contains("removed 2 object(s) just created"), "{}", stderr(&o));
     assert_eq!(left(), 0, "the pair the module made is still under the locator");

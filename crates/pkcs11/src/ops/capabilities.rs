@@ -260,7 +260,7 @@ pub(crate) fn check_attestation(
 pub(super) fn check_capabilities(t: &Target, tok: &Token, mode: Mode, verb: Verb) -> Result<()> {
     let creating = verb == Verb::Create;
     let to_token = |e| match e {
-        KmError::Unsupported(m) => tok.unsupported(m),
+        KmError::Unsupported(m) => tok.unsupported_for(Topic::Generate, m),
         e => e,
     };
     let own = if creating { Some(own_generation(t, tok.provider.as_ref()).map_err(to_token)?) } else { None };
@@ -268,7 +268,12 @@ pub(super) fn check_capabilities(t: &Target, tok: &Token, mode: Mode, verb: Verb
     check_attestation(t, tok.provider.as_ref()).map_err(|m| tok.unsupported(m))?;
     let generation = needs.generation.map(|m| vec![m]);
     if let Some(g) = needs.groups.iter().chain(&generation).find(|g| !g.iter().any(|m| tok.has(*m))) {
-        return Err(tok.unsupported(lacking(&tok.name, g, mode, t)));
+        let about = if generation.as_ref().is_some_and(|own| std::ptr::eq(own, g)) {
+            Topic::Generate
+        } else {
+            Topic::Mechanism
+        };
+        return Err(tok.unsupported_for(about, lacking(&tok.name, g, mode, t)));
     }
     // The proof the realisation will make, as the spec says it (camigrate's plan asks the same).
     if let Some(b) = cakeys_core::plan::expected_binding(t) {

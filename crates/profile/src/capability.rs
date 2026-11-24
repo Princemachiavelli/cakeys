@@ -194,9 +194,10 @@ pub enum Capability {
     },
     /// `C_DestroyObject` really removing an object of the class (`CKO_*`): `delete.CKO_PRIVATE_KEY`.
     Delete(String),
-    /// A secret key's commitment, the operation `kind` names (`hmac-sha256`, `cmac`, `kcv-ecb`,
-    /// `kcv-ecb-decrypt`, `kcv-des3-ecb`, `kw`), working on a key of `key_type` of `bytes`:
-    /// `commit.hmac-sha256.CKK_GENERIC_SECRET.32`.
+    /// A secret key's commitment, the operation `kind` names (`cakeys_core::id::Commit::
+    /// profile_kind`: `hmac-sha256`, `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`), working on a key of
+    /// `key_type` of `bytes`: `commit.hmac-sha256.CKK_GENERIC_SECRET.32`. A check value's cipher
+    /// is the key type's (`commit.kcv-ecb.CKK_DES3.24`).
     Commit {
         /// The commitment kind.
         kind: String,
@@ -310,9 +311,9 @@ pub fn generation_mechanism(key_type: &str) -> Option<&'static str> {
     })
 }
 
-/// The mechanism a commitment of `kind` computes with.
+/// The mechanism a commitment of `kind` computes with on a key of `key_type`.
 #[must_use]
-pub fn commit_mechanism(kind: &str) -> Option<&'static str> {
+pub fn commit_mechanism(kind: &str, key_type: &str) -> Option<&'static str> {
     Some(match kind {
         "hmac-sha1" => "CKM_SHA_1_HMAC",
         "hmac-sha224" => "CKM_SHA224_HMAC",
@@ -320,9 +321,8 @@ pub fn commit_mechanism(kind: &str) -> Option<&'static str> {
         "hmac-sha384" => "CKM_SHA384_HMAC",
         "hmac-sha512" => "CKM_SHA512_HMAC",
         "cmac" => "CKM_AES_CMAC",
-        "cmac-des3" => "CKM_DES3_CMAC",
-        "kcv-ecb" | "kcv-ecb-decrypt" => "CKM_AES_ECB",
-        "kcv-des3-ecb" | "kcv-des3-ecb-decrypt" => "CKM_DES3_ECB",
+        "kcv-ecb" | "kcv-ecb-dec" if key_type == "CKK_DES3" => "CKM_DES3_ECB",
+        "kcv-ecb" | "kcv-ecb-dec" => "CKM_AES_ECB",
         "kw" => "CKM_AES_KEY_WRAP",
         _ => return None,
     })
@@ -450,7 +450,9 @@ impl Capability {
                 vec!["CKM_ECDH1_DERIVE".into()]
             }
             Capability::Prove { binding, .. } if binding.name() == "pop-ecdh" => vec!["CKM_ECDH1_DERIVE".into()],
-            Capability::Commit { kind, .. } => commit_mechanism(kind).map(str::to_owned).into_iter().collect(),
+            Capability::Commit { kind, key_type, .. } => {
+                commit_mechanism(kind, key_type.name()).map(str::to_owned).into_iter().collect()
+            }
             Capability::Crypt { mechanism, .. }
             | Capability::Kdf { mechanism, .. }
             | Capability::Sign { mechanism, .. } => {

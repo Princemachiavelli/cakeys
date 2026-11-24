@@ -5,7 +5,7 @@
 
 use crate::baseline::Baseline;
 use crate::capability::{Capability, On};
-use crate::names::{KeyKind, Operation};
+use crate::names::KeyKind;
 use crate::profile::{Profile, Why};
 
 /// The capability of generating `key_type` on `on`.
@@ -162,7 +162,7 @@ impl<'a> Effective<'a> {
                 return Some(Verdict::no(&l.profile, l.evidence(&generate(key_type, On::Item(item.to_owned())), item)));
             }
             for r in &l.restrict {
-                if matches!(r.operation, Operation::Generate)
+                if r.operation == "generate"
                     && r.key_type == key_type
                     && let Some(bits) = bits
                     && (r.max_bits.is_some_and(|max| bits > max) || r.min_bits.is_some_and(|min| bits < min))

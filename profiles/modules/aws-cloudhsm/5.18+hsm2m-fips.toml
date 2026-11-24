@@ -104,8 +104,8 @@ mechanisms = ["CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_PAD", "CKM_DES3_KEY_GEN", "C
 "generate.CKK_EC.secp521r1" = { answer = "yes" }
 "generate.CKK_EC_EDWARDS.edwards25519" = { answer = "no", evidence = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID" }
 "generate.CKK_EC_EDWARDS.edwards448" = { answer = "no", evidence = "generation refused: CKR_ATTRIBUTE_VALUE_INVALID" }
-"generate.CKK_EC_MONTGOMERY.curve25519" = { answer = "no" }
-"generate.CKK_EC_MONTGOMERY.curve448" = { answer = "no" }
+"generate.CKK_EC_MONTGOMERY.curve25519" = { answer = "no", evidence = "generation refused: CKR_MECHANISM_INVALID" }
+"generate.CKK_EC_MONTGOMERY.curve448" = { answer = "no", evidence = "generation refused: CKR_MECHANISM_INVALID" }
 "generate.CKK_GENERIC_SECRET.1" = { answer = "no", evidence = "valueLen = 1: CKR_FUNCTION_FAILED" }
 "generate.CKK_GENERIC_SECRET.16" = { answer = "yes" }
 "generate.CKK_GENERIC_SECRET.32" = { answer = "yes" }
@@ -244,9 +244,9 @@ mechanisms = ["CKM_AES_KEY_WRAP", "CKM_AES_KEY_WRAP_PAD", "CKM_DES3_KEY_GEN", "C
 "commit.kcv-ecb.CKK_AES.16" = { answer = "yes" }
 "commit.kcv-ecb.CKK_AES.24" = { answer = "yes" }
 "commit.kcv-ecb.CKK_AES.32" = { answer = "yes" }
-"commit.kcv-ecb-decrypt.CKK_AES.16" = { answer = "yes" }
-"commit.kcv-ecb-decrypt.CKK_AES.24" = { answer = "yes" }
-"commit.kcv-ecb-decrypt.CKK_AES.32" = { answer = "yes" }
+"commit.kcv-ecb-dec.CKK_AES.16" = { answer = "yes" }
+"commit.kcv-ecb-dec.CKK_AES.24" = { answer = "yes" }
+"commit.kcv-ecb-dec.CKK_AES.32" = { answer = "yes" }
 "commit.kw.CKK_AES.16" = { answer = "no", evidence = "the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject" }
 "commit.kw.CKK_AES.24" = { answer = "no", evidence = "the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject" }
 "commit.kw.CKK_AES.32" = { answer = "no", evidence = "the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject" }
@@ -320,8 +320,8 @@ max-bits = 4096
 [claims]
 "interface" = "Cryptoki 2.40"
 "token.flags" = "rng, login-required, token-initialized"
-"token.max-rw-sessions" = "Max(1024)"
-"token.max-sessions" = "Max(1024)"
+"token.max-rw-sessions" = "1024"
+"token.max-sessions" = "1024"
 "token.pin-length" = "8-32"
 
 [notes]
@@ -333,8 +333,6 @@ max-bits = 4096
 "CKM_RSA_PKCS" = "RSA-2048 decrypt: CKR_ENCRYPTED_DATA_INVALID"
 "CKM_SHA224_RSA_PKCS" = "not listed; works"
 "cryptoki" = "the module reports Cryptoki 2.40"
-"curve25519" = "generation refused: CKR_MECHANISM_INVALID"
-"curve448" = "generation refused: CKR_MECHANISM_INVALID"
 "derive.secret" = "secp256r1: the derived secret reports CKA_SENSITIVE = true, CKA_EXTRACTABLE = true"
 "derive.template" = "secp256r1: the template as asked is refused (CKR_ATTRIBUTE_VALUE_INVALID); derived with CKA_VALUE_LEN = 32 added, CKA_EXTRACTABLE = false dropped"
 "template.public.CKA_PRIVATE" = "the module refuses a public key with CKA_PRIVATE = false"

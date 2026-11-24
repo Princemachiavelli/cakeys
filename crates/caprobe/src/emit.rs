@@ -201,7 +201,7 @@ pub(crate) fn profile(p: &Profile) -> String {
     }
     for r in &p.restrict {
         let _ = writeln!(s, "\n[[restrict]]");
-        let _ = writeln!(s, "operation = \"{}\"", toml_str(r.operation.name()));
+        let _ = writeln!(s, "operation = \"{}\"", toml_str(&r.operation));
         let _ = writeln!(s, "key-type = \"{}\"", toml_str(r.key_type.name()));
         if let Some(b) = r.min_bits {
             let _ = writeln!(s, "min-bits = {b}");
@@ -447,6 +447,12 @@ mod tests {
             "[[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nnote = \"by firmware\"\n",
             "[notes]\ntoken = \"t\"\n",
             "[manual.x]\nfinding = \"y\"\nevidence = \"[run] z\"\n",
+            // Added with the coverage plan (review 2026-11-23 D-20).
+            "[untested]\n\"CKM_SHA256\" = { why = \"scope\" }\n",
+            "[untested]\n\"CKM_SHA256\" = { why = \"scope\", note = \"on the host\" }\n",
+            "[mechanism-info]\n\"CKM_AES_CBC\" = { min = 16, max = 32, flags = [] }\n",
+            "[mechanism-info]\n\"CKM_AES_CBC\" = { min = 16, max = 32, flags = [\"encrypt\"] }\n",
+            "[claims]\n\"interface\" = \"Cryptoki 3.2\"\n",
         ]
         .map(str::to_owned)
         .into();

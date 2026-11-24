@@ -34,7 +34,7 @@ They are separate because they change independently, and each change means somet
 
 ## An annotated example
 
-Valid as it stands (`cakeys validate` accepts it with `TPM_PIN_FILE` set); every comment explains
+Valid as it stands: it loads with no variable set (`the_annotated_config_example_loads`); every comment explains
 the line below it or to its left. Not every key is shown for every table, only one of each kind
 plus the less obvious ones.
 
@@ -281,7 +281,8 @@ tokens.softhsm = { locator = { CKA_LABEL = "web-tls" }, origin = "file" }
 - **Each spec names exactly one object; one spec has at most one realisation per token.** A
   realisation is the pair (spec, token): the lock records one per pair.
 - **What loads is usable (17 at load):** a spec's `object` must exist, even if nothing uses the
-  spec; a `$NAME` path reference must name a set variable; every token a spec names is in
+  spec; a `$NAME` path reference is well formed (whether the variable is set is checked where the
+  file is read, 16); every token a spec names is in
   `[tokens]`; a locator names `CKA_LABEL` or `CKA_ID`, and a `CKA_ID` is hex (stored lower case,
   so `0A` and `0a` are one locator; an empty one is a real object's ID); an AES `valueLen` is 16,
   24 or 32 and no secret key's is 0; and every (spec, token) pair plans, the checks `validate`

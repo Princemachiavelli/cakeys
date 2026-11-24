@@ -24,7 +24,7 @@ impl Token {
     /// [`Provider::generation`]: crate::Provider::generation
     pub fn create(
         &self,
-        object: &ObjectCfg,
+        object: Object<'_>,
         spec: &SpecCfg,
         loc: &Locator,
         binding: Option<Binding>,
@@ -69,15 +69,17 @@ impl Token {
 
     /// The module's own generation: its template alone, no public template.
     fn generate_own(&self, g: &Generation) -> Result<Option<CreateNote>> {
-        let (mech, pair) = keygen_mechanism(g.keygen)
-            .ok_or_else(|| self.unsupported(format!("generating key on '{}' with {}", self.name, g.keygen)))?;
+        let (mech, pair) = keygen_mechanism(g.keygen).ok_or_else(|| {
+            self.unsupported_for(Topic::Generate, format!("generating key on '{}' with {}", self.name, g.keygen))
+        })?;
         let made = if pair {
             self.session.generate_key_pair(&mech, &[], &g.template).map(drop)
         } else {
             self.session.generate_key(&mech, &g.template).map(drop)
         };
         made.map(|()| None).map_err(|e| {
-            self.unsupported(format!("generating key on '{}': {} ({e})", self.name, rv_name(&e))).with_rv(rv_of(&e))
+            self.unsupported_for(Topic::Generate, format!("generating key on '{}': {} ({e})", self.name, rv_name(&e)))
+                .with_rv(rv_of(&e))
         })
     }
 
@@ -112,13 +114,14 @@ impl Token {
             .transpose()
     }
 
-    fn generate(&self, object: &ObjectCfg, spec: &SpecCfg, loc: &Locator) -> Result<Option<CreateNote>> {
+    fn generate(&self, object: Object<'_>, spec: &SpecCfg, loc: &Locator) -> Result<Option<CreateNote>> {
         // Each template as the provider adjusts it, before anything is generated.
         let on = Declared { object, spec, locator: loc };
         let key = self.generation_key(on)?;
         let public = self.generation_public(on, None)?;
         let refused = |e: CkError| {
-            self.unsupported(format!("generating key on '{}': {} ({e})", self.name, rv_name(&e))).with_rv(rv_of(&e))
+            self.unsupported_for(Topic::Generate, format!("generating key on '{}': {} ({e})", self.name, rv_name(&e)))
+                .with_rv(rv_of(&e))
         };
         let private_declared = templates::public_declares(spec, "CKA_PRIVATE");
         // A key pair, once more without the public half's default `CKA_PRIVATE = false` when the
@@ -128,12 +131,11 @@ impl Token {
                 .map(|(_, dropped)| dropped)
         };
         let note = |dropped, by_name| CreateNote::of(&self.name, dropped, by_name);
-        match (key_type_of(object)?, public) {
-            (KeyType::RSA, Some(public)) => {
+        match (key_type_of(object)?, object.curve(), public) {
+            (KeyType::RSA, _, Some(public)) => {
                 pair(&Mechanism::RsaPkcsKeyPairGen, &public, &key).map(|d| note(d, None)).map_err(refused)
             }
-            (kt @ (KeyType::EC | KeyType::EC_EDWARDS), Some(by_oid_public)) => {
-                let curve = curve_of(object)?;
+            (kt @ (KeyType::EC | KeyType::EC_EDWARDS), Some(curve), Some(by_oid_public)) => {
                 let mech = self.runnable(if curve.edwards() {
                     Mechanism::EccEdwardsKeyPairGen
                 } else {
@@ -147,15 +149,15 @@ impl Token {
                 match (by_oid, retry) {
                     (Err(by_oid), Some((name, why))) => {
                         let by_name = self.generation_public(on, Some(name))?.unwrap_or_default();
-                        pair(&mech, &by_name, &key)
-                            .map(|d| note(d, Some(curve.name().to_owned())))
-                            .map_err(|by_name| self.unsupported(by_name_refused(&self.name, why, &by_oid, &by_name)))
+                        pair(&mech, &by_name, &key).map(|d| note(d, Some(curve.name().to_owned()))).map_err(|by_name| {
+                            self.unsupported_for(Topic::Generate, by_name_refused(&self.name, why, &by_oid, &by_name))
+                        })
                     }
                     (other, _) => other.map(|d| note(d, None)).map_err(refused),
                 }
             }
             // A secret key: the mechanism its key type names.
-            (_, _) => {
+            _ => {
                 let mech = object.key_type.map_or(Mechanism::GenericSecretKeyGen, secret_key_gen);
                 self.session.generate_key(&mech, &key).map(|_| None).map_err(refused)
             }

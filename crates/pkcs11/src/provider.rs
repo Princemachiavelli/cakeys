@@ -3,19 +3,18 @@
 //! spec-compliant module would, so identities stay portable across modules and versions.
 
 use crate::Token;
-use cakeys_core::config::{Binding, Locator, ModuleInfo, ObjectCfg, Options, SpecCfg, TokenCfg};
+use crate::chain_time::ChainTime;
+use cakeys_core::config::{Binding, Locator, ModuleInfo, Object, ObjectCfg, Options, SpecCfg, TokenCfg};
 use cakeys_core::id::Scheme;
 use cakeys_core::plan::Target;
 use cakeys_core::types::ObjectClass;
 use cakeys_core::{KmError, Result};
 pub use cakeys_profile::PlaintextKind;
-use cakeys_profile::Set;
 use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectHandle};
 use cryptoki::session::Session;
 use std::borrow::Cow;
-use std::sync::Arc;
 
 /// A key bound to one purpose at creation ([`Provider::bound_keys`]).
 pub struct BoundKey {
@@ -58,16 +57,29 @@ pub fn keygen_mechanism(keygen: MechanismType) -> Option<(Mechanism<'static>, bo
     })
 }
 
+/// What an `Unsupported` refusal is about ([`Provider::hint`], `Token::unsupported_for`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Topic {
+    /// Generating a key on the token.
+    Generate,
+    /// Creating an object from a value (`C_CreateObject`): an import, a copy, a public object.
+    Create,
+    /// A mechanism the operation needs and the token does not offer or refuses.
+    Mechanism,
+}
+
 /// What one family of PKCS#11 modules needs beyond the standard, at three kinds of seam and
 /// nothing else (docs/archive/REVIEW-2026-11-15.md §4 named the first two):
 ///
 /// - *repairs*, where a module's answer is made what a spec-compliant module's would be: one
-///   for an attribute read ([`Self::repair`]), one for a mechanism ([`Self::stand_in`]);
+///   for each attribute read that needs one ([`Self::ec_point`], [`Self::key_type`],
+///   [`Self::policy_flag`]), one for a mechanism ([`Self::stand_in`]);
 /// - *templates*, where cakeys' own template for a call is made one the module takes: one for
 ///   every template cakeys builds, named by what it is for ([`Self::template`]);
 /// - *operations*, which a provider may replace whole, the default being plain PKCS#11 through
-///   a public [`Token`] method an override can wrap: [`Self::create`], [`Self::destroy`],
-///   [`Self::import_plaintext`] and [`Self::attest`].
+///   a public [`Token`] method an override can wrap: [`Self::create`] and [`Self::destroy`]; and
+///   the two a provider names with what they are, so the pair cannot disagree:
+///   [`Self::plaintext_import`] (its tool) and [`Self::attestation`] (its computation).
 ///
 /// Beside them: how to recognise the module, its settings and advice, and the facts a caller
 /// must know before it acts ([`Self::manages_as_so`], [`Self::generation`]). Two hooks only the
@@ -86,8 +98,10 @@ pub trait Provider: Send + Sync {
     /// Whether this provider recognises the loaded module (from `C_GetInfo`), for auto-detection.
     fn matches(&self, module: &ModuleInfo) -> bool;
 
-    /// Advice appended when the module cannot do something the spec asks for.
-    fn hint(&self) -> Option<&'static str> {
+    /// Advice appended when the module cannot do what `about` names: only where it applies, so a
+    /// refused proof mechanism never carries advice about generating keys (review 2026-11-23 B-9).
+    fn hint(&self, about: Topic) -> Option<&'static str> {
+        let _ = about;
         None
     }
 
@@ -119,12 +133,31 @@ pub trait Provider: Send + Sync {
 
     // ── Repairs ──────────────────────────────────────────────────────────────────────────
 
-    /// Repair what the module reported for one attribute read ([`Report`]) to what a
-    /// spec-compliant module would report, returning the same variant. The policy check, the
-    /// identities and the lock all see the result, so identities stay portable across modules
-    /// and versions; the profile keeps the raw observation. The default changes nothing.
-    fn repair<'a>(&self, report: Report<'a>) -> Report<'a> {
-        report
+    // Each repairs what the module reported for one attribute read to what a spec-compliant
+    // module would report. The policy check, the identities and the lock all see the result, so
+    // identities stay portable across modules and versions; the profile keeps the raw
+    // observation. The defaults change nothing. One typed hook per read, so no repair can answer
+    // for another (review 2026-11-23 B-22).
+
+    /// `CKA_EC_POINT` as `raw` reads, which tpm2-pkcs11 and AWS `CloudHSM` encode their own way.
+    fn ec_point<'a>(&self, raw: &'a [u8]) -> Cow<'a, [u8]> {
+        Cow::Borrowed(raw)
+    }
+
+    /// `CKA_KEY_TYPE` as `reported`, with the object's `CKA_EC_PARAMS` where it has them: AWS
+    /// `CloudHSM` reports an Ed25519 key as `CKK_EC` \[run\].
+    fn key_type(&self, reported: KeyType, ec_params: Option<&[u8]>) -> KeyType {
+        let _ = ec_params;
+        reported
+    }
+
+    /// A boolean policy attribute `attr` (`CKA_SIGN`, `CKA_DERIVE`, ...) as `reported`;
+    /// `private_key_type` reads the object's key type when it is a private key. ykcs11's fixed
+    /// table says `CKA_DERIVE` false on keys its `C_DeriveKey` derives with (the profile keeps
+    /// the raw observation, `derive.key-attribute`).
+    fn policy_flag(&self, attr: AttributeType, reported: bool, private_key_type: &dyn Fn() -> Option<KeyType>) -> bool {
+        let _ = (attr, private_key_type);
+        reported
     }
 
     /// The mechanism this module runs for the standard `m` it does not list, parameterless:
@@ -182,7 +215,7 @@ pub trait Provider: Send + Sync {
     /// for a locator it cannot place a key under.
     fn generation(
         &self,
-        _object: &ObjectCfg,
+        _object: Object<'_>,
         _spec: &SpecCfg,
         _loc: &Locator,
         _binding: Option<Binding>,
@@ -229,49 +262,19 @@ pub trait Provider: Send + Sync {
         tok.destroy_plain(req)
     }
 
-    /// Import plaintext key material the module's own way, outside PKCS#11 (docs/CAMIGRATE.md
-    /// `tpm2-ptool`: tpm2-pkcs11 creates keys from values only through `tpm2_ptool import`):
-    /// `ctx.key` is a private key's PKCS#8 `PrivateKeyInfo` or a secret key's value. The caller
-    /// opens the token again afterwards to see the key. The default refuses.
-    ///
-    /// # Errors
-    ///
-    /// `Unsupported` (this default, or a key type the tool cannot take); whatever the tool
-    /// reports.
-    fn import_plaintext(&self, _ctx: &ImportCtx<'_>) -> Result<()> {
-        Err(KmError::Unsupported(format!("{} imports no plaintext outside PKCS#11", self.name()).into()))
-    }
-
-    /// How plaintext keys get into this module, as a profile's `plaintext-import` and an
-    /// `import.*` row's `via` name it: `C_CreateObject` by default (as SO where the provider
-    /// manages as SO), or the provider's own [`Self::import_plaintext`].
-    fn plaintext_import(&self) -> PlaintextKind {
-        PlaintextKind::CreateObject
+    /// How plaintext keys get into this module ([`PlaintextVia`]): `C_CreateObject` by default
+    /// (as SO where the provider manages as SO), or the provider's own tool, which comes with
+    /// the kind it is named by, so the two cannot disagree (review 2026-11-23 B-27).
+    fn plaintext_import(&self) -> PlaintextVia {
+        PlaintextVia::CreateObject(PlaintextKind::CreateObject)
     }
 
     /// The attestation commitment this provider can compute (§3.7 of docs/DESIGN.md), if any:
-    /// the scheme it records and the object classes it can attest.
+    /// the scheme it records, the object classes it can attest, and the computation itself.
     /// `None` (the default): this module exposes no attestation, so a spec opting into one is
     /// refused (15) before anything is created.
     fn attestation(&self) -> Option<AttestationCap> {
         None
-    }
-
-    /// Compute the attestation commitment for `key` on its token (called only when the spec
-    /// opted in and [`Provider::attestation`] covers the class). Returns the canonical scheme
-    /// digest plus the anchor it was verified to. A missing attestation is an error naming the
-    /// reason (e.g. an imported key, or a session that could not attest), never a pass; an
-    /// attestation that names other material than `ctx.spki` is a conflict (13).
-    ///
-    /// # Errors
-    ///
-    /// Whatever the module's attestation path cannot establish: `Unsupported` (this default:
-    /// the provider advertises none), `Unavailable` when the token has none to give, `Conflict`
-    /// when it names other material than `ctx.spki`.
-    fn attest(&self, _ctx: &AttestCtx<'_>) -> Result<Attested> {
-        // Unreachable in practice: the caller checks `attestation()` first. Kept as an error so
-        // a provider advertising a capability must actually implement it.
-        Err(KmError::Unsupported(format!("{} exposes no attestation", self.name()).into()))
     }
 
     // ── Read only by the probe ───────────────────────────────────────────────────────────
@@ -295,67 +298,7 @@ pub trait Provider: Send + Sync {
     }
 }
 
-/// One attribute read as the module reported it, for [`Provider::repair`]: the repair returns
-/// the same variant with what a spec-compliant module would have reported.
-pub enum Report<'a> {
-    /// `CKA_EC_POINT`, which tpm2-pkcs11 and AWS `CloudHSM` encode their own way.
-    EcPoint(Cow<'a, [u8]>),
-    /// `CKA_KEY_TYPE`, with the object's `CKA_EC_PARAMS` where it has them: AWS `CloudHSM`
-    /// reports an Ed25519 key as `CKK_EC` \[run\].
-    KeyType {
-        /// What the module reported.
-        reported: KeyType,
-        /// The object's `CKA_EC_PARAMS`, where it has them.
-        ec_params: Option<&'a [u8]>,
-    },
-    /// A boolean policy attribute (`CKA_SIGN`, `CKA_DERIVE`, ...): ykcs11's fixed table says
-    /// `CKA_DERIVE` false on keys its `C_DeriveKey` derives with. The profile keeps the raw
-    /// observation (`derive.key-attribute`).
-    PolicyFlag {
-        /// The attribute read.
-        attr: AttributeType,
-        /// What the module reported.
-        reported: bool,
-        /// Reads the object's key type when it is a private key.
-        private_key_type: &'a dyn Fn() -> Option<KeyType>,
-    },
-}
-
-/// The repaired reads ([`Provider::repair`]): a repair that answers with another variant than
-/// it was asked changes nothing.
 impl dyn Provider + '_ {
-    /// `CKA_EC_POINT` as `raw` reads, repaired.
-    #[must_use]
-    pub fn ec_point<'a>(&self, raw: &'a [u8]) -> Cow<'a, [u8]> {
-        match self.repair(Report::EcPoint(Cow::Borrowed(raw))) {
-            Report::EcPoint(point) => point,
-            _ => Cow::Borrowed(raw),
-        }
-    }
-
-    /// `CKA_KEY_TYPE` as `reported`, repaired from the object's `ec_params`.
-    #[must_use]
-    pub fn key_type(&self, reported: KeyType, ec_params: Option<&[u8]>) -> KeyType {
-        match self.repair(Report::KeyType { reported, ec_params }) {
-            Report::KeyType { reported: repaired, .. } => repaired,
-            _ => reported,
-        }
-    }
-
-    /// The policy flag `attr` as `reported`, repaired.
-    #[must_use]
-    pub fn policy_flag(
-        &self,
-        attr: AttributeType,
-        reported: bool,
-        private_key_type: &dyn Fn() -> Option<KeyType>,
-    ) -> bool {
-        match self.repair(Report::PolicyFlag { attr, reported, private_key_type }) {
-            Report::PolicyFlag { reported: repaired, .. } => repaired,
-            _ => reported,
-        }
-    }
-
     /// The standard mechanisms [`Provider::stand_in`] covers: of those cakeys runs through
     /// [`Token::runnable`], in the form it asks for them, each the provider answers. What
     /// `caprobe` probes although the module does not list it.
@@ -403,8 +346,8 @@ pub enum Template<'a> {
 /// The object a template makes: `object` as `spec` declares it, under `locator`.
 #[derive(Clone, Copy)]
 pub struct Declared<'a> {
-    /// The object's type.
-    pub object: &'a ObjectCfg,
+    /// The object, parsed.
+    pub object: Object<'a>,
     /// The spec it is made by (the probe's own, for its scratch objects).
     pub spec: &'a SpecCfg,
     /// Where it goes on the token.
@@ -497,8 +440,8 @@ impl Attributes {
 /// What [`Provider::create`] makes: `object` as `spec` declares it, under `locator`, to be
 /// proven by `binding` (private keys).
 pub struct Create<'a> {
-    /// The object's type.
-    pub object: &'a ObjectCfg,
+    /// The object, parsed.
+    pub object: Object<'a>,
     /// The spec it is created by.
     pub spec: &'a SpecCfg,
     /// Where it goes on the token.
@@ -517,8 +460,8 @@ pub struct Destroy<'a> {
     pub handles: &'a [ObjectHandle],
 }
 
-/// What a provider can attest (§3.7 of docs/DESIGN.md), from [`Provider::attestation`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a provider can attest (§3.7 of docs/DESIGN.md), from [`Provider::attestation`], and how.
+#[derive(Debug, Clone, Copy)]
 pub struct AttestationCap {
     /// Scheme the commitment records (an attestation scheme: `Scheme::is_attestation`; its
     /// lock-record kind is `Scheme::attestation_kind`).
@@ -529,9 +472,40 @@ pub struct AttestationCap {
     /// PIV, whose attestation is of keys generated on the `YubiKey`. An import such an attestation
     /// cannot cover is refused before the key is written (15), where the device may keep it.
     pub imported: bool,
+    /// Compute the attestation commitment for `ctx.key` on its token (called only when the
+    /// spec opted in and `classes` covers it): the canonical scheme digest plus the anchor it
+    /// was verified to. A missing attestation is an error naming the reason (an imported key, a
+    /// session that could not attest), never a pass: `Unavailable` when the token has none to
+    /// give, `Conflict` (13) when it names other material than `ctx.spki`.
+    pub attest: fn(&AttestCtx<'_>) -> Result<Attested>,
 }
 
-/// What [`Provider::import_plaintext`] gets: the token as keys.toml describes it, the key's type
+/// How plaintext keys get into a module ([`Provider::plaintext_import`]), each with the kind a
+/// profile's `plaintext-import` and an `import.*` row's `via` name it by.
+#[derive(Debug, Clone, Copy)]
+pub enum PlaintextVia {
+    /// `C_CreateObject` with the key's attributes: `create-object`, or `piv-import` (ykcs11, as
+    /// SO into a PIV slot).
+    CreateObject(PlaintextKind),
+    /// The provider's own tool, outside PKCS#11 (docs/CAMIGRATE.md `tpm2-ptool`: tpm2-pkcs11
+    /// creates keys from values only through `tpm2_ptool import`): `ctx.key` is a private key's
+    /// PKCS#8 `PrivateKeyInfo` or a secret key's value. The caller opens the token again
+    /// afterwards to see the key. Errors: `Unsupported` for a key type the tool cannot take,
+    /// else whatever the tool reports.
+    Tool(PlaintextKind, fn(&ImportCtx<'_>) -> Result<()>),
+}
+
+impl PlaintextVia {
+    /// The kind it is named by.
+    #[must_use]
+    pub fn kind(self) -> PlaintextKind {
+        match self {
+            PlaintextVia::CreateObject(k) | PlaintextVia::Tool(k, _) => k,
+        }
+    }
+}
+
+/// What a [`PlaintextVia::Tool`] gets: the token as keys.toml describes it, the key's type
 /// and locator, and the plaintext. Never `Debug`: it would print the key and the PIN.
 pub struct ImportCtx<'a> {
     /// The token, as keys.toml describes it.
@@ -602,93 +576,6 @@ pub struct Commitment {
     pub id: String,
 }
 
-/// When the certificates of an attestation chain must be valid (ISSUES.md B8). `check` holds
-/// every link to its validity period, at the system clock's time unless told another
-/// (`--at`, `--ignore-validity`); every other verb (`lock`, `create`, `resolve`, camigrate) judges
-/// the dates by the clock too but only warns ([`ChainTime::Warn`]): `check` is what enforces. There is
-/// no default: every token open names one ([`crate::Token::open`]), so no reader of
-/// attestations skips the dates by forgetting to ask (review D5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChainTime {
-    /// The dates are not checked.
-    Unchecked,
-    /// Valid at this time: seconds since the Unix epoch, UTC.
-    At(u64),
-    /// Judged at this time, but a chain whose only fault is its dates is accepted with a warning
-    /// ([`Attested::warning`]).
-    Warn(u64),
-    /// Asked for now, and the system clock reads before the Unix epoch: there is no time to judge
-    /// the dates by. [`ChainTime::verify`] refuses, naming the clock, or with `warn` (a verb
-    /// other than `check`) verifies the chain without its dates and warns so.
-    NoClock {
-        /// Whether a chain is accepted, with a warning, rather than refused.
-        warn: bool,
-    },
-}
-
-/// What [`ChainTime::NoClock`] says.
-const NO_CLOCK: &str = "the system clock reads before 1970, so the attestation chain's dates cannot be judged: set \
-     the clock, or `check --at <time>` judges them at another time (`--ignore-validity` skips them)";
-
-impl ChainTime {
-    /// Now, by the system clock. Never `SOURCE_DATE_EPOCH`: Nix's stdenv sets it to 1980 in
-    /// every build, where every chain would be not yet valid.
-    #[must_use]
-    pub fn now() -> Self {
-        Self::by_clock(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH), false)
-    }
-
-    /// Now, by the system clock, warning only: what every verb but `check` judges dates with.
-    #[must_use]
-    pub fn warn_now() -> Self {
-        Self::by_clock(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH), true)
-    }
-
-    /// The time the clock's reading `since` the epoch gives, refusing (or with `warn`, warning)
-    /// for a clock before it: never the epoch itself, where every chain is "not yet valid" and
-    /// nothing names the clock (provider.rs F2).
-    fn by_clock(since: std::result::Result<std::time::Duration, std::time::SystemTimeError>, warn: bool) -> Self {
-        match (since, warn) {
-            (Ok(d), false) => ChainTime::At(d.as_secs()),
-            (Ok(d), true) => ChainTime::Warn(d.as_secs()),
-            (Err(_), warn) => ChainTime::NoClock { warn },
-        }
-    }
-
-    /// Verify a chain by `verify`, given the time to hold its dates to (`None`: unchecked). Under
-    /// [`ChainTime::Warn`], a chain that fails only at that time (it verifies without the dates)
-    /// is accepted, with the dated failure as the warning; any other failure is the undated one.
-    /// [`ChainTime::NoClock`] has no time: refused, or (warning) verified without the dates.
-    ///
-    /// # Errors
-    ///
-    /// Whatever `verify` returns, as above; `Unavailable` for [`ChainTime::NoClock`] that refuses.
-    pub fn verify<T>(self, verify: impl Fn(Option<u64>) -> Result<T>) -> Result<(T, Option<String>)> {
-        match self {
-            ChainTime::Unchecked => verify(None).map(|v| (v, None)),
-            ChainTime::At(t) => verify(Some(t)).map(|v| (v, None)),
-            ChainTime::Warn(t) => match verify(Some(t)) {
-                Ok(v) => Ok((v, None)),
-                Err(dated) => verify(None).map(|v| (v, Some(dated.to_string()))),
-            },
-            ChainTime::NoClock { warn: false } => Err(KmError::Unavailable(NO_CLOCK.into())),
-            ChainTime::NoClock { warn: true } => verify(None).map(|v| (v, Some(NO_CLOCK.to_owned()))),
-        }
-    }
-
-    /// An RFC 3339 time in UTC, `YYYY-MM-DDTHH:MM:SSZ` (`check --at`).
-    ///
-    /// # Errors
-    ///
-    /// `Validation` (17) for anything else.
-    pub fn parse(s: &str) -> Result<Self> {
-        let t: der::DateTime = s.parse().map_err(|e| {
-            KmError::Validation(format!("--at {s}: not an RFC 3339 time in UTC (YYYY-MM-DDTHH:MM:SSZ): {e}").into())
-        })?;
-        Ok(ChainTime::At(t.unix_duration().as_secs()))
-    }
-}
-
 impl AttestCtx<'_> {
     /// The material SPKI, required for asymmetric classes: an attestation that could not be
     /// cross-checked against the key `rfc7093m4` names would be provenance for unknown material.
@@ -743,7 +630,7 @@ impl Provider for Generic {
 /// fix-ups): recognised by the `[match] manufacturer` of its module profiles, named by their
 /// family, every hook the default. `softhsm` and `kryoptic` are these (aws-cloudhsm has a crate
 /// of its own).
-pub struct Data(&'static str);
+pub struct Data(pub(crate) &'static str);
 
 impl Provider for Data {
     fn name(&self) -> &'static str {
@@ -756,175 +643,9 @@ impl Provider for Data {
     }
 }
 
-/// Registered providers. The CLI builds one from the provider crates it links; a downstream
-/// binary adds its own with [`Registry::with`] (see the `custom-provider` example). A module
-/// profile's family is a provider too ([`Data`]), with no code: the registry falls back to the
-/// profiles when no code provider is named or claims a module.
-#[derive(Clone, Default)]
-pub struct Registry {
-    providers: Vec<Arc<dyn Provider>>,
-}
-
-impl Registry {
-    /// An empty registry: no provider beyond [`Generic`] and the profiles' [`Data`] ones.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Extend the registry with another provider, builder-style: the registry it returns is
-    /// the one to use (the `#[must_use]` is load-bearing — the input is consumed).
-    #[must_use]
-    pub fn with(mut self, p: impl Provider + 'static) -> Self {
-        self.providers.push(Arc::new(p));
-        self
-    }
-
-    /// The names of the code providers registered, in registration order.
-    #[must_use]
-    pub fn names(&self) -> Vec<&'static str> {
-        self.providers.iter().map(|p| p.name()).collect()
-    }
-
-    /// Whether `name` is a provider this registry can select explicitly.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::named`].
-    pub fn knows(&self, name: &str) -> Result<bool> {
-        Ok(self.named(name)?.is_some())
-    }
-
-    /// The provider registered as `name` (or [`Generic`]), else the module profile family of
-    /// that name ([`Data`]), without loading any module.
-    ///
-    /// # Errors
-    ///
-    /// `Validation` (17) when no profile set is active: never taken for "no such provider"
-    /// (ISSUES.md Q24).
-    pub fn named(&self, name: &str) -> Result<Option<Arc<dyn Provider>>> {
-        let set = Set::active().map_err(|e| KmError::Validation(e.into()))?;
-        Ok(self.named_in(set, name))
-    }
-
-    fn named_in(&self, set: &'static Set, name: &str) -> Option<Arc<dyn Provider>> {
-        if name == Generic.name() {
-            return Some(Arc::new(Generic));
-        }
-        if let Some(p) = self.providers.iter().find(|p| p.name() == name) {
-            return Some(Arc::clone(p));
-        }
-        let family = set.module_family_names().into_iter().find(|f| *f == name)?;
-        Some(Arc::new(Data(family)))
-    }
-
-    /// The explicitly configured provider; else the first registered one that recognises the
-    /// module; else the module profile family whose `[match] manufacturer` it reports
-    /// ([`Data`]); else [`Generic`].
-    ///
-    /// # Errors
-    ///
-    /// `Validation` when `explicit` names neither a provider nor a profile family, or when the
-    /// module's manufacturer is claimed by the profiles of several families and none is named.
-    pub fn select(&self, explicit: Option<&str>, module: &ModuleInfo) -> Result<Arc<dyn Provider>> {
-        self.select_in(Set::active().map_err(|e| KmError::Validation(e.into()))?, explicit, module)
-    }
-
-    fn select_in(&self, set: &'static Set, explicit: Option<&str>, module: &ModuleInfo) -> Result<Arc<dyn Provider>> {
-        if let Some(name) = explicit {
-            return self.named_in(set, name).ok_or_else(|| {
-                KmError::Validation(
-                    format!(
-                        "unknown provider '{name}' (registered: generic, {}; profile families: {})",
-                        self.names().join(", "),
-                        set.module_family_names().join(", ")
-                    )
-                    .into(),
-                )
-            });
-        }
-        if let Some(p) = self.providers.iter().find(|p| p.matches(module)) {
-            return Ok(Arc::clone(p));
-        }
-        let manufacturer = module.manufacturer.trim_end_matches([' ', '\0']);
-        match set.module_families(manufacturer)[..] {
-            [] => Ok(Arc::new(Generic)),
-            [family] => Ok(Arc::new(Data(family))),
-            ref families => Err(KmError::Validation(
-                format!(
-                    "the module's manufacturer '{manufacturer}' is claimed by the profiles of several families \
-                 ({}): name one in `provider`",
-                    families.join(", ")
-                )
-                .into(),
-            )),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    /// Every verb but `check` warns about a chain's dates, `check` refuses it, `--ignore-validity`
-    /// skips them; a chain wrong for any other reason is refused under each (review D5).
-    #[test]
-    fn a_chain_out_of_its_dates_warns_where_check_refuses() {
-        use super::ChainTime::{At, Unchecked, Warn};
-        let dated = |at: Option<u64>| match at {
-            Some(t) if t > 100 => Err(KmError::Conflict("'slot' is not valid at 101".into())),
-            _ => Ok("attested"),
-        };
-        assert_eq!(Warn(50).verify(dated).unwrap(), ("attested", None));
-        let (v, warning) = Warn(101).verify(dated).unwrap();
-        assert_eq!((v, warning.as_deref()), ("attested", Some("conflict: 'slot' is not valid at 101")));
-        assert_eq!(At(101).verify(dated).unwrap_err().exit_code(), 13);
-        assert_eq!(Unchecked.verify(dated).unwrap(), ("attested", None));
-        let unpinned = |_: Option<u64>| -> Result<&str> { Err(KmError::Conflict("signed by no pinned root".into())) };
-        for when in [Warn(101), At(101), Unchecked] {
-            assert!(when.verify(unpinned).unwrap_err().to_string().contains("no pinned root"), "{when:?}");
-        }
-    }
-
-    /// A system clock before 1970 is no time to judge dates by (provider.rs F2): `check` refuses
-    /// naming the clock, every other verb verifies without the dates and warns so; never the
-    /// epoch, where every chain is "not yet valid" and nothing says why.
-    #[test]
-    fn a_clock_before_the_epoch_is_named() {
-        use std::time::{Duration, UNIX_EPOCH};
-        let before = UNIX_EPOCH.duration_since(UNIX_EPOCH + Duration::from_secs(1));
-        assert_eq!(ChainTime::by_clock(before.clone(), false), ChainTime::NoClock { warn: false });
-        assert_eq!(ChainTime::by_clock(before, true), ChainTime::NoClock { warn: true });
-        assert_eq!(ChainTime::by_clock(Ok(Duration::from_secs(7)), false), ChainTime::At(7));
-        assert_eq!(ChainTime::by_clock(Ok(Duration::from_secs(7)), true), ChainTime::Warn(7));
-        let dated = |at: Option<u64>| at.map_or(Ok("attested"), |_| Err(KmError::Conflict("not valid at 0".into())));
-        let e = ChainTime::NoClock { warn: false }.verify(dated).unwrap_err();
-        assert!(matches!(&e, KmError::Unavailable(m) if m.contains("system clock reads before 1970")), "{e}");
-        let (v, warning) = ChainTime::NoClock { warn: true }.verify(dated).unwrap();
-        assert_eq!(v, "attested");
-        assert!(warning.is_some_and(|w| w.contains("system clock")));
-    }
-
     use super::*;
-
-    struct Acme;
-    impl Provider for Acme {
-        fn name(&self) -> &'static str {
-            "acme"
-        }
-        fn matches(&self, m: &ModuleInfo) -> bool {
-            m.manufacturer == "Acme"
-        }
-    }
-
-    /// A code provider for a manufacturer the profiles also name (`SoftHSM`'s).
-    struct Mine;
-    impl Provider for Mine {
-        fn name(&self) -> &'static str {
-            "mine"
-        }
-        fn matches(&self, m: &ModuleInfo) -> bool {
-            m.manufacturer == "SoftHSM"
-        }
-    }
 
     /// A provider's template keeps one attribute per type: setting replaces in place.
     #[test]
@@ -955,62 +676,5 @@ mod tests {
         );
         let generic: &dyn Provider = &Generic;
         assert_eq!(generic.adjusted(&req, t.clone()).unwrap(), t, "the default changes nothing");
-    }
-
-    fn module(manufacturer: &str) -> ModuleInfo {
-        ModuleInfo {
-            path: "/x.so".into(),
-            hash: None,
-            description: "d".into(),
-            manufacturer: manufacturer.into(),
-            version: "1.0".into(),
-            cryptoki: "2.40".into(),
-        }
-    }
-
-    #[test]
-    fn selection_explicit_then_detected_then_generic() {
-        Set::activate_embedded().unwrap();
-        let r = Registry::new().with(Acme);
-        assert_eq!(r.select(None, &module("Acme")).unwrap().name(), "acme");
-        assert_eq!(r.select(None, &module("Other")).unwrap().name(), "generic");
-        assert_eq!(r.select(Some("generic"), &module("Acme")).unwrap().name(), "generic");
-        assert_eq!(r.select(Some("acme"), &module("Other")).unwrap().name(), "acme");
-        assert!(matches!(r.select(Some("nope"), &module("Acme")), Err(KmError::Validation(_))));
-        assert!(r.knows("acme").unwrap() && r.knows("generic").unwrap() && !r.knows("nope").unwrap());
-    }
-
-    /// A module no code claims is named by its profiles' family; code providers come first, a
-    /// family is selectable by name, and two families claiming one manufacturer are refused.
-    #[test]
-    fn profiles_name_the_modules_code_does_not_claim() {
-        let set: &'static Set = Box::leak(Box::new(Set::embedded().unwrap()));
-        let r = Registry::new().with(Acme);
-        assert_eq!(r.select_in(set, None, &module("SoftHSM")).unwrap().name(), "softhsm");
-        assert_eq!(r.select_in(set, None, &module("Kryoptic")).unwrap().name(), "kryoptic");
-        assert_eq!(r.select_in(set, None, &module("CloudHSM")).unwrap().name(), "aws-cloudhsm");
-        // A layer's manufacturer (p11-kit's) names no module.
-        assert_eq!(r.select_in(set, None, &module("PKCS#11 Kit")).unwrap().name(), "generic");
-        assert_eq!(r.select_in(set, Some("softhsm"), &module("PKCS#11 Kit")).unwrap().name(), "softhsm");
-        assert_eq!(r.select_in(set, Some("aws-cloudhsm"), &module("Other")).unwrap().name(), "aws-cloudhsm");
-        // A provider is a family: one module profile's name is none (keys.toml's moduleProfile).
-        let pair = Some("aws-cloudhsm/5.18+hsm2m-non-fips");
-        assert!(r.select_in(set, pair, &module("CloudHSM")).is_err());
-        let e = r.select_in(set, Some("nope"), &module("x")).err().unwrap();
-        assert!(e.to_string().contains("profile families: aws-cloudhsm"), "{e}");
-        // Code before data: a provider claiming SoftHSM's manufacturer wins.
-        assert_eq!(Registry::new().with(Mine).select_in(set, None, &module("SoftHSM")).unwrap().name(), "mine");
-        let dir = std::env::temp_dir().join(format!("cakeys-provider-twins-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("t.toml"),
-            "profile = \"twin/1\"\nmode = \"observed\"\n[match]\nmanufacturer = \"SoftHSM\"\n",
-        )
-        .unwrap();
-        let twins: &'static Set = Box::leak(Box::new(Set::embedded().unwrap().adding_dir(&dir).unwrap()));
-        std::fs::remove_dir_all(&dir).unwrap();
-        let e = r.select_in(twins, None, &module("SoftHSM")).err().unwrap();
-        assert!(e.to_string().contains("several families (softhsm, twin)"), "{e}");
-        assert_eq!(r.select_in(twins, Some("twin"), &module("SoftHSM")).unwrap().name(), "twin");
     }
 }

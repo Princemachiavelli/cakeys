@@ -360,9 +360,9 @@ firmware = "1.5"
 "commit.kcv-ecb.CKK_AES.16" = { answer = "yes" }
 "commit.kcv-ecb.CKK_AES.24" = { answer = "yes" }
 "commit.kcv-ecb.CKK_AES.32" = { answer = "yes" }
-"commit.kcv-ecb-decrypt.CKK_AES.16" = { answer = "yes" }
-"commit.kcv-ecb-decrypt.CKK_AES.24" = { answer = "yes" }
-"commit.kcv-ecb-decrypt.CKK_AES.32" = { answer = "yes" }
+"commit.kcv-ecb-dec.CKK_AES.16" = { answer = "yes" }
+"commit.kcv-ecb-dec.CKK_AES.24" = { answer = "yes" }
+"commit.kcv-ecb-dec.CKK_AES.32" = { answer = "yes" }
 "commit.kw.CKK_AES.16" = { answer = "yes" }
 "commit.kw.CKK_AES.24" = { answer = "yes" }
 "commit.kw.CKK_AES.32" = { answer = "yes" }
@@ -499,8 +499,8 @@ max-bits = 16384
 "objects.profiles" = "0"
 "objects.validation" = "0"
 "token.flags" = "rng, login-required, token-initialized"
-"token.max-rw-sessions" = "Infinite"
-"token.max-sessions" = "Infinite"
+"token.max-rw-sessions" = "infinite"
+"token.max-sessions" = "infinite"
 "token.pin-length" = "8-0"
 
 [notes]

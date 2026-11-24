@@ -19,7 +19,7 @@ use x509_cert::der::{Decode as _, Encode as _};
 ///
 /// `Conflict` when `bytes` is not what the class holds; `Validation` for a class that is no
 /// public object.
-pub fn public_object_attrs(object: &ObjectCfg, bytes: &[u8]) -> Result<Vec<Attribute>> {
+pub fn public_object_attrs(object: Object<'_>, bytes: &[u8]) -> Result<Vec<Attribute>> {
     match object.class {
         Class::Certificate => {
             let cert = x509_cert::Certificate::from_der(bytes)
@@ -54,9 +54,9 @@ pub fn public_object_attrs(object: &ObjectCfg, bytes: &[u8]) -> Result<Vec<Attri
 ///
 /// `Conflict` when the SPKI is not a key of `object`'s type and curve; `Validation` for an
 /// object with no curve cakeys knows.
-pub fn public_key_attrs(object: &ObjectCfg, spki: &[u8]) -> Result<Vec<Attribute>> {
+pub fn public_key_attrs(object: Object<'_>, spki: &[u8]) -> Result<Vec<Attribute>> {
     let bad = |e: &dyn std::fmt::Display| KmError::Conflict(format!("the public key: {e}").into());
-    let declared = if object.key_type == Some(Kt::Rsa) { KeyAlg::Rsa } else { KeyAlg::Ec(curve_of(object)?) };
+    let declared = object.curve().map_or(KeyAlg::Rsa, KeyAlg::Ec);
     let held = KeyAlg::of_spki(spki).map_err(|e| bad(&e))?;
     let curve = match (held, declared) {
         (KeyAlg::Rsa, KeyAlg::Rsa) => {
@@ -122,11 +122,11 @@ mod tests {
         let rsa = id::rsa_spki(&[0xc5; 256], &[1, 0, 1]).unwrap();
         let mut rsa_object = ObjectCfg::new(Class::PublicKey, Some(Kt::Rsa));
         rsa_object.modulus_bits = Some(2048);
-        assert!(public_key_attrs(&rsa_object, &rsa).is_ok());
+        assert!(public_key_attrs(Object::new(&rsa_object).unwrap(), &rsa).is_ok());
         for declared in Curve::ALL {
             let object = key_on(declared);
             for held in Curve::ALL {
-                let made = public_key_attrs(&object, &spki_on(held));
+                let made = public_key_attrs(Object::new(&object).unwrap(), &spki_on(held));
                 if held == declared {
                     assert!(made.unwrap().contains(&Attribute::EcParams(declared.params().to_vec())));
                     continue;
@@ -137,12 +137,12 @@ mod tests {
                     "{declared:?} given {held:?}: {e}"
                 );
             }
-            let e = public_key_attrs(&object, &rsa).unwrap_err();
+            let e = public_key_attrs(Object::new(&object).unwrap(), &rsa).unwrap_err();
             assert!(matches!(&e, KmError::Conflict(m) if m.contains("an RSA key")), "{e}");
-            let e = public_key_attrs(&rsa_object, &spki_on(declared)).unwrap_err();
+            let e = public_key_attrs(Object::new(&rsa_object).unwrap(), &spki_on(declared)).unwrap_err();
             assert!(matches!(&e, KmError::Conflict(m) if m.contains(declared.display())), "{e}");
         }
-        let e = public_key_attrs(&key_on(Curve::P256), b"no SPKI").unwrap_err();
+        let e = public_key_attrs(Object::new(&key_on(Curve::P256)).unwrap(), b"no SPKI").unwrap_err();
         assert!(matches!(e, KmError::Conflict(_)), "{e}");
     }
 }

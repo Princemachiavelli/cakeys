@@ -23,7 +23,7 @@ impl Token {
     pub fn ids(
         &self,
         h: ObjectHandle,
-        object: &ObjectCfg,
+        object: Object<'_>,
         loc: &Locator,
         mode: Mode,
         commits: &[Commit],
@@ -33,14 +33,14 @@ impl Token {
     ) -> Result<BTreeMap<String, String>> {
         let mut ids = BTreeMap::new();
         match mode {
-            Mode::Direct if class_of(object) == ObjectClass::CERTIFICATE => {
+            Mode::Direct if class_of(&object) == ObjectClass::CERTIFICATE => {
                 let Some(Attribute::Value(der)) = self.attr(h, AttributeType::Value)? else {
                     return Err(KmError::Unsupported("certificate has no readable CKA_VALUE".into()));
                 };
                 ids.insert(Scheme::Certhash.name().into(), id::sri(&der));
                 ids.insert(Scheme::Rfc7093m4.name().into(), id::sri(&id::cert_spki(&der)?));
             }
-            Mode::Direct if class_of(object) == ObjectClass::DATA => {
+            Mode::Direct if class_of(&object) == ObjectClass::DATA => {
                 // SHA-256 of the content: the same SRI hash as a flat Nix fixed-output hash.
                 let Some(Attribute::Value(value)) = self.attr(h, AttributeType::Value)? else {
                     return Err(KmError::Unsupported("data object has no readable CKA_VALUE".into()));
@@ -56,7 +56,7 @@ impl Token {
             }
             Mode::Commitment => {
                 for c in commits {
-                    ids.insert(c.scheme().name().into(), id::sri(&self.commit(h, object, *c, commitment_label)?));
+                    ids.insert(c.scheme().name().into(), id::sri(&self.commit(h, &object, *c, commitment_label)?));
                 }
             }
             Mode::WrapRebind => {
@@ -128,7 +128,7 @@ impl Token {
         // Nothing of its own to compare (an unreadable type or unknown curve): reading the
         // stand-in's key already refused what cakeys cannot use.
         let Some(own) = own else { return Ok(()) };
-        let found = id::spki_curve(spki)?;
+        let found = id::KeyAlg::of_spki(spki)?.curve();
         if found == own {
             return Ok(());
         }
@@ -335,7 +335,7 @@ impl Token {
     fn wrap_rebind(
         &self,
         target: ObjectHandle,
-        object: &ObjectCfg,
+        object: Object<'_>,
         commits: &[Commit],
         commitment_label: &str,
     ) -> Result<Vec<(Commit, Vec<u8>)>> {
@@ -354,7 +354,7 @@ impl Token {
         let blob = s.wrap_key(&wrap, kek.handle(), target).map_err(fail("C_WrapKey"))?;
         let copy = s.unwrap_key(&wrap, kek.handle(), &blob, &template).map_err(fail("C_UnwrapKey"))?;
         let copy = SessionObject::new(s, copy);
-        commits.iter().map(|c| Ok((*c, self.commit(copy.handle(), object, *c, commitment_label)?))).collect()
+        commits.iter().map(|c| Ok((*c, self.commit(copy.handle(), &object, *c, commitment_label)?))).collect()
     }
 
     /// wrap-rebind's copy of `object`'s key for `commits` ([`templates::rebind_copy`]), as the
@@ -363,27 +363,8 @@ impl Token {
     /// # Errors
     ///
     /// As [`templates::rebind_copy`]; the provider's refusal.
-    pub(crate) fn rebind_copy_template(&self, object: &ObjectCfg, commits: &[Commit]) -> Result<Vec<Attribute>> {
+    pub(crate) fn rebind_copy_template(&self, object: Object<'_>, commits: &[Commit]) -> Result<Vec<Attribute>> {
         self.provider.adjusted(&Template::Session(SessionKey::RebindCopy), templates::rebind_copy(object, commits)?)
-    }
-}
-
-/// The kind a profile's `commit.<kind>.*` rows name this commitment by
-/// (`cakeys_profile::capability::commit_mechanism` maps it back to a mechanism).
-#[must_use]
-pub fn commit_kind(c: Commit) -> &'static str {
-    match c {
-        Commit::Hmac(HmacHash::Sha1) => "hmac-sha1",
-        Commit::Hmac(HmacHash::Sha224) => "hmac-sha224",
-        Commit::Hmac(HmacHash::Sha256) => "hmac-sha256",
-        Commit::Hmac(HmacHash::Sha384) => "hmac-sha384",
-        Commit::Hmac(HmacHash::Sha512) => "hmac-sha512",
-        Commit::Cmac => "cmac",
-        Commit::KcvEcb(BlockCipher::Aes) => "kcv-ecb",
-        Commit::KcvEcbDecrypt(BlockCipher::Aes) => "kcv-ecb-decrypt",
-        Commit::KcvEcb(BlockCipher::Des3) => "kcv-des3-ecb",
-        Commit::KcvEcbDecrypt(BlockCipher::Des3) => "kcv-des3-ecb-decrypt",
-        Commit::Kw => "kw",
     }
 }
 

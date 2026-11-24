@@ -217,13 +217,15 @@ pub fn compare(
     // so say so instead of reporting a hash mismatch (also when updating). A `modulusBits`
     // declared since is a gap `record_object` fills, not another type (review 2026-11-23 A-5).
     if let Some(locked) = lock.objects.get(t.object_name).and_then(|o| o.object_type.as_ref())
-        && !locked.same_type(t.object)
+        && !locked.same_type(t.object.cfg())
     {
         return Err(KmError::PreconditionFailed(
             format!(
                 "the type of object '{}' in keys.toml changed since it was locked: locked {}, now {}; \
              different material needs a new object name",
-                t.object_name, locked, t.object
+                t.object_name,
+                locked,
+                t.object.cfg()
             )
             .into(),
         ));
@@ -518,7 +520,7 @@ fn record_object(t: &Target, r: &Resolved, entry: &mut crate::config::LockObject
     let mut changed = false;
     match &mut entry.object_type {
         None => {
-            entry.object_type = Some(t.object.clone());
+            entry.object_type = Some(t.object.cfg().clone());
             changed = true;
         }
         Some(ty) if ty.modulus_bits.is_none() && t.object.modulus_bits.is_some() => {
@@ -764,7 +766,7 @@ mod tests {
             uri: "pkcs11:token=t;object=k;type=private".into(),
             mode: Mode::Direct,
             public_only: false,
-            spec_digest: id::spec_digest(t.object, t.spec),
+            spec_digest: id::spec_digest(&t.object, t.spec),
             ids: [("rfc7093m4".to_owned(), SRI_A.to_owned())].into(),
             binding: Some(Binding::PopSign),
             assurance: crate::plan::Assurance::Proof,
@@ -989,7 +991,7 @@ mod tests {
         lock.objects.insert(
             "k".into(),
             crate::config::LockObject {
-                object_type: Some(t.object.clone()),
+                object_type: Some(t.object.cfg().clone()),
                 ids: [("rfc7093m4".to_owned(), SRI_A.to_owned())].into(),
                 ..Default::default()
             },

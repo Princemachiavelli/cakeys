@@ -90,8 +90,6 @@ Load rules (17):
 - `origin = "file"` only on an object with `migrate.file`.
 - An object with `migrate.file` has no `create` pair.
 - `publicOnly` pairs are never `file`, as they are never `import`.
-- `attestation = true` on a `file` pair is refused when the provider cannot attest an
-  imported key (ykcs11), as camigrate D8 already does for imports.
 - A private or secret key's `migrate.file` may not be under `/nix/store`, which is
   world-readable; nor may any other file holding a secret (`migrate.passphraseFile`, a token's
   `pinFile` and `soCredentialFile`). The path is resolved first (symlinks and `..`), so a link
@@ -105,6 +103,10 @@ Load rules (17):
   refusals (a lock write, camigrate's admin operations, D8) are lifted with it.
 - Unchanged: certificates, public keys and data objects default to `adopt`. They may now also
   say `file`.
+
+At run time, not at load: `attestation = true` on a `file` pair is refused (15) when the
+provider cannot attest an imported key (ykcs11), as camigrate D8 does for imports
+(`ops::check_import`, by the dry run too).
 
 The `migrate` table is in no digest, and it is not part of the type the lock pins. The lock's
 `objects.<o>.type` is a serialised `ObjectCfg` [src], so the table goes on a keys.toml-only
@@ -192,7 +194,7 @@ PKCS#12 two objects name is opened twice (its KDF runs twice).
   - A PKCS#12 whose key is not encrypted (a `keyBag`, from `-keypbe NONE`), named as such:
     `openssl pkcs12 -in old.p12 -nodes | openssl pkcs12 -export -out new.p12`.
 - Every new method name joins `Method::from_name` and its frozen list. Otherwise a lock
-  carrying it would fail load (`provenance origin method '…' is unknown`, config.rs) [src].
+  carrying it would fail load (`provenance origin method '…' is unknown`, `config/lock.rs`) [src].
 
 **F5. Exposure is `file`, and the flags stay what they mean today.** This amends
 [CAMIGRATE.md](CAMIGRATE.md):
@@ -318,16 +320,16 @@ Where each part lives:
 - **Config (F1, F2):** `KeyOrigin::File`, `ObjectMigrateCfg` and `Config::object_migrate`, kept
   apart from `ObjectCfg` by a keys.toml-only `ObjectEntry`. `Config::object_file` resolves the
   path and keeps secret material out of `/nix/store`; `check_origins` holds the load rules
-  (`crates/core/src/config/mod.rs`).
+  (`crates/core/src/config/check.rs`).
 - **First use (F3):** `reconcile` lets a `file` pair's import be a first use. camigrate puts
   the IDs the host computes from the file into the lock before the token is written, so the
   token must show exactly them. The lock is restored when it does not (`from_its_file`,
-  `crates/camigrate/src/lib.rs`).
+  `crates/camigrate/src/file_verbs.rs`).
 - **Formats (F4):** `crates/camigrate/src/keyfile.rs`. In `file.rs`, PKCS#12 now reads
   OpenSSL 3's encrypted certificate container and every certificate bag, and refuses legacy
   schemes with the re-export hint. The new methods are `pkcs8`, `pkcs1`, `sec1` and `raw`
   (`crates/core/src/migrate.rs`). A secret key's hex or base64 file: `secret` and `detect` in
-  `keyfile.rs`, `migrate.encoding` (`Encoding`) and its load rules in `config.rs`.
+  `keyfile.rs`, `migrate.encoding` (`Encoding`, `config/mod.rs`) and its load rules in `config/check.rs`.
 - **The verb (F6):** `camigrate import [<object> ...] --to <t>`.
   - `--in` now lands on `file` pairs too.
   - cakeys' `create` passes over `file` pairs.
@@ -361,11 +363,8 @@ Not built:
     import.
   - Why that is enough for now: every token here that takes a secret key can delete one. A
     host-side check matters for a token that cannot.
-- **The capability profile in the dry run (F6, item 4).** The dry run checks the file, its
-  format, its identity and the locator. A token that refuses the object is met when the object
-  is created, and what was made is removed again.
-- **A `keyfile` fuzz target, and a property test over formats.** The unit tests use fixed
-  fixtures only.
+- **A property test over formats.** The unit tests use fixed fixtures; the `key_file` fuzz
+  target feeds the reader arbitrary bytes, not keys re-encoded across formats.
 - **The NixOS populate unit (F-e).**
 
 The Nix library (`nix/lib.nix`) reads keys.toml with `fromTOML`, and its `type` now drops an

@@ -362,6 +362,25 @@ impl Commit {
         }
     }
 
+    /// The kind a profile's `commit.<kind>.<key type>.<bytes>` rows name it by: the scheme's own
+    /// name, the HMAC's hash beside it (one scheme for every hash, which a generic secret does
+    /// not imply). The cipher is the row's key type, as it is the label's (review 2026-11-23
+    /// A-9: one table here, no name of the profile's own).
+    #[must_use]
+    pub fn profile_kind(self) -> &'static str {
+        match self {
+            Commit::Hmac(HmacHash::Sha1) => "hmac-sha1",
+            Commit::Hmac(HmacHash::Sha224) => "hmac-sha224",
+            Commit::Hmac(HmacHash::Sha256) => "hmac-sha256",
+            Commit::Hmac(HmacHash::Sha384) => "hmac-sha384",
+            Commit::Hmac(HmacHash::Sha512) => "hmac-sha512",
+            Commit::Cmac => "cmac",
+            Commit::KcvEcb(_) => "kcv-ecb",
+            Commit::KcvEcbDecrypt(_) => "kcv-ecb-dec",
+            Commit::Kw => "kw",
+        }
+    }
+
     /// Domain-separation label `<commitment label>/<scheme>/<keyType>/<bits>`. The intrinsic type
     /// is mixed in so the same bytes held as two key types never share an ID.
     pub fn label(self, commitment_label: &str, object: &ObjectCfg) -> Vec<u8> {
@@ -536,6 +555,16 @@ impl KeyAlg {
         KeyAlg::read_spki(spki).map(|(alg, _)| alg)
     }
 
+    /// The curve: `Some` for an EC or Edwards key, `None` for RSA. With [`Self::of_spki`], the
+    /// curve a canonical SPKI's key is on (review D6, and 2026-11-23 A-13).
+    #[must_use]
+    pub fn curve(self) -> Option<Curve> {
+        match self {
+            KeyAlg::Ec(c) => Some(c),
+            KeyAlg::Rsa => None,
+        }
+    }
+
     /// [`KeyAlg::of_spki`], with the parsed SPKI its key's own parser takes next: the bytes
     /// are decoded once.
     pub(crate) fn read_spki(spki: &[u8]) -> Result<(KeyAlg, pkcs8::SubjectPublicKeyInfoRef<'_>)> {
@@ -690,21 +719,6 @@ fn rsa_key(modulus: &[u8], exponent: &[u8]) -> std::result::Result<rsa::PublicKe
         return Err("the exponent is not below the modulus");
     }
     Ok(rsa::PublicKey::new_unchecked(n, e))
-}
-
-/// The curve a DER SPKI's key is on ([`KeyAlg::of_spki`]): `Some` for an EC or Edwards key,
-/// `None` for RSA. It once had a dispatcher of its own that also read an Edwards curve under
-/// `id-ecPublicKey` and a Weierstrass curve's OID as the algorithm (review D6); neither is a
-/// canonical SPKI, and every caller's is one.
-///
-/// # Errors
-///
-/// As [`KeyAlg::of_spki`].
-pub fn spki_curve(spki: &[u8]) -> Result<Option<Curve>> {
-    Ok(match KeyAlg::of_spki(spki)? {
-        KeyAlg::Ec(c) => Some(c),
-        KeyAlg::Rsa => None,
-    })
 }
 
 /// Canonical DER SPKI of a certificate's subject key: links a certificate to its key object.
@@ -1122,7 +1136,7 @@ mod tests {
                 include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/", $f))
             };
         }
-        let curve = |cert: &[u8]| spki_curve(&cert_spki(cert).unwrap()).unwrap();
+        let curve = |cert: &[u8]| KeyAlg::of_spki(&cert_spki(cert).unwrap()).unwrap().curve();
         assert_eq!(curve(fixture!("tpm-import-rsa2048-cert.der")), None);
         assert_eq!(curve(fixture!("tpm-import-p256-cert.der")), Some(Curve::P256));
         assert_eq!(curve(fixture!("adopt-cert-p384.der")), Some(Curve::P384));
@@ -1152,7 +1166,11 @@ mod tests {
             ("no SubjectPublicKeyInfo", b"\x30\x00".to_vec()),
         ];
         for (what, der) in cases {
-            assert!(matches!(spki_curve(&der), Err(KmError::Unsupported(_))), "{what}: {:?}", spki_curve(&der));
+            assert!(
+                matches!(KeyAlg::of_spki(&der), Err(KmError::Unsupported(_))),
+                "{what}: {:?}",
+                KeyAlg::of_spki(&der)
+            );
             assert!(matches!(spki_canonical(&der), Err(KmError::Unsupported(_))), "{what}");
         }
     }

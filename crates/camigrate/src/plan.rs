@@ -5,9 +5,9 @@
 //! decision (docs/CAMIGRATE.md D9). The names it decides between — methods and exposure levels — are
 //! the lock's, in `cakeys_core::migrate`.
 
+use crate::side::{PlaintextImport, ProbedWays, Side};
 use cakeys_core::config::{AttrValue, Immutables, ObjectCfg};
-use cakeys_core::migrate::{Exposure, Method, PlaintextImport, ProbedWays, Side};
-use cakeys_core::pop::OaepHash;
+use cakeys_core::migrate::{Exposure, Method, OaepHash};
 use cakeys_core::types::ObjectClass;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -81,14 +81,27 @@ fn method_name<S: serde::Serializer>(m: &Option<Method>, s: S) -> Result<S::Ok, 
 }
 
 impl Plan {
-    fn ready(m: &Material, method: Method, exposure: Exposure, notes: Vec<String>) -> Plan {
+    /// Block the plan: the run would refuse it, for `why` (review 2026-11-23 C-23: each rule
+    /// wrote both lines out).
+    pub(crate) fn block(&mut self, why: impl Into<String>) {
+        self.ready = false;
+        self.reasons.push(why.into());
+    }
+
+    /// [`Self::block`], `why` said first: what keeps the object home outranks how it would move.
+    pub(crate) fn block_first(&mut self, why: impl Into<String>) {
+        self.ready = false;
+        self.reasons.insert(0, why.into());
+    }
+
+    fn ready(m: &Material, method: Method, exposure: Exposure) -> Plan {
         Plan {
             object: m.object.into(),
             method: Some(method),
             exposure: Some(exposure),
             ready: true,
             reasons: vec![],
-            notes,
+            notes: vec![],
         }
     }
 
@@ -130,25 +143,16 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     let trusted_only = m.flag("CKA_WRAP_WITH_TRUSTED") == Some(true);
     let mut ways = Ways::default();
     match to {
-        // Before anything is offered: a target that takes the type in by no import takes it by
-        // no vendor method either.
+        // Before anything is offered: a target that takes the type in by no import.
         To::Token(dst) if dst.refuses.iter().any(|a| a.covers(ty)) => ways.block(format!(
             "{} ({}) takes in no {} by any import (its profile's migration.refuses)",
             dst.token,
             dst.provider,
             describe(ty)
         )),
+        // A provider's own method (D10, `Method::Vendor`) is offered by none yet: no profile or
+        // provider declares one (review 2026-11-23 C-17).
         To::Token(dst) => {
-            // Provider methods compete at their declared level (D10).
-            for v in &from.vendor {
-                if v.objects.iter().any(|a| a.covers(ty)) && (v.targets.is_empty() || v.targets.contains(&dst.provider))
-                {
-                    let method = Method::Vendor { provider: v.provider.clone(), name: v.name.clone() };
-                    let note =
-                        format!("{} declares the {} level; cakeys records it, it cannot check it", method, v.exposure);
-                    ways.offer_noted(method, v.exposure, note);
-                }
-            }
             sealed(m, from, dst, trusted_only, allow, &mut ways);
             if trusted_only {
                 ways.block(
@@ -179,16 +183,15 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     }
     let Ways { mut candidates, blocked } = ways;
     candidates.sort_by_key(|c| c.exposure);
-    let Some(Candidate { method, exposure, notes }) = candidates.into_iter().next() else {
+    let Some(Candidate { method, exposure }) = candidates.into_iter().next() else {
         return Plan::impossible(m, blocked);
     };
-    let mut plan = Plan::ready(m, method, exposure, notes);
+    let mut plan = Plan::ready(m, method, exposure);
     if matches!(exposure, Exposure::Host | Exposure::File) {
         // Why it could not stay sealed: a profile or a mechanism may be the fix, not the flag.
         plan.notes.extend(blocked.into_iter().map(|why| format!("not sealed: {why}")));
         if !allow.host_plaintext {
-            plan.ready = false;
-            plan.reasons.push(format!("the {exposure} path needs --allow-host-plaintext (docs/CAMIGRATE.md D2)"));
+            plan.block(format!("the {exposure} path needs --allow-host-plaintext (docs/CAMIGRATE.md D2)"));
         }
     }
     if let To::Token(dst) = to {
@@ -201,7 +204,6 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
 struct Candidate {
     method: Method,
     exposure: Exposure,
-    notes: Vec<String>,
 }
 
 /// What the planner found for one object: the ways it could move, and why others cannot.
@@ -213,11 +215,7 @@ struct Ways {
 
 impl Ways {
     fn offer(&mut self, method: Method, exposure: Exposure) {
-        self.candidates.push(Candidate { method, exposure, notes: vec![] });
-    }
-
-    fn offer_noted(&mut self, method: Method, exposure: Exposure, note: String) {
-        self.candidates.push(Candidate { method, exposure, notes: vec![note] });
+        self.candidates.push(Candidate { method, exposure });
     }
 
     fn block(&mut self, why: String) {
@@ -231,14 +229,12 @@ fn public(m: &Material, to: &To) -> Plan {
     let ty = m.ty;
     match to {
         To::Token(dst) => match ProbedWays::of(&dst.probed.create, ty) {
-            Some(r) if r.yes => Plan::ready(m, Method::Public, Exposure::Public, vec![]),
+            Some(r) if r.yes => Plan::ready(m, Method::Public, Exposure::Public),
             Some(_) => Plan::impossible(
                 m,
                 vec![format!("{} creates no {} (its create.* row says no)", dst.token, describe(ty))],
             ),
-            None if dst.public_import.iter().any(|a| a.covers(ty)) => {
-                Plan::ready(m, Method::Public, Exposure::Public, vec![])
-            }
+            None if dst.public_import.iter().any(|a| a.covers(ty)) => Plan::ready(m, Method::Public, Exposure::Public),
             None => Plan::impossible(m, vec![format!("{} accepts no {} by import", dst.token, describe(ty))]),
         },
         To::File(_) => Plan::impossible(m, vec!["files carry private keys; a public object needs no export".into()]),
@@ -448,7 +444,7 @@ fn target_notes(dst: &Side, plan: &Plan) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cakeys_core::migrate::{Accept, VendorMethod};
+    use crate::side::Accept;
     use cakeys_core::types::KeyType;
 
     fn obj(class: ObjectClass, kt: Option<KeyType>) -> ObjectCfg {
@@ -765,34 +761,6 @@ mod tests {
         assert_eq!(p.ready, cfg!(feature = "kwp"), "{p:?}");
     }
 
-    /// A provider method competes at its declared level, is noted as declared, and is used
-    /// only toward the targets it names.
-    #[test]
-    fn vendor_methods_compete_at_their_declared_level() {
-        let luna = |targets: Vec<String>| Side {
-            vendor: vec![VendorMethod {
-                provider: "luna".into(),
-                name: "clone".into(),
-                exposure: Exposure::Enforced,
-                objects: vec![Accept::class(ObjectClass::PrivateKey)],
-                targets,
-            }],
-            ..Side::pkcs11("hsm-a", "luna", Vec::new())
-        };
-        let ext = [("CKA_EXTRACTABLE", true)];
-        let p = plan_of(&p256(), &ext, &luna(vec![]), &To::Token(&kryoptic()), Allow::default());
-        assert_eq!(p.method, Some(Method::Vendor { provider: "luna".into(), name: "clone".into() }));
-        assert_eq!(p.exposure, Some(Exposure::Enforced));
-        assert!(p.notes.iter().any(|n| n.contains("declares the enforced level")), "{p:?}");
-        let p = plan_of(&p256(), &ext, &luna(vec!["luna".into()]), &To::Token(&kryoptic()), Allow::default());
-        assert!(!p.ready, "not toward a kryoptic target: {p:?}");
-        // A target whose migration.refuses covers the key takes it by no vendor method either.
-        let refusing = Side { refuses: vec![Accept::key(ObjectClass::PrivateKey, &[KeyType::Ec])], ..kryoptic() };
-        let p = plan_of(&p256(), &ext, &luna(vec![]), &To::Token(&refusing), Allow::default());
-        assert!(!p.ready && p.method.is_none(), "{p:?}");
-        assert!(p.reasons.iter().any(|r| r.contains("migration.refuses")), "{p:?}");
-    }
-
     /// A key that goes by the host path says why no sealed way would carry it: the fix may be a
     /// profile or a mechanism rather than --allow-host-plaintext (review plan.rs F2).
     #[test]
@@ -822,7 +790,7 @@ mod tests {
     /// (`docs/archive/CAPROBE_MIGRATION.md`, M4), and only for that type.
     #[test]
     fn probed_rows_decide_before_the_claims_for_their_type() {
-        use cakeys_core::migrate::{Probed, ProbedWays};
+        use crate::side::{Probed, ProbedWays};
         let ext = [("CKA_EXTRACTABLE", true)];
         let p256_rows = |yes, via: Option<&str>| {
             vec![Probed {

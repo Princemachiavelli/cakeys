@@ -331,7 +331,7 @@ fn an_import_the_provider_cannot_attest_is_refused_before_the_write() {
          [objects.pk]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\
          migrate = {{ file = \"{key}\" }}\n\n\
          [specs.pk]\nobject = \"pk\"\nattributes = {{ CKA_SIGN = true }}\n\
-         tokens.piv = {{ locator = {{ CKA_ID = \"18\", CKA_LABEL = \"ff-attest\" }}, origin = \"file\", attestation = true }}\n",
+         tokens.piv = {{ locator = {{ CKA_ID = \"18\" }}, origin = \"file\", attestation = true }}\n",
         module = soft.module,
         label = soft.token_label,
         pin = e.dir.join("pin").display(),
@@ -348,8 +348,10 @@ fn an_import_the_provider_cannot_attest_is_refused_before_the_write() {
         assert_eq!(code(&o), 15, "dry run {dry_run}: {}", stderr(&o));
         assert!(stderr(&o).contains("attests only keys the device generated"), "dry run {dry_run}: {}", stderr(&o));
     }
+    // ykcs11 locates by CKA_ID alone (a CKA_LABEL is refused first, 17): the key is looked for by it.
+    let id = cryptoki::object::Attribute::Id(vec![0x18]);
     assert!(
-        open_session(&soft.module, soft.token_label, "1234").labelled("ff-attest").is_empty(),
+        open_session(&soft.module, soft.token_label, "1234").find_objects(&[id]).unwrap().is_empty(),
         "the refused key reached the token"
     );
 }

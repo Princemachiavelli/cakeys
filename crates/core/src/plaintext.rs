@@ -44,17 +44,18 @@ fn scalar<B: AsRef<[u8]> + zeroize::Zeroize>(bytes: B) -> Zeroizing<Vec<u8>> {
     Zeroizing::new(bytes.as_ref().to_vec())
 }
 
-/// Parse a PKCS#8 private key of `key_type` (and `curve`, for EC keys) into its parts.
+/// Parse a PKCS#8 private key of `key_type` (and `curve`, for EC and Edwards keys, as the object
+/// was parsed: review 2026-11-23 A-8) into its parts.
 ///
 /// # Errors
 ///
 /// `Unsupported` for a key type or curve with no parser here; `Conflict` for bytes that are not
 /// such a key (the message never includes them).
-pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<&str>) -> Result<PrivateParts> {
+pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<Curve>) -> Result<PrivateParts> {
     use pkcs8::DecodePrivateKey as _;
     let bad = |what: &str| KmError::Conflict(format!("the source's wrapped key is not a PKCS#8 {what} key").into());
     let ec = |value| Ok(PrivateParts::Ec(value));
-    match (key_type, curve.and_then(|c| Curve::from_cfg(key_type, c))) {
+    match (key_type, curve) {
         (KeyType::Ec, Some(Curve::P256)) => {
             ec(scalar(p256::SecretKey::from_pkcs8_der(der).map_err(|_| bad("P-256"))?.to_bytes()))
         }
@@ -81,7 +82,7 @@ pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<&str>) ->
         (kt, _) => Err(KmError::Unsupported(
             format!(
                 "no host-path parser for a {kt} private key{}",
-                curve.map_or_else(String::new, |c| format!(" on {c}"))
+                curve.map_or_else(String::new, |c| format!(" on {}", c.name()))
             )
             .into(),
         )),
@@ -198,14 +199,14 @@ mod tests {
         use rsa::traits::PublicKeyParts as _;
         let ec = p256::SecretKey::from_slice(&[7u8; 32]).unwrap();
         let der = ec.to_pkcs8_der().unwrap();
-        let PrivateParts::Ec(v) = private_from_pkcs8(der.as_bytes(), KeyType::Ec, Some("secp256r1")).unwrap() else {
+        let PrivateParts::Ec(v) = private_from_pkcs8(der.as_bytes(), KeyType::Ec, Some(Curve::P256)).unwrap() else {
             panic!("not EC")
         };
         assert_eq!(v.as_slice(), &[7u8; 32]);
         let ed = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
         let der = ed.to_pkcs8_der().unwrap();
         let PrivateParts::Edwards(v) =
-            private_from_pkcs8(der.as_bytes(), KeyType::EcEdwards, Some("edwards25519")).unwrap()
+            private_from_pkcs8(der.as_bytes(), KeyType::EcEdwards, Some(Curve::Ed25519)).unwrap()
         else {
             panic!("not Edwards")
         };
@@ -222,7 +223,7 @@ mod tests {
         assert_eq!(spki_of_pkcs8(ec_der.as_bytes()).unwrap(), ec.public_key().to_public_key_der().unwrap().as_bytes());
         // The wrong type, or bytes that are no key: refused, and never echoed.
         assert!(matches!(
-            private_from_pkcs8(der.as_bytes(), KeyType::Ec, Some("secp256r1")),
+            private_from_pkcs8(der.as_bytes(), KeyType::Ec, Some(Curve::P256)),
             Err(KmError::Conflict(_))
         ));
         assert!(

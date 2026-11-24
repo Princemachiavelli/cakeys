@@ -14,8 +14,8 @@ impl Token {
     /// `Conflict` whenever the token's object is not the declared type (missing
     /// `CKA_KEY_TYPE`, another curve, modulus or length) or violates a declared policy
     /// attribute; `Unsupported` for an object class cakeys does not manage.
-    pub fn check(&self, h: ObjectHandle, object: &ObjectCfg, spec: &SpecCfg) -> Result<()> {
-        let class = class_of(object);
+    pub fn check(&self, h: ObjectHandle, object: Object<'_>, spec: &SpecCfg) -> Result<()> {
+        let class = class_of(&object);
         if class == ObjectClass::CERTIFICATE {
             return match self.attr(h, AttributeType::CertificateType)? {
                 Some(Attribute::CertificateType(CertificateType::X_509)) => self.check_policy(h, spec),
@@ -50,8 +50,8 @@ impl Token {
                 format!("CKA_KEY_TYPE is {kt}, spec object type says {}", object.key_type.map_or("", Kt::name)).into(),
             ));
         }
-        if kt == KeyType::EC || kt == KeyType::EC_EDWARDS {
-            let want = curve_of(object)?;
+        // The key type matched: an EC or Edwards object has its curve.
+        if let Some(want) = object.curve() {
             match self.attr(h, AttributeType::EcParams)? {
                 Some(Attribute::EcParams(p)) if Curve::from_params(&p) == Some(want) => {}
                 other => return Err(KmError::Conflict(format!("CKA_EC_PARAMS {other:?} is not {want:?}").into())),
@@ -297,11 +297,9 @@ impl Token {
         };
         let offered = std::cell::OnceCell::new();
         crate::templates::policy(attrs, &|name, n| {
-            offered
-                .get_or_init(named)
-                .get(n)
-                .copied()
-                .ok_or_else(|| self.unsupported(format!("{name}: token '{}' does not offer {n}", self.name)))
+            offered.get_or_init(named).get(n).copied().ok_or_else(|| {
+                self.unsupported_for(Topic::Mechanism, format!("{name}: token '{}' does not offer {n}", self.name))
+            })
         })
     }
 }

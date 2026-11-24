@@ -922,6 +922,11 @@ fn named_transport_key_and_lock(e: &Env, soft: &Ref) {
     let with = |extra: &[&str]| code(&e.km(soft, &[&plan[..], extra].concat()));
     assert_eq!(with(&["--transport-spec", "tk-kryoptic"]), 0);
     assert_eq!(with(&["--transport-spec", "ek1-kry"]), 15);
+    // `migrate` names its transport key the same way (review 2026-11-23 D-23: no test ran it).
+    let mv = ["migrate", "ek1", "--from", "softhsm", "--to", "kryoptic", "--spec", "ek1-kry", "--dry-run"];
+    let moved = |extra: &[&str]| code(&e.km(soft, &[&mv[..], extra].concat()));
+    assert_eq!(moved(&["--transport-spec", "tk-kryoptic"]), 0);
+    assert_eq!(moved(&["--transport-spec", "ek1-kry"]), 15);
     let copy = e.dir.join("copy.lock");
     std::fs::copy(e.dir.join("keys.lock"), &copy).unwrap();
     let locked = |lock: &std::path::Path| code(&e.km(soft, &[&["--lock", lock.to_str().unwrap()], &plan[..]].concat()));
@@ -2184,9 +2189,12 @@ fn plant_fixture_key(soft: &Ref) {
         std::fs::read_to_string(format!("{}/../cli/tests/fixtures/tpm-import-p256.pem", env!("CARGO_MANIFEST_DIR")))
             .unwrap();
     let der = x509_cert::der::pem::decode_vec(pem.as_bytes()).unwrap().1;
-    let cakeys_core::plaintext::PrivateParts::Ec(scalar) =
-        cakeys_core::plaintext::private_from_pkcs8(&der, cakeys_core::types::KeyType::Ec, Some("secp256r1")).unwrap()
-    else {
+    let cakeys_core::plaintext::PrivateParts::Ec(scalar) = cakeys_core::plaintext::private_from_pkcs8(
+        &der,
+        cakeys_core::types::KeyType::Ec,
+        Some(cakeys_core::id::Curve::P256),
+    )
+    .unwrap() else {
         panic!("not an EC key")
     };
     let label = || Attribute::Label(b"xf-k".to_vec());

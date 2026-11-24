@@ -493,8 +493,9 @@ with it.
   `profiles/layers/cryptoki.toml`, and the patched-binding layer in `binding.rs`.
 - **Part 1.** `commit.<kind>.<key type>.<bytes>` rows, computed with the verbs' own
   `Token::commit`, twice, and on a second key for distinctness; `Effective::commit` and the gate
-  (refused only when every commitment the spec declares is measured *no*). `CKM_DES3_CMAC` is
-  called through `VendorDefined`; no reference module lists it yet, so it has no row.
+  (refused only when every commitment the spec declares is measured *no*). `CKM_DES3_CMAC` has
+  no row: SoftHSM 2.7 lists it, but cryptoki names no 0x138, so it can be neither called nor seen
+  in the list (docs/OPEN.md).
 - **Part 2.** Import, export and unwrap rows for generic secret, the five HMAC types and Triple
   DES, checked by commitment (AES by its host check value).
 - **Parts 3 and 8.** `[mechanism-info]` (`C_GetMechanismInfo`) and `[claims]` (token flags,

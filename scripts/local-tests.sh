@@ -110,24 +110,13 @@ export TMPDIR=$T HOME=$T
 export CAKEYS_TOKEN_ENV_SH=$tree/nix/token-env.sh
 # shellcheck source=nix/token-env.sh
 . "$CAKEYS_TOKEN_ENV_SH"
-softhsm_conf "$T"
-softhsm_init kmtest
-export CAKEYS_TEST_MODULE=$softhsm/lib/softhsm/libsofthsm2.so CAKEYS_TEST_REQUIRE=1
-kryoptic_conf "$T"
-export CAKEYS_KRYOPTIC_MODULE=$kryoptic/lib/libkryoptic_pkcs11.so CAKEYS_KRYOPTIC_REQUIRE=1
-kryoptic_init "$CAKEYS_KRYOPTIC_MODULE" kmtest
-export CAKEYS_TOKEN_TEMPLATE=$T/token-template
-mkdir -p "$CAKEYS_TOKEN_TEMPLATE"
-cp -r "$T/softhsm-tokens" "$T/kryoptic.sql" "$CAKEYS_TOKEN_TEMPLATE/"
-export CAKEYS_P11KIT_ENV_SH=$tree/nix/p11kit-test-env.sh CAKEYS_TPM_ENV_SH=$tree/nix/tpm2-test-env.sh
-export CAKEYS_P11KIT_CLIENT=$p11kit/lib/pkcs11/p11-kit-client.so CAKEYS_P11KIT_REQUIRE=1
-export CAKEYS_TPM_MODULE=$tpm2/lib/libtpm2_pkcs11.so CAKEYS_TPM_REQUIRE=1
-export CAKEYS_TPM_VENDOR_MODULE=$tpm2_vendor/lib/libtpm2_pkcs11.so CAKEYS_TPM_VENDOR_REQUIRE=1
+test_env "$T" "$softhsm/lib/softhsm/libsofthsm2.so" "$kryoptic/lib/libkryoptic_pkcs11.so" \
+  "$p11kit/lib/pkcs11/p11-kit-client.so" "$tree/nix/p11kit-test-env.sh" "$tree/nix/tpm2-test-env.sh" \
+  "$provider/lib/ossl-modules" "$tpm2/lib/libtpm2_pkcs11.so" "$tpm2_vendor/lib/libtpm2_pkcs11.so"
 # A swtpm port range of this run's own, above the check phase's 24000 and below the kernel's
 # ephemeral ports (32768 on), which a client's own connections take: two local runs at once (two
 # worktrees) would otherwise take the same ports (nix/test-tokens.sh).
 export CAKEYS_TPM_PORT_BASE=${CAKEYS_TPM_PORT_BASE:-$((24256 + RANDOM % 60 * 128))}
-export CAKEYS_PKCS11_PROVIDER_DIR=$provider/lib/ossl-modules
 # cargo's target runner for the host's triple (CARGO_TARGET_<TRIPLE>_RUNNER), as the Nix build
 # names it: on any other triple's variable cargo would not use it, and every test would share
 # one token set while the *_REQUIRE variables demand what only the runner starts.

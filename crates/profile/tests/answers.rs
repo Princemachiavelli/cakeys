@@ -134,6 +134,21 @@ fn answers(set: &Set) -> String {
         for (h, v) in eff.oaep() {
             answer(format!("oaep {h}"), v);
         }
+        // Each commitment the profile has rows for, at no length and at each length its rows
+        // name: no commit verdict was pinned, so a wrong one went unseen (review 2026-11-23
+        // A-16).
+        let mut commits = std::collections::BTreeMap::<(String, String), Vec<u32>>::new();
+        for c in p.capabilities.keys() {
+            if let Capability::Commit { kind, key_type, bytes } = c {
+                commits.entry((kind.clone(), key_type.name().to_owned())).or_default().push(*bytes);
+            }
+        }
+        for ((kind, kt), lengths) in commits {
+            answer(format!("commit {kind} {kt}"), eff.commit(&kind, &kt, None));
+            for n in lengths {
+                answer(format!("commit {kind} {kt} {n} bytes"), eff.commit(&kind, &kt, Some(n)));
+            }
+        }
     }
     out
 }

@@ -21,14 +21,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The `format` of a bundle.
-pub const BUNDLE_FORMAT: &str = "cakeys-export";
+pub(crate) const BUNDLE_FORMAT: &str = "cakeys-export";
 /// The `version` this camigrate writes and reads.
-pub const BUNDLE_VERSION: u32 = 1;
+pub(crate) const BUNDLE_VERSION: u32 = 1;
 
 /// One export: the keys, and what they share.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct Bundle {
+pub(crate) struct Bundle {
     /// [`BUNDLE_FORMAT`], checked on read.
     pub(crate) format: String,
     /// [`BUNDLE_VERSION`], checked on read.
@@ -36,59 +36,59 @@ pub struct Bundle {
     /// The AES key-encryption key under RSA-OAEP to the transport key (base64), shared by every
     /// key of a composed method; absent when none is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kek: Option<String>,
+    pub(crate) kek: Option<String>,
     /// The source token and its provider.
     pub(crate) source: Source,
     /// The transport key the wrapped keys are sealed to; absent exactly when the bundle carries
     /// public objects only, which need none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transport: Option<TransportRef>,
+    pub(crate) transport: Option<TransportRef>,
     /// One entry per object, each object once.
-    pub keys: Vec<Entry>,
+    pub(crate) keys: Vec<Entry>,
 }
 
 /// One exported object: a key, wrapped, or a public object, as it is.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct Entry {
+pub(crate) struct Entry {
     /// The object's name, as in the source's keys.toml and lock.
-    pub object: String,
+    pub(crate) object: String,
     /// The method's frozen name (`rsa-oaep-sha1+aes-kwp`, ...).
-    pub method: String,
+    pub(crate) method: String,
     /// The exposure the method gave the key.
     pub(crate) exposure: Exposure,
     /// Secret keys: the label their commitments were computed with, as in the lock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commitment_label: Option<String>,
+    pub(crate) commitment_label: Option<String>,
     /// Private keys: the canonical SPKI DER (base64), which the target creates beside the key and
     /// whose hash must be the object's `rfc7093m4`. An addition to D5's format: a target module
     /// that keeps no public point with an unwrapped EC key (`SoftHSM`) could not compute the
     /// identity otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub public_key: Option<String>,
+    pub(crate) public_key: Option<String>,
     /// A key's own key-encryption key under RSA-OAEP (base64): the first part of
     /// `CKM_RSA_AES_KEY_WRAP`'s output, used instead of the bundle's shared one. Every `enforced`
     /// composed key has one, and a `sealed` one from a source with no RFC 5649 of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kek: Option<String>,
+    pub(crate) kek: Option<String>,
     /// A key (base64): under its KEK (RFC 5649), or under RSA-OAEP directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wrapped: Option<String>,
+    pub(crate) wrapped: Option<String>,
     /// A public object (base64, method `public`): a certificate's DER, a public key's canonical
     /// SPKI, a data object's value. The import recomputes its identity from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub(crate) value: Option<String>,
     /// The object's type, as in the lock.
     #[serde(rename = "type")]
-    pub object_type: ObjectCfg,
+    pub(crate) object_type: ObjectCfg,
     /// The object's IDs, as in the source's lock: the import must reproduce them.
-    pub ids: BTreeMap<String, String>,
+    pub(crate) ids: BTreeMap<String, String>,
 }
 
 /// Where the material came from: provenance, as the source realisation records it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Source {
+pub(crate) struct Source {
     /// The source token's name in keys.toml.
     pub(crate) token: String,
     /// The provider that handled it.
@@ -98,7 +98,7 @@ pub struct Source {
 /// The transport key the material is wrapped to: its object and locked identity.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct TransportRef {
+pub(crate) struct TransportRef {
     /// The transport key's object name.
     pub(crate) object: String,
     /// Its locked identity: the SPKI's `rfc7093m4`.
@@ -109,7 +109,7 @@ impl Bundle {
     /// Whether the file `bytes` is a bundle (TOML whose `format` is [`BUNDLE_FORMAT`]), told by
     /// what it holds: anything else `import --in` reads as a key file (review 2026-11-23 C-6).
     #[must_use]
-    pub fn is_bundle(bytes: &[u8]) -> bool {
+    pub(crate) fn is_bundle(bytes: &[u8]) -> bool {
         std::str::from_utf8(bytes)
             .ok()
             .and_then(|text| text.parse::<toml::Table>().ok())
@@ -126,7 +126,7 @@ impl Bundle {
     /// # Errors
     ///
     /// `Validation` (17) for anything malformed or inconsistent.
-    pub fn parse(text: &str, path: &std::path::Path) -> Result<Bundle> {
+    pub(crate) fn parse(text: &str, path: &std::path::Path) -> Result<Bundle> {
         let invalid = |msg: String| KmError::Validation(format!("{}: {msg}", path.display()).into());
         let mut b: Bundle = toml::from_str(text).map_err(|e| invalid(e.to_string()))?;
         if b.format != BUNDLE_FORMAT || b.version != BUNDLE_VERSION {
@@ -243,7 +243,7 @@ impl Bundle {
     /// # Errors
     ///
     /// `Unavailable` when it does not serialize: never an empty file in its place.
-    pub fn to_toml(&self) -> Result<String> {
+    pub(crate) fn to_toml(&self) -> Result<String> {
         toml::to_string(self).map_err(|e| KmError::Unavailable(format!("serializing the bundle: {e}").into()))
     }
 
@@ -252,7 +252,7 @@ impl Bundle {
     /// # Errors
     ///
     /// A message for malformed base64.
-    pub fn wrapped_kek(&self) -> std::result::Result<Option<Vec<u8>>, String> {
+    pub(crate) fn wrapped_kek(&self) -> std::result::Result<Option<Vec<u8>>, String> {
         self.kek.as_deref().map(|k| decode("kek", k)).transpose()
     }
 }
@@ -263,7 +263,7 @@ impl Entry {
     /// # Errors
     ///
     /// A message for a name this camigrate does not know.
-    pub fn method(&self) -> std::result::Result<Method, String> {
+    pub(crate) fn method(&self) -> std::result::Result<Method, String> {
         Method::from_name(&self.method).ok_or_else(|| format!("unknown method '{}'", self.method))
     }
 
@@ -272,7 +272,7 @@ impl Entry {
     /// # Errors
     ///
     /// A message for malformed base64, or a public object's entry.
-    pub fn wrapped_key(&self) -> std::result::Result<Vec<u8>, String> {
+    pub(crate) fn wrapped_key(&self) -> std::result::Result<Vec<u8>, String> {
         decode("wrapped", self.wrapped.as_deref().ok_or("no wrapped key")?)
     }
 
@@ -281,7 +281,7 @@ impl Entry {
     /// # Errors
     ///
     /// A message for malformed base64.
-    pub fn wrapped_kek(&self) -> std::result::Result<Option<Vec<u8>>, String> {
+    pub(crate) fn wrapped_kek(&self) -> std::result::Result<Option<Vec<u8>>, String> {
         self.kek.as_deref().map(|k| decode("kek", k)).transpose()
     }
 
@@ -290,7 +290,7 @@ impl Entry {
     /// # Errors
     ///
     /// A message for malformed base64, or a key's entry.
-    pub fn public_value(&self) -> std::result::Result<Vec<u8>, String> {
+    pub(crate) fn public_value(&self) -> std::result::Result<Vec<u8>, String> {
         decode("value", self.value.as_deref().ok_or("no value")?)
     }
 
@@ -299,7 +299,7 @@ impl Entry {
     /// # Errors
     ///
     /// A message for malformed base64, or a public key cakeys cannot canonicalize.
-    pub fn public_spki(&self) -> std::result::Result<Option<Vec<u8>>, String> {
+    pub(crate) fn public_spki(&self) -> std::result::Result<Option<Vec<u8>>, String> {
         let Some(k) = &self.public_key else { return Ok(None) };
         let der = decode("publicKey", k)?;
         cakeys_core::id::spki_canonical(&der).map(Some).map_err(|e| format!("publicKey: {e}"))
@@ -308,7 +308,7 @@ impl Entry {
 
 /// Standard base64.
 #[must_use]
-pub fn encode(bytes: &[u8]) -> String {
+pub(crate) fn encode(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 

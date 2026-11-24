@@ -10,7 +10,7 @@
 //! `profiles` keys.toml names. A token with neither is skipped, with a note.
 
 use crate::ops::{self, Target};
-use crate::provider::Registry;
+use crate::registry::Registry;
 use crate::resolution::{self, Resolved};
 use cakeys_core::config::{Binding, KeyOrigin, Lock, Mode, ObjectCfg, TokenCfg, TokenObservation};
 use cakeys_core::{KmError, Result};
@@ -85,7 +85,7 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
 /// The capability of proving `t`'s private key the way its spec binds it
 /// (`plan::expected_binding`), when that is a proof.
 fn proof(t: &Target) -> Option<Capability> {
-    proof_capability(t.object, cakeys_core::plan::expected_binding(t)?)
+    proof_capability(&t.object, cakeys_core::plan::expected_binding(t)?)
 }
 
 /// What a capability row of `object` is on: its curve, or its modulus size.
@@ -263,7 +263,7 @@ fn commitments(t: &Target, eff: &Effective, token: &str) -> Option<std::result::
     let verdicts: Vec<(&str, Verdict)> = cakeys_core::plan::declared_commits(t)
         .iter()
         .map(|c| {
-            let kind = crate::token::commit_kind(*c);
+            let kind = c.profile_kind();
             (kind, eff.commit(kind, kt.name(), bytes))
         })
         .collect();

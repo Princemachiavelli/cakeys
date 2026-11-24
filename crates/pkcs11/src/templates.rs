@@ -10,8 +10,8 @@
 //! [`Provider::template`]: crate::Provider::template
 
 use crate::provider::{Declared, SessionKey};
-use crate::token::{bool_attr, curve_of, key_type_of, locator_attrs};
-use cakeys_core::config::{AttrValue, ObjectCfg, SpecCfg};
+use crate::token::{bool_attr, key_type_of, locator_attrs};
+use cakeys_core::config::{AttrValue, Object, ObjectCfg, SpecCfg};
 use cakeys_core::id::Commit;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
@@ -139,7 +139,7 @@ pub fn generation_public(
             t.extend([Attribute::ModulusBits(bits.into()), Attribute::PublicExponent(vec![1, 0, 1])]);
         }
         KeyType::EC | KeyType::EC_EDWARDS => {
-            let curve = curve_of(on.object)?;
+            let Some(curve) = on.object.curve() else { return Ok(None) };
             t.push(Attribute::EcParams(ec_params.unwrap_or(curve.params()).to_vec()));
         }
         _ => return Ok(None),
@@ -158,7 +158,7 @@ pub fn generation_public(
 pub fn import_key(on: Declared<'_>, policy: Vec<Attribute>) -> Result<Vec<Attribute>> {
     let mut t = vec![
         Attribute::Token(true),
-        Attribute::Class(crate::token::class_of(on.object)),
+        Attribute::Class(crate::token::class_of(&on.object)),
         Attribute::KeyType(key_type_of(on.object)?),
     ];
     t.extend(locator_attrs(on.locator)?);
@@ -197,7 +197,7 @@ pub fn public_half(
 pub fn object(on: Declared<'_>, policy: Vec<Attribute>, material: Option<Vec<Attribute>>) -> Result<Vec<Attribute>> {
     let mut t = token_object(on)?;
     t.extend(policy);
-    t.extend(material.unwrap_or_else(|| kind(on.object)));
+    t.extend(material.unwrap_or_else(|| kind(&on.object)));
     if on.object.class == Class::Data && on.spec.flag("CKA_PRIVATE").is_none() {
         t.push(Attribute::Private(false));
     }
@@ -287,7 +287,7 @@ pub fn session(key: SessionKey) -> Vec<Attribute> {
 /// # Errors
 ///
 /// Whatever the key type refuses.
-pub fn rebind_copy(object: &ObjectCfg, commits: &[Commit]) -> Result<Vec<Attribute>> {
+pub fn rebind_copy(object: Object<'_>, commits: &[Commit]) -> Result<Vec<Attribute>> {
     let mut t = session(SessionKey::RebindCopy);
     t.push(Attribute::KeyType(key_type_of(object)?));
     for c in commits {
@@ -338,7 +338,7 @@ mod tests {
             (&[("CKA_PRIVATE", true)][..], &[("CKA_PRIVATE", true), ("CKA_VERIFY", true)][..], false),
         ] {
             let s = spec(private, public);
-            let on = Declared { object: &object, spec: &s, locator: &locator };
+            let on = Declared { object: Object::new(&object).unwrap(), spec: &s, locator: &locator };
             for t in [generation_public(on, vec![], None).unwrap().unwrap(), public_half(on, vec![], None).unwrap()] {
                 assert_eq!(t.contains(&Attribute::Private(false)), carries, "{private:?} {public:?}: {t:?}");
                 assert_eq!(t.contains(&Attribute::Verify(true)), carries, "{private:?} {public:?}: {t:?}");

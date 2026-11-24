@@ -10,15 +10,15 @@
 use crate::bundle::{BUNDLE_FORMAT, BUNDLE_VERSION, Bundle, Entry, Source, TransportRef, encode};
 use crate::public::free_locator;
 use crate::public::{Moved, already_there, public_key, roll_back};
+use crate::side::Side;
 use crate::tokens::unwrap_refusals;
 use cakeys_core::config::{AttrValue, Binding, Lock, Origin};
-use cakeys_core::migrate::{Exposure, Method, Side};
-use cakeys_core::pop::OaepHash;
+use cakeys_core::migrate::{Exposure, Method, OaepHash};
 use cakeys_core::types::{KeyType, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::token::{SessionObject, with_public_default_dropped};
-use cakeys_pkcs11::{SessionKey, Template, Token, Via, templates};
+use cakeys_pkcs11::{SessionKey, Template, Token, Topic, Via, templates};
 use cryptoki::mechanism::rsa::PkcsOaepParams;
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, ObjectHandle};
@@ -103,7 +103,9 @@ pub(crate) fn export(
         };
     let modulus = rsa_parts(&transport.spki)?.0.len();
     let session = from.raw();
-    let refused = |what: &str, e: cryptoki::error::Error| from.unsupported(format!("{what} on '{}': {e}", from.name));
+    let refused = |what: &str, e: cryptoki::error::Error| {
+        from.unsupported_for(Topic::Mechanism, format!("{what} on '{}': {e}", from.name))
+    };
     // The transport public key and the shared KEK are session objects on the source: both go
     // when this returns, however it does.
     let mut tpub_template = templates::session(SessionKey::TransportKey);
@@ -211,7 +213,7 @@ fn hold<'a>(items: &'a [Item<'a>], from: &Token, lock: &'a Lock, notes: &mut Not
             Held::Public(bytes)
         } else {
             let loc = &src.on_token.locator;
-            let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string().into()))?;
+            let h = from.find_key(&src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string().into()))?;
             Held::Key(h, (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?)
         };
         found.push(Found { item, locked, object_type, held });
@@ -278,7 +280,10 @@ fn wrap(
         }
         (Method::RsaOaepAesKwp(_), Some(kek)) => {
             let kwp = rfc5649(from).ok_or_else(|| {
-                from.unsupported(format!("'{}' offers no RFC 5649 key wrap this build can name", from.name))
+                from.unsupported_for(
+                    Topic::Mechanism,
+                    format!("'{}' offers no RFC 5649 key wrap this build can name", from.name),
+                )
             })?;
             session.wrap_key(&kwp, kek, h).map(shared).map_err(|e| refused("wrapping the key", e))
         }
@@ -413,7 +418,7 @@ pub(crate) fn preflight(
     let tr = tr.ok_or_else(|| no_transport(dst))?;
     ops::verify(tr, to, lock, notes)?;
     let unwrapping = to
-        .find_key(tr.object, &tr.on_token.locator, false)?
+        .find_key(&tr.object, &tr.on_token.locator, false)?
         .ok_or_else(|| KmError::NotFound(format!("{tr}: the transport key").into()))?;
     // Per class (`Token::occupied`): a certificate beside the key is no collision, and a public
     // key object already holding the bundle's public key is the key's public half, reused.
@@ -485,7 +490,7 @@ fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: Option<&Target>, 
             .into(),
         )
     })?;
-    if locked.object_type.as_ref() != Some(&e.object_type) || dst.object != &e.object_type {
+    if locked.object_type.as_ref() != Some(&e.object_type) || dst.object.cfg() != &e.object_type {
         return Err(KmError::PreconditionFailed(
             format!("{dst}: the bundle carries a {}, the lock and keys.toml another type", e.object_type).into(),
         ));
@@ -538,7 +543,7 @@ fn create(
         .ok_or_else(|| KmError::Validation(format!("{dst}: a public object is created, not unwrapped").into()))?;
     let session = to.raw();
     let refused = |what: &str, e: cryptoki::error::Error| {
-        unwrap_error(&format!("{dst}: {what} on '{}'", to.name), &e, |m| to.unsupported(m))
+        unwrap_error(&format!("{dst}: {what} on '{}'", to.name), &e, |m| to.unsupported_for(Topic::Mechanism, m))
     };
     // The templates as the provider adjusts them, before anything is created.
     let template = templates::import_key(
@@ -568,10 +573,13 @@ fn create(
             // unwraps both in one CKM_RSA_AES_KEY_WRAP: its input is the same two blobs, joined.
             let Some(kwp) = rfc5649(to) else {
                 if !rsa_aes_key_wrap(to) {
-                    return Err(to.unsupported(format!(
-                        "'{}' offers no RFC 5649 key wrap, nor CKM_RSA_AES_KEY_WRAP, this build can name",
-                        to.name
-                    )));
+                    return Err(to.unsupported_for(
+                        Topic::Mechanism,
+                        format!(
+                            "'{}' offers no RFC 5649 key wrap, nor CKM_RSA_AES_KEY_WRAP, this build can name",
+                            to.name
+                        ),
+                    ));
                 }
                 let joined = [kek_blob, key].concat();
                 made.push(
@@ -694,7 +702,7 @@ pub(crate) fn create_public_half(dst: &Target, to: &Token, spki: &[u8]) -> Resul
     let create = || {
         with_public_default_dropped(&t, declared, |p| to.raw().create_object(p))
             .map(|(made, _)| made)
-            .map_err(|e| to.unsupported(format!("{dst}: the public half: C_CreateObject: {e}")))
+            .map_err(|e| to.unsupported_for(Topic::Create, format!("{dst}: the public half: C_CreateObject: {e}")))
     };
     to.managing("creating the public half", create)
 }

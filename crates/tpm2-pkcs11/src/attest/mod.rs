@@ -49,8 +49,9 @@ pub(crate) mod fuzzing {
 
 use cakeys_core::config::{Options, parse_options};
 use cakeys_core::id::Scheme;
-use cakeys_core::{KmError, Msg, Result};
+use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::provider::{AttestCtx, Attested};
+use cakeys_pkcs11::token::read_attribute;
 use cryptoki::object::{Attribute, AttributeType};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -59,15 +60,6 @@ use std::path::PathBuf;
 /// `tokens.<t>.options.akHandle` does not name one. Deliberately outside the 0x81000001..0A range the
 /// common tools take (tpm2-pkcs11's primary sits at 0x81000001); change it if yours collides.
 pub(crate) const DEFAULT_AK_HANDLE: u32 = 0x8100_0016;
-
-/// One hex-text attribute, shared by the store and the unsealed wrapping key.
-///
-/// # Errors
-///
-/// `Validation` if the value is not even-length hex.
-pub(crate) fn store_hex(s: &str) -> Result<Vec<u8>> {
-    store::hex(s)
-}
 
 /// The tpm2-pkcs11 provider's `[tokens.<t>.options]`, for the native attestation path.
 #[derive(Debug, Default, Deserialize)]
@@ -188,12 +180,8 @@ impl Tpm2Options {
 /// (db.c `db_for_path`): `$TPM2_PKCS11_STORE` unconditionally, then the first of
 /// `/etc/tpm2_pkcs11`, `$XDG_DATA_HOME/tpm2-pkcs11` (or `~/.local/share/tpm2-pkcs11`),
 /// `~/.tpm2_pkcs11` and the working directory that holds a store file. Anything else could read
-/// another store than the module the PKCS#11 object came from.
-fn store_dir(cfg: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<PathBuf> {
-    store_dir_of(cfg.token_name, opts)
-}
-
-/// [`store_dir`] for `token_name` (the plaintext import's too).
+/// another store than the module the PKCS#11 object came from. For `token_name` (the
+/// attestation's and the plaintext import's).
 ///
 /// # Errors
 ///
@@ -386,7 +374,7 @@ fn certify_through_store(ctx: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<(esy
     };
     let want = expected(ctx)?;
     let class = store::store_class(ctx.object.class)?;
-    let store = store::Store::open(&store_dir(ctx, opts)?, &ctx.cfg.token_label)?;
+    let store = store::Store::open(&store_dir_of(ctx.token_name, opts)?, &ctx.cfg.token_label)?;
     let tobj = store.find(&cka_id, label.as_deref(), class)?;
     let conf = tcti(ctx, opts)?;
     let mut esys_ctx = esys::context(&conf)?;
@@ -430,26 +418,6 @@ fn expected<'a>(ctx: &'a AttestCtx<'_>) -> Result<esys::Expected<'a>> {
         ));
     };
     Ok(esys::Expected::Commitment(esys::Bind { hash: esys::hmac_algorithm(hash)?, input: &c.input, id: &c.id }))
-}
-
-/// One attribute read of the key object: the attribute, `None` when the module has none to show
-/// (absent or sensitive, which cryptoki leaves out of the result), and any other failure
-/// `Unavailable` with the module's return value. A failed `CKA_LABEL` read is never taken for
-/// "no label", which would widen the store row search (attest/mod.rs F1).
-///
-/// # Errors
-///
-/// `Unavailable` when `C_GetAttributeValue` fails.
-fn read_attribute(
-    what: &str,
-    read: std::result::Result<Vec<Attribute>, cryptoki::error::Error>,
-) -> Result<Option<Attribute>> {
-    match read {
-        Ok(v) => Ok(v.into_iter().next()),
-        Err(e) => Err(KmError::Unavailable(
-            Msg::from(format!("C_GetAttributeValue ({what}): {e}")).with_rv(cakeys_pkcs11::token::rv_of(&e)),
-        )),
-    }
 }
 
 /// The tpm2-pkcs11 versions the store reader was tested with (review A8): the sqlite schema and
@@ -556,22 +524,6 @@ mod tests {
             paths(&["/etc/tpm2_pkcs11", "/h/.local/share/tpm2-pkcs11", "/h/.tpm2_pkcs11", "/w"])
         );
         assert_eq!(store_candidates(env(&[]), None), paths(&["/etc/tpm2_pkcs11"]));
-    }
-
-    /// A failed attribute read of the key object is unavailable (16) with the module's return
-    /// value, never "no label", which would widen the store row search (attest/mod.rs F1); an
-    /// attribute the module has none of is `None`.
-    #[test]
-    fn a_failed_attribute_read_is_unavailable() {
-        use cryptoki::context::Function;
-        use cryptoki::error::{Error as CkError, RvError};
-        let failed = CkError::Pkcs11(RvError::VendorDefined(0x8000_0001), Function::GetAttributeValue);
-        let e = read_attribute("CKA_LABEL", Err(failed)).unwrap_err();
-        assert!(matches!(&e, KmError::Unavailable(m) if m.contains("CKA_LABEL")), "{e}");
-        assert_eq!(e.rv(), Some(0x8000_0001));
-        assert_eq!(read_attribute("CKA_LABEL", Ok(vec![])).unwrap(), None);
-        let label = Attribute::Label(b"k".to_vec());
-        assert_eq!(read_attribute("CKA_LABEL", Ok(vec![label.clone()])).unwrap(), Some(label));
     }
 
     /// The store reader reads only the versions it was tested with (15 otherwise, naming it).

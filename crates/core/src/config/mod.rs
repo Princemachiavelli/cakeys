@@ -8,9 +8,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+mod address;
+mod check;
 mod io;
 mod lock;
 mod observe;
+pub(crate) use check::is_name;
+use check::{
+    check_names, check_origins, check_scratch_slots, check_secret_files, check_token, check_transport_keys,
+    check_value_len, env_ref,
+};
 pub use io::*;
 pub use lock::*;
 pub use observe::*;
@@ -404,19 +411,6 @@ impl ObjectCfg {
         })
     }
 
-    /// The key type, if this class can have it (and, for EC and Edwards keys, a supported curve);
-    /// any other pairing is unsupported (15).
-    ///
-    /// # Errors
-    ///
-    /// `Unsupported` for a class/key-type pairing cakeys does not manage, and whatever `curve`
-    /// rejects for EC and Edwards keys (`Validation` when the object names no curve).
-    pub fn checked_key_type(&self) -> Result<KeyType> {
-        self.kind()?.key_type().ok_or_else(|| {
-            KmError::Unsupported(format!("{}/{}", self.class, self.key_type.map_or("", KeyType::name)).into())
-        })
-    }
-
     /// What the object is: its class and type fields parsed into one of the combinations
     /// cakeys manages ([`ObjectKind`]). Every object is parsed when keys.toml loads, used by a
     /// spec or not.
@@ -540,6 +534,69 @@ impl ObjectKind {
             ObjectKind::Secret { key_type, .. } => Some(key_type),
             ObjectKind::Certificate | ObjectKind::Data => None,
         }
+    }
+
+    /// The curve, for EC and Edwards keys.
+    #[must_use]
+    pub fn curve(self) -> Option<crate::id::Curve> {
+        match self {
+            ObjectKind::Asymmetric { key: AsymmetricKey::Ec(c) | AsymmetricKey::Edwards(c), .. } => Some(c),
+            _ => None,
+        }
+    }
+}
+
+/// An object as parsed: keys.toml's form ([`ObjectCfg`], the type the lock pins and the spec
+/// digest hashes) with what it is ([`ObjectKind`]). Made once where a target or a probe names
+/// the object, so what reads its key type or curve after that cannot fail on them (review
+/// 2026-11-23 A-8: every reader re-parsed the strings, with error arms load made unreachable).
+/// Its fields read through to the [`ObjectCfg`].
+#[derive(Debug, Clone, Copy)]
+pub struct Object<'a> {
+    cfg: &'a ObjectCfg,
+    kind: ObjectKind,
+}
+
+impl<'a> Object<'a> {
+    /// `cfg`, parsed.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`ObjectCfg::kind`] refuses; never for an object of a loaded keys.toml.
+    pub fn new(cfg: &'a ObjectCfg) -> Result<Object<'a>> {
+        Ok(Object { cfg, kind: cfg.kind()? })
+    }
+
+    /// keys.toml's form.
+    #[must_use]
+    pub fn cfg(self) -> &'a ObjectCfg {
+        self.cfg
+    }
+
+    /// What it is.
+    #[must_use]
+    pub fn kind(self) -> ObjectKind {
+        self.kind
+    }
+
+    /// The key type, for keys.
+    #[must_use]
+    pub fn key_type(self) -> Option<KeyType> {
+        self.kind.key_type()
+    }
+
+    /// The curve, for EC and Edwards keys.
+    #[must_use]
+    pub fn curve(self) -> Option<crate::id::Curve> {
+        self.kind.curve()
+    }
+}
+
+impl std::ops::Deref for Object<'_> {
+    type Target = ObjectCfg;
+
+    fn deref(&self) -> &ObjectCfg {
+        self.cfg
     }
 }
 
@@ -761,115 +818,6 @@ impl std::fmt::Display for Locator {
     }
 }
 
-/// Identity modes, strongest first (docs/DESIGN.md §3.4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Mode {
-    /// The ID hashes the object's public material: public keys, certificates, data objects.
-    Direct,
-    /// The ID hashes a commitment the token computes with the secret key (a MAC, a check value, a
-    /// wrap), for secret keys whose usage bits allow one.
-    Commitment,
-    /// An extractable secret key without such bits: wrapped under a session KEK, unwrapped as a
-    /// session copy that allows every scheme of its type, committed, then both destroyed.
-    WrapRebind,
-}
-
-/// How a private-key object is bound to the public key its identity hashes (docs/DESIGN.md §3.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Binding {
-    /// The token signed a fresh challenge that verified on the host against that public key.
-    PopSign,
-    /// `pop-sign` on a `CKA_ALWAYS_AUTHENTICATE` key: the same proof, with the per-use
-    /// `C_Login(CKU_CONTEXT_SPECIFIC)` the key demands before it signs. Derived from the
-    /// observed attribute and recorded in the lock; never written in keys.toml.
-    PopSignPin,
-    /// The token derived the ECDH shared secret with an ephemeral host key and both sides `MACed`
-    /// the challenge with it (derive-only EC keys).
-    PopEcdh,
-    /// The token decrypted a host challenge (RSA-OAEP) to the expected plaintext (decrypt-only
-    /// RSA keys).
-    PopDecrypt,
-    /// The token unwrapped a host secret (RSA-OAEP) into a non-extractable session key and both
-    /// sides `MACed` the challenge with it (unwrap-only RSA keys: transport keys, docs/CAMIGRATE.md D3).
-    PopUnwrap,
-    /// Only the token says the objects belong together (opt-in, or `publicOnly`).
-    TokenAsserted,
-}
-
-impl Binding {
-    /// Strength, strongest 0: a realisation must never move to a higher rank. Every `pop-*`
-    /// proves the same fact — possession of the named public key — by whichever capability the
-    /// key has. `pop-sign-pin` proves it too: its per-use PIN is recorded by the observed
-    /// `CKA_ALWAYS_AUTHENTICATE` bit in the policy, not by a weaker rank.
-    #[must_use]
-    pub fn rank(self) -> u8 {
-        match self {
-            Binding::PopSign | Binding::PopSignPin | Binding::PopEcdh | Binding::PopDecrypt | Binding::PopUnwrap => 0,
-            Binding::TokenAsserted => 1,
-        }
-    }
-
-    /// The name keys.toml and the lock write.
-    #[must_use]
-    pub fn name(self) -> &'static str {
-        match self {
-            Binding::PopSign => "pop-sign",
-            Binding::PopSignPin => "pop-sign-pin",
-            Binding::PopEcdh => "pop-ecdh",
-            Binding::PopDecrypt => "pop-decrypt",
-            Binding::PopUnwrap => "pop-unwrap",
-            Binding::TokenAsserted => "token-asserted",
-        }
-    }
-
-    /// The proof a capability row names (`prove.<proof>.…`, docs/CAPROBE.md): the binding's,
-    /// `pop-sign` for a per-use PIN too; `None` for `token-asserted`, which proves nothing.
-    #[must_use]
-    pub fn proof_name(self) -> Option<&'static str> {
-        match self {
-            Binding::PopSignPin => Some(Binding::PopSign.name()),
-            Binding::TokenAsserted => None,
-            proven => Some(proven.name()),
-        }
-    }
-}
-
-impl std::fmt::Display for Binding {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
-impl Mode {
-    /// Strength, strongest 0: a realisation must never move to a higher rank.
-    #[must_use]
-    pub fn rank(self) -> u8 {
-        match self {
-            Mode::Direct => 0,
-            Mode::Commitment => 1,
-            Mode::WrapRebind => 2,
-        }
-    }
-
-    /// The name the lock writes.
-    #[must_use]
-    pub fn name(self) -> &'static str {
-        match self {
-            Mode::Direct => "direct",
-            Mode::Commitment => "commitment",
-            Mode::WrapRebind => "wrap-rebind",
-        }
-    }
-}
-
-impl std::fmt::Display for Mode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
 /// Read and check keys.toml; `$NAME` path references read the process environment.
 ///
 /// # Errors
@@ -985,287 +933,6 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
     Ok(cfg)
 }
 
-/// A secret key's `valueLen` is one its commitment label can carry, and the one its key type
-/// fixes when it fixes one.
-fn check_value_len(o: &ObjectCfg) -> std::result::Result<(), String> {
-    let Some(len) = o.value_len else { return Ok(()) };
-    // The commitment label carries 8 × valueLen bits (docs/DESIGN.md §3.3): bound it so that
-    // never overflows (tests/properties.rs: `commitment_labels_are_injective`).
-    if len > u64::from(u32::MAX) {
-        return Err(format!("valueLen {len} bytes is out of range"));
-    }
-    if o.class == ObjectClass::SecretKey
-        && let Some(kt) = o.key_type
-        && let Some(fixed) = kt.fixed_value_len()
-        && len != fixed
-    {
-        return Err(format!("a {kt} key is {fixed} bytes; leave valueLen out or write {fixed}, not {len}"));
-    }
-    // Lengths no module makes: refused at load rather than by the module at `create` (review D1).
-    if o.class == ObjectClass::SecretKey && o.key_type == Some(KeyType::Aes) && ![16, 24, 32].contains(&len) {
-        return Err(format!("an AES key is 16, 24 or 32 bytes, not {len}"));
-    }
-    if o.class == ObjectClass::SecretKey && len == 0 {
-        return Err("valueLen 0: a secret key has at least one byte".into());
-    }
-    Ok(())
-}
-
-/// One token's settings agree with each other: `provider` names a family and `moduleProfile` a
-/// profile of it, `probe.scratchId` is a hex `CKA_ID`, and an SO credential comes with a user PIN.
-fn check_token(t: &TokenCfg) -> std::result::Result<(), String> {
-    // `provider` names a family; one profile of it is `moduleProfile`.
-    if let Some(p) = t.provider.as_deref().filter(|p| p.contains('/')) {
-        return Err(format!(
-            "provider = \"{p}\" names one module profile; name its family in provider and the profile in \
-             moduleProfile = \"{p}\""
-        ));
-    }
-    if let (Some(family), Some(profile)) = (t.provider.as_deref(), t.module_profile.as_deref())
-        && profile.split_once('/').map_or(profile, |(f, _)| f) != family
-    {
-        return Err(format!("moduleProfile '{profile}' is not of provider '{family}''s family"));
-    }
-    if let Some(id) = &t.probe.scratch_id
-        && crate::hex::decode(id).is_none_or(|b| b.is_empty())
-    {
-        return Err(format!("probe.scratchId {id:?} is not a hex CKA_ID"));
-    }
-    // An SO step logs the user out; without a user PIN to return to, the new private key could
-    // not be found again, let alone proven.
-    if (t.so_credential_file.is_some() || t.so_credential_env.is_some()) && t.pin_file.is_none() && t.pin_env.is_none()
-    {
-        return Err("soCredentialFile/soCredentialEnv needs a user PIN (pinFile or pinEnv) to return to the user \
-                    session"
-            .into());
-    }
-    Ok(())
-}
-
-/// A token's `probe.scratchId` is the `CKA_ID` of no locator keys.toml has on that token: the
-/// write probes overwrite that slot's key, and a key keys.toml declares there is a real one
-/// (review 2026-11-23 D-1: one digit off, the probe replaced it).
-fn check_scratch_slots(cfg: &Config) -> std::result::Result<(), String> {
-    for (token, t) in &cfg.tokens {
-        let Some(scratch) = t.probe.scratch_id.as_deref().and_then(crate::hex::decode) else { continue };
-        let mut declared = cfg.specs.iter().filter_map(|(spec, s)| {
-            let id = s.tokens.get(token)?.locator.id.as_deref().and_then(crate::hex::decode)?;
-            (id == scratch).then_some(spec)
-        });
-        if let Some(spec) = declared.next() {
-            return Err(format!(
-                "token '{token}': probe.scratchId {} is the CKA_ID of spec '{spec}''s locator there: the write probes \
-                 would overwrite that key; name a slot keys.toml does not use",
-                crate::hex::encode(&scratch)
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Whether `n` is a name: `[A-Za-z0-9][A-Za-z0-9_-]*` ([`check_names`]; a vendor method's parts,
-/// `migrate::Method::from_name`).
-pub(crate) fn is_name(n: &str) -> bool {
-    n.starts_with(|c: char| c.is_ascii_alphanumeric())
-        && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-}
-
-/// Object, spec and token names are `[A-Za-z0-9][A-Za-z0-9_-]*`: `check` splits a reference on
-/// `.id.`, the lock and `gc` join names with dots, and the Nix library puts them in a shell
-/// command. Invalid at load (17), before any other rule names them.
-fn check_names(cfg: &Config) -> std::result::Result<(), String> {
-    let names = cfg
-        .objects
-        .keys()
-        .map(|n| ("object", n))
-        .chain(cfg.specs.keys().map(|n| ("spec", n)))
-        .chain(cfg.tokens.keys().map(|n| ("token", n)))
-        .chain(cfg.specs.values().flat_map(|s| s.tokens.keys().map(|n| ("token", n))));
-    for (what, name) in names {
-        if !is_name(name) {
-            return Err(format!(
-                "{what} name {name:?}: names are letters, digits, '-' and '_', starting with a letter or digit"
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Each `transportWith` names a spec realised on its own token whose object is an RSA private
-/// key declared to unwrap and never leave the token (docs/CAMIGRATE.md D3).
-fn check_transport_keys(cfg: &Config) -> std::result::Result<(), String> {
-    for (token, t) in &cfg.tokens {
-        let Some(spec) = &t.migrate.transport_with else { continue };
-        let what = format!("token '{token}': migrate.transportWith = \"{spec}\"");
-        let Some(s) = cfg.specs.get(spec) else { return Err(format!("{what} names no spec")) };
-        if !s.tokens.contains_key(token) {
-            return Err(format!("{what}, but that spec does not realise it on '{token}'"));
-        }
-        let rsa = cfg
-            .objects
-            .get(&s.object)
-            .is_some_and(|o| o.class == ObjectClass::PrivateKey && o.key_type == Some(KeyType::Rsa));
-        if !rsa {
-            return Err(format!("{what}: a transport key is an RSA private key, and '{}' is not", s.object));
-        }
-        // What it protects is no better guarded than it (camigrate refuses a smaller one found
-        // on a token too).
-        if let Some(bits) = cfg.objects.get(&s.object).and_then(|o| o.modulus_bits).filter(|b| *b < 2048) {
-            return Err(format!("{what}: a transport key has at least 2048 bits, and '{}' declares {bits}", s.object));
-        }
-        if s.flag("CKA_UNWRAP") != Some(true) || s.flag("CKA_EXTRACTABLE") != Some(false) {
-            return Err(format!(
-                "{what}: a transport key declares CKA_UNWRAP = true and CKA_EXTRACTABLE = false in its attributes"
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// No file keys.toml names to hold a secret is in the world-readable Nix store
-/// ([`secret_in_store`]): `pinFile`, `soCredentialFile`, `migrate.passphraseFile`, and
-/// `migrate.file` when the object's material is secret ([`Config::secret_material`]). A `$NAME`
-/// path is checked when it resolves ([`TokenCfg::pin_path`], [`Config::object_file`],
-/// [`Config::object_passphrase_file`]), and every secret file again when it is read
-/// (`secret::read`), so a link changed since load is caught too.
-fn check_secret_files(cfg: &Config) -> std::result::Result<(), String> {
-    let literal = |v: &Option<String>| v.clone().filter(|f| !f.starts_with('$')).map(PathBuf::from);
-    let tokens = cfg.tokens.iter().flat_map(|(name, t)| {
-        [("pinFile", &t.pin_file), ("soCredentialFile", &t.so_credential_file)].into_iter().filter_map(
-            move |(what, p)| {
-                let p = p.clone().filter(|p| !p.to_string_lossy().starts_with('$'))?;
-                Some((format!("token '{name}': {what}"), p))
-            },
-        )
-    });
-    let objects = cfg.object_migrate.iter().flat_map(|(object, m)| {
-        let file = literal(&m.file).filter(|_| cfg.secret_material(object));
-        [("file", file), ("passphraseFile", literal(&m.passphrase_file))]
-            .into_iter()
-            .filter_map(move |(what, p)| Some((format!("object '{object}': migrate.{what}"), p?)))
-    });
-    tokens.chain(objects).find_map(|(what, path)| secret_in_store(&what, &path)).map_or(Ok(()), Err)
-}
-
-/// Each pair's `origin` fits its object (docs/CONFIG.md): a private or secret key states it; a
-/// `publicOnly` adoption, a certificate, a public key and a data object are never created; a
-/// `CKA_TRUSTED` key cannot be generated; and an object is created by at most one pair, which
-/// says where its material is born and with whose policy, so no order of a run decides either.
-/// A file is a birthplace too (docs/FILE.md): `origin = "file"` needs the object's
-/// `migrate.file`, and an object born in a file is never also created on a token.
-fn check_origins(cfg: &Config) -> std::result::Result<(), String> {
-    for (object, m) in &cfg.object_migrate {
-        if m.file.is_none() && (m.passphrase_file.is_some() || m.passphrase_env.is_some()) {
-            return Err(format!("object '{object}': migrate.passphraseFile/passphraseEnv without migrate.file"));
-        }
-        if let Some(e) = m.encoding {
-            if m.file.is_none() {
-                return Err(format!("object '{object}': migrate.encoding without migrate.file"));
-            }
-            // Any other object's file is taken as it is: a data object's value may well be hex text.
-            if cfg.objects.get(object).is_some_and(|o| o.class != ObjectClass::SecretKey) {
-                return Err(format!(
-                    "object '{object}': migrate.encoding = \"{e}\" applies to secret keys only; any other \
-                     object's file is read for what it holds"
-                ));
-            }
-        }
-        // A secret key's file may hold its value or hex or base64 text of it, and only the length
-        // tells them apart; without one, the file's first read would pin a guess (docs/FILE.md F4).
-        if m.file.is_some()
-            && m.encoding.is_none()
-            && cfg.objects.get(object).is_some_and(|o| o.class == ObjectClass::SecretKey && o.value_len.is_none())
-        {
-            return Err(format!(
-                "object '{object}': a secret key's migrate.file needs the key's valueLen or migrate.encoding = \
-                 \"raw\", \"hex\" or \"base64\": its value, hex and base64 of it are told apart by length alone"
-            ));
-        }
-    }
-    // Every (spec, token) pair's origin on its own, then across pairs: at most one creates each object.
-    let mut created: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    for (spec_name, spec) in &cfg.specs {
-        let Some(object) = cfg.objects.get(&spec.object) else { continue };
-        let key = matches!(object.class, ObjectClass::PrivateKey | ObjectClass::SecretKey);
-        let has_file = cfg.object_migrate.get(&spec.object).is_some_and(|m| m.file.is_some());
-        for (token, on) in &spec.tokens {
-            let what = format!("spec '{spec_name}' on token '{token}'");
-            let Some(origin) = on.origin else {
-                // Unset means "adopt", except for a key's private or secret material, which must say.
-                if key && !on.public_only {
-                    return Err(format!(
-                        "{what}: a private or secret key states its origin: \"create\" (`cakeys create` makes it \
-                         here), \"import\" (camigrate brings it), \"file\" (camigrate brings it from the object's \
-                         migrate.file) or \"adopt\" (it is already there)"
-                    ));
-                }
-                continue;
-            };
-            if on.public_only && origin != KeyOrigin::Adopt {
-                return Err(format!("{what}: publicOnly adopts the public half, never origin = \"{origin}\""));
-            }
-            if origin == KeyOrigin::File && !has_file {
-                return Err(format!(
-                    "{what}: origin = \"file\" reads the object's migrate.file, and object '{}' names none",
-                    spec.object
-                ));
-            }
-            if origin != KeyOrigin::Create {
-                continue;
-            }
-            if !key {
-                return Err(format!("{what}: {} objects are adopted or imported, never created", object.class));
-            }
-            if has_file {
-                return Err(format!(
-                    "{what}: object '{}' is born in its migrate.file, so it is never created on a token; \
-                     origin = \"file\", \"import\" or \"adopt\"",
-                    spec.object
-                ));
-            }
-            if spec.flag("CKA_TRUSTED") == Some(true) {
-                return Err(format!(
-                    "{what}: CKA_TRUSTED = true cannot be generated (the token's security officer sets it): \
-                     origin = \"adopt\" or \"import\""
-                ));
-            }
-            created.entry(spec.object.as_str()).or_default().push(what);
-        }
-    }
-    if let Some((object, pairs)) = created.iter().find(|(_, pairs)| pairs.len() > 1) {
-        return Err(format!(
-            "object '{object}' has origin = \"create\" on several pairs ({}): a key is created once, on one \
-             token and with one spec's policy; the other pairs import or adopt it",
-            pairs.join(", ")
-        ));
-    }
-    Ok(())
-}
-
-/// A whole-value environment reference in a path field: `$NAME` or `${NAME}` becomes the value of
-/// the environment variable `NAME`, so one shared `keys.toml` can carry a machine-specific pin
-/// file or module path. A value with no leading `$` is a literal path. A malformed reference fails
-/// at load (exit 17); an unset one fails where the path is used: `module` when its token is
-/// opened ([`TokenCfg::module_path`], so `--module` can stand in for it), `pinFile` and
-/// `soCredentialFile` when the secret is read ([`TokenCfg::pin_path`]), so a check that touches
-/// no token needs no PIN variable.
-fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<String> {
-    let name = match value.strip_prefix('$') {
-        Some(rest) => rest.strip_prefix('{').and_then(|r| r.strip_suffix('}')).unwrap_or(rest),
-        None => return Ok(value.to_owned()),
-    };
-    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err(KmError::Validation(
-            format!("{what}: \"{value}\" is neither $NAME, ${{NAME}} nor a literal path").into(),
-        ));
-    }
-    // Unset is this host's environment not providing it, as an unset `pinEnv` is (16); only a
-    // reference that is not one is invalid (review 2026-11-23 A-14).
-    env(name).ok_or_else(|| {
-        KmError::Unavailable(format!("{what}: environment variable {name} (\"{value}\") is not set").into())
-    })
-}
-
 impl Config {
     /// The file `object`'s material is born in (`[objects.<o>.migrate] file`, docs/FILE.md), its
     /// `$NAME` reference resolved by `env` now; `None` when the object names none. Resolved at
@@ -1322,296 +989,11 @@ impl Config {
             _ => false,
         }
     }
-
-    /// The (spec, token) pairs a verb's address selects (`[<object>] [--spec] [--token]`,
-    /// docs/CAKEYS.md): each part left out selects every one; an empty result is no error.
-    ///
-    /// # Errors
-    ///
-    /// `Validation` (17) when a part names nothing keys.toml has, or `--spec` realises
-    /// another object than the one named.
-    pub fn select(&self, object: Option<&str>, spec: Option<&str>, token: Option<&str>) -> Result<Vec<(&str, &str)>> {
-        if let Some(o) = object
-            && !self.objects.contains_key(o)
-        {
-            return Err(KmError::Validation(format!("unknown object '{o}'").into()));
-        }
-        if let Some(s) = spec {
-            let Some(cfg) = self.specs.get(s) else {
-                return Err(KmError::Validation(format!("unknown spec '{s}'").into()));
-            };
-            if let Some(o) = object.filter(|o| *o != cfg.object) {
-                return Err(KmError::Validation(format!("spec '{s}' realises '{}', not '{o}'", cfg.object).into()));
-            }
-        }
-        if let Some(t) = token
-            && !self.tokens.contains_key(t)
-        {
-            return Err(KmError::Validation(format!("unknown token '{t}'").into()));
-        }
-        Ok(self
-            .specs
-            .iter()
-            .filter(|(n, s)| spec.is_none_or(|w| w == n.as_str()) && object.is_none_or(|o| o == s.object))
-            .flat_map(|(n, s)| s.tokens.keys().map(move |t| (n.as_str(), t.as_str())))
-            .filter(|(_, t)| token.is_none_or(|w| w == *t))
-            .collect())
-    }
-
-    /// The one (spec, token) pair a verb's address names: an object or `--spec`, narrowed by
-    /// the others when the object is realised more than once.
-    ///
-    /// # Errors
-    ///
-    /// `Validation` (17) when neither an object nor `--spec` is given, or as [`Self::select`],
-    /// or when no pair matches; `Ambiguous` (12) when several do and `--spec`/`--token` has to
-    /// narrow it.
-    pub fn address(&self, object: Option<&str>, spec: Option<&str>, token: Option<&str>) -> Result<(String, String)> {
-        if object.is_none() && spec.is_none() {
-            return Err(KmError::Validation("name an object, or a spec with --spec".into()));
-        }
-        let pairs = self.select(object, spec, token)?;
-        let what = object.map_or_else(|| format!("spec '{}'", spec.unwrap_or_default()), |o| format!("object '{o}'"));
-        match pairs.as_slice() {
-            [(s, t)] => Ok(((*s).to_owned(), (*t).to_owned())),
-            [] => Err(KmError::Validation(
-                format!(
-                    "no spec places {what}{}{}",
-                    spec.filter(|_| object.is_some()).map_or_else(String::new, |s| format!(" through spec '{s}'")),
-                    token.map_or_else(String::new, |t| format!(" on token '{t}'"))
-                )
-                .into(),
-            )),
-            _ => Err(KmError::Ambiguous(
-                format!("{what} has several (spec, token) pairs {pairs:?}; pass --spec/--token").into(),
-            )),
-        }
-    }
-}
-
-/// Module that realised an object (`C_GetInfo` plus the loaded file). Provenance only: on verify a
-/// different build identity is a warning, and so is a different `hash` at the same `path` (the
-/// file replaced in place: the case a path outside the Nix store cannot show); a different
-/// `path` alone (a Nix rebuild) is a note. Identity itself is enforced by the CA-IDs.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModuleInfo {
-    /// The file the dynamic loader mapped, symlinks resolved — whatever named it in keys.toml or
-    /// with `--module` (a bare name, a profile symlink, `$NAME`).
-    pub path: String,
-    /// SRI SHA-256 of that file; absent when it could not be read.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hash: Option<String>,
-    /// `CK_INFO.libraryDescription`.
-    pub description: String,
-    /// `CK_INFO.manufacturerID`.
-    pub manufacturer: String,
-    /// `CK_INFO.libraryVersion`.
-    pub version: String,
-    /// `CK_INFO.cryptokiVersion`: the PKCS#11 version the module implements.
-    pub cryptoki: String,
-}
-
-impl ModuleInfo {
-    /// Equal apart from the file (`path`, `hash`).
-    #[must_use]
-    pub fn same_build_identity(&self, other: &Self) -> bool {
-        (&self.description, &self.manufacturer, &self.version, &self.cryptoki)
-            == (&other.description, &other.manufacturer, &other.version, &other.cryptoki)
-    }
-}
-
-/// The token a realisation was made on (`C_GetTokenInfo`): provenance, like [`ModuleInfo`]; another
-/// token is a warning.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct TokenInfo {
-    /// `CK_TOKEN_INFO.model`.
-    pub model: String,
-    /// `CK_TOKEN_INFO.serialNumber`.
-    pub serial: String,
-    /// `CK_TOKEN_INFO.firmwareVersion`.
-    pub firmware: String,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The synthetic Nix-library fixture must stay a valid lock of the current schema.
-    #[test]
-    fn fixture_lock_parses() {
-        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"));
-        let lock = load_lock(path).unwrap();
-        assert_eq!(lock.realisations["signing-soft"]["softhsm"].binding, Some(Binding::PopSign));
-        // A recorded CKA_ID loads in lower case, as keys.toml's does: `0A` and `0a` are one
-        // locator, never a change to review (review D1). A non-hex one is no lock cakeys wrote.
-        let text = std::fs::read_to_string(path).unwrap();
-        let with_id = |id: &str| {
-            text.replace(
-                "locator = { CKA_LABEL = \"signing\" }",
-                &format!("locator = {{ CKA_LABEL = \"signing\", CKA_ID = \"{id}\" }}"),
-            )
-        };
-        let lock = parse_lock(&with_id("0A"), path).unwrap();
-        assert_eq!(lock.realisations["signing-soft"]["softhsm"].locator.id.as_deref(), Some("0a"));
-        let e = parse_lock(&with_id("zz"), path).unwrap_err();
-        assert!(e.to_string().contains("CKA_ID 'zz' is not hex"), "{e}");
-    }
-
-    /// Observation keys of a newer cakeys load and survive a rewrite (the TUF re-serialization
-    /// rule); anywhere else an unknown key is still a refused lock, `provenance` included.
-    #[test]
-    fn unknown_observation_keys_are_kept_on_rewrite() {
-        let fixture = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"));
-        let text = std::fs::read_to_string(fixture).unwrap();
-        let known = "provider = \"softhsm\"\ncakeysVersion = \"0.1.0\"\n";
-        assert!(text.contains(known));
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("keys.lock");
-        std::fs::write(&path, text.replacen(known, &format!("{known}builder = \"ci-7\"\nrun = {{ id = 3 }}\n"), 1))
-            .unwrap();
-        let lock = load_lock(&path).unwrap();
-        let extra = |l: &Lock| {
-            let key = l.realisations["signing-soft"]["softhsm"].observation.clone().unwrap();
-            l.observations[&key].extra.clone()
-        };
-        assert_eq!(extra(&lock).keys().collect::<Vec<_>>(), ["builder", "run"]);
-        save_lock(&path, &lock).unwrap();
-        assert_eq!(extra(&load_lock(&path).unwrap()), extra(&lock));
-        // The rename left nothing behind but the lock.
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-        // A compared table takes no unknown key, and neither does the object's history.
-        for (table, key) in [
-            ("[realisations.signing-soft.softhsm]\n", "builder = \"ci-7\"\n"),
-            ("[realisations.signing-soft.softhsm]\n", "provenance = { builder = \"ci-7\" }\n"),
-        ] {
-            std::fs::write(&path, text.replacen(table, &format!("{table}{key}"), 1)).unwrap();
-            assert!(matches!(load_lock(&path), Err(KmError::Validation(_))), "{key}");
-        }
-    }
-
-    /// A realisation names an observation the lock has (17 otherwise); an origin names a known
-    /// method; `gc` reports and drops exactly the observations no remaining realisation names.
-    #[test]
-    fn observations_are_referenced_and_collected() {
-        let path = Path::new("test.lock");
-        let sri = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
-        let set = |lock: &mut Lock, f: &dyn Fn(&mut LockRealisation)| {
-            f(lock.realisations.get_mut("s").unwrap().get_mut("t").unwrap());
-        };
-        let mut lock = attestable_lock();
-        set(&mut lock, &|r| r.observation = Some(sri.into()));
-        let err = lock.clone().validate(path).unwrap_err();
-        assert!(err.to_string().contains("is not in the lock"), "{err}");
-        lock.observations.insert(sri.into(), Observation::default());
-        lock.observations.insert("sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=".into(), Observation::default());
-        lock.clone().validate(path).unwrap();
-        // Every observation's module hash is checked, not only the first one's (review
-        // config.rs F2): a good one first, a malformed one after.
-        let module = |hash: &str| ModuleInfo {
-            path: "/m.so".into(),
-            hash: Some(hash.into()),
-            description: String::new(),
-            manufacturer: String::new(),
-            version: String::new(),
-            cryptoki: String::new(),
-        };
-        let mut hashed = lock.clone();
-        let mut entries = hashed.observations.values_mut();
-        entries.next().unwrap().module = Some(module(sri));
-        entries.next().unwrap().module = Some(module("sha256-x"));
-        let err = hashed.validate(path).unwrap_err();
-        assert!(err.to_string().contains("module hash \"sha256-x\""), "{err}");
-        assert!(matches!(lock.token_observation("t"), TokenObservation::One(_)));
-        assert!(matches!(lock.token_observation("other"), TokenObservation::None));
-
-        let mut bad = lock.clone();
-        let origin = Origin {
-            from: "a".into(),
-            method: "carrier-pigeon".into(),
-            exposure: crate::migrate::Exposure::Public,
-            declared: false,
-        };
-        set(&mut bad, &|r| r.provenance = Some(Provenance { origin: Some(origin.clone()) }));
-        assert!(bad.validate(path).unwrap_err().to_string().contains("origin method"));
-
-        let cfg: Config = toml::from_str(
-            "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-             [specs.s]\nobject = \"k\"\ntokens.t = { locator = { CKA_LABEL = \"k\" } }\n",
-        )
-        .unwrap();
-        let unnamed = "observations.\"sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=\"";
-        assert_eq!(gc(&cfg, &mut lock.clone(), false), [unnamed]);
-        // With the spec gone, the realisation goes, and so does the observation only it named.
-        let cfg = Config { specs: BTreeMap::new(), ..cfg };
-        let stale = gc(&cfg, &mut lock, true);
-        assert_eq!(stale.len(), 3, "{stale:?}");
-        assert!(lock.realisations.is_empty() && lock.observations.is_empty());
-    }
-
-    /// `gc` leaves a lock that loads: an object renamed in keys.toml before `lock` ran
-    /// takes the realisation that still names it along (it once stayed, naming an object `gc`
-    /// had dropped, and every later run refused the lock, `lock` and `gc` included). And no
-    /// lock that would not load is ever written: `save_lock` refuses it and keeps the old one.
-    #[test]
-    fn gc_and_save_leave_a_lock_that_loads() {
-        let path = Path::new("test.lock");
-        let mut lock = attestable_lock();
-        let renamed: Config = toml::from_str(
-            "[objects.renamed]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
-             [specs.s]\nobject = \"renamed\"\ntokens.t = { locator = { CKA_LABEL = \"k\" } }\n",
-        )
-        .unwrap();
-        let stale = gc(&renamed, &mut lock, true);
-        assert!(stale.contains(&"realisations.s.t".to_owned()) && stale.contains(&"objects.k".to_owned()), "{stale:?}");
-        lock.clone().validate(path).unwrap();
-
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("keys.lock");
-        let mut broken = attestable_lock();
-        broken.objects.clear();
-        // Saved after a token write, a lock that would not load is a lock not written (21), with
-        // the load rule it breaks (review 2026-11-23 A-17).
-        let e = save_lock(&file, &broken).unwrap_err();
-        assert!(e.exit_code() == 21 && e.to_string().contains("is not in the lock"), "{e}");
-        assert!(!file.exists(), "an invalid lock was written");
-        save_lock(&file, &attestable_lock()).unwrap();
-        load_lock(&file).unwrap();
-    }
-
-    /// A lock that cannot be saved is `LockUnwritable` (21), whatever stage of the write failed:
-    /// a run that changed the token must say its record is missing, not exit 1 like any I/O.
-    #[test]
-    fn a_lock_that_cannot_be_saved_is_its_own_code() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let ro = dir.path().join("ro");
-        std::fs::create_dir(&ro).unwrap();
-        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
-        // Root writes anyway (access(2) and the write both succeed).
-        if std::fs::File::create(ro.join("probe")).is_ok() {
-            return;
-        }
-        let e = save_lock(&ro.join("keys.lock"), &attestable_lock()).unwrap_err();
-        assert_eq!(e.exit_code(), 21, "{e}");
-        assert!(e.to_string().contains("lock cannot be written"), "{e}");
-    }
-
-    /// A symlinked lock (a NixOS layout: the lock in a checked-out repository) is written through
-    /// to its target, never replaced by a copy the repository never sees (config.rs F7).
-    #[test]
-    fn a_symlinked_lock_is_written_through() {
-        let dir = tempfile::tempdir().unwrap();
-        let (real, link) = (dir.path().join("repo.lock"), dir.path().join("keys.lock"));
-        save_lock(&real, &Lock { version: LOCK_VERSION, ..Default::default() }).unwrap();
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-        save_lock(&link, &attestable_lock()).unwrap();
-        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link was replaced");
-        let text = |p: &Path| std::fs::read_to_string(p).unwrap();
-        assert_eq!(text(&real), toml::to_string_pretty(&attestable_lock()).unwrap(), "the target was not written");
-        assert_eq!(unwritable(&link, false), None);
-    }
 
     /// Object, spec and token names have one grammar, checked at load (17): a reference splits
     /// on `.id.`, and shell commands are built from them.
@@ -1970,195 +1352,5 @@ mod tests {
         let text = "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_DES3\"\n";
         let err = parse_config_with(text, Path::new("keys.toml"), &|_| None).unwrap_err();
         assert!(matches!(&err, KmError::Unsupported(m) if m.contains("CKO_PRIVATE_KEY/CKK_DES3")), "{err}");
-    }
-
-    /// Downgrade detection compares ranks: an inverted order would silently disable it. The
-    /// `pop-*` methods share rank 0: each proves possession of the same key.
-    #[test]
-    fn binding_ranks_are_pinned() {
-        assert!(Binding::PopSign.rank() < Binding::TokenAsserted.rank());
-        assert_eq!(Binding::PopSign.to_string(), "pop-sign");
-        assert_eq!(Binding::PopSignPin.to_string(), "pop-sign-pin");
-        assert_eq!(Binding::PopEcdh.to_string(), "pop-ecdh");
-        assert_eq!(Binding::PopDecrypt.to_string(), "pop-decrypt");
-        assert_eq!(Binding::PopUnwrap.to_string(), "pop-unwrap");
-        assert_eq!(Binding::PopSignPin.rank(), Binding::PopSign.rank());
-        assert_eq!(Binding::PopEcdh.rank(), Binding::PopSign.rank());
-        assert_eq!(Binding::PopDecrypt.rank(), Binding::PopSign.rank());
-        assert_eq!(Binding::PopUnwrap.rank(), Binding::PopSign.rank());
-        assert_eq!(Binding::TokenAsserted.to_string(), "token-asserted");
-    }
-
-    /// A minimal valid lock with one object and realisation, for the attestation-invariant
-    /// tests: the caller mutates it and expects `validate` to accept or refuse.
-    fn attestable_lock() -> Lock {
-        let mut ids = BTreeMap::new();
-        ids.insert("rfc7093m4".to_owned(), "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".to_owned());
-        let mut lock = Lock { version: LOCK_VERSION, ..Default::default() };
-        lock.objects.insert(
-            "k".into(),
-            LockObject {
-                object_type: Some(ObjectCfg {
-                    curve: Some("secp256r1".into()),
-                    ..ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Ec))
-                }),
-                ids,
-                ..Default::default()
-            },
-        );
-        lock.realisations.insert(
-            "s".into(),
-            [(
-                "t".into(),
-                LockRealisation {
-                    object: "k".into(),
-                    locator: Locator { label: Some("k".into()), id: None },
-                    spec_digest: "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".into(),
-                    mode: Mode::Direct,
-                    schemes: ["rfc7093m4".to_owned()].into_iter().collect(),
-                    public_only: false,
-                    binding: Some(Binding::PopSign),
-                    attestation: None,
-                    policy: BTreeMap::new(),
-                    immutables: Immutables::default(),
-                    observation: None,
-                    observed: None,
-                    provenance: None,
-                },
-            )]
-            .into_iter()
-            .collect(),
-        );
-        lock
-    }
-
-    /// Attestation IDs are per device and never stand alone (§3.7): they live on the realisation
-    /// that computed them — never in the object's shared `ids`, where the same material attested
-    /// on a second TPM would collide — and that realisation must also hold a portable scheme.
-    #[test]
-    fn attestation_is_per_realisation_and_never_alone() {
-        let path = Path::new("test.lock");
-        let sri = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
-        let record = |kind: &str| AttestationRecord { kind: kind.into(), root: sri.into(), id: sri.into() };
-        let real = |lock: &mut Lock| lock.realisations.get_mut("s").unwrap().get_mut("t").unwrap().clone();
-        let set = |lock: &mut Lock, r: LockRealisation| {
-            lock.realisations.get_mut("s").unwrap().insert("t".into(), r);
-        };
-
-        // In the object's ids: refused, wherever it came from.
-        let mut lock = attestable_lock();
-        lock.objects.get_mut("k").unwrap().ids.insert("tpm-certify".to_owned(), sri.to_owned());
-        let err = lock.validate(path).unwrap_err();
-        assert!(err.to_string().contains("belongs to the realisation"), "{err}");
-
-        // On the realisation beside a portable scheme: loads.
-        let mut lock = attestable_lock();
-        let mut r = real(&mut lock);
-        r.attestation = Some(record("tpm-certify"));
-        set(&mut lock, r.clone());
-        lock.clone().validate(path).unwrap();
-
-        // Alone (a realisation whose portable schemes are gone): refused.
-        let mut alone = lock.clone();
-        let mut r2 = r.clone();
-        r2.schemes.clear();
-        set(&mut alone, r2);
-        let err = alone.validate(path).unwrap_err();
-        assert!(err.to_string().contains("locked only by its attestation"), "{err}");
-
-        // Unknown kind, or a non-SRI id: refused.
-        let mut bad = lock.clone();
-        let mut r3 = r.clone();
-        r3.attestation = Some(record("vendor-x"));
-        set(&mut bad, r3);
-        assert!(bad.validate(path).unwrap_err().to_string().contains("unknown attestation kind"));
-        let mut bad = lock;
-        r.attestation.as_mut().unwrap().id = "nope".into();
-        set(&mut bad, r);
-        assert!(bad.validate(path).unwrap_err().to_string().contains("attestation id"));
-    }
-
-    /// A missing lock is an empty one of the current version; what is saved is what loads back,
-    /// with no temporary file left beside it; a bare file name lives in the working directory.
-    #[test]
-    fn a_lock_saves_and_loads_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("keys.lock");
-        let empty = load_lock(&path).unwrap();
-        assert_eq!((empty.version, empty.objects.len()), (LOCK_VERSION, 0));
-        let mut lock =
-            load_lock(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"))).unwrap();
-        lock.objects.retain(|name, _| lock.realisations.values().any(|r| r.values().any(|r| r.object == *name)));
-        save_lock(&path, &lock).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(text, toml::to_string_pretty(&load_lock(&path).unwrap()).unwrap());
-        assert_eq!(load_lock(&path).unwrap().realisations.len(), lock.realisations.len());
-        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
-        assert_eq!(names, ["keys.lock"]);
-        assert_eq!(lock_dir(Path::new("keys.lock")), Path::new("."));
-        assert_eq!(lock_dir(&path), dir.path());
-    }
-
-    /// A lock that exists keeps its mode across a save, exactly and whatever the umask: a 0600
-    /// lock stays private, a group's 0660 stays the group's. A key file is never widened by the
-    /// file it replaces. A sidecar this user cannot write (another user's, left 0644) still
-    /// guards the update: `flock` needs no write access (review 2026-11-23 A-4, A-12).
-    #[test]
-    fn a_saved_lock_keeps_its_mode_and_a_read_only_sidecar_guards() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("keys.lock");
-        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        let set = |p: &Path, m: u32| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
-        save_lock(&path, &attestable_lock()).unwrap();
-        for kept in [0o600, 0o660, 0o640] {
-            set(&path, kept);
-            save_lock(&path, &attestable_lock()).unwrap();
-            assert_eq!(mode(&path), kept, "a save reset the lock's mode");
-        }
-        let key = dir.path().join("k.pem");
-        std::fs::write(&key, "old").unwrap();
-        set(&key, 0o644);
-        write_whole(&key, b"new", 0o600).unwrap();
-        assert_eq!(mode(&key), 0o600, "a key file took the mode of what it replaced");
-        let sidecar = dir.path().join("keys.lock.lck");
-        std::fs::write(&sidecar, "").unwrap();
-        set(&sidecar, 0o444);
-        let guard = lock_for_update(&path, |_| unreachable!("nothing else holds it")).unwrap();
-        drop(guard);
-    }
-
-    /// Why a lock cannot be written: inside a Nix build sandbox, a lock file or a directory this
-    /// user cannot write; nothing when both can be (a lock not there yet included).
-    #[test]
-    fn an_unwritable_lock_says_why() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("keys.lock");
-        // What a message names: the path resolved (macOS's /tmp is /private/tmp).
-        let real = dir.path().canonicalize().unwrap();
-        assert_eq!(unwritable(&path, false), None);
-        let sandboxed = unwritable(&path, true).unwrap();
-        assert!(sandboxed.contains("inside a Nix build sandbox"), "{sandboxed}");
-        std::fs::write(&path, "version = 1\n").unwrap();
-        assert_eq!(unwritable(&path, false), None);
-        let mode = |p: &Path, m: u32| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
-        mode(&path, 0o444);
-        // access(2) grants root every write: the permission cases mean nothing as root.
-        if rustix::fs::access(&path, rustix::fs::Access::WRITE_OK).is_ok() {
-            return;
-        }
-        assert_eq!(unwritable(&path, false), Some(format!("{} is not writable", real.join("keys.lock").display())));
-        mode(&path, 0o644);
-        mode(dir.path(), 0o555);
-        let said = unwritable(&path, false);
-        mode(dir.path(), 0o755);
-        assert_eq!(said, Some(format!("the lock's directory {} is not writable", real.display())));
-        // A lock not there yet in a directory that cannot take it.
-        std::fs::remove_file(&path).unwrap();
-        mode(dir.path(), 0o555);
-        let said = unwritable(&path, false);
-        mode(dir.path(), 0o755);
-        assert!(said.is_some_and(|s| s.contains("directory")));
     }
 }

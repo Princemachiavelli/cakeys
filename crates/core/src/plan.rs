@@ -3,7 +3,7 @@
 //! pass before any token is opened (exit 17).
 
 use crate::attrs;
-use crate::config::{AsymmetricKey, AttrValue, Binding, Config, Mode, ObjectCfg, ObjectKind, SpecCfg, SpecTokenCfg};
+use crate::config::{AsymmetricKey, AttrValue, Binding, Config, Mode, Object, ObjectKind, SpecCfg, SpecTokenCfg};
 use crate::id::{BlockCipher, Commit, Curve, HmacHash, Scheme};
 use crate::types::{KeyType as Kt, ObjectClass as Class};
 use crate::{KmError, Result};
@@ -17,8 +17,8 @@ pub struct Target<'a> {
     pub spec: &'a SpecCfg,
     /// The name of the object it realises.
     pub object_name: &'a str,
-    /// That object's type.
-    pub object: &'a ObjectCfg,
+    /// That object, parsed.
+    pub object: Object<'a>,
     /// The token's name.
     pub token_name: &'a str,
     /// The spec's settings for this token.
@@ -33,7 +33,8 @@ impl<'a> Target<'a> {
     /// # Errors
     ///
     /// `NotFound` if keys.toml names no such spec, or the spec no such token; `Validation` if
-    /// the spec references an unknown object, or `[tokens]` has no entry named `token_name`.
+    /// the spec references an unknown object, or `[tokens]` has no entry named `token_name`;
+    /// what [`Object::new`] refuses for a `Config` not made by loading.
     pub fn new(cfg: &'a Config, spec_name: &'a str, token_name: &'a str) -> Result<Self> {
         let spec = cfg.specs.get(spec_name).ok_or_else(|| KmError::NotFound(format!("spec '{spec_name}'").into()))?;
         let (object_name, object) = cfg.objects.get_key_value(&spec.object).ok_or_else(|| {
@@ -47,6 +48,10 @@ impl<'a> Target<'a> {
             return Err(KmError::Validation(format!("unknown token '{token_name}'").into()));
         }
         let transport = cfg.tokens.get(token_name).and_then(|t| t.migrate.transport_with.as_deref()) == Some(spec_name);
+        // Load parsed it already: this refuses only for a `Config` not made by loading, named
+        // as every other error of the pair is.
+        let object = Object::new(object)
+            .map_err(|e| e.prefixed(format_args!("'{object_name}' (spec '{spec_name}') on token '{token_name}'")))?;
         Ok(Target { spec_name, spec, object_name, object, token_name, on_token, transport })
     }
 
@@ -294,9 +299,7 @@ fn check_declared(t: &Target, class: Class, declared: &BTreeMap<String, AttrValu
 /// object's class (checked here, so no object is ever created for an unusable spec).
 pub fn plan_mode(t: &Target) -> Result<Mode> {
     let invalid = |why: &str| Err(KmError::Validation(format!("{t}: {why}").into()));
-    // The object's type, as load parsed it (`ObjectCfg::kind`): what load refuses comes back
-    // here only for a `Config` not made by loading, named the same way whatever its kind.
-    let kind = t.object.kind().map_err(|e| e.prefixed(t))?;
+    let kind = t.object.kind();
     check_binding(t, kind)?;
     // Attribute shapes and names, per class: a private key's `publicAttributes` shape its public
     // key object.
@@ -470,7 +473,7 @@ mod tests {
              tokens.t = {{ locator = {{ CKA_LABEL = \"x\" }}, origin = \"adopt\"{on} }}\n"
         ))
         .unwrap();
-        plan_mode(&Target::new(&cfg, "s", "t").unwrap())
+        Target::new(&cfg, "s", "t").and_then(|t| plan_mode(&t))
     }
 
     const EC: &str = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";

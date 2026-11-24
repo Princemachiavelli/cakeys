@@ -276,14 +276,14 @@ key to its identity:
        stays unavailable (16) on such a token.
      - **Misreported attribute.** ykcs11 reports `CKA_DERIVE = false` on every key from a
        fixed table while its keys derive. The provider repairs the reported value
-       (`Provider::repair`), so `CKA_DERIVE = true` checks and is recorded. A lock
+       (`Provider::policy_flag`), so `CKA_DERIVE = true` checks and is recorded. A lock
        recorded before that repair fails `check` once (14, "CKA_DERIVE false -> true"), and
        `lock` re-records it.
    - `pop-decrypt` (RSA keys that only decrypt): the host encrypts a fresh 32-byte secret (not
      the 78-byte challenge, which OAEP-SHA-256 cannot carry in a 1024-bit key) to the public key
      with RSA-OAEP (SHA-1, MGF1-SHA1 — the PKCS#11 baseline; SoftHSM implements no other OAEP);
      the token decrypts with `CKM_RSA_PKCS_OAEP`. A token that refuses the hash's parameters
-     before decrypting is asked SHA-256, then SHA-512, each a fresh encryption (Cloud KMS
+     before decrypting is asked SHA-256, then SHA-512: the same secret, encrypted again under each hash (Cloud KMS
      binds each key to one, which `CKA_ALLOWED_MECHANISMS` cannot say [run]); a decryption that
      began and failed is never retried, since a module may leave it active (tpm2-pkcs11 [run]).
      `pop-unwrap` tries the hashes alike. Where the token or the key's
@@ -693,7 +693,7 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
   not `CKA_EXTRACTABLE` or `CKA_SENSITIVE`, and "never more than one object" holds only if the
   module's search returns every match, once: native-pkcs11 reports constant policy for any
   keychain key, and its searches both hide duplicates and show one key twice (PLAN.md A0b). A provider can repair a known misreport, as
-  `repair` does for ykcs11's `CKA_DERIVE`, but not a module that does not know.
+  `policy_flag` does for ykcs11's `CKA_DERIVE`, but not a module that does not know.
 - **`piv-attestation` proves no liveness** (no verifier nonce in Yubico's certificate, §3.7):
   a malicious module could replay an old one. `tpm-certify` is nonce-bound, so it proves the
   object was loaded in that TPM at verify time.
@@ -759,10 +759,14 @@ label and the hash itself. Everything else is fixed by definition:
 - binding names (`pop-sign`, `pop-sign-pin`, `pop-ecdh`, `pop-decrypt`, `pop-unwrap`, `token-asserted`) and their rank (the
   `pop-*` methods share the top rank). The challenge layout
   (`cakeys/pop/v1`) is pinned by `message_layout_is_pinned`, though nothing stored depends on it;
-- lock field names (`objects`, `ids`, `realisations`, `object`, `locator`, `specDigest`,
-  `schemes`, `pairs`, `publicOnly`, `binding`, `policy`, `immutables`, `observation`, `observed`,
-  `provenance`, `origin`, `observations`, `provider`, `cakeysVersion`, `profile`,
-  `module`, `token`, `mechanisms`, `uri`);
+- lock field names: `version`; `objects` with `type` (`class`, `keyType`, `curve`,
+  `modulusBits`, `valueLen`, `certificateType`), `ids`, `commitmentLabel`, `publicKey`;
+  `realisations` with `object`, `locator`, `specDigest`, `mode`, `schemes`, `pairs`, `publicOnly`,
+  `binding`, `policy`, `immutables`, `attestation` (`kind`, `root`, `id`), `observation`,
+  `observed` (`uri`, `session`) and `provenance` (`origin`: `from`, `method`, `exposure`,
+  `declared`); `observations` with `provider`, `cakeysVersion`, `profile`, `mechanisms`,
+  `module` (`path`, `hash`, `description`, `manufacturer`, `version`, `cryptoki`), `token`
+  (`model`, `serial`, `firmware`, ...) and `capabilities` (`answer`, `evidence`, `via`);
 - `keys.toml` keys;
 - exit codes;
 - the URI shape.

@@ -12,20 +12,11 @@ impl Run<'_> {
     /// `export --to-file`: one private key, through the host (`Token::extract`), into a
     /// passphrase-protected file (docs/CAMIGRATE.md D2 `file`): encrypted PKCS#8, or PKCS#12 with the
     /// certificate the lock pairs with it on the source. Written whole or not at all, mode 0600.
-    #[expect(clippy::too_many_arguments, reason = "the export command's parts, as the CLI hands them over")]
-    pub(super) fn export_file(
-        &self,
-        objects: &[&str],
-        from: &str,
-        dest: &Destination,
-        out: &Path,
-        pass: &Path,
-        how: &MoveArgs,
-        notes: &mut Notes,
-    ) -> anyhow::Result<()> {
+    pub(super) fn export_file(&self, ctx: &MoveCtx, out: &Path, pass: &Path, notes: &mut Notes) -> anyhow::Result<()> {
+        let from = ctx.from;
         // The source is opened once, for the plan and the hand-over.
         let source = self.opener.open(from, Access::Scratch, notes);
-        let (moves, source) = self.plan(objects, from, dest, &[], how, super::Show::No, source, notes)?;
+        let (moves, source, _) = self.plan(ctx, super::Show::No, source, Access::Read, notes)?;
         moves.ready()?;
         let [p] = moves.plans.as_slice() else {
             return Err(KmError::Validation(
@@ -40,10 +31,14 @@ impl Run<'_> {
         let source = self.source(from, source, notes)?;
         cakeys_pkcs11::ops::verify(&src, &source, &self.lock, notes)?;
         let h = source
-            .find_key(src.object, &src.on_token.locator, false)?
+            .find_key(&src.object, &src.on_token.locator, false)?
             .ok_or_else(|| KmError::NotFound(src.to_string().into()))?;
-        let kwp = sealed::rfc5649(&source)
-            .ok_or_else(|| source.unsupported(format!("'{from}' offers no RFC 5649 key wrap to hand the key over")))?;
+        let kwp = sealed::rfc5649(&source).ok_or_else(|| {
+            source.unsupported_for(
+                cakeys_pkcs11::Topic::Mechanism,
+                format!("'{from}' offers no RFC 5649 key wrap to hand the key over"),
+            )
+        })?;
         let pkcs8 = source.extract(h, &kwp)?;
         let bytes = match p.method {
             Some(Method::Pkcs12) => {
@@ -376,14 +371,14 @@ fn from_its_file(
     let pass = file_passphrase(cfg, dst.object_name, how.pass)?;
     let encoding = cfg.object_migrate.get(dst.object_name).and_then(|m| m.encoding);
     let m =
-        keyfile::read(&bytes, dst.object, private_data, pass.as_ref().map(|p| p.as_str()), encoding).map_err(|e| {
+        keyfile::read(&bytes, &dst.object, private_data, pass.as_ref().map(|p| p.as_str()), encoding).map_err(|e| {
             match e {
                 KmError::Validation(why) => KmError::Validation(format!("{}: {why}", path.display()).into()),
                 other => other,
             }
         })?;
     drop(bytes);
-    let ids = keyfile::host_ids(dst.object, &m);
+    let ids = keyfile::host_ids(&dst.object, &m);
     let locked = lock.objects.get(dst.object_name).map(|o| &o.ids);
     for (scheme, got) in &ids {
         if let Some(want) = locked.and_then(|l| l.get(scheme.name()))
@@ -420,7 +415,7 @@ fn from_its_file(
     let before = lock.clone();
     if first_use && !ids.is_empty() {
         let entry = lock.objects.entry(dst.object_name.to_owned()).or_default();
-        entry.object_type = Some(dst.object.clone());
+        entry.object_type = Some(dst.object.cfg().clone());
         entry.ids.extend(ids.iter().map(|(s, v)| (s.name().to_owned(), v.clone())));
     }
     let method = m.method.name();

@@ -53,7 +53,8 @@ crates/p11-names/
 ```
 
 Dependencies: `cryptoki-sys` (the C types), `libloading`, `serde` and `toml`, all already in
-the tree, and `p11-names`, which depends on `cryptoki-sys` alone. About 1–1.5k lines.
+the tree, and `p11-names`, which depends on `cryptoki-sys` alone. About 2.2k lines, and 0.9k for
+`p11-names` (most of it the name tables).
 
 ### Loading
 
@@ -101,7 +102,7 @@ forward! {
         => hooks::find_objects;
     C_GetAttributeValue(s: CK_SESSION_HANDLE, h: CK_OBJECT_HANDLE, t: *mut CK_ATTRIBUTE, n: CK_ULONG)
         => hooks::attribute_value;
-    C_SignInit(s: CK_SESSION_HANDLE, m: *mut CK_MECHANISM, key: CK_OBJECT_HANDLE) key => key;
+    C_SignInit(s: CK_SESSION_HANDLE, m: *mut CK_MECHANISM, key: CK_OBJECT_HANDLE) => substitute_key;
     // ... the other 63, most with no hook
 }
 
@@ -122,9 +123,10 @@ unsafe extern "C" fn C_FindObjects(s: CK_SESSION_HANDLE, out: *mut CK_OBJECT_HAN
 }
 ```
 
-The `key => key` form marks the functions that take a key (`C_SignInit`, `C_DecryptInit`,
+The `=> substitute_key` form marks the functions that take a key (`C_SignInit`, `C_DecryptInit`,
 `C_DeriveKey`, `C_UnwrapKey`, `C_WrapKey`, ...): a `use_label` rule substitutes the handle
-before forwarding.
+before forwarding; `=> corrupt_output` marks those whose output a rule may change. The plan's
+lists of both are generated from these marks.
 
 ### The plan
 
@@ -214,10 +216,12 @@ With `P11_FAULT_TRACE`, one JSON line per call, appended (`O_APPEND`, so the per
 writers of a test run interleave whole lines):
 
 ```json
-{"pid":4711,"seq":17,"fn":"C_SignInit","n":2,"mechanism":"CKM_ECDSA_SHA256","rv":"CKR_OK","rule":null}
+{"exe":"cakeys","fn":"C_SignInit","mechanism":4164,"n":2,"pid":4711,"rule":null,"rv":"CKR_OK","seq":17}
 ```
 
-This is PLAN.md A1's trace if `pkcs11-spy` proves too lossy: which functions, mechanisms,
+The function and return value are names; what the call was about (`mechanism`, here
+`CKM_ECDSA_SHA256`, attribute types, classes, ...) is numbers, which the reader maps to names
+(`trace.rs`). This is PLAN.md A1's trace if `pkcs11-spy` proves too lossy: which functions, mechanisms,
 attribute types and return values cakeys really meets, per reference token.
 
 What a call returns through its arguments (the flags of an info structure, the classes and key

@@ -4,12 +4,15 @@
 
 use cakeys_core::KmError;
 use cakeys_core::config::{Binding, Config, Mode, ObjectKind, parse_config_with, parse_lock};
-use cakeys_core::id::Scheme;
+use cakeys_core::id::{Curve, Scheme};
 use cakeys_core::plaintext::{PrivateParts, private_from_pkcs8, spki_of_pkcs8};
 use cakeys_core::plan::{Assurance, Target, binding, expected_binding, plan_mode};
 use cakeys_core::types::KeyType;
 use ed25519_dalek::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
 use std::path::Path;
+
+/// The RSA signature the PKCS#11 baseline makes: PKCS#1 v1.5 over SHA-256.
+const V15: cakeys_core::pop::RsaSignature = cakeys_core::pop::RsaSignature::Pkcs1v15(cakeys_core::pop::HashAlg::Sha256);
 
 /// keys.toml with one token `t`, one object `o` of `object`, and one spec `s` on `t` with
 /// `spec` lines and `on_token` entries beside the locator; `origin = "adopt"` unless they name
@@ -340,7 +343,9 @@ fn every_curve_parses_from_pkcs8() {
         ($key:ty, $curve:literal, $bytes:expr) => {{
             let key = <$key>::from_slice(&$bytes).unwrap();
             let der = key.to_pkcs8_der().unwrap();
-            let PrivateParts::Ec(v) = private_from_pkcs8(der.as_bytes(), KeyType::Ec, Some($curve)).unwrap() else {
+            let PrivateParts::Ec(v) =
+                private_from_pkcs8(der.as_bytes(), KeyType::Ec, Curve::from_cfg(KeyType::Ec, $curve)).unwrap()
+            else {
                 unreachable!("an EC curve yields an EC scalar")
             };
             assert_eq!(v.as_slice(), &$bytes[..], $curve);
@@ -358,8 +363,8 @@ fn every_curve_parses_from_pkcs8() {
     let der = ed.to_pkcs8_der().unwrap();
     assert_eq!(spki_of_pkcs8(der.as_bytes()).unwrap(), ed.verifying_key().to_public_key_der().unwrap().as_bytes());
     // Asked for as another type, or a type with no parser: refused, the bytes never echoed.
-    assert!(matches!(private_from_pkcs8(der.as_bytes(), KeyType::Ec, Some("secp384r1")), Err(KmError::Conflict(_))));
-    let e = private_from_pkcs8(der.as_bytes(), KeyType::Aes, Some("secp256r1")).err().unwrap();
+    assert!(matches!(private_from_pkcs8(der.as_bytes(), KeyType::Ec, Some(Curve::P384)), Err(KmError::Conflict(_))));
+    let e = private_from_pkcs8(der.as_bytes(), KeyType::Aes, Some(Curve::P256)).err().unwrap();
     assert!(matches!(&e, KmError::Unsupported(m) if m.contains("on secp256r1")), "{e}");
     assert!(matches!(spki_of_pkcs8(b"no key at all"), Err(KmError::Unsupported(_))));
     // An Edwards curve has no ECDSA hash: its proof is EdDSA.
@@ -371,9 +376,9 @@ fn every_curve_parses_from_pkcs8() {
 #[test]
 fn proofs_need_a_verifier_for_the_key() {
     let ed448 = ed448::pkcs8::PublicKeyBytes([3u8; 57]).to_public_key_der().unwrap();
-    let e = cakeys_core::pop::verify(ed448.as_bytes(), b"m", b"s").unwrap_err();
+    let e = cakeys_core::pop::verify(ed448.as_bytes(), b"m", b"s", V15).unwrap_err();
     assert!(matches!(&e, KmError::Unsupported(m) if m.contains("no Ed448 signature verifier")), "{e}");
-    let e = cakeys_core::pop::verify(b"junk", b"m", b"s").unwrap_err();
+    let e = cakeys_core::pop::verify(b"junk", b"m", b"s", V15).unwrap_err();
     assert!(matches!(&e, KmError::Unsupported(m) if m.contains("not a SubjectPublicKeyInfo")), "{e}");
 }
 
@@ -700,10 +705,10 @@ fn a_certificate_names_its_key_and_an_ed25519_proof_its_signer() {
     let other = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
     let spki = key.verifying_key().to_public_key_der().unwrap();
     let signature = key.sign(b"message").to_bytes();
-    cakeys_core::pop::verify(spki.as_bytes(), b"message", &signature).unwrap();
+    cakeys_core::pop::verify(spki.as_bytes(), b"message", &signature, V15).unwrap();
     assert_eq!(cakeys_core::sig::ed25519(spki.as_bytes(), b"message", &signature), Some(Ok(())));
     for (msg, sig) in [(&b"another"[..], signature), (b"message", other.sign(b"message").to_bytes())] {
-        let e = cakeys_core::pop::verify(spki.as_bytes(), msg, &sig).unwrap_err();
+        let e = cakeys_core::pop::verify(spki.as_bytes(), msg, &sig, V15).unwrap_err();
         assert!(matches!(&e, KmError::Conflict(m) if m.contains("did not sign for the public key")), "{e}");
     }
 }

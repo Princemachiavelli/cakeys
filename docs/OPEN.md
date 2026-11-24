@@ -353,7 +353,9 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   begun (2026-11-18: `crates/core/spec/lock.qnt`, `checks.quint`, `crates/core/tests/lock_mbt.rs`).
   Left for the model: imports and provenance, certificates and public-key objects (pairs, the
   certificate exception of the second-name rule), transport keys (`publicKey`), locators and
-  `publicOnly`, recorded commitment labels, deprecated schemes; and an inductive invariant, so
+  `publicOnly`, recorded commitment labels, deprecated schemes, a spec retargeted to another
+  object in keys.toml (the reconcile rule review reconcile F1 fixed, `reconcile.rs`, which the
+  model's keys.toml never does; review 2026-11-23 A-16); and an inductive invariant, so
   that Apalache proves the properties for every reachable lock, not only within two steps.
   Then Alloy for the lock's structure and S16, Tamarin for proof of possession and attestation.
 - **Kani and fuzzing**: a property written once as a function that panics when it fails

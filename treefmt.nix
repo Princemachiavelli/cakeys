@@ -10,11 +10,6 @@ let
       "MD025" # several top-level headings: the archived prior-art excerpt is a set of documents in one file
       "MD036" # bold paragraph labels: the research notes use them as run-in headings
     ];
-    # docs/archive/working/RESPONSE.md is a reply verbatim: one quoted question after another, each answered inline.
-    per-file-ignores."docs/archive/working/RESPONSE.md" = [
-      "MD028"
-      "MD041"
-    ];
   };
 
   typosConfig = toml "typos.toml" {

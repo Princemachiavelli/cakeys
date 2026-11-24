@@ -291,7 +291,7 @@ fn public_key(entries: Vec<Entry>) -> Result<Vec<u8>> {
 /// The key `spki` (canonical) is of `object`'s type: RSA, or EC or Edwards on its curve; and
 /// as many bits as `modulusBits` says.
 fn check_type(spki: &[u8], object: &ObjectCfg) -> Result<()> {
-    let curve = id::spki_curve(spki).map_err(|e| bad(format!("its key: {e}")))?;
+    let curve = id::KeyAlg::of_spki(spki).map(id::KeyAlg::curve).map_err(|e| bad(format!("its key: {e}")))?;
     let fits = match (object.key_type, curve) {
         (Some(KeyType::Rsa), None) => {
             use rsa::traits::PublicKeyParts as _;
@@ -592,7 +592,8 @@ mod tests {
                 (Some(want.as_slice()), &method, Exposure::File),
                 "{file}"
             );
-            cakeys_core::plaintext::private_from_pkcs8(&m.bytes, KeyType::Ec, Some("secp256r1")).unwrap();
+            cakeys_core::plaintext::private_from_pkcs8(&m.bytes, KeyType::Ec, Some(cakeys_core::id::Curve::P256))
+                .unwrap();
             assert_eq!(host_ids(&p256(), &m), [(Scheme::Rfc7093m4, id::sri(&want))], "{file}");
         }
         let rsa = object(Class::PrivateKey, Some(KeyType::Rsa), None);

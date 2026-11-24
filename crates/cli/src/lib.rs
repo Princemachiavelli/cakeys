@@ -449,7 +449,7 @@ impl Run<'_> {
         // pkcs11-provider finds a private key's public half by CKA_ID alone: without one, a
         // module whose private key carries no public point (SoftHSM) gives OpenSSL no public key.
         let t = Target::new(cfg, &r.spec, &r.token)?;
-        if tok.key_id(t.object, &t.on_token.locator, t.on_token.public_only)?.is_none() {
+        if tok.key_id(&t.object, &t.on_token.locator, t.on_token.public_only)?.is_none() {
             notes.warn(format!(
                 "'{object}' on '{}' has no CKA_ID: pkcs11-provider finds a private key's public half by \
                  CKA_ID, so unless the module puts the public key on the private object, OpenSSL cannot \
