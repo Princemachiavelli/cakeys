@@ -235,7 +235,9 @@ key to its identity:
      The token must offer the mechanism and the key's own `CKA_ALLOWED_MECHANISMS`, where it
      can be read, must allow it: a key pinned to `CKM_ECDSA` or `CKM_RSA_PKCS` proves through the
      fallback (the object matrix, OPEN.md). Every binding below chooses the same way, and one
-     whose mechanisms the list allows none of is refused (15) naming them. A proof records only
+     whose mechanisms the list allows none of is refused naming them: at load (17) when the spec
+     declares the list (`plan::proof_mechanisms`), on the token (15) when only the object carries
+     it. A proof records only
      its binding, never the mechanism.
 
      On a key the token reports `CKA_ALWAYS_AUTHENTICATE` (declared or not), the same proof runs
@@ -259,7 +261,9 @@ key to its identity:
        ephemeral key the host generated, so reading it reveals nothing the host did not already
        hold. The binding is still `pop-ecdh`. Where the profile does not say, the sealed form
        is tried first and the extractable one when the module refuses to derive into a sealed
-       secret; a derivation that ran and failed is never retried
+       secret (a template refusal: `CKR_ATTRIBUTE_VALUE_INVALID`, `CKR_ATTRIBUTE_TYPE_INVALID`,
+       `CKR_TEMPLATE_INCONSISTENT`, `CKR_TEMPLATE_INCOMPLETE`), or will not MAC with one; a key
+       that may not derive, or a derivation that ran and failed, is never retried
        (`an_ecdh_proof_falls_back_to_the_extractable_secret`).
      - **Read-write session (an exception to M1).** tpm2-pkcs11 keeps derived secrets as
        store rows, so it refuses `C_DeriveKey` in a read-only session (`derive.ecdh.read-only`
@@ -272,10 +276,11 @@ key to its identity:
        (`Provider::repair`), so `CKA_DERIVE = true` checks and is recorded. A lock
        recorded before that repair fails `verify` once (14, "CKA_DERIVE false -> true"), and
        `lock` re-records it.
-   - `pop-decrypt` (RSA keys that only decrypt): the host encrypts the challenge to the public key
+   - `pop-decrypt` (RSA keys that only decrypt): the host encrypts a fresh 32-byte secret (not
+     the 78-byte challenge, which OAEP-SHA-256 cannot carry in a 1024-bit key) to the public key
      with RSA-OAEP (SHA-1, MGF1-SHA1 — the PKCS#11 baseline; SoftHSM implements no other OAEP);
      the token decrypts with `CKM_RSA_PKCS_OAEP`. A token that refuses the hash's parameters
-     before decrypting is asked SHA-256, then SHA-512, each with a fresh challenge (Cloud KMS
+     before decrypting is asked SHA-256, then SHA-512, each a fresh encryption (Cloud KMS
      binds each key to one, which `CKA_ALLOWED_MECHANISMS` cannot say [run]); a decryption that
      began and failed is never retried, since a module may leave it active (tpm2-pkcs11 [run]).
      `pop-unwrap` tries the hashes alike. Where the token or the key's

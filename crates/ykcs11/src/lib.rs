@@ -371,7 +371,7 @@ mod tests {
     /// that slot may sit (exported from slot 95 of the `YubiKey` here). ykcs11's placeholder is
     /// never one: every key ykcs11 generates has it, a real key's too (review 2026-11-23 D-1:
     /// it used to mark a slot as scratch). Nor is a real certificate, another slot's
-    /// attestation, or no PIV slot at all (f9's CKA_ID, a two-byte ID).
+    /// attestation, or no PIV slot at all (f9's `CKA_ID`, a two-byte ID).
     #[test]
     fn only_the_slots_attestation_sits_beside_the_probes_certificate() {
         let placeholder = der(include_str!("../tests/fixtures/placeholder95.pem"));

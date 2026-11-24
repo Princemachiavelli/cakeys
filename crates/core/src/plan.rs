@@ -213,6 +213,53 @@ fn check_binding(t: &Target, kind: ObjectKind) -> Result<()> {
                 .into(),
         ),
         _ => Ok(()),
+    }?;
+    // A declared allowed list that forbids every mechanism of the proof: the token would refuse
+    // each proof (15), so the spec is refused here, as one forbidding every commitment is
+    // (review 2026-11-23 A-10).
+    if let (Some(b), Some(allowed)) = (binding(t), t.spec.allowed_mechanisms()) {
+        let needs = proof_mechanisms(b, kind);
+        if !needs.is_empty() && !needs.iter().any(|m| allowed.iter().any(|a| a == m)) {
+            return invalid(format!(
+                "binding = \"{b}\" proves possession with one of {}, and the spec's CKA_ALLOWED_MECHANISMS \
+                 allows none of them; allow one, or opt in with binding = \"token-asserted\" on this token",
+                needs.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The mechanisms a proof by `binding` may run on a private key of `kind`, one of which the key's
+/// `CKA_ALLOWED_MECHANISMS` must allow: the names of the first group of `cakeys_pkcs11`'s
+/// `proof_mechanisms`, which its test holds equal. Empty when the binding runs none. `pop-unwrap`'s
+/// HMAC runs on the unwrapped session key, which the private key's list does not narrow.
+#[must_use]
+pub fn proof_mechanisms(binding: Binding, kind: ObjectKind) -> &'static [&'static str] {
+    use crate::sig::HashAlg;
+    let ObjectKind::Asymmetric { key, .. } = kind else { return &[] };
+    match (binding, key) {
+        (Binding::PopSign | Binding::PopSignPin, AsymmetricKey::Ec(c)) => match HashAlg::for_curve(c) {
+            Some(HashAlg::Sha256) => &["CKM_ECDSA_SHA256", "CKM_ECDSA"],
+            Some(HashAlg::Sha384) => &["CKM_ECDSA_SHA384", "CKM_ECDSA"],
+            Some(HashAlg::Sha512) => &["CKM_ECDSA_SHA512", "CKM_ECDSA"],
+            None => &[],
+        },
+        (Binding::PopSign | Binding::PopSignPin, AsymmetricKey::Edwards(_)) => &["CKM_EDDSA"],
+        (Binding::PopSign | Binding::PopSignPin, AsymmetricKey::Rsa { .. }) => &[
+            "CKM_SHA256_RSA_PKCS",
+            "CKM_RSA_PKCS",
+            "CKM_SHA384_RSA_PKCS",
+            "CKM_SHA512_RSA_PKCS",
+            "CKM_SHA256_RSA_PKCS_PSS",
+            "CKM_SHA384_RSA_PKCS_PSS",
+            "CKM_SHA512_RSA_PKCS_PSS",
+            "CKM_RSA_PKCS_PSS",
+        ],
+        (Binding::PopEcdh, _) => &["CKM_ECDH1_DERIVE"],
+        (Binding::PopDecrypt, _) => &["CKM_RSA_PKCS_OAEP", "CKM_RSA_PKCS"],
+        (Binding::PopUnwrap, _) => &["CKM_RSA_PKCS_OAEP"],
+        (Binding::TokenAsserted, _) => &[],
     }
 }
 
@@ -445,6 +492,33 @@ mod tests {
         for on in [", publicOnly = true, binding = \"token-asserted\"", ", publicOnly = true"] {
             assert_eq!(planned(EC, "", on).unwrap(), Mode::Direct, "{on}");
         }
+    }
+
+    /// A proof the declared `CKA_ALLOWED_MECHANISMS` forbids is refused at load (17), like a
+    /// commitment it forbids, not at every proof on the token (15) (review 2026-11-23 A-10).
+    #[test]
+    fn a_proof_the_allowed_mechanisms_forbid_is_refused_at_load() {
+        let allow = |attrs: &str, ms: &str| format!("{attrs}, CKA_ALLOWED_MECHANISMS = [{ms}]");
+        for (ty, attrs, on, forbidding, allowing) in [
+            (EC, "CKA_SIGN = true", "", "\"CKM_ECDH1_DERIVE\"", "\"CKM_ECDSA\""),
+            (EC, "CKA_DERIVE = true", ", binding = \"pop-ecdh\"", "\"CKM_ECDSA\"", "\"CKM_ECDH1_DERIVE\""),
+            (RSA, "CKA_SIGN = true", "", "\"CKM_RSA_PKCS_OAEP\"", "\"CKM_SHA512_RSA_PKCS_PSS\""),
+            (RSA, "CKA_DECRYPT = true", ", binding = \"pop-decrypt\"", "\"CKM_RSA_X_509\"", "\"CKM_RSA_PKCS\""),
+            (RSA, "CKA_UNWRAP = true", ", binding = \"pop-unwrap\"", "\"CKM_RSA_PKCS\"", "\"CKM_RSA_PKCS_OAEP\""),
+        ] {
+            let e = planned(ty, &allow(attrs, forbidding), on).unwrap_err();
+            assert!(
+                matches!(&e, KmError::Validation(m) if m.contains("CKA_ALLOWED_MECHANISMS allows none of them")),
+                "{attrs}{on}: {e}"
+            );
+            assert_eq!(planned(ty, &allow(attrs, allowing), on).unwrap(), Mode::Direct, "{attrs}{on}");
+        }
+        let asserted = ", binding = \"token-asserted\"";
+        assert_eq!(planned(EC, &allow("CKA_SIGN = true", "\"CKM_ECDH1_DERIVE\""), asserted).unwrap(), Mode::Direct);
+        // The curve's hash: a P-384 key signs its proof with CKM_ECDSA_SHA384, not SHA-256.
+        let p384 = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp384r1\"";
+        assert!(planned(p384, &allow("CKA_SIGN = true", "\"CKM_ECDSA_SHA256\""), "").is_err());
+        assert!(planned(p384, &allow("CKA_SIGN = true", "\"CKM_ECDSA_SHA384\""), "").is_ok());
     }
 
     /// Ed448 has no verifier, whichever of its names keys.toml spells (review plan.rs F2: the

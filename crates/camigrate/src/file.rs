@@ -34,6 +34,9 @@ const ID_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1
 const ID_ENCRYPTED_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.6");
 const ID_SHA256: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1");
 const ID_LOCAL_KEY_ID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.21");
+/// PKCS#12's `keyBag` (RFC 7292 §4.2.1): a key not encrypted, which `openssl pkcs12 -keypbe NONE`
+/// writes. Refused by name.
+const ID_KEY_BAG: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.12.10.1.1");
 /// What a PKCS#12 written before OpenSSL 3, or with `-legacy`, is refused with: how to re-export it.
 const LEGACY_P12: &str = "a PKCS#12 from before OpenSSL 3 or `-legacy`; re-export it: \
                           openssl pkcs12 -in old.p12 -legacy -nodes | openssl pkcs12 -export -out new.p12";
@@ -205,7 +208,17 @@ pub(crate) fn read(bytes: &[u8], pass: &str) -> Result<Read> {
     for info in infos {
         let bags = if info.content_type == ID_ENCRYPTED_DATA { encrypted_octets(&info, pass)? } else { octets(&info)? };
         for bag in Vec::<SafeBag>::from_der(&bags).map_err(bad)? {
-            let value = ContextSpecific::<Any>::from_der(&bag.bag_value).map_err(bad)?.value.to_der().map_err(bad)?;
+            // A key bag's value is the key itself: wiped as the containers are.
+            let value = Zeroizing::new(
+                ContextSpecific::<Any>::from_der(&bag.bag_value).map_err(bad)?.value.to_der().map_err(bad)?,
+            );
+            if bag.bag_id == ID_KEY_BAG {
+                // Said as what it is, not as a file without a key (review 2026-11-23 C-22).
+                return Err(bad(
+                    "a PKCS#12 whose key is not encrypted (a keyBag, `-keypbe NONE`); re-export it with a key \
+                     encryption: `openssl pkcs12 -in old.p12 -nodes | openssl pkcs12 -export -out new.p12`",
+                ));
+            }
             if bag.bag_id == pkcs12::PKCS_12_PKCS8_KEY_BAG_OID {
                 if pkcs8.is_some() {
                     return Err(bad("a PKCS#12 with more than one key"));
@@ -238,18 +251,19 @@ pub(crate) fn decrypt_pkcs8(der: &[u8], pass: &str) -> Result<Zeroizing<Vec<u8>>
 }
 
 /// The content of a `data` `ContentInfo`: its octets. Any other type than this and
-/// `encryptedData` ([`encrypted_octets`]) is not read.
-fn octets(info: &ContentInfo) -> Result<Vec<u8>> {
+/// `encryptedData` ([`encrypted_octets`]) is not read. Wiped when dropped, as a key bag in it
+/// may be.
+fn octets(info: &ContentInfo) -> Result<Zeroizing<Vec<u8>>> {
     if info.content_type != ID_DATA {
         return Err(bad(format!("a PKCS#12 container of type {}, not data", info.content_type)));
     }
-    Ok(info.content.decode_as::<OctetString>().map_err(bad)?.as_bytes().to_vec())
+    Ok(Zeroizing::new(info.content.decode_as::<OctetString>().map_err(bad)?.as_bytes().to_vec()))
 }
 
 /// The content of an `encryptedData` `ContentInfo` under `pass`: where OpenSSL 3 puts the
 /// certificate bags by default, PBES2-encrypted like the key. A legacy scheme (RC2, 3DES) is
-/// refused with the re-export hint.
-fn encrypted_octets(info: &ContentInfo, pass: &str) -> Result<Vec<u8>> {
+/// refused with the re-export hint. Wiped when dropped: what is decrypted may hold a key.
+fn encrypted_octets(info: &ContentInfo, pass: &str) -> Result<Zeroizing<Vec<u8>>> {
     let data = info.content.decode_as::<pkcs12::cms::encrypted_data::EncryptedData>().map_err(bad)?;
     let content = &data.enc_content_info;
     if content.content_type != ID_DATA {
@@ -262,7 +276,7 @@ fn encrypted_octets(info: &ContentInfo, pass: &str) -> Result<Vec<u8>> {
     if let Some(why) = kdf_refused(params) {
         return Err(bad(why));
     }
-    scheme.decrypt(pass, ciphertext.as_bytes()).map_err(|_| wrong())
+    scheme.decrypt(pass, ciphertext.as_bytes()).map(Zeroizing::new).map_err(|_| wrong())
 }
 
 /// Why a PBES2 key file is not opened on its KDF parameters alone: more work than this process

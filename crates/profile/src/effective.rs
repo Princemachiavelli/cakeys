@@ -727,7 +727,7 @@ mod tests {
 
     /// A secret-key length the probe did not try is yes only between the nearest two it tried,
     /// both of which worked, for a commitment and a generation alike: below a refused length,
-    /// past the last one tried, or across a refused one it is unknown, never a guess. SoftHSM's
+    /// past the last one tried, or across a refused one it is unknown, never a guess. `SoftHSM`'s
     /// rows (16 bytes refused, 32 and 64 computed) made 8 bytes a yes (review 2026-11-23 A-1).
     #[test]
     fn secret_lengths_interpolate_only_between_two_that_worked() {

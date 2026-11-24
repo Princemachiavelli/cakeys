@@ -58,7 +58,7 @@ impl Token {
         match binding {
             Binding::PopSign | Binding::PopSignPin => self.prove_sign(h, object, spki, &msg, binding),
             Binding::PopEcdh => self.prove_ecdh(h, spki, &msg),
-            Binding::PopDecrypt => self.prove_decrypt(h, spki, &msg),
+            Binding::PopDecrypt => self.prove_decrypt(h, spki),
             Binding::PopUnwrap => self.prove_unwrap(h, spki, &msg),
             Binding::TokenAsserted => Ok(()),
         }
@@ -175,13 +175,15 @@ impl Token {
         let extractable_after =
             |why: String| self.prove_ecdh_extractable(h, spki, &ch).map_err(|e| after_sealed(e, &why));
         // Unknown means try (review 2026-11-15 §4): where the module refuses to derive into a
-        // sealed secret, the extractable one. Only that refusal: what fails after the derivation
-        // is the proof's answer.
+        // sealed secret, the extractable one. Only that refusal, of the template: a key that may
+        // not derive or a derivation that failed is the proof's answer, never derived again
+        // (review 2026-11-23 B-8).
+        let failed = self.proof_failed("C_DeriveKey", "derive", "CKA_DERIVE");
         let sealed = self.proof_secret(Binding::PopEcdh, true)?;
-        let (derived, rw) = match self.derive_for_proof(h, &ch.peer, &sealed, ch.secret.len()) {
+        let (derived, rw) = match self.derive_for_proof(h, &ch.peer, &sealed, ch.secret.len())? {
             Ok(derived) => derived,
-            Err(KmError::Conflict(e)) => return Err(KmError::Conflict(e)),
-            Err(refusal) => return extractable_after(refusal.to_string()),
+            Err(e) if template_refusal(&e) => return extractable_after(failed(e).to_string()),
+            Err(e) => return Err(failed(e)),
         };
         let session = rw.as_ref().unwrap_or(&self.session);
         let derived = SessionObject::new(session, derived);
@@ -218,8 +220,10 @@ impl Token {
     /// secret it computed itself. The secret belongs to a single-use ephemeral key the host
     /// generated, so reading it reveals nothing the host did not already hold.
     fn prove_ecdh_extractable(&self, h: ObjectHandle, spki: &[u8], ch: &pop::EcdhChallenge) -> Result<()> {
-        let (derived, rw) =
-            self.derive_for_proof(h, &ch.peer, &self.proof_secret(Binding::PopEcdh, false)?, ch.secret.len())?;
+        let failed = self.proof_failed("C_DeriveKey", "derive", "CKA_DERIVE");
+        let (derived, rw) = self
+            .derive_for_proof(h, &ch.peer, &self.proof_secret(Binding::PopEcdh, false)?, ch.secret.len())?
+            .map_err(failed)?;
         let session = rw.as_ref().unwrap_or(&self.session);
         let derived = SessionObject::new(session, derived);
         let value = session.get_attributes(derived.handle(), &[AttributeType::Value]);
@@ -254,35 +258,39 @@ impl Token {
     /// `C_DeriveKey` for a proof, against the ephemeral `peer`: in the verb's session, else —
     /// refused there as read-only (tpm2-pkcs11 keeps derived secrets as store rows, so it
     /// derives only in a read-write session, `derive.read-only = false` \[run\]) — in a read-write
-    /// session opened for it, returned so the secret is used and destroyed where it lives.
+    /// session opened for it, returned so the secret is used and destroyed where it lives. The
+    /// module's refusal is returned as it is (the inner error), for the caller to tell a refused
+    /// template from a failed derivation.
     fn derive_for_proof(
         &self,
         h: ObjectHandle,
         peer: &[u8],
         template: &[Attribute],
         len: usize,
-    ) -> Result<(ObjectHandle, Option<Session>)> {
+    ) -> Result<std::result::Result<(ObjectHandle, Option<Session>), CkError>> {
         let mech = Mechanism::Ecdh1Derive(Ecdh1DeriveParams::new(EcKdf::null(), peer));
-        let failed = self.proof_failed("C_DeriveKey", "derive", "CKA_DERIVE");
         // A module refusing the template's own policy defaults derives without them
         // (`derive_any`): the proof needs only the shared secret.
-        match derive_any(&self.session, &mech, h, template, len) {
+        Ok(match derive_any(&self.session, &mech, h, template, len) {
             Ok((derived, ..)) => Ok((derived, None)),
             Err(CkError::Pkcs11(RvError::SessionReadOnly, _)) => {
                 let rw = self.extra_session(Access::Write)?;
-                let (derived, ..) = derive_any(&rw, &mech, h, template, len).map_err(failed)?;
-                Ok((derived, Some(rw)))
+                derive_any(&rw, &mech, h, template, len).map(|(derived, ..)| (derived, Some(rw)))
             }
-            Err(e) => Err(failed(e)),
-        }
+            Err(e) => Err(e),
+        })
     }
 
-    /// `pop-decrypt`: the host encrypts the challenge to the public key with RSA-OAEP, or with
-    /// PKCS #1 v1.5 where the token or the key's allowed mechanisms offer only `CKM_RSA_PKCS`; the
-    /// token decrypts it with the private key. The plaintext matches only if the token's private
-    /// key is the one `spki` names. OAEP takes the first of [`OAEP`]'s hashes the token does not
-    /// refuse before decrypting.
-    fn prove_decrypt(&self, h: ObjectHandle, spki: &[u8], msg: &[u8]) -> Result<()> {
+    /// `pop-decrypt`: the host encrypts a fresh secret ([`pop::secret`]) to the public key with
+    /// RSA-OAEP, or with PKCS #1 v1.5 where the token or the key's allowed mechanisms offer only
+    /// `CKM_RSA_PKCS`; the token decrypts it with the private key. The plaintext matches only if
+    /// the token's private key is the one `spki` names. OAEP takes the first of [`OAEP`]'s hashes
+    /// the token does not refuse before decrypting.
+    fn prove_decrypt(&self, h: ObjectHandle, spki: &[u8]) -> Result<()> {
+        // 32 bytes, not the 78-byte challenge, which OAEP-SHA-256 cannot carry in a 1024-bit key
+        // (review 2026-11-23 B-7).
+        let secret = pop::secret()?;
+        let msg = secret.as_slice();
         let permits = self.proof_permits(h)?;
         let usable = |m: MechanismType| self.has(m) && permits(m);
         let (oaep, v15) = (MechanismType::RSA_PKCS_OAEP, MechanismType::RSA_PKCS);
@@ -311,6 +319,7 @@ impl Token {
         } else {
             return Err(self.none_allowed(&[oaep, v15]));
         };
+        let plain = Zeroizing::new(plain);
         if !pop::ct_eq(msg, &plain) {
             return Err(KmError::Conflict(
                 format!(
@@ -822,6 +831,38 @@ mod tests {
     use super::*;
     use pop::HashAlg::{Sha256, Sha512};
     use pop::RsaSignature::{Pkcs1v15, Pss};
+
+    /// The mechanisms a proof runs on the private key are the ones core's load check names
+    /// (review 2026-11-23 A-10): an allowed list load accepts is one some proof mechanism fits.
+    #[test]
+    fn the_proofs_mechanisms_are_the_ones_load_checks() {
+        let ec =
+            |curve: &str| ObjectCfg { curve: Some(curve.into()), ..ObjectCfg::new(Class::PrivateKey, Some(Kt::Ec)) };
+        let objects = [
+            ec("secp256r1"),
+            ec("secp384r1"),
+            ec("secp521r1"),
+            ObjectCfg { curve: Some("edwards25519".into()), ..ObjectCfg::new(Class::PrivateKey, Some(Kt::EcEdwards)) },
+            ObjectCfg::new(Class::PrivateKey, Some(Kt::Rsa)),
+        ];
+        let bindings = [
+            Binding::PopSign,
+            Binding::PopSignPin,
+            Binding::PopEcdh,
+            Binding::PopDecrypt,
+            Binding::PopUnwrap,
+            Binding::TokenAsserted,
+        ];
+        for object in &objects {
+            let kind = object.kind().unwrap();
+            for binding in bindings {
+                let groups = proof_mechanisms(object, binding).unwrap();
+                let ours: Vec<String> =
+                    groups.first().map(|g| g.iter().map(ToString::to_string).collect()).unwrap_or_default();
+                assert_eq!(ours, cakeys_core::plan::proof_mechanisms(binding, kind), "{object:?} {binding}");
+            }
+        }
+    }
 
     /// The extractable ECDH proof's refusal after the sealed one names both and keeps the
     /// module's return value (possession.rs F1); a failed proof is the proof's answer, as given.

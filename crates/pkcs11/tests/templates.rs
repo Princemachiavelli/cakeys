@@ -216,6 +216,18 @@ fn templates_pass_through_the_provider() {
     assert_eq!(taken(), ["trusted copy"]);
     let id = tok.raw().get_attributes(h, &[AttributeType::Id, AttributeType::Trusted]).unwrap();
     assert_eq!(id, [Attribute::Id(TRUSTED_ID.to_vec()), Attribute::Trusted(true)]);
+    // Taken off again as SO, with any an earlier run left (review 2026-11-23 B-25): the token's
+    // trusted set, which `Token::trusted` counts for camigrate, stays as the test found it.
+    let label = [Attribute::Label(b"tmpl-trusted".to_vec())];
+    let left = || tok.raw().find_objects(&label).unwrap();
+    tok.as_so("removing the trusted copies", || {
+        for h in left() {
+            tok.raw().destroy_object(h).map_err(|e| KmError::Unavailable(e.to_string().into()))?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert!(left().is_empty(), "a trusted copy left on the token");
 
     // Refused: the provider's error, and nothing under the locator.
     let loc = at(REFUSED);

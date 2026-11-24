@@ -165,7 +165,7 @@ impl Run<'_> {
         match moved {
             public::Moved::Imported => {
                 tally.moved();
-                self.record(&dst)?;
+                self.record(&dst, &public::unrecorded_hint(&dst))?;
                 notes.say(format!("imported {object} from {} into {dst}", input.display()));
             }
             public::Moved::AlreadyThere => {
@@ -249,7 +249,7 @@ impl Run<'_> {
                 Ok(None) => {}
                 Ok(Some(public::Moved::Imported)) => {
                     tally.moved();
-                    self.record(&dst)?;
+                    self.record(&dst, &public::unrecorded_hint(&dst))?;
                     notes.say(format!("imported {object} from its file into {dst}"));
                 }
                 Ok(Some(public::Moved::AlreadyThere)) => {
@@ -282,8 +282,15 @@ fn local_key_id(lock: &Lock, object: &str) -> cakeys_core::Result<String> {
 /// Never empty.
 fn read_passphrase(path: &Path) -> cakeys_core::Result<Zeroizing<String>> {
     let pass = cakeys_core::secret::read("passphrase", None, Some(path))?.unwrap_or_default();
+    non_empty(pass, &path.display())
+}
+
+/// `pass`, read from `source`, unless it is empty (17): the one check of every passphrase, a
+/// file's or an environment variable's (review 2026-11-23 C-14), so an empty one is said as
+/// empty, never tried as one the file "does not open under".
+fn non_empty(pass: Zeroizing<String>, source: &dyn std::fmt::Display) -> cakeys_core::Result<Zeroizing<String>> {
     if pass.is_empty() {
-        return Err(KmError::Validation(format!("{}: the passphrase is empty", path.display()).into()));
+        return Err(KmError::Validation(format!("{source}: the passphrase is empty").into()));
     }
     Ok(pass)
 }
@@ -305,7 +312,8 @@ fn file_passphrase(cfg: &Config, object: &str, over: Option<&Path>) -> cakeys_co
         return read_passphrase(path).map(Some);
     }
     if let Some(var) = cfg.object_migrate.get(object).and_then(|m| m.passphrase_env.as_deref()) {
-        return cakeys_core::secret::read(&format!("object '{object}': the passphrase"), Some(var), None);
+        let pass = cakeys_core::secret::read(&format!("object '{object}': the passphrase"), Some(var), None)?;
+        return pass.map(|p| non_empty(p, &format_args!("object '{object}': env var {var}"))).transpose();
     }
     cfg.object_passphrase_file(object, &|name| std::env::var(name).ok())?.map(|p| read_passphrase(&p)).transpose()
 }
@@ -430,5 +438,14 @@ mod tests {
             let e = local_key_id(&lock, unpinned).unwrap_err();
             assert!(e.exit_code() == 14 && e.to_string().contains(unpinned), "{e}");
         }
+    }
+
+    /// An empty passphrase is refused (17) naming where it came from, whichever source it is
+    /// (review 2026-11-23 C-14: `passphraseEnv` skipped the check).
+    #[test]
+    fn an_empty_passphrase_is_refused_by_its_source() {
+        let e = non_empty(Zeroizing::new(String::new()), &"object 'k': env var PASS").unwrap_err();
+        assert!(e.exit_code() == 17 && e.to_string().contains("env var PASS: the passphrase is empty"), "{e}");
+        assert_eq!(non_empty(Zeroizing::new("p".into()), &"f").unwrap().as_str(), "p");
     }
 }

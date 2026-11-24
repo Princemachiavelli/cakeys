@@ -68,6 +68,9 @@ in
       deadnix.priority = 1;
       statix.priority = 2;
       nixfmt.priority = 3;
+      # caprobe's output, byte for byte (`every_committed_profile_is_what_the_emitter_writes`):
+      # a row past the column width stays on one line.
+      taplo.excludes = [ "profiles/modules/*/*.toml" ];
       rumdl-check.options = [
         "--config"
         "${rumdlConfig}"

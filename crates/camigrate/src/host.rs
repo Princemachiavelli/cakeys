@@ -44,8 +44,7 @@ pub(crate) fn import(
     let (h, spki) = source_key(src, from, lock, notes)?;
     // The target first: nothing is in plaintext yet when it refuses.
     let occupied = landing(dst, to, spki.as_deref())?;
-    let plain = hand_over(from, h)?;
-    check_identity(dst, lock, &plain)?;
+    let plain = hand_over(from, h, dst, lock)?;
     let origin = origin(src.token_name, method, Exposure::Host);
     create_landed(dst, to, lock, &plain, spki.as_deref(), &occupied, origin, notes)
 }
@@ -94,11 +93,16 @@ fn source_key(src: &Target, from: &Token, lock: &Lock, notes: &mut Notes) -> Res
     Ok((h, spki))
 }
 
-/// The key `h` of `from` in this process's memory (`Token::extract`, by RFC 5649).
-fn hand_over(from: &Token, h: ObjectHandle) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+/// The key `h` of `from` in this process's memory (`Token::extract`, by RFC 5649), its identity
+/// checked against what the lock pins for `dst` ([`check_identity`]) before any path can write
+/// it: the one way a move from a token holds the plaintext, so none writes an unchecked key
+/// (`tpm2_ptool` once did: review 2026-11-23 C-13).
+fn hand_over(from: &Token, h: ObjectHandle, dst: &Target, lock: &Lock) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     let kwp = rfc5649(from)
         .ok_or_else(|| from.unsupported(format!("'{}' offers no RFC 5649 key wrap to hand the key over", from.name)))?;
-    from.extract(h, &kwp)
+    let plain = from.extract(h, &kwp)?;
+    check_identity(dst, lock, &plain)?;
+    Ok(plain)
 }
 
 /// Create the key `plain` (a private key's PKCS#8, of the public key `spki`, or a secret key's
@@ -178,12 +182,15 @@ pub(crate) fn import_ptool(
         return Err(KmError::Conflict(
             format!(
                 "objects already sit under the locator of {dst}, and the lock records no realisation there; \
-             refusing to import over them"
+             refusing to import over them. {}",
+                crate::public::unrecorded_hint(dst)
             )
             .into(),
         ));
     }
-    let plain = hand_over(from, h)?;
+    // Checked as on every host path: the wrong key never reaches the TPM, nor the PIN
+    // tpm2_ptool's command line.
+    let plain = hand_over(from, h, dst, lock)?;
     to.import_plaintext(dst.object, &dst.on_token.locator, &plain)?;
     drop(plain);
     // The key is in the TPM from here on: a reopen that fails leaves it there, unrecorded, and

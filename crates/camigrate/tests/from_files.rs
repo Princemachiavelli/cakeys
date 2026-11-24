@@ -233,6 +233,16 @@ fn every_file_format_imports_as_the_same_key() {
         assert_eq!(origin["method"].as_str(), Some(*method), "{file}");
         assert_eq!(code(&e.cakeys(soft, &["check", "--spec", &format!("k{i}"), "--token", "softhsm"])), 0, "{file}");
     }
+    // A passphrase from the environment is held to a file's: an empty one is refused (17) as
+    // empty, never tried as one the file "does not open under" (review 2026-11-23 C-14).
+    let last = formats.len();
+    config(last, "p256.enc.pem", ", passphraseEnv = \"CAKEYS_TEST_EMPTY_PASS\"");
+    let vars: Vec<_> = soft.env.iter().copied().chain([("CAKEYS_TEST_EMPTY_PASS", "")]).collect();
+    let empty = Ref { env: ref_env(&vars), ..soft.clone() };
+    let spec = format!("k{last}");
+    let o = e.km(&empty, &["import", "k", "--token", "softhsm", "--spec", &spec, "--allow-host-plaintext"]);
+    assert_eq!(code(&o), 17, "{}", stderr(&o));
+    assert!(stderr(&o).contains("env var CAKEYS_TEST_EMPTY_PASS: the passphrase is empty"), "{}", stderr(&o));
     let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
     let spki = cakeys_core::id::spki_canonical(&std::fs::read(fixture("p256.pub.der")).unwrap()).unwrap();
     assert_eq!(lock["objects"]["k"]["ids"]["rfc7093m4"].as_str(), Some(cakeys_core::id::sri(&spki).as_str()));

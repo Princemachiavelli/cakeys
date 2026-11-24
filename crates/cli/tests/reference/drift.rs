@@ -210,8 +210,11 @@ fn allowed_mechanisms_and_public_attributes() {
              tokens.ref = {{ locator = {{ CKA_LABEL = \"attrs\" }}, origin = \"create\" }}\n"
         )
     };
-    // A mechanism the token does not offer: refused before anything is created.
+    // A list without the proof's mechanism is an invalid spec (17); one the proof can use but
+    // naming a mechanism the token does not offer is refused before anything is created (15).
     e.config(&spec("\"CKM_BOGUS\"", "CKA_VERIFY = false"));
+    assert_eq!(e.code(&["create", "--spec", "k", "--token", "ref", "--no-update-lock"]), 17);
+    e.config(&spec("\"CKM_ECDSA\", \"CKM_BOGUS\"", "CKA_VERIFY = false"));
     assert_eq!(e.code(&["create", "--spec", "k", "--token", "ref", "--no-update-lock"]), 15);
     assert!(s.labelled("attrs").is_empty(), "nothing was created");
 

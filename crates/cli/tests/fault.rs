@@ -328,7 +328,9 @@ fn a_substitution_of_nothing_is_the_plans_mistake() {
 /// refuses, every template of it (`derive_any`: as asked, with its length, without each policy
 /// default) or will not MAC with once derived, proves with the extractable secret instead;
 /// where that is refused too, both
-/// refusals are named. A derivation that ran for another key is a conflict, never retried.
+/// refusals are named. A derivation that ran for another key is a conflict, and one that failed
+/// otherwise (a device error, a key that may not derive) is the proof's answer: never retried
+/// (review 2026-11-23 B-8).
 #[test]
 fn an_ecdh_proof_falls_back_to_the_extractable_secret() {
     let Some(w) = lying("fault-ecdh-fallback") else { return };
@@ -356,6 +358,12 @@ fn an_ecdh_proof_falls_back_to_the_extractable_secret() {
     assert!(said.contains("C_DeriveKey (proof of possession)") && said.contains("(sealed: "), "{said}");
     let (exit, said, _) = run("other", "[[rule]]\nfn = \"C_DeriveKey\"\nof_label = \"d\"\nuse_label = \"d-other\"\n");
     assert_eq!(exit, 13, "{said}");
+    // Every C_DeriveKey fails alike, so each derivation fires the rule: one, never the extractable.
+    for (rv, want) in [("CKR_DEVICE_ERROR", 16), ("CKR_KEY_FUNCTION_NOT_PERMITTED", 15)] {
+        let (exit, said, fired) = run(rv, &format!("[[rule]]\nfn = \"C_DeriveKey\"\nrv = \"{rv}\"\n"));
+        assert_eq!((exit, fired), (want, 1), "{rv}: {said}");
+        assert!(said.contains(rv) && !said.contains("(sealed: "), "{rv}: {said}");
+    }
 }
 
 /// An OAEP proof tries the next hash (SHA-1, SHA-256, SHA-512) only where the token refuses one's

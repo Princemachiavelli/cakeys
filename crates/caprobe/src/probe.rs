@@ -257,7 +257,7 @@ fn check_slot(tok: &Token, id: &[u8]) -> Result<()> {
         certs.push(der);
     }
     let marker = |c: &Vec<u8>| c.as_slice() == moves::SLOT_MARKER;
-    if certs.iter().any(marker) && certs.iter().filter(|c| !marker(*c)).all(|c| tok.provider.scratch_companion(id, c)) {
+    if certs.iter().any(marker) && certs.iter().filter(|c| !marker(c)).all(|c| tok.provider.scratch_companion(id, c)) {
         return Ok(());
     }
     let shown = cakeys_core::hex::encode(id);
@@ -2108,29 +2108,7 @@ fn probe_wrapping(made: &mut Made, profile: &mut Draft, transport: (ObjectHandle
 /// subtraction: it may be the probe's template or key, not the mechanism.
 fn probe_key_wraps(made: &mut Made, profile: &mut Draft, transport: (ObjectHandle, ObjectHandle), aes: ObjectHandle) {
     let session = made.session;
-    let label = made.scratch.label();
-    let template = vec![
-        Attribute::Token(true),
-        Attribute::Label(label.as_bytes().to_vec()),
-        Attribute::Class(ObjectClass::SECRET_KEY),
-        Attribute::KeyType(KeyType::AES),
-        Attribute::ValueLen(32.into()),
-        Attribute::Wrap(true),
-        Attribute::Unwrap(true),
-    ];
-    let kek = secret_template(made.tok, Kt::Aes, &label, template)
-        .map_err(|e| refused(made.tok, &e))
-        .and_then(|t| session.generate_key(&Mechanism::AesKeyGen, &t).map_err(|e| ckr(&e)));
-    let kek = match kek {
-        Ok(h) => {
-            made.scratch.track(&[h], &label);
-            Some(h)
-        }
-        Err(e) => {
-            made.undetermined.push(format!("no AES key wrap probes: a wrapping AES key: {e}"));
-            None
-        }
-    };
+    let kek = wrapping_kek(made);
     // Each wrap's variants (CKM_RSA_AES_KEY_WRAP's by OAEP hash), its wrapping and unwrapping key.
     let mut wraps: Vec<(&str, Vec<KeyWrap>, ObjectHandle, ObjectHandle)> = Vec::new();
     if let Some(kek) = kek {
@@ -2219,6 +2197,34 @@ fn probe_key_wraps(made: &mut Made, profile: &mut Draft, transport: (ObjectHandl
     }
     profile.out.subtract.mechanisms.sort();
     profile.out.subtract.mechanisms.dedup();
+}
+
+/// A scratch AES-256 key that wraps and unwraps, for [`probe_key_wraps`]' AES wraps; `None`,
+/// said as undetermined, when the token will not make one.
+fn wrapping_kek(made: &mut Made) -> Option<ObjectHandle> {
+    let label = made.scratch.label();
+    let template = vec![
+        Attribute::Token(true),
+        Attribute::Label(label.as_bytes().to_vec()),
+        Attribute::Class(ObjectClass::SECRET_KEY),
+        Attribute::KeyType(KeyType::AES),
+        Attribute::ValueLen(32.into()),
+        Attribute::Wrap(true),
+        Attribute::Unwrap(true),
+    ];
+    let kek = secret_template(made.tok, Kt::Aes, &label, template)
+        .map_err(|e| refused(made.tok, &e))
+        .and_then(|t| made.session.generate_key(&Mechanism::AesKeyGen, &t).map_err(|e| ckr(&e)));
+    match kek {
+        Ok(h) => {
+            made.scratch.track(&[h], &label);
+            Some(h)
+        }
+        Err(e) => {
+            made.undetermined.push(format!("no AES key wrap probes: a wrapping AES key: {e}"));
+            None
+        }
+    }
 }
 
 /// Whether the AES keys `a` and `b` on the token are one key: the same check value (`CKM_AES_ECB`
@@ -2550,7 +2556,7 @@ mod tests {
         ops.finish(&mut profile);
         assert_eq!(profile.out.add, ["CKM_ECDSA_SHA224", "CKM_SHA224_RSA_PKCS"]);
         assert!(profile.out.notes["CKM_SHA1_RSA_PKCS"].contains("cannot verify its signatures"));
-        assert!(profile.out.subtract.mechanisms.is_empty());
+        assert_eq!(profile.out.subtract.mechanisms, [] as [String; 0]);
     }
 
     /// Evidence keeps the module's return value and drops cryptoki's prose and the token's

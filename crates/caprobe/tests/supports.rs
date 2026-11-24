@@ -55,6 +55,22 @@ fn supports_answers_from_the_embedded_profiles() {
     unknown(&["CKM_SHA512_HMAC"], "(none)");
 }
 
+/// The layers `supports --layer`'s help names resolve, and the binding layer named explicitly
+/// changes nothing: it is always applied, as the build decides (review 2026-11-23 D-7: the help
+/// named `cryptoki/0.12-unpatched`, which no profile is).
+#[test]
+fn the_layers_the_help_names_resolve() {
+    let help = tool(BIN).args(["supports", "--help"]).output().unwrap();
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(!help.contains("unpatched"), "{help}");
+    for (module, layer) in [("softhsm/2.7", "p11-kit/0.26"), ("tpm2-pkcs11", "swtpm")] {
+        assert!(help.contains(layer), "{layer} not in\n{help}");
+        assert_ne!(exit(&["--profile", module, "--layer", layer, "CKM_SHA256"]), 17, "{layer}");
+    }
+    let kwp = ["--profile", "softhsm/2.7", "CKM_AES_KEY_WRAP_KWP"];
+    assert_eq!(supports(&[&kwp[..], &["--layer", "cryptoki/0.12"]].concat()), supports(&kwp));
+}
+
 /// `--profiles <dir>` adds profiles to the embedded set: a layer of one's own subtracts.
 #[test]
 fn supports_reads_profiles_from_a_directory() {

@@ -651,9 +651,12 @@ mod tests {
         let p256 = p256();
         let ssh = b"-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n";
         let crl = b"-----BEGIN X509 CRL-----\nAAAA\n-----END X509 CRL-----\n";
-        let cases: [(&[u8], Option<&str>, &str); 7] = [
+        let cases: [(&[u8], Option<&str>, &str); 8] = [
             (&fixture("p256.legacy-enc.pem"), PASS, "openssl pkcs8 -topk8"),
             (&fixture("p256.legacy.p12"), PASS, "openssl pkcs12 -in old.p12 -legacy"),
+            // Its key in a plain keyBag: said as such, not as a file without a key (review
+            // 2026-11-23 C-22).
+            (&fixture("p256.nokeypbe.p12"), PASS, "whose key is not encrypted (a keyBag, `-keypbe NONE`)"),
             (&fixture("p256.enc.pem"), None, "no passphrase is given"),
             (&fixture("p256.enc.pem"), Some("other"), "does not open under this passphrase"),
             (ssh, None, "ssh-keygen -p -m PKCS8"),

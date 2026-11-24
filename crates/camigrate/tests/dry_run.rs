@@ -2127,6 +2127,9 @@ fn host_moves_refuse_what_they_cannot_check() {
     let o = migrate("hg-dst", "p11kit");
     assert_eq!(code(&o), 13, "{}", stderr(&o));
     assert!(stderr(&o).contains("would collide with"), "{}", stderr(&o));
+    // With how to record a key an earlier run moved there but could not record (review
+    // 2026-11-23 C-21).
+    assert!(stderr(&o).contains("`cakeys lock --spec hg-dst --token p11kit` records it"), "{}", stderr(&o));
 
     // The key's own public half, but without CKA_VERIFY: reused, then refused, the import undone.
     let source = open_session(&soft.module, soft.token_label, "1234");

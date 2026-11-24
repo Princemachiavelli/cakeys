@@ -9,8 +9,8 @@ use crate::plan::{Action, AttributeChange, Call};
 use crate::{Fatal, Shim};
 use cryptoki_sys::{
     CK_ATTRIBUTE, CK_ATTRIBUTE_TYPE, CK_MECHANISM_TYPE, CK_OBJECT_CLASS, CK_OBJECT_HANDLE, CK_RV, CK_SESSION_HANDLE,
-    CK_SESSION_INFO, CK_SLOT_ID, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CKA_CLASS, CKA_LABEL, CKF_SERIAL_SESSION,
-    CKR_ATTRIBUTE_TYPE_INVALID, CKR_BUFFER_TOO_SMALL, CKR_OK,
+    CK_SESSION_INFO, CK_SLOT_ID, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CKA_CLASS, CKA_LABEL, CKF_RW_SESSION,
+    CKF_SERIAL_SESSION, CKR_ATTRIBUTE_TYPE_INVALID, CKR_BUFFER_TOO_SMALL, CKR_OK, CKR_SESSION_READ_WRITE_SO_EXISTS,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::raw::c_void;
@@ -463,12 +463,19 @@ unsafe fn named(
             return Ok(Vec::new());
         }
         let mut own = 0;
-        let rv = real!(shim, C_OpenSession)(info.slotID, CKF_SERIAL_SESSION, std::ptr::null_mut(), None, &raw mut own);
+        let open = real!(shim, C_OpenSession);
+        let mut rv = open(info.slotID, CKF_SERIAL_SESSION, std::ptr::null_mut(), None, &raw mut own);
+        // A read-only session is refused while the caller holds an SO one (PKCS #11, C_OpenSession):
+        // a read-write one reads the same objects (review 2026-11-23 B-17).
+        if rv == CKR_SESSION_READ_WRITE_SO_EXISTS {
+            rv = open(info.slotID, CKF_SERIAL_SESSION | CKF_RW_SESSION, std::ptr::null_mut(), None, &raw mut own);
+        }
         if rv != CKR_OK {
             return Err(failed("C_OpenSession", rv));
         }
         let mut found = Vec::new();
         let mut what = "C_FindObjectsInit";
+        let mut overrun = None;
         let mut rv = real!(shim, C_FindObjectsInit)(own, template.as_mut_ptr(), template.len() as CK_ULONG);
         if rv == CKR_OK {
             what = "C_FindObjects";
@@ -479,11 +486,20 @@ unsafe fn named(
                 if rv != CKR_OK || n == 0 {
                     break;
                 }
-                found.extend_from_slice(&batch[..usize::try_from(n).unwrap_or(0)]);
+                // A count past the batch is the module's fault, named, never a panic the guard
+                // turns into a bare CKR_GENERAL_ERROR (review 2026-11-23 B-16).
+                let Some(got) = usize::try_from(n).ok().and_then(|n| batch.get(..n)) else {
+                    overrun = Some(n);
+                    break;
+                };
+                found.extend_from_slice(got);
             }
             real!(shim, C_FindObjectsFinal)(own);
         }
         real!(shim, C_CloseSession)(own);
+        if let Some(n) = overrun {
+            return Err(Fatal(format!("resolving a label: C_FindObjects returned {n} handles into room for 16")));
+        }
         if rv == CKR_OK { Ok(found) } else { Err(failed(what, rv)) }
     }
 }
@@ -509,6 +525,10 @@ mod tests {
         static OWN_LEFT: RefCell<Vec<CK_OBJECT_HANDLE>> = const { RefCell::new(Vec::new()) };
         /// What `C_FindObjectsInit` on the shim's own session returns.
         static OWN_INIT: Cell<CK_RV> = const { Cell::new(CKR_OK) };
+        /// The caller holds an SO session: a read-only one is refused.
+        static SO_HELD: Cell<bool> = const { Cell::new(false) };
+        /// A count `C_FindObjects` reports on the shim's own session instead of its batch.
+        static OWN_COUNT: Cell<CK_ULONG> = const { Cell::new(0) };
     }
 
     unsafe extern "C" fn get_session_info(_: CK_SESSION_HANDLE, info: *mut CK_SESSION_INFO) -> CK_RV {
@@ -519,11 +539,14 @@ mod tests {
 
     unsafe extern "C" fn open_session(
         _: CK_SLOT_ID,
-        _: CK_FLAGS,
+        flags: CK_FLAGS,
         _: *mut c_void,
         _: CK_NOTIFY,
         out: *mut CK_SESSION_HANDLE,
     ) -> CK_RV {
+        if SO_HELD.get() && flags & CKF_RW_SESSION == 0 {
+            return CKR_SESSION_READ_WRITE_SO_EXISTS;
+        }
         // SAFETY: the shim's own handle.
         unsafe { *out = OWN };
         CKR_OK
@@ -550,6 +573,11 @@ mod tests {
         max: CK_ULONG,
         count: *mut CK_ULONG,
     ) -> CK_RV {
+        if session == OWN && OWN_COUNT.get() > 0 {
+            // SAFETY: the shim's own count.
+            unsafe { *count = OWN_COUNT.get() };
+            return CKR_OK;
+        }
         let batch = if session == OWN {
             OWN_LEFT.take()
         } else {
@@ -624,6 +652,32 @@ mod tests {
         let fatal = unsafe { find_objects(&shim, &call, CALLER, out.as_mut_ptr(), 3, &raw mut n) }.unwrap_err();
         OWN_INIT.set(CKR_OK);
         assert!(fatal.0.contains("C_FindObjectsInit returned 0x30"), "{}", fatal.0);
+    }
+
+    /// A module reporting more handles than the shim's batch holds is a fault named by its count,
+    /// never a panic the guard answers as a bare `CKR_GENERAL_ERROR` (review 2026-11-23 B-16).
+    #[test]
+    fn a_count_past_the_batch_is_named() {
+        let shim = fake(&module(), "[[rule]]\nfn = \"C_FindObjects\"\nhide_label = \"decoy\"\n", None);
+        OWN_COUNT.set(17);
+        BATCHES.set(VecDeque::from([vec![1]]));
+        let (mut out, mut n) = ([0; 3], 0);
+        let call = shim.plan.count(Fn::C_FindObjects);
+        // SAFETY: a search of the fake module, into buffers of ours.
+        let fatal = unsafe { find_objects(&shim, &call, CALLER, out.as_mut_ptr(), 3, &raw mut n) }.unwrap_err();
+        OWN_COUNT.set(0);
+        assert!(fatal.0.contains("C_FindObjects returned 17 handles into room for 16"), "{}", fatal.0);
+    }
+
+    /// A label resolves while the caller holds an SO session, where the module refuses the shim
+    /// a read-only one: it reads through a read-write one (review 2026-11-23 B-17).
+    #[test]
+    fn a_label_resolves_beside_an_so_session() {
+        let shim = fake(&module(), "[[rule]]\nfn = \"C_FindObjects\"\nadd_label = \"decoy\"\n", None);
+        SO_HELD.set(true);
+        let got = search(&shim, &[&[1]]);
+        SO_HELD.set(false);
+        assert_eq!(got, [vec![1, LABELLED]]);
     }
 
     /// `corrupt` changes the last byte the module returned, inside the caller's buffer; a module

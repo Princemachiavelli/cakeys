@@ -182,9 +182,10 @@ pub fn compare(
 ) -> Result<()> {
     let update = write == LockWrite::Record;
     // The lock pins the type its IDs were computed for: a different type is different material,
-    // so say so instead of reporting a hash mismatch (also when updating).
+    // so say so instead of reporting a hash mismatch (also when updating). A `modulusBits`
+    // declared since is a gap `record_object` fills, not another type (review 2026-11-23 A-5).
     if let Some(locked) = lock.objects.get(t.object_name).and_then(|o| o.object_type.as_ref())
-        && locked != t.object
+        && !locked.same_type(t.object)
     {
         return Err(KmError::PreconditionFailed(
             format!(
@@ -483,9 +484,16 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
 /// (never a deprecated one), and a transport key's public key. Whether it changed.
 fn record_object(t: &Target, r: &Resolved, entry: &mut crate::config::LockObject, notes: &mut Notes) -> bool {
     let mut changed = false;
-    if entry.object_type.is_none() {
-        entry.object_type = Some(t.object.clone());
-        changed = true;
+    match &mut entry.object_type {
+        None => {
+            entry.object_type = Some(t.object.clone());
+            changed = true;
+        }
+        Some(ty) if ty.modulus_bits.is_none() && t.object.modulus_bits.is_some() => {
+            ty.modulus_bits = t.object.modulus_bits;
+            changed = true;
+        }
+        Some(_) => {}
     }
     // A recorded label stays: the IDs the lock holds were computed under it, and a run computes
     // with it (`commitment_label`), so only a gap is filled.
@@ -888,7 +896,7 @@ mod tests {
              tokens.t = { locator = { CKA_LABEL = \"k-copy\" }, origin = \"adopt\" }\n",
         )
         .unwrap();
-        let target = |spec: &str| Target::new(&cfg, spec, "t").unwrap();
+        let target = |spec: &'static str| Target::new(&cfg, spec, "t").unwrap();
         let (s, s2, copy) = (target("s"), target("s2"), target("copy"));
         let plain = |t: &Target| Resolved { spec: t.spec_name.to_owned(), ..resolved(t) };
         let attested = |t: &Target| Resolved {
@@ -1101,6 +1109,41 @@ mod tests {
         retyped.objects.get_mut("k").unwrap().object_type.as_mut().unwrap().curve = Some("secp384r1".into());
         for write in [LockWrite::Compare, LockWrite::Record] {
             let e = compare(&t, &resolved(&t), &retyped, &facts("1"), write, &mut Notes::default()).unwrap_err();
+            assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("changed since it was locked")), "{e}");
+        }
+    }
+
+    /// A `modulusBits` declared after the lock recorded the type describes the same key: the
+    /// changed spec is reviewed and `lock` records the size; another declared size is still
+    /// another type (review 2026-11-23 A-5).
+    #[test]
+    fn a_declared_modulus_size_is_not_a_new_type() {
+        let rsa = |bits: &str| -> Config {
+            toml::from_str(&format!(
+                "[tokens.t]\ntokenLabel = \"t\"\n\n\
+                 [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\n{bits}\n\
+                 [specs.s]\nobject = \"k\"\nattributes = {{ CKA_SIGN = true }}\n\
+                 tokens.t = {{ locator = {{ CKA_LABEL = \"k\" }}, origin = \"adopt\" }}\n",
+            ))
+            .unwrap()
+        };
+        let (bare, sized, other) = (rsa(""), rsa("modulusBits = 2048\n"), rsa("modulusBits = 3072\n"));
+        let mut lock = empty_lock();
+        let t = Target::new(&bare, "s", "t").unwrap();
+        reconcile(&t, &resolved(&t), &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap();
+
+        let t = Target::new(&sized, "s", "t").unwrap();
+        let e = compare(&t, &resolved(&t), &lock, &facts("1"), LockWrite::Compare, &mut Notes::default()).unwrap_err();
+        assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("changed in keys.toml")), "{e}");
+        assert!(
+            reconcile(&t, &resolved(&t), &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap()
+        );
+        assert_eq!(lock.objects["k"].object_type.as_ref().unwrap().modulus_bits, Some(2048));
+        compare(&t, &resolved(&t), &lock, &facts("1"), LockWrite::Compare, &mut Notes::default()).unwrap();
+
+        let t = Target::new(&other, "s", "t").unwrap();
+        for write in [LockWrite::Compare, LockWrite::Record] {
+            let e = compare(&t, &resolved(&t), &lock, &facts("1"), write, &mut Notes::default()).unwrap_err();
             assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("changed since it was locked")), "{e}");
         }
     }

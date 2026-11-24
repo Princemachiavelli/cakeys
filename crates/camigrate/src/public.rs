@@ -187,13 +187,26 @@ pub(crate) fn free_locator(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Res
         return Err(KmError::Conflict(
             format!(
                 "{} object(s) a {} would collide with already sit under the locator of {dst}, and the lock records \
-                 no realisation there; refusing to import over them",
-                occupied.colliding, dst.object.class
+                 no realisation there; refusing to import over them. {}",
+                occupied.colliding,
+                dst.object.class,
+                unrecorded_hint(dst)
             )
             .into(),
         ));
     }
     Ok(occupied)
+}
+
+/// How to record a key a run moved to `dst` but could not record (the lock unwritable then,
+/// 21): what a collision under its locator says, and that failure itself (review 2026-11-23
+/// C-21). `cakeys lock` verifies and records it, without how it was moved.
+pub(crate) fn unrecorded_hint(dst: &Target) -> String {
+    format!(
+        "If a run moved the key there but could not record it, `cakeys lock --spec {} --token {}` records it \
+         (without how it was moved)",
+        dst.spec_name, dst.token_name
+    )
 }
 
 /// The creation template from the object's bytes: the class and type, the material, `CKA_TOKEN`,

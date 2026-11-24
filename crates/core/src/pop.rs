@@ -214,11 +214,23 @@ pub fn unwrap_challenge(spki: &[u8], msg: &[u8]) -> Result<UnwrapChallenge> {
 ///
 /// As [`unwrap_challenge`].
 pub fn unwrap_challenge_with(spki: &[u8], msg: &[u8], padding: RsaPadding) -> Result<UnwrapChallenge> {
-    // Wiped when dropped, as the ECDH proof's shared secret is: the key the token unwraps.
+    let secret = secret()?;
+    Ok(UnwrapChallenge { wrapped: rsa_encrypt(spki, padding, &*secret)?, mac: mac_sha256(&*secret, msg) })
+}
+
+/// A fresh 32-byte secret from the OS, wiped when dropped as the ECDH proof's shared secret is:
+/// what an RSA decryption or unwrap proof encrypts to the public key, which binds the answer to
+/// it. It fits OAEP-SHA-256 on a 1024-bit key, where the 78-byte challenge does not
+/// (review 2026-11-23 B-7).
+///
+/// # Errors
+///
+/// `Unavailable` if the OS random number generator fails.
+pub fn secret() -> Result<zeroize::Zeroizing<[u8; 32]>> {
     let mut secret = zeroize::Zeroizing::new([0u8; 32]);
     getrandom::fill(&mut *secret)
         .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
-    Ok(UnwrapChallenge { wrapped: rsa_encrypt(spki, padding, &*secret)?, mac: mac_sha256(&*secret, msg) })
+    Ok(secret)
 }
 
 /// The RSA-OAEP hash, with MGF1 of the same hash: a transport wrap's and an OAEP proof's.
@@ -246,11 +258,32 @@ pub enum RsaPadding {
 ///
 /// # Errors
 ///
-/// `Unsupported` if `spki` is not an RSA key; `Unavailable` if the OS random number generator
-/// or the encryption fails (for instance, `msg` is too long for the modulus).
+/// `Unsupported` if `spki` is not an RSA key, or `msg` is longer than `padding` carries on its
+/// modulus (OAEP-SHA-512 carries nothing on a 1024-bit key); `Unavailable` if the OS random
+/// number generator or the encryption fails.
 pub fn rsa_encrypt(spki: &[u8], padding: RsaPadding, msg: &[u8]) -> Result<Vec<u8>> {
     let key = rsa::PublicKey::from_public_key_der(spki)
         .map_err(|e| KmError::Unsupported(format!("RSA encryption to this SPKI: {e}").into()))?;
+    // RFC 8017 §7.1.1 and §7.2.1: the most a padding carries in a k-byte modulus. A key too
+    // small for the message is the key's size, not a failure of the host (review 2026-11-23 A-11).
+    let k = rsa::traits::PublicKeyParts::size(&key);
+    let (name, overhead) = match padding {
+        RsaPadding::Pkcs1v15 => ("PKCS #1 v1.5", 11),
+        RsaPadding::Oaep(OaepHash::Sha1) => ("OAEP-SHA-1", 2 * 20 + 2),
+        RsaPadding::Oaep(OaepHash::Sha256) => ("OAEP-SHA-256", 2 * 32 + 2),
+        RsaPadding::OaepSha512 => ("OAEP-SHA-512", 2 * 64 + 2),
+    };
+    let room = k.saturating_sub(overhead);
+    if msg.len() > room {
+        return Err(KmError::Unsupported(
+            format!(
+                "RSA encryption: {name} carries at most {room} bytes in a {}-bit modulus, not {}",
+                rsa::traits::PublicKeyParts::n(&key).bit_width_vartime(),
+                msg.len()
+            )
+            .into(),
+        ));
+    }
     let rng = &mut getrandom::SysRng;
     match padding {
         RsaPadding::Pkcs1v15 => key.encrypt(rng, rsa::Pkcs1v15Encrypt, msg),
@@ -397,6 +430,32 @@ mod tests {
         assert_eq!(secret.len(), 32);
         assert_eq!(mac_sha256(&secret, &msg), ch.mac);
         assert_ne!(unwrap_challenge(spki.as_bytes(), &msg).unwrap().mac, ch.mac, "a fresh secret each time");
+    }
+
+    /// A message longer than the padding carries in the modulus is the key's size (15), named,
+    /// never the host failing (16); the 32-byte proof secret fits every padding a 1024-bit key
+    /// takes but OAEP-SHA-512, which carries nothing there (review 2026-11-23 A-11, B-7).
+    #[test]
+    fn a_message_too_long_for_the_modulus_is_unsupported() {
+        use pkcs8::EncodePublicKey;
+        let private = rsa::PrivateKey::new(&mut getrandom::SysRng, 1024).unwrap();
+        let spki = private.to_public_key().to_public_key_der().unwrap();
+        let spki = spki.as_bytes();
+        let challenge = message(spki, &[0u8; 32]);
+        let fresh = secret().unwrap();
+        for padding in [RsaPadding::Pkcs1v15, RsaPadding::Oaep(OaepHash::Sha1), RsaPadding::Oaep(OaepHash::Sha256)] {
+            assert_eq!(rsa_encrypt(spki, padding, fresh.as_slice()).unwrap().len(), 128, "{padding:?}");
+        }
+        let e = rsa_encrypt(spki, RsaPadding::Oaep(OaepHash::Sha256), &challenge).unwrap_err();
+        assert!(
+            matches!(&e, KmError::Unsupported(m) if m.contains("OAEP-SHA-256 carries at most 62 bytes in a 1024-bit modulus, not 78")),
+            "{e}"
+        );
+        let e = rsa_encrypt(spki, RsaPadding::OaepSha512, fresh.as_slice()).unwrap_err();
+        assert!(matches!(&e, KmError::Unsupported(m) if m.contains("at most 0 bytes")), "{e}");
+        // At the limit, it encrypts.
+        rsa_encrypt(spki, RsaPadding::Oaep(OaepHash::Sha256), &[1u8; 62]).unwrap();
+        assert_ne!(*fresh, *secret().unwrap(), "a fresh secret each time");
     }
 
     #[test]

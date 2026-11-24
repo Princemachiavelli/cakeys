@@ -47,10 +47,13 @@ pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
 ///
 /// # Errors
 ///
-/// `Validation` if the lock breaks a load rule (nothing is written); `Io` if the lock cannot be
-/// encoded; `LockUnwritable` (21) if the temporary write, sync or rename fails.
+/// `LockUnwritable` (21) if the lock breaks a load rule (nothing is written), or if the temporary
+/// write, sync or rename fails; `Io` if the lock cannot be encoded.
 pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
-    lock.check(path).map_err(|e| KmError::Validation(format!("not writing a lock that would not load: {e}").into()))?;
+    // Saved after a token write as any other time: the token may hold what the lock does not
+    // record, whichever check stopped the write (review 2026-11-23 A-17).
+    lock.check(path)
+        .map_err(|e| KmError::LockUnwritable(format!("not writing a lock that would not load: {e}").into()))?;
     let text =
         toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display()).into()))?;
     // A new lock is created like any new file (0666 under the umask); one that exists keeps its

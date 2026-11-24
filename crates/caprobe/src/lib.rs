@@ -148,7 +148,9 @@ struct SupportsArgs {
     /// The token in keys.toml whose `provider` names the profile family.
     #[arg(long)]
     token: Option<String>,
-    /// A delta layer on top, repeatable: p11-kit/0.26, cryptoki/0.12-unpatched, swtpm.
+    /// A delta layer on top, repeatable: p11-kit/0.26, swtpm, or one from --profiles. The
+    /// cryptoki binding layer is always applied, as this build decides it (`--layer
+    /// cryptoki/0.12` adds nothing).
     #[arg(long = "layer")]
     layers: Vec<String>,
     /// List the members of a baseline class (pq, hmac, key-wrap, oaep) with verdicts.

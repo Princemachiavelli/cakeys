@@ -219,34 +219,37 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
             out.notes.push(format!("{t}: the profiles do not decide ({})", lines.join("; ")));
         }
     }
-    if needs.generation.is_some()
-        && let Some(kt) = t.object.key_type
-    {
-        let verdict = if kt.is_asymmetric() {
-            let bits = t.object.modulus_bits.and_then(|b| u32::try_from(b).ok());
-            eff.generate(kt.name(), t.object.curve.as_deref(), bits)
-        } else {
-            // A secret key's length: keys.toml's `valueLen`, or what its type fixes.
-            let bytes = t.object.value_len.or_else(|| kt.fixed_value_len());
-            eff.generate_secret(kt.name(), bytes.and_then(|b| u32::try_from(b).ok()))
-        };
-        match verdict {
-            Verdict::Yes { .. } => {}
-            v @ Verdict::No { .. } => {
-                out.refusals.push(format!("{t}: token '{token}' cannot generate it: {v}"));
-            }
-            v @ Verdict::Unknown { .. } => out.notes.push(format!("{t}: generation not decided: {v}")),
+    // The generation's type, curve and size; then a secret key's commitments: refused only when
+    // the profile measured every one the spec declares and the module cannot compute any (an
+    // unmeasured one is the advertised list's); a note when none is a yes and some are
+    // undecided, as for a generation.
+    let generated = needs.generation.and_then(|_| generating(t, &eff, token));
+    for said in generated.into_iter().chain(commitments(t, &eff, token)) {
+        match said {
+            Ok(refusal) => out.refusals.push(refusal),
+            Err(undecided) => out.notes.push(undecided),
         }
     }
-    // A secret key's commitments: refused only when the profile measured every one the spec
-    // declares and the module cannot compute any (an unmeasured one is the advertised list's);
-    // a note when none is a yes and some are undecided, as for a generation.
-    match commitments(t, &eff, token) {
-        Some(Ok(refusal)) => out.refusals.push(refusal),
-        Some(Err(undecided)) => out.notes.push(undecided),
-        None => {}
-    }
     Ok(out)
+}
+
+/// What the profiles say of generating `t`'s key, its type, curve and size: `Ok`, the refusal;
+/// `Err`, a note, when undecided; `None` when it is a yes or `t` names no key type.
+fn generating(t: &Target, eff: &Effective, token: &str) -> Option<std::result::Result<String, String>> {
+    let kt = t.object.key_type?;
+    let verdict = if kt.is_asymmetric() {
+        let bits = t.object.modulus_bits.and_then(|b| u32::try_from(b).ok());
+        eff.generate(kt.name(), t.object.curve.as_deref(), bits)
+    } else {
+        // A secret key's length: keys.toml's `valueLen`, or what its type fixes.
+        let bytes = t.object.value_len.or_else(|| kt.fixed_value_len());
+        eff.generate_secret(kt.name(), bytes.and_then(|b| u32::try_from(b).ok()))
+    };
+    match verdict {
+        Verdict::Yes { .. } => None,
+        v @ Verdict::No { .. } => Some(Ok(format!("{t}: token '{token}' cannot generate it: {v}"))),
+        v @ Verdict::Unknown { .. } => Some(Err(format!("{t}: generation not decided: {v}"))),
+    }
 }
 
 /// What the profiles say of `t`'s declared commitments when it is a secret key: `Ok`, the

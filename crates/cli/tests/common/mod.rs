@@ -562,7 +562,7 @@ pub fn assert_profile_conforms(
     assert!(
         std::fs::read(scratch).unwrap() == committed,
         "{path} is not what the probe generates: regenerate it with `caprobe probe --token <t> --write \
-         --diff {name} --out profiles/{path}`, never by hand"
+         --rsa-max-bits 4096 --diff {name} --out profiles/{path}` (scripts/regen-profiles.sh), never by hand"
     );
     // A read-only probe conforms on what it observes; it may never overwrite the file.
     assert_eq!(code(&km(&["probe", "--token", token, "--diff", name])), 0);

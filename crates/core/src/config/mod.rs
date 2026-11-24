@@ -348,6 +348,19 @@ impl ObjectCfg {
         ObjectCfg { class, key_type, certificate_type: None, curve: None, value_len: None, modulus_bits: None }
     }
 
+    /// Whether `other` is material of this type: every field equal, except that a `modulusBits`
+    /// only one of them declares is no difference. The public key already fixes the modulus and
+    /// the token check verifies a declared size, so declaring it later describes the same key;
+    /// two different declared sizes are different material.
+    #[must_use]
+    pub fn same_type(&self, other: &ObjectCfg) -> bool {
+        let bits = match (self.modulus_bits, other.modulus_bits) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+        };
+        bits && ObjectCfg { modulus_bits: None, ..self.clone() } == ObjectCfg { modulus_bits: None, ..other.clone() }
+    }
+
     /// Replace a curve alias by its canonical name (unknown names are left for validation), and
     /// fill in the length a key type fixes (`CKK_DES3`: 24) when `valueLen` is absent, so writing
     /// it or not is the same type, spec digest and commitment label.
@@ -1547,8 +1560,10 @@ mod tests {
         let file = dir.path().join("keys.lock");
         let mut broken = attestable_lock();
         broken.objects.clear();
+        // Saved after a token write, a lock that would not load is a lock not written (21), with
+        // the load rule it breaks (review 2026-11-23 A-17).
         let e = save_lock(&file, &broken).unwrap_err();
-        assert!(e.exit_code() == 17 && e.to_string().contains("is not in the lock"), "{e}");
+        assert!(e.exit_code() == 21 && e.to_string().contains("is not in the lock"), "{e}");
         assert!(!file.exists(), "an invalid lock was written");
         save_lock(&file, &attestable_lock()).unwrap();
         load_lock(&file).unwrap();
@@ -2108,6 +2123,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("keys.lock");
+        // What a message names: the path resolved (macOS's /tmp is /private/tmp).
+        let real = dir.path().canonicalize().unwrap();
         assert_eq!(unwritable(&path, false), None);
         let sandboxed = unwritable(&path, true).unwrap();
         assert!(sandboxed.contains("inside a Nix build sandbox"), "{sandboxed}");
@@ -2119,12 +2136,12 @@ mod tests {
         if rustix::fs::access(&path, rustix::fs::Access::WRITE_OK).is_ok() {
             return;
         }
-        assert_eq!(unwritable(&path, false), Some(format!("{} is not writable", path.display())));
+        assert_eq!(unwritable(&path, false), Some(format!("{} is not writable", real.join("keys.lock").display())));
         mode(&path, 0o644);
         mode(dir.path(), 0o555);
         let said = unwritable(&path, false);
         mode(dir.path(), 0o755);
-        assert_eq!(said, Some(format!("the lock's directory {} is not writable", dir.path().display())));
+        assert_eq!(said, Some(format!("the lock's directory {} is not writable", real.display())));
         // A lock not there yet in a directory that cannot take it.
         std::fs::remove_file(&path).unwrap();
         mode(dir.path(), 0o555);

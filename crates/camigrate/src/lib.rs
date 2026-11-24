@@ -16,7 +16,7 @@ mod transport;
 
 use anyhow::Context as _;
 use bundle::Bundle;
-use cakeys_cli_common::{Opener, print, read_lock, save_changed};
+use cakeys_cli_common::{Opener, print, read_lock};
 use cakeys_core::KmError;
 use cakeys_core::config::{
     ALLOW_NIX_STORE_KEYS, Config, KeyOrigin, Lock, Origin, SpecCfg, SpecTokenCfg, in_nix_build, save_lock, write_whole,
@@ -445,26 +445,27 @@ impl Tally {
         self.failed.get_or_insert(err);
     }
 
-    /// Save the lock if anything moved, then exit with the first failure.
+    /// Say the lock was updated if anything moved, then exit with the first failure. Each move
+    /// saved it already ([`Run::record`]): never a second write only to say so (review
+    /// 2026-11-23 C-21).
     fn finish(self, run: &Run<'_>, notes: &mut Notes) -> anyhow::Result<()> {
-        run.save(self.changed, notes)?;
+        if self.changed {
+            notes.say(format!("updated {}", run.lock_path.display()));
+        }
         self.failed.map_or(Ok(()), |e| Err(e.into()))
     }
 }
 
 impl Run<'_> {
-    /// Save the lock if the verb changed it: also when a later object failed, so what moved is
-    /// never left on a token without its realisation.
-    fn save(&self, changed: bool, notes: &mut Notes) -> anyhow::Result<()> {
-        save_changed(&self.lock_path, &self.lock, changed, notes)
-    }
-
     /// Record one object's write at once, before the run touches another (the save is atomic):
     /// a run killed or failing later never leaves an object on a token the lock does not record,
-    /// and on ykcs11 cakeys cannot remove it. [`Self::save`] says so once, at the end.
-    fn record(&self, what: &dyn std::fmt::Display) -> anyhow::Result<()> {
-        save_lock(&self.lock_path, &self.lock)
-            .with_context(|| format!("{what} is on the token, but the lock could not record it"))
+    /// and on ykcs11 cakeys cannot remove it. [`Tally::finish`] says so once, at the end. A save
+    /// that fails stops the run (21), saying how to record the object once the lock can be
+    /// written (`hint`: [`public::unrecorded_hint`]); nothing after it is moved.
+    fn record(&self, what: &dyn std::fmt::Display, hint: &str) -> anyhow::Result<()> {
+        save_lock(&self.lock_path, &self.lock).with_context(|| {
+            format!("{what} is on the token, but the lock could not record it, and the run stops here. {hint}")
+        })
     }
 
     /// `--dry-run`: plan each object's move from `from` to `dest` and print it (docs/CAMIGRATE.md D9);
@@ -640,7 +641,7 @@ impl Run<'_> {
                 }
                 Ok(Some(public::Moved::Imported)) => {
                     tally.moved();
-                    self.record(&dst)?;
+                    self.record(&dst, &public::unrecorded_hint(&dst))?;
                     notes.say(format!(
                         "imported {} from {} ({}) into {dst}",
                         e.object, bundle.source.token, bundle.source.provider
@@ -702,6 +703,7 @@ impl Run<'_> {
         for p in &moves.plans {
             let pair = source_target(cfg, &self.lock, &p.object, from)
                 .and_then(|src| Ok((src, import_target(cfg, &p.object, to, spec_for(cfg, specs, &p.object), MOVE)?)));
+            let hint = pair.as_ref().map(|(_, dst)| public::unrecorded_hint(dst)).unwrap_or_default();
             let lock = &mut self.lock;
             let target = &mut target;
             let sealing = &mut sealing;
@@ -734,7 +736,7 @@ impl Run<'_> {
             match outcome {
                 Ok(public::Moved::Imported) => {
                     tally.moved();
-                    self.record(&format_args!("'{}' on token '{to}'", p.object))?;
+                    self.record(&format_args!("'{}' on token '{to}'", p.object), &hint)?;
                     let how = p.method.as_ref().map_or_else(String::new, Method::name);
                     notes.say(format!("moved {} from {from} to {to} ({how})", p.object));
                 }
@@ -785,6 +787,31 @@ impl Run<'_> {
         Ok((planned.0, planned.1))
     }
 
+    /// Whether the source's SO made a trusted copy (`transport --trusted`) of the transport key
+    /// `dest` seals to. A source that did not open is planned from the lock, which records no
+    /// trusted copy; a lookup that fails on an open one is its own error, never "no copy".
+    fn trusted_transport(
+        &self,
+        dest: &tokens::Dest<'_>,
+        transport_key: Option<&str>,
+        source: &cakeys_core::Result<Token>,
+    ) -> anyhow::Result<bool> {
+        let spki = match dest {
+            // No transport key named is the plan's own reason (`plan_moves`); a recorded one that
+            // does not decode is an error.
+            tokens::Dest::Token(name) => match tokens::transport_spec(&self.lock, name, transport_key) {
+                Ok(spec) => locked_spki(&self.lock, spec, name)?,
+                Err(_) => None,
+            },
+            tokens::Dest::Transport(t, _) => t.spki().ok(),
+            tokens::Dest::File(_) => None,
+        };
+        Ok(match (spki, source) {
+            (Some(spki), Ok(tok)) => tok.trusted(&spki)?.0.is_some(),
+            _ => false,
+        })
+    }
+
     /// [`Self::plan`], opening a target token with `target` access, and handing it back, when it
     /// opened, beside the source: a `migrate` that writes there opens it once, read-write (review
     /// lib.rs F5: read-only for the plan, then again for the run).
@@ -828,23 +855,7 @@ impl Run<'_> {
             tokens::Dest::Transport(t, _) => transport_choice(cfg, &t.token, how),
             tokens::Dest::File(_) => how.transport_key.as_deref(),
         };
-        let spki = match &dest {
-            // No transport key named is the plan's own reason (`plan_moves`); a recorded one that
-            // does not decode is an error.
-            tokens::Dest::Token(name) => match tokens::transport_spec(&self.lock, name, transport_key) {
-                Ok(spec) => locked_spki(&self.lock, spec, name)?,
-                Err(_) => None,
-            },
-            tokens::Dest::Transport(t, _) => t.spki().ok(),
-            tokens::Dest::File(_) => None,
-        };
-        // Whether the source's SO made a trusted copy of that key (`transport --trusted`). A
-        // source that did not open is planned from the lock, which records no trusted copy; a
-        // lookup that fails on an open one is its own error, never "no copy".
-        let trusted_transport = match (spki, &source) {
-            (Some(spki), Ok(tok)) => tok.trusted(&spki)?.0.is_some(),
-            _ => false,
-        };
+        let trusted_transport = self.trusted_transport(&dest, transport_key, &source)?;
         let req = tokens::Request {
             objects,
             from,

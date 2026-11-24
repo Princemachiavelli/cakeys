@@ -203,8 +203,10 @@ first.
 
 **Labels to handles.** `of_label`, `from_label`, `add_label` and `use_label` are resolved
 through a session of the shim's own (`C_OpenSession` on the caller's slot, read from
-`C_GetSessionInfo`), so resolving never interrupts a find the caller has open. Object handles
-are valid across an application's sessions, which is what makes this work.
+`C_GetSessionInfo`), so resolving never interrupts a find the caller has open. The session is
+read-only, or read-write where the module refuses a read-only one because the caller holds an
+SO session (`CKR_SESSION_READ_WRITE_SO_EXISTS`). Object handles are valid across an
+application's sessions, which is what makes this work.
 
 ### The trace
 

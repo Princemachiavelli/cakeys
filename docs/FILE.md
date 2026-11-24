@@ -189,6 +189,8 @@ PKCS#12 two objects name is opened twice (its KDF runs twice).
   - A PKCS#12 from before OpenSSL 3, or from `-legacy` (a SHA-1 MAC, RC2 or 3DES bags): the MAC
     is refused as today, and so is any non-PBES2 bag. Re-export it:
     `openssl pkcs12 -in old.p12 -legacy -nodes | openssl pkcs12 -export -out new.p12`.
+  - A PKCS#12 whose key is not encrypted (a `keyBag`, from `-keypbe NONE`), named as such:
+    `openssl pkcs12 -in old.p12 -nodes | openssl pkcs12 -export -out new.p12`.
 - Every new method name joins `Method::from_name` and its frozen list. Otherwise a lock
   carrying it would fail load (`provenance origin method '…' is unknown`, config.rs) [src].
 

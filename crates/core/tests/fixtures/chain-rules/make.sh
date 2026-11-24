@@ -42,7 +42,7 @@ EOF
 # The key of `name`, and its own request config naming it (LibreSSL takes the config's
 # distinguished name over -subj).
 key() {
-  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$1.key"
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -pkeyopt ec_param_enc:named_curve -out "$1.key"
   sed "s/^CN = placeholder$/CN = cakeys chain-rules $1/" ext.cnf >"$1.cnf"
 }
 

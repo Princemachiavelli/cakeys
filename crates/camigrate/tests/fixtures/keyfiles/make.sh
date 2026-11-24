@@ -33,6 +33,8 @@ cat p256.crt.pem ca.crt.pem >two-certs.pem
 # PKCS#12: OpenSSL 3's default (its certificates in a PBES2-encrypted container) and -legacy.
 openssl pkcs12 -export -inkey p256.pkcs8.pem -in p256.crt.pem -certfile ca.crt.pem -passout "$pass" -out p256.p12
 openssl pkcs12 -export -legacy -inkey p256.pkcs8.pem -in p256.crt.pem -passout "$pass" -out p256.legacy.p12
+# The key unencrypted (a plain keyBag, in a plain data container): refused by name.
+openssl pkcs12 -export -keypbe NONE -inkey p256.pkcs8.pem -in p256.crt.pem -passout "$pass" -out p256.nokeypbe.p12
 
 # RSA 2048: PKCS#1 as `openssl genrsa -traditional` writes it, and PKCS#8.
 openssl genrsa -traditional -out rsa2048.pkcs1.pem 2048
