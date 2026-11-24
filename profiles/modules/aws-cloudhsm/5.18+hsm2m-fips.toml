@@ -284,7 +284,15 @@ max-bits = 4096
 "CKM_EC_KEY_PAIR_GEN" = { min = 256, max = 521, flags = ["hardware", "generate-key-pair"] }
 "CKM_GENERIC_SECRET_KEY_GEN" = { min = 1, max = 800, flags = ["hardware", "generate"] }
 "CKM_RSA_AES_KEY_WRAP" = { min = 2048, max = 4096, flags = ["hardware", "wrap", "unwrap"] }
-"CKM_RSA_PKCS" = { min = 2048, max = 4096, flags = ["hardware", "encrypt", "decrypt", "sign", "verify", "wrap", "unwrap"] }
+"CKM_RSA_PKCS" = { min = 2048, max = 4096, flags = [
+  "hardware",
+  "encrypt",
+  "decrypt",
+  "sign",
+  "verify",
+  "wrap",
+  "unwrap",
+] }
 "CKM_RSA_PKCS_KEY_PAIR_GEN" = { min = 2048, max = 4096, flags = ["hardware", "generate-key-pair"] }
 "CKM_RSA_PKCS_OAEP" = { min = 2048, max = 4096, flags = ["hardware", "encrypt", "decrypt", "wrap", "unwrap"] }
 "CKM_RSA_PKCS_PSS" = { min = 2048, max = 4096, flags = ["hardware", "sign", "verify"] }
