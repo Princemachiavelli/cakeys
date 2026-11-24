@@ -22,6 +22,7 @@ left is test placement and a few weak assertions.
 ## Findings
 
 ### D-1. The scratch-slot guard accepts any key ykcs11 generated, so a mistyped `scratchId` overwrites a real key — critical — 1, 2 — verified
+
 `crates/caprobe/src/probe.rs:236-270`, `crates/ykcs11/src/lib.rs:153-178`, `crates/core/src/config/mod.rs:1006-1010`, `crates/caprobe/src/probe.rs:163-165`
 `check_slot` passes a slot whose only certificates are ykcs11's own placeholder (serial 0,
 self-issued, `CN=YubiKey PIV Slot <n>`) plus the attestation. ykcs11 writes that same placeholder
@@ -43,6 +44,7 @@ probe-specific placeholder, and accept only "empty" or "that marker"; (c) have t
 provider refuse non-retired slots (01–04) for `scratchId`.
 
 ### D-2. Most signing mechanisms count as working without a verified signature, and `add` rows rest on that — medium — 1 — verified
+
 `crates/caprobe/src/probe.rs:1777-1811`, `:1583-1596`, `:477-480`, `crates/core/src/sig.rs:144-171`
 `rsa_ops` verifies only `CKM_RSA_PKCS` and `CKM_SHA256_RSA_PKCS`; the other nine (SHA-1/224/384/512
 PKCS#1, all five PSS, raw X.509) pass `none`, so any returned bytes are "worked". `ec_ops` gives
@@ -56,6 +58,7 @@ digest. Fix: replace the `verified: bool` column with a verifier per row (`rsa_p
 those rows note-only, and write `add` only for a verified signature.
 
 ### D-3. Wrap round trips count an unwrap that succeeded, not one that gave the key back — medium — 1 — plausible
+
 `crates/caprobe/src/probe.rs:1946-1976`, `:2085-2106`, `crates/caprobe/src/probe/moves.rs:649-661`
 `probe_wrapping` writes `wrap.rsa-oaep.<hash> = yes` when `C_UnwrapKey` returns a handle;
 `probe_key_wraps` likewise keeps a mechanism out of `subtract`. Neither compares the unwrapped key
@@ -70,6 +73,7 @@ with `same_aes` against an imported AES fixture of known value, and unwrap a hos
 side.
 
 ### D-4. Asymmetric generation records any non-SO error as the module's "no" — medium — 1 — verified
+
 `crates/caprobe/src/probe.rs:750-777`, `:1286-1290`, `:1349-1353`; compare `:784-806`, `:1895-1904`
 `Made::create` maps every `Token::create` error except an SO-login failure to `Created::Refused`,
 which `create_curves` and `probe_rsa` write as `generate.<kt>.<on> = no`. Errors that carry no
@@ -82,6 +86,7 @@ refusals with prose evidence, and a regeneration commits them. Fix: in `Made::cr
 does.
 
 ### D-5. Two attribute rows are decided without a control — medium — 1 — verified (code), plausible (which modules)
+
 `crates/caprobe/src/probe/extras.rs:87-92`, `:138-149`, `:172-175`
 `aes_key`'s doc says "extractable false" but the template sets no `CKA_EXTRACTABLE`, so the key
 takes the module's default; `attr.read.CKA_NEVER_EXTRACTABLE` then answers yes whenever the key is
@@ -95,6 +100,7 @@ CBC to fail with `CKR_MECHANISM_INVALID`/`CKR_KEY_FUNCTION_NOT_PERMITTED`, else 
 a note.
 
 ### D-6. The regeneration instructions omit `--rsa-max-bits 4096`, and following them breaks the conformance test — medium — 6 — verified
+
 `crates/caprobe/src/emit.rs:150-158`, `crates/cli/tests/common/mod.rs:562-566`, `crates/caprobe/src/lib.rs:191-195`
 Every committed profile starts with "regenerate with `caprobe probe --token <t> --write --diff
 <profile> --out <this file>`", and `assert_profile_conforms`' failure message says the same. The
@@ -107,6 +113,7 @@ probed maximum in the profile (`[reported]` already exists) and have `--diff` de
 `--rsa-max-bits` to it.
 
 ### D-7. `supports --layer` help names a layer that does not exist — medium — 6 — verified
+
 `crates/caprobe/src/lib.rs:151`, `crates/caprobe/src/supports.rs:111-117`, `profiles/layers/cryptoki.toml:8`
 The help says "repeatable: p11-kit/0.26, cryptoki/0.12-unpatched, swtpm". No profile is named
 `cryptoki/0.12-unpatched` anywhere in the repo: `--layer cryptoki/0.12-unpatched` exits 17 (unknown
@@ -118,6 +125,7 @@ unpatched subtraction as an addressable layer or say in the help that the bindin
 decided by the build.
 
 ### D-8. spec-coverage: two statuses decide nothing, and the file costs a second full traced test pass per crane check — medium — 4, 8 — verified
+
 `crates/caprobe/src/coverage.rs:265-314`, `:345-358`, `spec-coverage/cakeys.toml` (`[summary]`), `nix/package-crane.nix:205-215`
 The committed summary is `used = 250, out-of-scope = 797, gap = 50`: the `profile` status
 (`profile_names`, `recorded_names`, `ck_names`, `PROSE` and their test, ~70 lines) and `refused`
@@ -129,6 +137,7 @@ the traced regeneration an opt-in report (as `packages.coverage` is: "a report, 
 and keep only the cheap trace-free consistency check in the normal build.
 
 ### D-9. Two plan documents describe a state the code no longer has — medium — 5 — verified
+
 `docs/CAPROBE_PROFILE_COVERAGE.md:3-4`, `:20-38`, `:478-519`; `docs/CAPROBE_MIGRATION.md:15-24`
 CAPROBE_PROFILE_COVERAGE.md opens "Nothing here is built yet" and its "Where things stand" table
 says import rows exist for AES only and `advertise` has no status per entry; its own "Built"
@@ -140,6 +149,7 @@ both (and the dated COVERAGE_PLAN.md log) under `docs/archive/`, moving the stil
 "Not done" bullets into CAPROBE.md and OPEN.md (proposal 1).
 
 ### D-10. The `CKM_DES3_CMAC` probe can never run, and the doc gives the wrong reason — low — 4, 5 — verified
+
 `crates/caprobe/src/probe/secrets.rs:105-129`, `docs/CAPROBE_PROFILE_COVERAGE.md:493-494`, `docs/OPEN.md:58-60`, `nix/patches/cryptoki-allowed-mechanisms-unnamed.patch:29`
 `MechanismType::try_from(0x138)` fails for an unnamed standard value (OPEN.md; the patch itself
 falls back to `from_raw` only for `CKA_ALLOWED_MECHANISMS`), so the function returns at its first
@@ -149,6 +159,7 @@ doc says "no reference module lists it yet", while OPEN.md records that SoftHSM 
 `CKM_DES3_CMAC` lands; correct the doc sentence.
 
 ### D-11. Montgomery generation: the "bare" fallback is stricter than the usage template, and refusals miss the row's evidence — low — 1, 5 — verified
+
 `crates/caprobe/src/probe.rs:1183-1196`, `:1215-1218`
 The usage try sends public `[CKA_EC_PARAMS]`; the fallback ("bare") sends public
 `[CKA_EC_PARAMS, CKA_VERIFY = true, CKA_PRIVATE = false]`. A Montgomery key cannot verify, so a
@@ -161,6 +172,7 @@ evidence (`generation_evidence`), unlike every other generation; the committed r
 (proposal 4 removes the surrounding machinery).
 
 ### D-12. A sealed ECDH derivation counts as working without checking the secret when the module lists no HMAC — low — 1 — verified
+
 `crates/caprobe/src/probe.rs:1676-1690`, `:1625-1637`
 With no `CKM_SHA256_HMAC`, `try_sealed` returns `Derives` when the secret merely reports
 sensitive and non-extractable, so `derive.ecdh.sealed = yes` and `CKM_ECDH1_DERIVE` is "worked"
@@ -170,6 +182,7 @@ the mechanism's row is unverified. Fix: without HMAC, fall back to the extractab
 (it is what `pop-ecdh` will do) and record sealed only as a note.
 
 ### D-13. Commitment rows turn a busy session or a failed second call into "no" — low — 1 — verified
+
 `crates/caprobe/src/probe/secrets.rs:123-127`, `:149-153`
 `probe_des3_cmac` maps any `C_Sign` error to no, including `CKR_OPERATION_ACTIVE`, which
 `refusal_row`/`crypt_row` treat as undetermined. `commit_row` takes the second commitment with
@@ -177,6 +190,7 @@ the mechanism's row is unverified. Fix: without HMAC, fall back to the extractab
 Fix: route both through `refusal_row`.
 
 ### D-14. A probe that made objects but counts none writes no `delete` rows and says nothing — low — 1 — verified
+
 `crates/caprobe/src/probe.rs:925-965`, `docs/CAPROBE_MIGRATION.md:257-259`
 When the before-count is empty although `scratch.labels` is not (the fTPM run: "the leftover count
 found nothing to count … the probe should say so rather than write nothing"), `delete_rows`
@@ -185,6 +199,7 @@ tracked and the before-count is empty, push "no delete rows: nothing found under
 labels".
 
 ### D-15. The catch-all coverage rule's reason is false for return values the tools match by name — low — 5 — verified
+
 `spec-coverage/manual.toml:848-851`, `spec-coverage/cakeys.toml:927`, `crates/caprobe/src/probe.rs:468`, `crates/caprobe/src/probe/secrets.rs:281`, `crates/camigrate/src/sealed.rs:626-646`
 `CKR_*` → out-of-scope, "met by no test and matched by no name". `CKR_OPERATION_ACTIVE` (six
 matches in caprobe), `CKR_MECHANISM_PARAM_INVALID` (`crypt_row`, sealed.rs) and
@@ -193,6 +208,7 @@ above it ("matched by name, met by no test"). The fault suites inject them but r
 add them to the gap rules (or, with D-8, retire the file).
 
 ### D-16. caprobe-local CLI nits — low — 6 — verified
+
 `crates/caprobe/src/lib.rs:120-123`, `:124`, `:143-162`, `:171-172`, `:191-195`, `:288-292`; `docs/CAPROBE.md:14-19`, `:158`
 `caps --token` and `probe --token` have no help text. `supports`' help says "what a vendor SO
 version supports": SO means shared object here and Security Officer two lines later in `probe`'s
@@ -203,6 +219,7 @@ so). `supports CKM_X --class pq` silently drops `CKM_X`, and `--bits` is ignored
 `--module`.
 
 ### D-17. Small inconsistencies in probe.rs — low — 5, 7 — verified
+
 `crates/caprobe/src/probe.rs:2159-2191`, `:760`, `:793`, `crates/caprobe/src/probe/moves.rs:187-190`, `crates/kmsp11/src/lib.rs:26`
 `generate`'s doc comment (`The probe verb …`, `# Errors`) is attached to `build_lacks`, whose own
 doc follows it, and `generate` has none. An SO-login failure is recognised by the substring
@@ -211,6 +228,7 @@ not use). The purpose-bound keys use the label prefix `caprobe-`, every other pr
 `cakeys-probe-`.
 
 ### D-18. Profile evidence embeds the verbs' prose and provider hints — low — 4, 5 — verified
+
 `crates/caprobe/src/probe.rs:1514-1559`, `profiles/modules/kmsp11/1.9+hsm.toml` (`prove.pop-decrypt.CKK_RSA.RSA_SIGN_*`)
 `evidence()` strips cryptoki's prose but keeps cakeys' own message, including `hint for kmsp11:
 Cloud KMS: a key libkmsp11 creates keeps its versions 30 days …`, repeated in eight rows. Any
@@ -220,6 +238,7 @@ silently stale (the diff ignores evidence). Fix: evidence = the `C_*` function a
 (plus cakeys' refusal class), never the hint; keep prose in `[notes]` if wanted.
 
 ### D-19. No test holds the probe to leaving non-probe objects alone, or the slot guard to a placeholder-only real key — low — 7 — verified
+
 `crates/caprobe/tests/fault.rs:16-29`, `crates/caprobe/tests/reference.rs:180-215`
 `scratch()` plants a `decoy` pair "no probe made" and uses it only as a substitution target; no
 case asserts it survives the write probes, `clear_stale` and `destroy_after_failure`. The guard
@@ -228,6 +247,7 @@ certificate, nor a ykcs11-generated key with only its placeholder (D-1). Fix: as
 `labelled("decoy").len() == 2` after `probe_cases`; add the two slot cases.
 
 ### D-20. The emitter's "every optional field alone" list has drifted — low — 7 — verified
+
 `crates/caprobe/src/emit.rs:410-461`
 Its doc says "A field added to the parser belongs here", but `[untested]`, `[mechanism-info]` and
 `[claims]` (added with the coverage plan) are missing. They round-trip today only because the
@@ -235,6 +255,7 @@ committed profiles carry them. Fix: add the three bodies, or derive the list fro
 profile that sets every field.
 
 ### D-21. The cakeys `validate` test binary is mostly harness self-tests; two fault tests accept any failure — low — 7 — verified
+
 `crates/cli/tests/validate.rs:44-236`, `crates/cli/tests/fault.rs:322`, `:479`
 Eight of its twelve tests test the harness (YubiKey latch, env scrub, opt-in, bounded run, and
 four lints that grep test sources), beside four static-gate tests the file header describes. The
@@ -244,6 +265,7 @@ documented outcome is a specific code (16 for a failing call). Fix: move the sel
 `tests/harness.rs`; assert exact exit codes.
 
 ### D-22. After an interrupted slot probe the guard refuses with "may hold a real key" for the probe's own certificate — low — 6 — verified
+
 `crates/caprobe/src/probe/moves.rs:122-136`, `crates/caprobe/src/probe.rs:256-269`
 In a scratch slot the move probes write the fixture certificate (`CN=cakeys-probe`) and only the
 final P-256 generation puts ykcs11's placeholder back. A run stopped in between (Ctrl-C, an SO
@@ -253,6 +275,7 @@ clears the slot by hand. Fix: accept the probe's own fixture certificate as an o
 also the marker D-1 proposes).
 
 ### D-23. The surface test merges flags across subcommands — low — 7 — verified
+
 `crates/cli/tests/common/surface.rs:14-25`, `:59-66`
 `surface()` collects every long flag into one set, so a flag shared by two verbs counts as tested
 when either uses it: `probe --profiles` (the regeneration flag the scripts use) is run by no test,
@@ -261,6 +284,7 @@ not that it is per tool rather than per verb. Fix: record `verb --flag` pairs an
 within one argument list, or say so in the doc.
 
 ### D-24. Smaller doc drift — low — 5 — verified
+
 `docs/CAPROBE.md:278-279`, `:299-300`, `crates/caprobe/src/baseline.rs:255-265`, `crates/caprobe/tests/template_hook.rs:12-15`, `crates/caprobe/src/lib.rs:211-215`
 CAPROBE.md says the baseline "regenerates byte for byte"; the test compares parsed baselines. Its
 diff paragraph omits `[untested]`, which `diff` compares. template_hook.rs' header says a second
@@ -325,6 +349,7 @@ subprocess control is no longer forced.
 ## Files reviewed (every file in scope, with one line each: "clean" or finding IDs)
 
 caprobe source and tests:
+
 - `crates/caprobe/src/probe.rs` — D-1, D-2, D-3, D-4, D-11, D-12, D-14, D-17, D-18; proposals 3, 4, 6
 - `crates/caprobe/src/probe/moves.rs` — D-3, D-17, D-22; proposal 3
 - `crates/caprobe/src/probe/secrets.rs` — D-10, D-13; proposals 5, 7
@@ -346,6 +371,7 @@ caprobe source and tests:
 - `crates/caprobe/tests/tpm2.rs`, `ftpm.rs`, `yubikey.rs` — clean
 
 Integration-test harness (`crates/cli/tests`):
+
 - `common/mod.rs` — D-6 (message at :562-566); otherwise clean (prior F3–F8 fixes hold)
 - `common/surface.rs` — D-23
 - `common/xref.rs` — clean
@@ -357,6 +383,7 @@ Integration-test harness (`crates/cli/tests`):
 - `fixtures/*` — clean (the five files no Rust test reads are read by checks.nix and nix/examples.nix)
 
 Profiles and coverage data:
+
 - `profiles/modules/softhsm/2.7.toml`, `kryoptic/1.5.toml`, `tpm2-pkcs11/1.10+swtpm.toml`, `tpm2-pkcs11/1.10+amd-ftpm.toml`, `ykcs11/2.7.toml` — D-6 (RSA rows stop at 4096), D-11 (Montgomery rows without evidence)
 - `profiles/modules/kmsp11/1.9+hsm.toml`, `1.9+hsm-fips.toml`, `aws-cloudhsm/5.18+hsm2m-fips.toml`, `5.18+hsm2m-non-fips.toml` — D-18
 - `profiles/layers/cryptoki.toml` — D-7
@@ -366,6 +393,7 @@ Profiles and coverage data:
 - `spec-coverage/objects/softhsm.toml`, `kryoptic.toml`, `tpm2-pkcs11+swtpm.toml` — clean (generated and pinned by the object-matrix test; consumed only by it)
 
 Documentation:
+
 - `docs/CAPROBE.md` — D-7, D-8, D-16, D-24
 - `docs/CAPROBE_PROFILE_COVERAGE.md` — D-9, D-10; proposal 1
 - `docs/CAPROBE_MIGRATION.md` — D-9, D-14; proposal 1

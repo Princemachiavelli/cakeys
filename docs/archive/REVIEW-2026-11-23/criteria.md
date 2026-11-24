@@ -4,6 +4,7 @@ Repo: ~/srcs/cakeys @ 4304989 (main). Read-only review: do not edit the repo, do
 builds or tests (user rule: no long builds), never search /nix/store. git, rg/grep and reading are fine.
 
 ## Context to read first
+
 - README.md, docs/ARCHITECTURE.md (crate map, Provider seams), docs/DESIGN.md (identity, lock rules,
   security model §8), docs/OPEN.md (known open items: do not report these as new; you may challenge them).
 - Prior per-file review: review/REVIEW_<path with / replaced by _>.md (2026-11-18). Read the one for each
@@ -12,6 +13,7 @@ builds or tests (user rule: no long builds), never search /nix/store. git, rg/gr
   in one line, not as new findings.
 
 ## Criteria (apply each to every file)
+
 1. Correctness: logic errors; PKCS#11 semantics (CK_RV handling, session/login state, handle lifetime,
    two-call attribute reads, CKR_BUFFER_TOO_SMALL, read-only vs RW sessions); exit-code mapping; edge
    cases (empty, duplicates, odd names); panics on untrusted input (unwrap/expect/index/slice on token
@@ -40,18 +42,21 @@ builds or tests (user rule: no long builds), never search /nix/store. git, rg/gr
    (set -euo pipefail, quoting, traps), checks that cannot fail.
 
 ## Evidence bar
+
 Every finding must be traced in the code: cite file:line, the concrete input/state that triggers it, and
 what goes wrong. Mark each finding `verified` (you traced the path end to end) or `plausible` (you could
 not fully confirm). No speculative style opinions without a concrete cost.
 
 ## Severity
+
 - critical: identity/possession/attestation check can be fooled, secret leak, data loss of keys/lock.
 - high: wrong result, crash, or misleading success reachable by a user in normal use.
 - medium: latent bug, confusing or inconsistent UX, significant avoidable complexity.
 - low: nit, minor inconsistency, small cleanup.
 
 ## Output format (write to your file in the job tmp dir)
-```
+
+```text
 # Area <X>: <name>
 ## Summary (5-10 lines: overall quality, biggest risks, biggest simplification wins)
 ## Findings

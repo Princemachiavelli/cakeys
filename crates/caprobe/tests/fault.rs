@@ -95,6 +95,11 @@ fn rule(text: &str) -> String {
 /// cannot pass on a row no probe writes.
 fn probe_cases(w: &Workdir, cases: &[Case]) {
     let honest = std::fs::read_to_string(committed_profile(SOFTHSM.profile.1)).unwrap();
+    // The decoy pairs no probe made (one per `scratch`, on the one reference token).
+    let real = std::env::var("P11_FAULT_MODULE").unwrap();
+    let decoys = || open_session(&real, "kmtest", "1234").labelled("decoy").len();
+    let planted = decoys();
+    assert!(planted >= 2, "no decoy pair planted");
     for (name, plan, rows, undetermined, earned) in cases {
         let (exit, profile, said, fired) = probed(w, name, plan, &[]);
         assert_eq!(exit, 0, "{name}: {said}");
@@ -107,6 +112,9 @@ fn probe_cases(w: &Workdir, cases: &[Case]) {
             assert!(honest.contains(row), "{name}: {row:?} is no row of the committed profile");
             assert!(!profile.contains(row), "{name}: the honest module's {row:?} in\n{profile}");
         }
+        // Whatever the lie made the probe do, the pairs no probe made are left alone: no cleanup,
+        // stale sweep or rollback reaches an object it did not make (review 2026-11-23 D-19).
+        assert_eq!(decoys(), planted, "{name}: a decoy was touched");
     }
 }
 
@@ -269,6 +277,77 @@ fn the_probe_notes_which_derive_template_took() {
         ),
     ];
     probe_cases(&w, cases);
+}
+
+/// An OAEP hash counts only when a blob the host made with it unwraps to the host's key: a
+/// module whose own wrap round trip works but which decodes no peer's blob (here the shim swaps
+/// another RSA key in for the host-made blob's unwrap) gets no `wrap.rsa-oaep` yes for that hash
+/// (review 2026-11-23 D-3: its own round trip was enough). The call is found in a clean run's
+/// trace: the second of two OAEP SHA-1 unwraps with no wrap between them.
+#[test]
+fn an_oaep_hash_counts_only_when_a_host_made_blob_decodes() {
+    let Some(w) = scratch("fault-probe-host-blob") else { return };
+    let real = std::env::var("P11_FAULT_MODULE").unwrap();
+    let label = Attribute::Label(b"decoy-rsa".to_vec());
+    open_session(&real, "kmtest", "1234")
+        .generate_key_pair(
+            &Mechanism::RsaPkcsKeyPairGen,
+            &[
+                Attribute::Token(true),
+                label.clone(),
+                Attribute::ModulusBits(2048.into()),
+                Attribute::PublicExponent(vec![1, 0, 1]),
+                Attribute::Wrap(true),
+            ],
+            &[Attribute::Token(true), label, Attribute::Unwrap(true), Attribute::Decrypt(true)],
+        )
+        .unwrap();
+    let (exit, profile, said, _) = probed(&w, "clean", "", &[]);
+    assert_eq!(exit, 0, "{said}");
+    assert!(profile.contains(OAEP_SHA1), "the honest module's row: {profile}");
+    let trace = std::fs::read_to_string(w.dir.join("clean.jsonl")).unwrap();
+    let calls: Vec<serde_json::Value> = trace.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let wraps: Vec<&serde_json::Value> =
+        calls.iter().filter(|c| c["fn"] == "C_WrapKey" || c["fn"] == "C_UnwrapKey").collect();
+    // CKM_RSA_PKCS_OAEP (9) with CKM_SHA_1 (0x220).
+    let sha1_unwrap = |c: &serde_json::Value| c["fn"] == "C_UnwrapKey" && c["mechanism"] == 9 && c["hash"] == 0x220;
+    let host = wraps.windows(2).find(|p| sha1_unwrap(p[0]) && sha1_unwrap(p[1])).map(|p| p[1]);
+    let host = host.unwrap_or_else(|| panic!("no host-made blob's unwrap in the trace: {wraps:?}"));
+    let plan = rule(&format!("fn = \"C_UnwrapKey\"\ncall = {}\nuse_label = \"decoy-rsa\"", host["n"]));
+    let (exit, profile, said, fired) = probed(&w, "blob", &plan, &[]);
+    assert_eq!(exit, 0, "{said}");
+    assert_fired("blob", &plan, &fired, &said);
+    assert!(profile.contains("\"wrap.rsa-oaep.SHA-1\" = { answer = \"no\" }"), "{profile}");
+    assert!(profile.contains("unwraps its own blob but not one the host made"), "{profile}");
+}
+
+/// `CKA_ALLOWED_MECHANISMS` is "enforced" only when the key encrypts by what its list allows
+/// and the module then refuses CBC, outside it: when the in-list ECB call fails too, the CBC
+/// refusal tells nothing, and the row says nothing of enforcement (review 2026-11-23 D-5: any
+/// CBC failure was "enforced"). The call is the clean run's ECB `C_EncryptInit` just before
+/// the CBC one.
+#[test]
+fn allowed_mechanisms_are_enforced_only_beside_a_working_control() {
+    let Some(w) = scratch("fault-probe-allowed") else { return };
+    let (exit, profile, said, _) = probed(&w, "clean", "", &[]);
+    assert_eq!(exit, 0, "{said}");
+    let enforced = "\"attr.set.CKA_ALLOWED_MECHANISMS.CKK_AES\" = { answer = \"yes\", via = \"enforced\" }";
+    assert!(profile.contains(enforced), "the honest module's row: {profile}");
+    let trace = std::fs::read_to_string(w.dir.join("clean.jsonl")).unwrap();
+    let calls: Vec<serde_json::Value> = trace.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let inits: Vec<&serde_json::Value> = calls.iter().filter(|c| c["fn"] == "C_EncryptInit").collect();
+    // CKM_AES_ECB (0x1081), then CKM_AES_CBC (0x1082) refused: the list kept to, not a mode probe.
+    let pair = |p: &&[&serde_json::Value]| {
+        p[0]["mechanism"] == 0x1081 && p[1]["mechanism"] == 0x1082 && p[1]["rv"] != "CKR_OK"
+    };
+    let ecb = inits.windows(2).find(pair).map(|p| p[0]);
+    let ecb = ecb.unwrap_or_else(|| panic!("no ECB then refused CBC C_EncryptInit in the trace"));
+    let plan = rule(&format!("fn = \"C_EncryptInit\"\ncall = {}\nrv = \"CKR_KEY_FUNCTION_NOT_PERMITTED\"", ecb["n"]));
+    let (exit, profile, said, fired) = probed(&w, "control", &plan, &[]);
+    assert_eq!(exit, 0, "{said}");
+    assert_fired("control", &plan, &fired, &said);
+    assert!(profile.contains("\"attr.set.CKA_ALLOWED_MECHANISMS.CKK_AES\" = { answer = \"yes\" }"), "{profile}");
+    assert!(said.contains("whether it is enforced is not told"), "{said}");
 }
 
 /// A pair the module made but the probe cannot find under its locator (probe.rs F3) is no

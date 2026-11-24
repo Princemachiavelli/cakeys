@@ -81,7 +81,11 @@ let
       pcscd = mkOption {
         type = types.bool;
         default = false;
-        description = "Also grant pcscd's socket (`/run/pcscd`); needs `sandbox.pcscd.enable`.";
+        description = ''
+          Also grant pcscd's socket (`/run/pcscd`); needs `sandbox.pcscd.enable`. pcscd serves
+          every reader on the host: a build granted it reaches every card plugged in, not only
+          this token's.
+        '';
       };
     };
   };
@@ -217,14 +221,17 @@ in
     sandbox.pcscd.enable = mkEnableOption ''
       smart cards in the Nix build sandbox through pcscd: enables pcscd and lets build users
       past its polkit check (nixbld users, or the auto-allocated UID range when
-      `nix.settings.auto-allocate-uids` is set). Tokens with `pcscd = true` get its socket
+      `nix.settings.auto-allocate-uids` is set). Tokens with `pcscd = true` get its socket,
+      which is host-wide: a build granted it reaches every card plugged in, not only its token's
     '';
 
     sandbox.tpm2.enable = mkEnableOption ''
       the TPM resource manager (`/dev/tpmrm*`) for builds: a udev rule adds an ACL granting
       read/write to every build GID (the nixbld group, or each auto-allocated UID slot). Builds
       still only see the device if a token lists it in `sandboxPaths` and they require that
-      token's feature. Builds select it with `TPM2TOOLS_TCTI`/`TPM2_PKCS11_TCTI=device:/dev/tpmrm0`
+      token's feature, but the device is the whole TPM: a build granted it reaches every object
+      its authorization allows, not only its token's keys. Builds select it with
+      `TPM2TOOLS_TCTI`/`TPM2_PKCS11_TCTI=device:/dev/tpmrm0`
     '';
 
     sandbox.uidRange.enable = mkEnableOption ''
@@ -319,6 +326,13 @@ in
         assertion = t.pcscd -> cfg.sandbox.pcscd.enable;
         message = "services.cakeys.tokens.${n}.pcscd needs services.cakeys.sandbox.pcscd.enable";
       }) cfg.tokens;
+      # pcscd serves every reader: tokens that share it share every card (review 2026-11-23 C-9).
+      warnings =
+        let
+          shared = lib.attrNames (lib.filterAttrs (_: t: t.pcscd) cfg.tokens);
+        in
+        lib.optional (lib.length shared > 1)
+          "services.cakeys.tokens.{${lib.concatStringsSep "," shared}}.pcscd: pcscd's socket serves every reader on the host, so a build requiring one of these tokens reaches the others' cards too";
       nix.settings.system-features = map featureOf (lib.attrNames cfg.tokens);
       # A plain definition: a second pre-build-hook elsewhere is a conflict, not a silent override.
       nix.settings.pre-build-hook = lib.getExe hook;

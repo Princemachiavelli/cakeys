@@ -216,6 +216,14 @@ fn token_and_creation_rules_are_checked_at_load() {
     load(&with_token("moduleProfile = \"aws-cloudhsm/5.18+hsm2m-non-fips\"")).unwrap();
     refused(with_token("probe = { scratchId = \"zz\" }"), "is not a hex CKA_ID");
     refused(with_token("probe = { scratchId = \"\" }"), "is not a hex CKA_ID");
+    // The probe's scratch slot is no slot keys.toml keeps a key in on that token, in whichever
+    // case it is written (review 2026-11-23 D-1: one digit off, the probe overwrote it).
+    let at_id = |scratch: &str| {
+        with_token(&format!("probe = {{ scratchId = \"{scratch}\" }}"))
+            .replace("locator = { CKA_LABEL = \"o\" }", "locator = { CKA_ID = \"0a\" }")
+    };
+    refused(at_id("0A"), "probe.scratchId 0a is the CKA_ID of spec 's''s locator there");
+    load(&at_id("0b")).unwrap();
     // A transport key: an RSA private key of at least 2048 bits that unwraps and never leaves.
     let rsa = |bits: u32| format!("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = {bits}");
     let unwraps = "attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }";

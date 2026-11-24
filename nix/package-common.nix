@@ -1,7 +1,6 @@
-# What both builds of the workspace share (nix/package.nix, the regular `buildRustPackage`, and
-# nix/package-crane.nix, crane's, which `nix flake check` uses): the source, the outputs, the
-# inputs, the cryptoki patches, the features and the integration-test environment. Each builder
-# adds only what is its own.
+# What the workspace's build (nix/package-crane.nix: the checks' build and, without its check
+# phase, packages.cakeys) is made of: the source, the outputs, the inputs, the cryptoki patches,
+# the features and the integration-test environment.
 {
   lib,
   stdenv,
@@ -25,7 +24,7 @@
   # for aarch64-darwin, and tpm2-pkcs11 and its tools are not packaged there, so there is no
   # module for it to attest. Darwin builds the tools with ykcs11 alone; `withTpm2 = false` builds
   # and tests that configuration on Linux too:
-  #   nix build --impure --expr '(builtins.getFlake "path:.").packages.x86_64-linux.cakeys.override { withTpm2 = false; }'
+  #   nix build --impure --expr '(builtins.getFlake "path:.").packages.x86_64-linux.cakeys-crane.override { withTpm2 = false; }'
   withTpm2 ? stdenv.hostPlatform.isLinux,
 }:
 let

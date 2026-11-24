@@ -84,9 +84,16 @@ pub(super) fn check_reported_ranges(profile: &mut Draft) {
     }
 }
 
-/// A fresh AES key made raw, extractable false, with `extra` in its template.
+/// A fresh AES key made raw, extractable false, with `extra` in its template (review 2026-11-23
+/// D-5: the template left `CKA_EXTRACTABLE` to the module, so the `CKA_NEVER_EXTRACTABLE` row
+/// could not be no on a module that defaults to extractable).
 fn aes_key(s: &Session, extra: &[Attribute]) -> Option<ObjectHandle> {
-    let mut template = vec![Attribute::Token(false), Attribute::ValueLen(32.into()), Attribute::Sensitive(true)];
+    let mut template = vec![
+        Attribute::Token(false),
+        Attribute::ValueLen(32.into()),
+        Attribute::Sensitive(true),
+        Attribute::Extractable(false),
+    ];
     template.extend_from_slice(extra);
     s.generate_key(&Mechanism::AesKeyGen, &template).ok()
 }
@@ -170,9 +177,24 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
             let back = s.get_attributes(h, &[AttributeType::AllowedMechanisms]).ok().and_then(|v| v.into_iter().next());
             let kept = matches!(&back, Some(Attribute::AllowedMechanisms(m)) if m == &vec![MechanismType::AES_ECB]);
             if kept {
-                // Outside the list: CBC must be refused if the module enforces it.
-                let enforced = s.encrypt(&Mechanism::AesCbc([0; 16]), h, &[0; 16]).is_err();
-                profile.set(cap, Answer::Yes, None, Some(if enforced { "enforced" } else { "listed-only" }.into()));
+                // Outside the list, CBC must be refused if the module enforces it; only a key that
+                // encrypts by what the list allows (ECB), on a module that has CBC, tells a
+                // refusal of the list from one of the key or the mechanism (review 2026-11-23 D-5).
+                let inside = s.encrypt(&Mechanism::AesEcb, h, &[0; 16]).is_ok();
+                let outside = s.encrypt(&Mechanism::AesCbc([0; 16]), h, &[0; 16]).is_ok();
+                let via = match (inside, made.tok.lists(MechanismType::AES_CBC), outside) {
+                    (_, _, true) => Some("listed-only"),
+                    (true, true, false) => Some("enforced"),
+                    _ => {
+                        made.undetermined.push(
+                            "CKA_ALLOWED_MECHANISMS: whether it is enforced is not told: the key does not encrypt \
+                             by CKM_AES_ECB, which its list allows, or the module has no CKM_AES_CBC to refuse"
+                                .into(),
+                        );
+                        None
+                    }
+                };
+                profile.set(cap, Answer::Yes, None, via.map(Into::into));
             } else {
                 profile.set(cap, Answer::No, Some(format!("it reads back {back:?}")), None);
             }

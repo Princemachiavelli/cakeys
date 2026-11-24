@@ -1,7 +1,8 @@
 # cakeys, caprobe and camigrate built with crane: the dependencies once per Cargo.lock
 # (`buildDepsOnly`), reused by this build, its tests, clippy and their reruns, so a source change
-# rebuilds only the workspace's own crates. `nix flake check` uses it (checks.nix); packages.cakeys
-# is the regular build (nix/package.nix). What both share is in nix/package-common.nix.
+# rebuilds only the workspace's own crates. `nix flake check` uses it (checks.nix), and
+# packages.cakeys is it without the check phase (`unchecked`). The source, outputs, patches,
+# features and test environment are in nix/package-common.nix.
 {
   lib,
   callPackage,
@@ -193,8 +194,8 @@ craneLib.buildPackage (
     inherit cargoArtifacts;
     # cargo-nextest: one process per test, each through nix/test-tokens.sh (cargo's target
     # runner), which gives it a token set of its own: the suites run in parallel, and no test
-    # sees what another left on a token. The regular build (nix/package.nix) and the coverage
-    # report run them the same way, as does the mutation report with the token suites.
+    # sees what another left on a token. The coverage report runs them the same way, as does
+    # the mutation report with the token suites.
     nativeBuildInputs = base.nativeBuildInputs ++ [ cargo-nextest ];
     ${runner} = "bash ${./test-tokens.sh}";
     cargoTestCommand = "cargo nextest run \${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE}";
@@ -215,6 +216,28 @@ craneLib.buildPackage (
         ${cargoTestCommandFor "test(committed_coverage_is_generated_from_the_trace)"}
     '';
     passthru = {
+      # What packages.cakeys ships (pkgs.nix; the NixOS module's default and the apps too): this
+      # build without its check phase, on the same dependency artifacts, so what users run is what
+      # every check and CI job builds, and its first use runs no token suite (review 2026-11-23
+      # C-8: it was a second, regular buildRustPackage build that nothing built).
+      unchecked = craneLib.buildPackage (
+        common.args
+        // base
+        // {
+          inherit cargoArtifacts;
+          doCheck = false;
+          # The cryptoki version and patches, and the features that need them, for builds outside
+          # Nix: scripts/local-tests.sh reads them with `nix eval --json .#cakeys.patchedCryptoki`,
+          # so its lists are these, not a copy. Each patch interpolated: a store path of its own,
+          # which `nix eval` copies there, where a path value would print as a place in the
+          # flake's source that need not exist on disk.
+          passthru.patchedCryptoki = {
+            inherit (common.cryptoki) version;
+            patches = map (p: "${p}") common.cryptoki.patches;
+            inherit (common) features;
+          };
+        }
+      );
       # Clippy with -D warnings over every target: the workspace lints (Cargo.toml
       # [workspace.lints]: unsafe_code deny, clippy::pedantic with one blanket allow) travel with
       # every build, editor and this check.

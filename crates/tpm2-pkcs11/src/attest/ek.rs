@@ -5,7 +5,7 @@
 
 use super::Tpm2Options;
 use super::esys;
-use cakeys_core::chain::{Cert, Start, certs_of, chain_to_anchor, pem_certs};
+use cakeys_core::chain::{Cert, Start, TCG_KP_EK_CERTIFICATE, certs_of, chain_to_anchor, pem_certs};
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ChainTime;
 use std::sync::LazyLock;
@@ -77,8 +77,17 @@ fn from_nv(leaf: &Cert, anchors: &[Cert], time: ChainTime) -> Result<Option<Trus
     verify(leaf, anchors, &[], time).map(Some)
 }
 
-/// `leaf` verified to one of `anchors` through `pool`, its dates judged by `time`.
+/// `leaf` verified to one of `anchors` through `pool`, its dates judged by `time`. A leaf that
+/// names its purposes names an EK's (`tcg-kp-EKCertificate`): another certificate the same CA
+/// issued is no EK credential (review 2026-11-23 A-3).
 fn verify(leaf: &Cert, anchors: &[Cert], pool: &[Cert], time: ChainTime) -> Result<Trusted> {
+    if !leaf.serves(&TCG_KP_EK_CERTIFICATE)? {
+        return Err(KmError::Conflict(
+            "the EK certificate's extendedKeyUsage does not name tcg-kp-EKCertificate (2.23.133.8.1): it is \
+             no Endorsement Key credential"
+                .into(),
+        ));
+    }
     let (anchor_spki, warning) =
         time.verify(|at| chain_to_anchor(leaf, Start::EndEntity, anchors, pool, at, MAX_LINKS)?.spki())?;
     Ok(Trusted { spki: leaf.spki()?, anchor_spki, warning })
@@ -126,6 +135,25 @@ mod tests {
             let other = Cert::from_der(ROOTS[1 - root].der().to_vec()).unwrap();
             assert!(verify(&leaf, std::slice::from_ref(&other), &pool, at).is_err());
         }
+    }
+
+    /// An EK certificate that names its purposes must name an EK's (tcg-kp-EKCertificate): a
+    /// TLS server certificate under the same anchor is no EK credential, whatever its chain
+    /// (review 2026-11-23 A-3). The fixtures are core's chain-rules chains.
+    #[test]
+    fn an_ek_certificate_names_the_ek_purpose_or_none() {
+        let pem = |bytes: &[u8]| certs_of(bytes).unwrap().remove(0);
+        let root = pem(include_bytes!("../../../core/tests/fixtures/chain-rules/ok-root.pem"));
+        let anchors = [root];
+        for ok in [
+            &include_bytes!("../../../core/tests/fixtures/chain-rules/ek-leaf.pem")[..],
+            &include_bytes!("../../../core/tests/fixtures/chain-rules/ok-leaf.pem")[..],
+        ] {
+            verify(&pem(ok), &anchors, &[], ChainTime::Unchecked).unwrap();
+        }
+        let server = pem(include_bytes!("../../../core/tests/fixtures/chain-rules/server-leaf.pem"));
+        let e = verify(&server, &anchors, &[], ChainTime::Unchecked).err().unwrap();
+        assert!(e.to_string().contains("does not name tcg-kp-EKCertificate"), "{e}");
     }
 
     /// A NV certificate whose chain reaches no anchor is first use; one whose chain reaches an

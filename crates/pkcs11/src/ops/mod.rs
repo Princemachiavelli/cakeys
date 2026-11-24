@@ -232,6 +232,9 @@ fn attest(
     if let Some(w) = &a.warning {
         notes.warn(format!("{t}: its attestation would fail `check` today: {w}"));
     }
+    if let Some(c) = &a.caveat {
+        notes.warn(format!("{t}: {c}"));
+    }
     Ok(AttestationRecord { kind: kind.to_owned(), root: a.root, id: a.id })
 }
 

@@ -333,7 +333,7 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
   shares one token set, so the tests that change the token (a second `kmtest` token, burnt PIN
   tries) break the others, and some find no object a CLI run just made, by a cause not
   established. Unsupported: `scripts/local-tests.sh` (nextest, a token set per test) is the
-  local runner, as the crane check phase, the regular build and the coverage report are; the
+  local runner, as the crane check phase and the coverage report are; the
   mutation report runs on one thread against shared tokens.
 - **Closing what the reports show** (`packages.coverage`, `packages.mutants`, DEVELOPMENT.md):
   the lock's load-time invariants and the transport-key rules are pinned by

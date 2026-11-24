@@ -947,6 +947,7 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
     }
     check_origins(&cfg).map_err(|e| invalid(&e))?;
     check_transport_keys(&cfg).map_err(|e| invalid(&e))?;
+    check_scratch_slots(&cfg).map_err(|e| invalid(&e))?;
     // What loads is usable (review D1): every pair names a token keys.toml defines and plans
     // (`plan_mode`), so no verb meets a spec that loaded and is refused at every use.
     for (spec, s) in &cfg.specs {
@@ -1015,6 +1016,27 @@ fn check_token(t: &TokenCfg) -> std::result::Result<(), String> {
         return Err("soCredentialFile/soCredentialEnv needs a user PIN (pinFile or pinEnv) to return to the user \
                     session"
             .into());
+    }
+    Ok(())
+}
+
+/// A token's `probe.scratchId` is the `CKA_ID` of no locator keys.toml has on that token: the
+/// write probes overwrite that slot's key, and a key keys.toml declares there is a real one
+/// (review 2026-11-23 D-1: one digit off, the probe replaced it).
+fn check_scratch_slots(cfg: &Config) -> std::result::Result<(), String> {
+    for (token, t) in &cfg.tokens {
+        let Some(scratch) = t.probe.scratch_id.as_deref().and_then(crate::hex::decode) else { continue };
+        let mut declared = cfg.specs.iter().filter_map(|(spec, s)| {
+            let id = s.tokens.get(token)?.locator.id.as_deref().and_then(crate::hex::decode)?;
+            (id == scratch).then_some(spec)
+        });
+        if let Some(spec) = declared.next() {
+            return Err(format!(
+                "token '{token}': probe.scratchId {} is the CKA_ID of spec '{spec}''s locator there: the write probes \
+                 would overwrite that key; name a slot keys.toml does not use",
+                crate::hex::encode(&scratch)
+            ));
+        }
     }
     Ok(())
 }
@@ -2048,6 +2070,35 @@ mod tests {
         assert_eq!(names, ["keys.lock"]);
         assert_eq!(lock_dir(Path::new("keys.lock")), Path::new("."));
         assert_eq!(lock_dir(&path), dir.path());
+    }
+
+    /// A lock that exists keeps its mode across a save, exactly and whatever the umask: a 0600
+    /// lock stays private, a group's 0660 stays the group's. A key file is never widened by the
+    /// file it replaces. A sidecar this user cannot write (another user's, left 0644) still
+    /// guards the update: `flock` needs no write access (review 2026-11-23 A-4, A-12).
+    #[test]
+    fn a_saved_lock_keeps_its_mode_and_a_read_only_sidecar_guards() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.lock");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let set = |p: &Path, m: u32| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
+        save_lock(&path, &attestable_lock()).unwrap();
+        for kept in [0o600, 0o660, 0o640] {
+            set(&path, kept);
+            save_lock(&path, &attestable_lock()).unwrap();
+            assert_eq!(mode(&path), kept, "a save reset the lock's mode");
+        }
+        let key = dir.path().join("k.pem");
+        std::fs::write(&key, "old").unwrap();
+        set(&key, 0o644);
+        write_whole(&key, b"new", 0o600).unwrap();
+        assert_eq!(mode(&key), 0o600, "a key file took the mode of what it replaced");
+        let sidecar = dir.path().join("keys.lock.lck");
+        std::fs::write(&sidecar, "").unwrap();
+        set(&sidecar, 0o444);
+        let guard = lock_for_update(&path, |_| unreachable!("nothing else holds it")).unwrap();
+        drop(guard);
     }
 
     /// Why a lock cannot be written: inside a Nix build sandbox, a lock file or a directory this

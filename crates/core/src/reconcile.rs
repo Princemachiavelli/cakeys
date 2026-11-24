@@ -209,6 +209,7 @@ pub fn compare(
         }
         warn_observed(t, prev, lock, facts, notes);
     }
+    same_object_no_weaker(t, r, lock, update)?;
     let unlisted = lock.unlisted_pairs(t.object_name);
     if !update && !unlisted.is_empty() {
         notes.note(format_args!(
@@ -258,6 +259,38 @@ fn spec_diff(t: &Target, r: &Resolved, prev: &LockRealisation) -> Vec<String> {
 /// What the realisation proved when it was locked, it must still prove — also when `lock`
 /// writes the lock: its mode, binding, attestation and schemes, and the immutables fixed when the
 /// object was made.
+/// The token object another spec already realised (the same object, token and locator, both
+/// through the private object or both `publicOnly`: the same PKCS#11 object) holds this spec
+/// to what that one established, as its own earlier realisation would: a second spec is no way
+/// to record it without its attestation, its proof or its mode, when writing too (review
+/// 2026-11-23 A-2). Another locator is another object of the same material, which may differ
+/// (keys.toml's `shared-a` signs, `shared-b` does not).
+fn same_object_no_weaker(t: &Target, r: &Resolved, lock: &Lock, update: bool) -> Result<()> {
+    let others = lock
+        .realisations
+        .iter()
+        .filter(|(spec, _)| spec.as_str() != t.spec_name)
+        .filter_map(|(spec, on)| Some((spec, on.get(t.token_name)?)))
+        .filter(|(_, prev)| {
+            prev.object == t.object_name && prev.locator == t.on_token.locator && prev.public_only == r.public_only
+        });
+    for (spec, prev) in others {
+        // What this one adds (an attestation the other lacks) is that realisation's to record.
+        no_downgrade(t, r, prev, update, &mut Notes::default()).map_err(|e| match e {
+            KmError::PreconditionFailed(m) => KmError::PreconditionFailed(
+                format!(
+                    "{m} (as spec '{spec}' realised the same object on '{}' under {}; a weaker realisation \
+                     needs a new object name)",
+                    t.token_name, prev.locator
+                )
+                .into(),
+            ),
+            other => other,
+        })?;
+    }
+    Ok(())
+}
+
 fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, notes: &mut Notes) -> Result<()> {
     if r.mode.rank() > prev.mode.rank() {
         return Err(KmError::PreconditionFailed(
@@ -836,6 +869,47 @@ mod tests {
         assert!(
             matches!(check(&resolved(&t)), Err(KmError::PreconditionFailed(m)) if m.contains("no longer computes"))
         );
+    }
+
+    /// A second spec of the same token object (the same locator) cannot record it weaker than the
+    /// first did, when writing too: without the attestation, or by `token-asserted`. As strong,
+    /// it records. A spec with another locator realises another object of the same material,
+    /// which may differ (review 2026-11-23 A-2).
+    #[test]
+    fn a_second_spec_of_the_same_object_cannot_record_it_weaker() {
+        let cfg: Config = toml::from_str(
+            "[tokens.t]\ntokenLabel = \"t\"\n\n\
+             [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.s]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
+             tokens.t = { locator = { CKA_LABEL = \"k\" }, origin = \"adopt\" }\n\n\
+             [specs.s2]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
+             tokens.t = { locator = { CKA_LABEL = \"k\" }, origin = \"adopt\" }\n\n\
+             [specs.copy]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
+             tokens.t = { locator = { CKA_LABEL = \"k-copy\" }, origin = \"adopt\" }\n",
+        )
+        .unwrap();
+        let target = |spec: &str| Target::new(&cfg, spec, "t").unwrap();
+        let (s, s2, copy) = (target("s"), target("s2"), target("copy"));
+        let plain = |t: &Target| Resolved { spec: t.spec_name.to_owned(), ..resolved(t) };
+        let attested = |t: &Target| Resolved {
+            attestation: Some(AttestationRecord { kind: "yubico-piv".into(), root: SRI_A.into(), id: SRI_A.into() }),
+            ..plain(t)
+        };
+        let mut lock = empty_lock();
+        let mut record = |t: &Target, r: &Resolved| {
+            reconcile(t, r, &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default())
+        };
+        record(&s, &attested(&s)).unwrap();
+        let unattested = record(&s2, &plain(&s2)).unwrap_err();
+        assert!(
+            matches!(&unattested, KmError::PreconditionFailed(m)
+                if m.contains("attestation") && m.contains("as spec 's' realised the same object")),
+            "{unattested}"
+        );
+        let asserted = record(&s2, &Resolved { binding: Some(Binding::TokenAsserted), ..attested(&s2) }).unwrap_err();
+        assert!(matches!(&asserted, KmError::PreconditionFailed(m) if m.contains("binding downgrade")), "{asserted}");
+        record(&s2, &attested(&s2)).unwrap();
+        record(&copy, &Resolved { binding: Some(Binding::TokenAsserted), ..plain(&copy) }).unwrap();
     }
 
     /// Provenance never changes a verdict: a different module build is a warning in the notes.

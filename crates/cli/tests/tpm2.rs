@@ -1053,6 +1053,8 @@ fn tpm2_vendor_module_attests_as_the_store_path_does() {
     let resolve = |token: &str| -> serde_json::Value {
         let o = e.km(&["resolve", "--spec", "p256", "--token", token]);
         assert_eq!(code(&o), 0, "{token}: {}", stderr(&o));
+        // The persistent AK is read from the TPM: no caveat, unlike akLabel's (review 2026-11-23 B-2).
+        assert!(!stderr(&o).contains("only the module vouches for"), "{token}: {}", stderr(&o));
         serde_json::from_str(&stdout(&o)).unwrap()
     };
     let (vendor, store) = (resolve("tpm"), resolve("store"));
@@ -1091,7 +1093,11 @@ fn tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store() {
     let att = e.locked_attestation("p256", "tpm");
     assert_eq!(att["kind"].as_str(), Some("tpm-certify"));
     for _ in 0..2 {
-        assert_eq!(e.code(&["verify", "--spec", "p256", "--token", "tpm"]), 0);
+        // Each run says what this signer cannot establish: only the module vouches for it
+        // (review 2026-11-23 B-2: nothing said so).
+        let o = e.km(&["verify", "--spec", "p256", "--token", "tpm"]);
+        assert_eq!(code(&o), 0, "{}", stderr(&o));
+        assert!(stderr(&o).contains("its tpm-certify signer (akLabel) is a key only the module vouches for"));
         assert_eq!(e.code(&["check", "p256.id.tpm-certify", "--token", "tpm"]), 0);
     }
     // No persistent AK was made: the TPM's handles are as they were.

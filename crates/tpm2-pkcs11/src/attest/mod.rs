@@ -312,7 +312,16 @@ fn parse_tcti(source: &str, value: &str) -> Result<tss_esapi::Tcti> {
 /// auth, names, material cross-check, the EK's credential).
 pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
     let opts = Tpm2Options::of(ctx.token_name, &ctx.cfg.options)?;
-    let (certified, ek) = match vendor::route(ctx, &opts)? {
+    let route = vendor::route(ctx, &opts)?;
+    // A token object as the signer (`akLabel`): its public area and its restricted, fixedTPM
+    // attributes are what the module reports, never read from the TPM, so a module with no TPM
+    // behind it could sign any statement (review 2026-11-23 B-2). Said on every run.
+    let caveat = (matches!(route, vendor::Route::Module) && opts.ak_label.is_some()).then(|| {
+        "its tpm-certify signer (akLabel) is a key only the module vouches for: the attestation is as \
+         trustworthy as the module, not the TPM; akHandle reads the Attestation Key from the TPM"
+            .to_owned()
+    });
+    let (certified, ek) = match route {
         vendor::Route::Module => {
             opts.refuse_ek_for_module(ctx.token_name)?;
             (vendor::certify(ctx, &opts)?, None)
@@ -343,6 +352,7 @@ pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
         id: cakeys_core::id::tpm_certify_id(&certified.name, &certified.qualified_name),
         root: cakeys_core::id::sri(&root),
         warning,
+        caveat,
     })
 }
 

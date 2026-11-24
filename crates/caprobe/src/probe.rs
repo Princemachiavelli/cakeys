@@ -31,7 +31,7 @@ use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsOaepParams, PkcsOaepSource, Pkcs
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass, ObjectHandle};
 use cryptoki::session::Session;
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod extras;
@@ -233,9 +233,12 @@ fn target(tok: &Token, cfg: &TokenCfg) -> Result<Target> {
     Ok(Target::Labels)
 }
 
-/// Refuse a scratch slot holding anything but the provider's own placeholder from an earlier
-/// generation (`Provider::scratch_occupant`): `scratchId` is one hex string, and a typo must
-/// never overwrite a real key.
+/// Refuse a scratch slot the probe did not leave: one holding anything, unless it holds the
+/// probe's own certificate ([`moves::SLOT_MARKER`], written at the end of every slot run) and
+/// beside it only what the module keeps beside any key (`Provider::scratch_companion`: ykcs11's
+/// attestation certificate). `scratchId` is one hex string, and a typo must never overwrite a
+/// real key: a module's own placeholder certificate is no mark, since every key it generates
+/// carries one, a real key `cakeys create` made included (review 2026-11-23 D-1).
 fn check_slot(tok: &Token, id: &[u8]) -> Result<()> {
     let s = tok.raw();
     let find =
@@ -253,17 +256,17 @@ fn check_slot(tok: &Token, id: &[u8]) -> Result<()> {
         };
         certs.push(der);
     }
-    if tok.provider.scratch_occupant(id, &certs) {
+    let marker = |c: &Vec<u8>| c.as_slice() == moves::SLOT_MARKER;
+    if certs.iter().any(marker) && certs.iter().filter(|c| !marker(*c)).all(|c| tok.provider.scratch_companion(id, c)) {
         return Ok(());
     }
     let shown = cakeys_core::hex::encode(id);
     Err(KmError::Validation(
         format!(
-            "token '{}': probe.scratchId {shown} holds objects that are not {}'s own placeholder from an earlier \
-         generation, so it may hold a real key: refusing to overwrite it; empty the slot or name \
-         another",
-            tok.name,
-            tok.provider.name()
+            "token '{}': probe.scratchId {shown} holds objects caprobe did not leave there (a slot it probed \
+             holds its own certificate, CN=cakeys-probe), so it may hold a real key: refusing to overwrite it; \
+             empty the slot or name another",
+            tok.name
         )
         .into(),
     ))
@@ -452,6 +455,11 @@ const MSG: &[u8] = b"cakeys probe: operations";
 #[derive(Default)]
 struct Ops {
     worked: BTreeSet<String>,
+    /// The signing mechanisms whose signature the host verified at least once, and those that
+    /// signed only where the host has no verifier (SHA-1, raw X.509): an unlisted one of the
+    /// latter alone is no `add` row (review 2026-11-23 D-2).
+    checked: BTreeSet<String>,
+    unchecked: BTreeSet<String>,
     failed: BTreeMap<String, Vec<String>>,
     /// The mechanisms tried though the module does not list them.
     unlisted: BTreeSet<String>,
@@ -472,9 +480,26 @@ impl Ops {
         }
     }
 
+    /// [`Self::record`] for a signature, `Ok(checked)`: whether the host verified it.
+    fn record_signed(&mut self, mech: MechanismType, on: &str, outcome: std::result::Result<bool, Msg>) {
+        if let Ok(checked) = &outcome {
+            let seen = if *checked { &mut self.checked } else { &mut self.unchecked };
+            seen.insert(mech.to_string());
+        }
+        self.record(mech, on, outcome.map(|_| ()));
+    }
+
     /// The rows and notes of what was seen; returns what could not be decided.
     fn finish(self, profile: &mut Draft) -> Vec<String> {
         for mech in self.worked.iter().filter(|m| self.unlisted.contains(*m)) {
+            // A signature only the module stands behind is not a mechanism the host saw work.
+            if self.unchecked.contains(mech) && !self.checked.contains(mech) {
+                profile.note(
+                    mech.clone(),
+                    "not listed; signs, but the host cannot verify its signatures, so it is not added".into(),
+                );
+                continue;
+            }
             profile.out.add.push(mech.clone());
             profile.note(mech.clone(), "not listed; works".into());
         }
@@ -630,11 +655,15 @@ type Pair = std::result::Result<(ObjectHandle, ObjectHandle), CkError>;
 enum Created {
     /// The pair `(public, private)` under its locator, and `create`'s note.
     Made(ObjectHandle, ObjectHandle, Option<token::CreateNote>),
-    /// The module refused the generation: a `cannot` row.
+    /// The module refused the generation (its `CKR_*`): a `cannot` row.
     Refused(KmError),
     /// The module said it generated, but the pair is not under its locator: neither a yes nor
     /// a no, so no row, and a note.
     Lost(KmError),
+    /// The module was never asked: cakeys or the provider refused first (no `CKR_*`: a
+    /// template the provider refuses, a host encoding error). It says nothing of the module, so
+    /// no row and a note, as `create_secret`'s caller does (review 2026-11-23 D-4).
+    Undecided(KmError),
 }
 
 /// A probe spec: `CKA_SENSITIVE` and the usage bits `private` and `public` name, true.
@@ -673,6 +702,14 @@ impl Made<'_> {
             self.ops.unlisted.insert(m.to_string());
         }
         self.ops.record(m, on, outcome);
+    }
+
+    /// [`Self::record`] for a signature ([`sign`]'s outcome: whether the host verified it).
+    fn record_signed(&mut self, m: MechanismType, on: &str, outcome: std::result::Result<bool, Msg>) {
+        if !self.tok.lists(m) {
+            self.ops.unlisted.insert(m.to_string());
+        }
+        self.ops.record_signed(m, on, outcome);
     }
 
     /// Generate a key pair where the target says: the templates completed with a fresh probe
@@ -758,6 +795,7 @@ impl Made<'_> {
         let note = match self.tok.create(object, spec, &loc, None) {
             Ok(note) => note,
             Err(KmError::Unavailable(m)) if m.contains(token::SO_LOGIN) => return Err(KmError::Unavailable(m)),
+            Err(e) if e.rv().is_none() => return Ok(Created::Undecided(e)),
             Err(e) => return Ok(Created::Refused(e)),
         };
         // Made: its label is the cleanup's and the leftover check's from here on, whatever the
@@ -809,7 +847,7 @@ impl Made<'_> {
     /// insist. `Ok((created, usable))`: `usable` when the usage took.
     fn create_for_use(&mut self, object: &ObjectCfg, usage: &SpecCfg, bare: &SpecCfg) -> Result<(Created, bool)> {
         match self.create(object, usage)? {
-            Created::Refused(_) => Ok((self.create(object, bare)?, false)),
+            Created::Refused(_) | Created::Undecided(_) => Ok((self.create(object, bare)?, false)),
             made => Ok((made, true)),
         }
     }
@@ -1291,6 +1329,9 @@ fn create_curves(
             (Created::Lost(e), _) => {
                 made.undetermined.push(format!("no generate row for {kt} on {curve}: the module generated, but {e}"));
             }
+            (Created::Undecided(e), _) => {
+                made.undetermined.push(format!("no generate row for {kt} on {curve}: never asked of the module: {e}"));
+            }
         }
     }
     Ok(())
@@ -1353,6 +1394,9 @@ fn probe_rsa(made: &mut Made, profile: &mut Draft) -> Result<Option<(ObjectHandl
             }
             (Created::Lost(e), _) => {
                 made.undetermined.push(format!("no generate row for {on}: the module generated, but {e}"));
+            }
+            (Created::Undecided(e), _) => {
+                made.undetermined.push(format!("no generate row for {on}: never asked of the module: {e}"));
             }
         }
     }
@@ -1426,17 +1470,21 @@ fn operate(made: &mut Made, profile: &mut Draft, kt: &KeyKind, on: &str, public:
                 let vendor = *mech.mechanism_type();
                 let name = MechanismType::EDDSA.to_string();
                 match sign(made.session, &mech, private, MSG, |s| sig::ed25519(&spki, MSG, s)) {
-                    Ok(()) => {
+                    Ok(true) => {
                         profile.out.add.push(name.clone());
                         profile.note(name, format!("not listed; signs through the provider's stand-in, {vendor:#x}"));
                     }
+                    Ok(false) => profile.note(
+                        name,
+                        format!("not listed; the provider's stand-in ({vendor:#x}) signs what the host cannot verify"),
+                    ),
                     Err(e) => {
                         profile.note(name, format!("not listed; the provider's stand-in ({vendor:#x}) on {on}: {e}"));
                     }
                 }
             } else if made.tries(MechanismType::EDDSA) {
                 let outcome = sign(made.session, &pure, private, MSG, |s| sig::ed25519(&spki, MSG, s));
-                made.record(MechanismType::EDDSA, on, outcome);
+                made.record_signed(MechanismType::EDDSA, on, outcome);
             }
         }
         KeyKind::Rsa => rsa_ops(made, profile, private, &spki, on),
@@ -1558,40 +1606,43 @@ fn evidence_text(token: &str, said: &str, rv: Option<u64>) -> String {
     }
 }
 
-/// Sign `data` with `mech`; `check` verifies the signature on the host where it can (`None`:
-/// no host verifier for this one, the call succeeding is the observation).
+/// Sign `data` with `mech`; `check` verifies the signature on the host where it can. `Ok(true)`
+/// when it verified; `Ok(false)` when there is no host verifier for this one (`None`), the
+/// call succeeding all that was seen, which makes no `add` row (review 2026-11-23 D-2).
 fn sign(
     s: &Session,
     mech: &Mechanism,
     key: ObjectHandle,
     data: &[u8],
     check: impl FnOnce(&[u8]) -> sig::Verdict,
-) -> std::result::Result<(), Msg> {
+) -> std::result::Result<bool, Msg> {
     let signature = s.sign(mech, key, data).map_err(|e| ck_refusal(&e))?;
     match check(&signature) {
         Some(Err(e)) => Err(format!("the signature does not verify ({e})").into()),
-        _ => Ok(()),
+        Some(Ok(())) => Ok(true),
+        None => Ok(false),
     }
 }
 
-/// ECDSA, raw and with each hash the module advertises; verified for the hashes `sig` has.
+/// ECDSA, raw and with each hash the module advertises, each signature verified on the host
+/// against the digest it signs; SHA-1, which the host does not compute, is signed unchecked.
 fn ec_ops(made: &mut Made, private: ObjectHandle, spki: &[u8], on: &str, hash: Option<HashAlg>) {
-    let verify = |h: Option<HashAlg>| move |s: &[u8]| h.and_then(|h| sig::ecdsa(spki, MSG, s, Encoding::Raw, Some(h)));
     // Raw ECDSA signs the curve's digest of the message.
-    let digest = hash.map_or_else(|| Sha256::digest(MSG).to_vec(), |h| h.digest(MSG));
-    let raw = (Mechanism::Ecdsa, digest, hash.or(Some(HashAlg::Sha256)));
-    let hashed = [
+    let raw = hash.unwrap_or(HashAlg::Sha256).digest(MSG);
+    let tries = [
+        (Mechanism::Ecdsa, raw.clone(), Some(raw)),
         (Mechanism::EcdsaSha1, MSG.to_vec(), None),
-        (Mechanism::EcdsaSha224, MSG.to_vec(), None),
-        (Mechanism::EcdsaSha256, MSG.to_vec(), Some(HashAlg::Sha256)),
-        (Mechanism::EcdsaSha384, MSG.to_vec(), Some(HashAlg::Sha384)),
-        (Mechanism::EcdsaSha512, MSG.to_vec(), Some(HashAlg::Sha512)),
+        (Mechanism::EcdsaSha224, MSG.to_vec(), Some(Sha224::digest(MSG).to_vec())),
+        (Mechanism::EcdsaSha256, MSG.to_vec(), Some(HashAlg::Sha256.digest(MSG))),
+        (Mechanism::EcdsaSha384, MSG.to_vec(), Some(HashAlg::Sha384.digest(MSG))),
+        (Mechanism::EcdsaSha512, MSG.to_vec(), Some(HashAlg::Sha512.digest(MSG))),
     ];
-    for (mech, data, h) in std::iter::once(raw).chain(hashed) {
+    for (mech, data, digest) in tries {
         let mt = mech.mechanism_type();
         if made.tries(mt) {
-            let outcome = sign(made.session, &mech, private, &data, verify(h));
-            made.record(mt, on, outcome);
+            let check = |s: &[u8]| digest.as_deref().and_then(|d| sig::ecdsa_prehash(spki, d, s, Encoding::Raw));
+            let outcome = sign(made.session, &mech, private, &data, check);
+            made.record_signed(mt, on, outcome);
         }
     }
 }
@@ -1772,11 +1823,13 @@ fn derived_once(
     }
 }
 
+/// A host verifier of an RSA signature over the message (`sig::rsa_pkcs1v15`, `sig::rsa_pss`),
+/// or none where the host does not compute the hash.
+type RsaCheck = Option<fn(&[u8], &[u8], &[u8]) -> sig::Verdict>;
+
 /// RSA signing (PKCS#1 v1.5 raw and hashed, PSS raw and hashed, raw X.509) and decryption
 /// (PKCS#1 v1.5, OAEP per hash: `decrypt.oaep`), on a 2048-bit key.
 fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[u8], on: &str) {
-    let pkcs1 = |s: &[u8]| sig::rsa_pkcs1v15::<Sha256>(spki, MSG, s);
-    let none = |_: &[u8]| None;
     let pss = |hash, mgf, len: usize| PkcsPssParams { hash_alg: hash, mgf, s_len: (len as u64).into() };
     // What raw `CKM_RSA_PKCS` signs: the digest behind its `DigestInfo` prefix.
     let digest_info = [token::digest_info(HashAlg::Sha256), Sha256::digest(MSG).as_slice()].concat();
@@ -1785,36 +1838,51 @@ fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandle, spki: &[
     // below the modulus.
     let block = pop::rsa_modulus_len(spki).map(|n| [vec![0u8], vec![0x5a; n.saturating_sub(1)]].concat());
     let sha256 = Sha256::digest(MSG).to_vec();
-    let signs: [(Mechanism, Vec<u8>, bool); 11] = [
-        (Mechanism::RsaPkcs, digest_info, true),
-        (Mechanism::Sha1RsaPkcs, MSG.to_vec(), false),
-        (Mechanism::Sha224RsaPkcs, MSG.to_vec(), false),
-        (Mechanism::Sha256RsaPkcs, MSG.to_vec(), true),
-        (Mechanism::Sha384RsaPkcs, MSG.to_vec(), false),
-        (Mechanism::Sha512RsaPkcs, MSG.to_vec(), false),
-        (Mechanism::RsaPkcsPss(pss(MechanismType::SHA256, PkcsMgfType::MGF1_SHA256, 32)), sha256, false),
-        (Mechanism::Sha1RsaPkcsPss(pss(MechanismType::SHA1, PkcsMgfType::MGF1_SHA1, 20)), MSG.to_vec(), false),
-        (Mechanism::Sha256RsaPkcsPss(pss(MechanismType::SHA256, PkcsMgfType::MGF1_SHA256, 32)), MSG.to_vec(), false),
-        (Mechanism::Sha384RsaPkcsPss(pss(MechanismType::SHA384, PkcsMgfType::MGF1_SHA384, 48)), MSG.to_vec(), false),
-        (Mechanism::Sha512RsaPkcsPss(pss(MechanismType::SHA512, PkcsMgfType::MGF1_SHA512, 64)), MSG.to_vec(), false),
+    // Each signature verified on the host over the message, as its hash says (the raw forms sign
+    // SHA-256's digest of it); SHA-1, which the host does not compute, is signed unchecked
+    // (review 2026-11-23 D-2: all but two went unverified, and fed `add` rows).
+    let signs: [(Mechanism, Vec<u8>, RsaCheck); 11] = [
+        (Mechanism::RsaPkcs, digest_info, Some(sig::rsa_pkcs1v15::<Sha256>)),
+        (Mechanism::Sha1RsaPkcs, MSG.to_vec(), None),
+        (Mechanism::Sha224RsaPkcs, MSG.to_vec(), Some(sig::rsa_pkcs1v15::<Sha224>)),
+        (Mechanism::Sha256RsaPkcs, MSG.to_vec(), Some(sig::rsa_pkcs1v15::<Sha256>)),
+        (Mechanism::Sha384RsaPkcs, MSG.to_vec(), Some(sig::rsa_pkcs1v15::<Sha384>)),
+        (Mechanism::Sha512RsaPkcs, MSG.to_vec(), Some(sig::rsa_pkcs1v15::<Sha512>)),
+        (
+            Mechanism::RsaPkcsPss(pss(MechanismType::SHA256, PkcsMgfType::MGF1_SHA256, 32)),
+            sha256,
+            Some(sig::rsa_pss::<Sha256>),
+        ),
+        (Mechanism::Sha1RsaPkcsPss(pss(MechanismType::SHA1, PkcsMgfType::MGF1_SHA1, 20)), MSG.to_vec(), None),
+        (
+            Mechanism::Sha256RsaPkcsPss(pss(MechanismType::SHA256, PkcsMgfType::MGF1_SHA256, 32)),
+            MSG.to_vec(),
+            Some(sig::rsa_pss::<Sha256>),
+        ),
+        (
+            Mechanism::Sha384RsaPkcsPss(pss(MechanismType::SHA384, PkcsMgfType::MGF1_SHA384, 48)),
+            MSG.to_vec(),
+            Some(sig::rsa_pss::<Sha384>),
+        ),
+        (
+            Mechanism::Sha512RsaPkcsPss(pss(MechanismType::SHA512, PkcsMgfType::MGF1_SHA512, 64)),
+            MSG.to_vec(),
+            Some(sig::rsa_pss::<Sha512>),
+        ),
     ];
-    for (mech, data, verified) in signs {
+    for (mech, data, check) in signs {
         let mt = mech.mechanism_type();
         if made.tries(mt) {
-            let outcome = if verified {
-                sign(made.session, &mech, private, &data, pkcs1)
-            } else {
-                sign(made.session, &mech, private, &data, none)
-            };
-            made.record(mt, on, outcome);
+            let outcome = sign(made.session, &mech, private, &data, |s| check.and_then(|v| v(spki, MSG, s)));
+            made.record_signed(mt, on, outcome);
         }
     }
     if made.tries(MechanismType::RSA_X_509) {
         let outcome = match &block {
-            Ok(block) => sign(made.session, &Mechanism::RsaX509, private, block, none),
+            Ok(block) => sign(made.session, &Mechanism::RsaX509, private, block, |_| None),
             Err(e) => Err(e.to_string().into()),
         };
-        made.record(MechanismType::RSA_X_509, on, outcome);
+        made.record_signed(MechanismType::RSA_X_509, on, outcome);
     }
     // Decryption: the host encrypts a fresh secret to the key, the token must recover it.
     let decrypts = |made: &mut Made, mech: &Mechanism, padding| -> std::result::Result<(), Msg> {
@@ -1962,8 +2030,24 @@ fn probe_wrapping(made: &mut Made, profile: &mut Draft, transport: (ObjectHandle
         ];
         match session.unwrap_key(&mech, unwraps, &wrapped, &template) {
             Ok(h) => {
-                round_trips.push((name, hash));
                 made.scratch.track(&[h], &label);
+                // Only the key that went in counts as coming back, and a module that wraps and
+                // unwraps with another hash than asked passes its own round trip: a blob the
+                // host made with this hash must decode too (review 2026-11-23 D-3).
+                if same_key(session, aes, h) == Some(false) {
+                    failures.push(format!("{name}: unwraps its own blob to another key"));
+                    continue;
+                }
+                match host_blob(made, &mech, wraps, unwraps, hash) {
+                    HostBlob::Decodes => round_trips.push((name, hash)),
+                    HostBlob::Refused(why) => failures.push(format!("{name}: {why}")),
+                    HostBlob::Untold(why) => {
+                        made.undetermined.push(format!(
+                            "wrap.rsa-oaep.{name} rests on the module's own round trip, not a host-made blob: {why}"
+                        ));
+                        round_trips.push((name, hash));
+                    }
+                }
             }
             Err(e) => failures.push(format!("{name}: wraps but does not unwrap: {}", ckr(&e))),
         }
@@ -2068,7 +2152,7 @@ fn probe_key_wraps(made: &mut Made, profile: &mut Draft, transport: (ObjectHandl
             continue;
         }
         let mut refusals = Vec::new();
-        let mut round_trip = false;
+        let (mut round_trip, mut wrong_key) = (false, false);
         for variant in variants {
             let oaep;
             let mech = match variant {
@@ -2099,12 +2183,27 @@ fn probe_key_wraps(made: &mut Made, profile: &mut Draft, transport: (ObjectHandl
             match session.unwrap_key(mech, unwraps_with, &wrapped, &template) {
                 Ok(h) => {
                     made.scratch.track(&[h], &label);
-                    round_trip = true;
+                    // The key that went in, not any key (review 2026-11-23 D-3).
+                    match same_key(session, aes, h) {
+                        Some(true) => round_trip = true,
+                        Some(false) => wrong_key = true,
+                        None => {
+                            made.undetermined.push(format!(
+                                "{name}: the unwrapped key is not compared with the one wrapped (no CKM_AES_ECB \
+                                 check value of both)"
+                            ));
+                            round_trip = true;
+                        }
+                    }
                 }
                 Err(e) => refusals.push(("C_UnwrapKey", e)),
             }
         }
         if round_trip {
+            continue;
+        }
+        if wrong_key {
+            profile.note(name.to_owned(), "wraps, but unwraps its own blob to another key".into());
             continue;
         }
         let refused_as_such = refusals
@@ -2120,6 +2219,70 @@ fn probe_key_wraps(made: &mut Made, profile: &mut Draft, transport: (ObjectHandl
     }
     profile.out.subtract.mechanisms.sort();
     profile.out.subtract.mechanisms.dedup();
+}
+
+/// Whether the AES keys `a` and `b` on the token are one key: the same check value (`CKM_AES_ECB`
+/// of a zero block). `None` when that cannot be told: no ECB, or a key that may not encrypt.
+fn same_key(session: &Session, a: ObjectHandle, b: ObjectHandle) -> Option<bool> {
+    let kcv = |h| session.encrypt(&Mechanism::AesEcb, h, &[0; 16]).ok();
+    Some(kcv(a)? == kcv(b)?)
+}
+
+/// What a blob the host made says of the module's RSA-OAEP with one hash ([`host_blob`]).
+enum HostBlob {
+    /// It unwrapped to the key the host wrapped.
+    Decodes,
+    /// It did not: the module does not decode OAEP with this hash, whatever its own round trip.
+    Refused(String),
+    /// It could not be told: why.
+    Untold(String),
+}
+
+/// The host OAEP-encrypts a known AES key ([`moves::AES_KEYS`]) to the transport key `public`
+/// with `hash`; the token must unwrap it with `mech` and `unwraps` to that key (review
+/// 2026-11-23 D-3: a module using another hash than asked passed its own round trip). The
+/// unwrapped session key is destroyed again.
+fn host_blob(made: &Made, mech: &Mechanism, public: ObjectHandle, unwraps: ObjectHandle, hash: OaepHash) -> HostBlob {
+    let value = moves::AES_KEYS[2];
+    let spki = match made.tok.material_spki(public) {
+        Ok(Some(spki)) => spki,
+        Ok(None) => return HostBlob::Untold("the transport key's public half carries no material".into()),
+        Err(e) => return HostBlob::Untold(evidence(made.tok, &e)),
+    };
+    let blob = match pop::rsa_encrypt(&spki, RsaPadding::Oaep(hash), value) {
+        Ok(blob) => blob,
+        Err(e) => return HostBlob::Untold(evidence(made.tok, &e)),
+    };
+    let template = [
+        Attribute::Token(false),
+        Attribute::Class(ObjectClass::SECRET_KEY),
+        Attribute::KeyType(KeyType::AES),
+        Attribute::Encrypt(true),
+    ];
+    // Its own blob unwrapped a moment ago: a refusal of this one is the blob's (modules say so
+    // as CKR_ENCRYPTED_DATA_INVALID, CKR_WRAPPED_KEY_INVALID or CKR_GENERAL_ERROR), unless it is
+    // about the template, which differs from the round trip's.
+    let h = match made.session.unwrap_key(mech, unwraps, &blob, &template) {
+        Ok(h) => h,
+        Err(
+            e @ CkError::Pkcs11(
+                RvError::TemplateIncomplete
+                | RvError::TemplateInconsistent
+                | RvError::AttributeTypeInvalid
+                | RvError::AttributeValueInvalid
+                | RvError::AttributeReadOnly,
+                _,
+            ),
+        ) => return HostBlob::Untold(format!("unwrapping a host-made blob, its template: {}", ckr(&e))),
+        Err(e) => return HostBlob::Refused(format!("unwraps its own blob but not one the host made: {}", ckr(&e))),
+    };
+    let verdict = match moves::same_aes(made, h, value) {
+        Ok(()) => HostBlob::Decodes,
+        Err(KmError::Conflict(_)) => HostBlob::Refused("unwraps a host-made blob to another key".into()),
+        Err(e) => HostBlob::Untold(evidence(made.tok, &e)),
+    };
+    let _ = made.session.destroy_object(h);
+    verdict
 }
 
 /// One key wrap [`probe_key_wraps`] tries: an AES key wrap, or `CKM_RSA_AES_KEY_WRAP` with
@@ -2367,6 +2530,27 @@ mod tests {
         // Worked with one hash: usable, the other hash's failure a note only.
         assert_eq!(profile.out.notes["CKM_RSA_PKCS_OAEP"], "RSA-2048 decrypt SHA-256: CKR_ARGUMENTS_BAD");
         assert!(!profile.out.notes.contains_key("CKM_ECDSA"));
+    }
+
+    /// An unlisted mechanism is an `add` row only on a signature the host verified: one that
+    /// signed only where the host has no verifier (SHA-1 here) is a note, and one that verified
+    /// once is added whatever else it signed unchecked (review 2026-11-23 D-2: any returned bytes
+    /// were an `add`).
+    #[test]
+    fn only_a_verified_signature_adds_a_mechanism() {
+        let mut ops = Ops::default();
+        for m in [MechanismType::ECDSA_SHA224, MechanismType::SHA1_RSA_PKCS, MechanismType::SHA224_RSA_PKCS] {
+            ops.unlisted.insert(m.to_string());
+        }
+        ops.record_signed(MechanismType::ECDSA_SHA224, "secp256r1", Ok(true));
+        ops.record_signed(MechanismType::SHA1_RSA_PKCS, "RSA-2048", Ok(false));
+        ops.record_signed(MechanismType::SHA224_RSA_PKCS, "RSA-2048", Ok(false));
+        ops.record_signed(MechanismType::SHA224_RSA_PKCS, "RSA-3072", Ok(true));
+        let mut profile = Draft::new(Profile::from_toml("profile = \"t\"\nmode = \"observed\"\n").unwrap());
+        ops.finish(&mut profile);
+        assert_eq!(profile.out.add, ["CKM_ECDSA_SHA224", "CKM_SHA224_RSA_PKCS"]);
+        assert!(profile.out.notes["CKM_SHA1_RSA_PKCS"].contains("cannot verify its signatures"));
+        assert!(profile.out.subtract.mechanisms.is_empty());
     }
 
     /// Evidence keeps the module's return value and drops cryptoki's prose and the token's

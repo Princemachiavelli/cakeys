@@ -270,8 +270,13 @@ generated, never edited, and pinned like the baseline:
   counts it as offered, and nothing else does.
   Every run destroys what it made. Notes carry `CKR_*` names, stable across binding releases.
 - **SO-only modules** (ykcs11): `tokens.<t>.probe.scratchId` names the one slot write probes may
-  generate into. The slot must be empty or hold the provider's own placeholder; anything else is
-  refused (17) before a write. No delete or wrap probes there: PIV cannot erase a key.
+  generate into. The slot must be empty or hold the probe's own certificate (`CN=cakeys-probe`),
+  which every slot run writes there last, beside at most the device's attestation of the slot;
+  anything else is refused (17) before a write. ykcs11's placeholder certificate is no mark: it
+  writes one for every key it generates, a real key's too. A run stopped before its last step
+  leaves the slot unmarked, refused until it is emptied (`scripts/yubikey-empty-slots.py`). A
+  `scratchId` that is the `CKA_ID` of a locator keys.toml has on that token is invalid at load.
+  No delete or wrap probes there: PIV cannot erase a key.
 - **RSA sizes**: an observed size decides; outside the reported range is no; between two that
   generated, with no size tried between them refused, is yes; otherwise unknown (a TPM
   generates only its discrete sizes: swtpm's 1024 yes, 1536 no leaves 1280 unknown).

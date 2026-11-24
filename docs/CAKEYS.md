@@ -171,9 +171,12 @@ forces it. The VM test covers all of this.
   - It always exits 0 and grants nothing on error.
   - Test: `checks.module`, *the hook grants token paths only to builds requiring the token's feature*.
 - **`sandbox.pcscd.enable`:** pcscd, plus a polkit rule for nixbld or the auto-allocated UID range,
-  plus `PrivateUsers=false` with auto UIDs.
+  plus `PrivateUsers=false` with auto UIDs. The grant is host-wide: pcscd serves every reader, so
+  a build granted its socket reaches every card plugged in, not only its token's. Several tokens
+  with `pcscd = true` are a warning.
 - **`sandbox.tpm2.enable`:** a udev ACL on `/dev/tpmrm*` for every build GID: the nixbld GID, or,
-  with `auto-allocate-uids`, each 65 536-ID slot's first UID, which is also its GID. Test:
+  with `auto-allocate-uids`, each 65 536-ID slot's first UID, which is also its GID. The device is
+  the whole TPM: a build granted it reaches every object its authorization allows. Test:
   `checks.tpm`, with auto UIDs, uid-range, nixbld, and a stripped-ACL control.
 - **`sandbox.uidRange.enable`:** `auto-allocate-uids` and the `uid-range` feature.
 - **`checks.<n>`:** a oneshot `cakeys-check-<n>` unit running `check`, required by the

@@ -190,6 +190,21 @@ pub trait Provider: Send + Sync {
         Ok(None)
     }
 
+    /// Whether a key may be made under `loc` on this module, generated or imported: a module
+    /// that places keys into fixed slots by their locator (ykcs11's PIV slots) refuses one it
+    /// cannot place. Static, so asked before anything is created: by the capability gate for
+    /// every pair keys.toml makes on the token, before every import's write
+    /// ([`crate::ops::check_import`]), and by a [`Self::create`] override (review 2026-11-23 B-3:
+    /// only ykcs11's override asked, so `validate`, `create --dry-run` and camigrate's imports
+    /// never did). The default places a key anywhere.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` (17) naming why the locator places no key.
+    fn placement(&self, _loc: &Locator) -> Result<()> {
+        Ok(())
+    }
+
     /// Create `req`'s object on `tok`. The default is [`Token::create_declared`]: the module's
     /// own template where [`Self::generation`] chooses one, else cakeys' templates, in an SO
     /// session where [`Self::manages_as_so`]. An override refuses what the module would place
@@ -269,11 +284,13 @@ pub trait Provider: Send + Sync {
         Vec::new()
     }
 
-    /// Whether the certificates `certs` (DER) found under the probe's scratch `CKA_ID` (`id`)
-    /// show a slot holding only what this module itself wrote when it generated the slot's key —
-    /// the only occupant the write probe may replace (`tokens.<t>.probe.scratchId`). Anything
-    /// else may be a real key, so the probe refuses it. The default recognises none.
-    fn scratch_occupant(&self, _id: &[u8], _certs: &[Vec<u8>]) -> bool {
+    /// Whether `cert` (DER), found under the probe's scratch `CKA_ID` (`id`,
+    /// `tokens.<t>.probe.scratchId`) beside the probe's own certificate, is one the module keeps
+    /// beside any key in a slot (ykcs11: the device's attestation of the slot), which says nothing
+    /// of whose key it is. Only the probe's certificate marks a slot as the probe's; a
+    /// certificate the module writes for every key it generates is no companion, since a real
+    /// key has it too (review 2026-11-23 D-1). The default recognises none.
+    fn scratch_companion(&self, _id: &[u8], _cert: &[u8]) -> bool {
         false
     }
 }
@@ -687,6 +704,10 @@ pub struct Attested {
     /// Why the chain would fail `check` though it verified: its dates, under
     /// [`ChainTime::Warn`].
     pub warning: Option<String>,
+    /// What the attestation does not establish though it verified, said on every run that
+    /// computes it: tpm2-pkcs11's `akLabel` signer, whose public area only the module reports
+    /// (review 2026-11-23 B-2).
+    pub caveat: Option<String>,
 }
 
 /// Plain PKCS#11, used when no registered provider recognises the module.

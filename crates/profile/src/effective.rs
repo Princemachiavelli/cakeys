@@ -204,17 +204,13 @@ impl<'a> Effective<'a> {
                 return Verdict::yes(&m.profile, None);
             }
             let free = !matches!(KeyKind::from(key_type), KeyKind::Aes | KeyKind::Des3);
-            let (below, above) =
-                (row.can_bytes.iter().filter(|b| **b < n).max(), row.can_bytes.iter().filter(|b| **b > n).min());
-            if free && below.is_some() && above.is_some() {
+            let tried = tried(row.can_bytes.iter().copied(), row.cannot_bytes.iter().copied());
+            if free && between_working(&tried, n) {
                 return Verdict::yes(&m.profile, None);
             }
-            let mut tried: Vec<u32> = row.can_bytes.iter().chain(&row.cannot_bytes).copied().collect();
             if !tried.is_empty() {
-                tried.sort_unstable();
-                let tried: Vec<String> = tried.iter().map(u32::to_string).collect();
                 return Verdict::Unknown {
-                    why: format!("module profile {} probed {} bytes only", m.profile, tried.join(", ")),
+                    why: format!("module profile {} probed {} bytes only", m.profile, sizes(&tried)),
                 };
             }
         }
@@ -232,25 +228,18 @@ impl<'a> Effective<'a> {
 
     /// Whether a module computes the commitment `kind` (`hmac-sha256`, `cmac`, `kcv-ecb`...) on a
     /// secret key of `key_type`, `bytes` long when the length is known. The module's
-    /// `commit.*` row for the length decides; for a key type whose length is free, any length
-    /// that did stands for one between two that did, and any other length is unknown. A profile
-    /// with no such rows is unknown: the advertised mechanism is all it knows.
+    /// `commit.*` row for the length decides; for a key type whose length is free, a length
+    /// between the nearest two tried, both of which worked, is yes, and any other length is
+    /// unknown (a length below a refused one is never yes). Without a length, a free key type
+    /// is yes when any length worked. A profile with no such rows is unknown: the advertised
+    /// mechanism is all it knows.
     #[must_use]
     pub fn commit(&self, kind: &str, key_type: &str, bytes: Option<u32>) -> Verdict {
         let Some(m) = self.module else {
             return Verdict::Unknown { why: "no module profile selected".into() };
         };
         let kt = KeyKind::from(key_type);
-        let rows: Vec<(u32, bool)> = m
-            .capabilities
-            .iter()
-            .filter_map(|(c, r)| match c {
-                Capability::Commit { kind: k, key_type: t, bytes: b } if k == kind && *t == kt => {
-                    Some((*b, r.answer.yes()))
-                }
-                _ => None,
-            })
-            .collect();
+        let rows = commit_rows(m, kind, &kt);
         if rows.is_empty() {
             return Verdict::Unknown { why: format!("module profile {} records no {kind} commitment", m.profile) };
         }
@@ -268,10 +257,22 @@ impl<'a> Effective<'a> {
             return Verdict::no(&m.profile, m.evidence(&row(rows[0].0), &format!("{kind} on {key_type}")));
         }
         let free = !matches!(kt, KeyKind::Aes | KeyKind::Des3);
-        if free && rows.iter().any(|(_, yes)| *yes) {
+        let worked = match bytes {
+            Some(n) => between_working(&rows, n),
+            None => rows.iter().any(|(_, yes)| *yes),
+        };
+        if free && worked {
             return Verdict::yes(&m.profile, None);
         }
-        Verdict::Unknown { why: format!("module profile {} probed {kind} at other lengths only", m.profile) }
+        Verdict::Unknown { why: format!("module profile {} probed {kind} at {} bytes only", m.profile, sizes(&rows)) }
+    }
+
+    /// Whether the module profile measured the commitment `kind` on `key_type` at any length:
+    /// what tells an unknown [`Self::commit`] for a length the probe did not try from one for a
+    /// commitment it never measured (the advertised mechanism's to decide).
+    #[must_use]
+    pub fn measured_commit(&self, kind: &str, key_type: &str) -> bool {
+        self.module.is_some_and(|m| !commit_rows(m, kind, &KeyKind::from(key_type)).is_empty())
     }
 
     /// Whether a module generates a key of `key_type`, optionally with one item (a curve, or a
@@ -314,20 +315,13 @@ impl<'a> Effective<'a> {
             if row.max_bits.is_some_and(|max| bits > max) || row.min_bits.is_some_and(|min| bits < min) {
                 return Verdict::no(&m.profile, m.notes.get(key_type).cloned());
             }
-            let tried = row.can_bits.iter().chain(&row.cannot_bits);
-            if tried.clone().next().is_some() {
-                // Between the nearest sizes tried on either side, both of which generated: a
-                // refused size in between (a TPM's discrete sizes) leaves it unknown.
-                let below = tried.clone().filter(|b| **b < bits).max();
-                let above = tried.clone().filter(|b| **b > bits).min();
-                if below.zip(above).is_some_and(|(lo, hi)| row.can_bits.contains(lo) && row.can_bits.contains(hi)) {
+            let tried = tried(row.can_bits.iter().copied(), row.cannot_bits.iter().copied());
+            if !tried.is_empty() {
+                if between_working(&tried, bits) {
                     return Verdict::yes(&m.profile, None);
                 }
-                let mut tried: Vec<u32> = tried.copied().collect();
-                tried.sort_unstable();
-                let tried: Vec<String> = tried.iter().map(u32::to_string).collect();
                 return Verdict::Unknown {
-                    why: format!("module profile {} probed {} bits only", m.profile, tried.join(", ")),
+                    why: format!("module profile {} probed {} bits only", m.profile, sizes(&tried)),
                 };
             }
         }
@@ -438,6 +432,42 @@ impl<'a> Effective<'a> {
     }
 }
 
+/// Whether `n`, a size the probe did not try, lies between the nearest sizes it tried on either
+/// side, and both of those worked: a refused size between them (a TPM's discrete sizes, a
+/// module's minimum HMAC length) or no tried size on one side leaves `n` unknown. A size tried
+/// both ways counts as refused. The one rule a size is interpolated by, in bits for
+/// [`Effective::generate`] and bytes for [`Effective::generate_secret`] and
+/// [`Effective::commit`] (review 2026-11-23 A-1).
+fn between_working(tried: &[(u32, bool)], n: u32) -> bool {
+    let worked = |size: u32| tried.iter().filter(|(s, _)| *s == size).all(|(_, ok)| *ok);
+    let below = tried.iter().map(|(s, _)| *s).filter(|s| *s < n).max();
+    let above = tried.iter().map(|(s, _)| *s).filter(|s| *s > n).min();
+    below.zip(above).is_some_and(|(lo, hi)| worked(lo) && worked(hi))
+}
+
+/// The lengths `m` measured the commitment `kind` on `kt` at, each with whether it worked.
+fn commit_rows(m: &Profile, kind: &str, kt: &KeyKind) -> Vec<(u32, bool)> {
+    m.capabilities
+        .iter()
+        .filter_map(|(c, r)| match c {
+            Capability::Commit { kind: k, key_type: t, bytes: b } if k == kind && t == kt => Some((*b, r.answer.yes())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `can` and `cannot` as one list of tried sizes, each with whether it worked.
+fn tried(can: impl IntoIterator<Item = u32>, cannot: impl IntoIterator<Item = u32>) -> Vec<(u32, bool)> {
+    can.into_iter().map(|s| (s, true)).chain(cannot.into_iter().map(|s| (s, false))).collect()
+}
+
+/// The sizes that were tried, in order, as an unknown size names them.
+fn sizes(tried: &[(u32, bool)]) -> String {
+    let mut sizes: Vec<u32> = tried.iter().map(|(s, _)| *s).collect();
+    sizes.sort_unstable();
+    sizes.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")
+}
+
 /// The PQ key type a `CKP_*` parameter set belongs to ([`Effective::query`]): the PBKDF2
 /// pseudo-random functions name none.
 fn parameter_set_key_type(name: &str) -> Option<&'static str> {
@@ -467,6 +497,7 @@ mod tests {
             CKM_ECDSA = 0x1041
             [key-types]
             CKK_AES = 0x1f
+            CKK_GENERIC_SECRET = 0x10
             CKK_EC = 0x3
             CKK_RSA = 0x0
             CKK_ML_DSA = 0x4a
@@ -692,6 +723,50 @@ mod tests {
             let v = stack.generate("CKK_RSA", None, Some(bits));
             assert!(matches!(&v, Verdict::Unknown { why } if why.contains("1024, 1536, 2048, 3072")), "{bits}: {v:?}");
         }
+    }
+
+    /// A secret-key length the probe did not try is yes only between the nearest two it tried,
+    /// both of which worked, for a commitment and a generation alike: below a refused length,
+    /// past the last one tried, or across a refused one it is unknown, never a guess. SoftHSM's
+    /// rows (16 bytes refused, 32 and 64 computed) made 8 bytes a yes (review 2026-11-23 A-1).
+    #[test]
+    fn secret_lengths_interpolate_only_between_two_that_worked() {
+        let b = baseline();
+        let m = profile(
+            "profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n\
+             \"commit.hmac-sha256.CKK_GENERIC_SECRET.16\" = { answer = \"no\" }\n\
+             \"commit.hmac-sha256.CKK_GENERIC_SECRET.32\" = { answer = \"yes\" }\n\
+             \"commit.hmac-sha256.CKK_GENERIC_SECRET.64\" = { answer = \"yes\" }\n\
+             \"commit.hmac-sha256.CKK_GENERIC_SECRET.128\" = { answer = \"no\" }\n\
+             \"commit.hmac-sha256.CKK_GENERIC_SECRET.256\" = { answer = \"yes\" }\n\
+             \"generate.CKK_GENERIC_SECRET.16\" = { answer = \"yes\" }\n\
+             \"generate.CKK_GENERIC_SECRET.24\" = { answer = \"no\" }\n\
+             \"generate.CKK_GENERIC_SECRET.32\" = { answer = \"yes\" }\n\
+             \"generate.CKK_GENERIC_SECRET.64\" = { answer = \"yes\" }\n",
+        );
+        let stack = eff(&b, Some(&m), &[]);
+        let commit = |n: Option<u32>| stack.commit("hmac-sha256", "CKK_GENERIC_SECRET", n);
+        let unknown = |v: Verdict, n: Option<u32>| {
+            assert!(
+                matches!(&v, Verdict::Unknown { why } if why.ends_with("16, 32, 64, 128, 256 bytes only")),
+                "{n:?}: {v:?}"
+            );
+        };
+        for n in [8, 24, 96, 512] {
+            unknown(commit(Some(n)), Some(n));
+        }
+        assert!(matches!(commit(Some(48)), Verdict::Yes { .. }));
+        assert!(matches!(commit(Some(16)), Verdict::No { .. }));
+        assert!(matches!(commit(None), Verdict::Yes { .. }), "the key type at all: some length worked");
+        let generate = |n: u32| stack.generate_secret("CKK_GENERIC_SECRET", Some(n));
+        for n in [8, 20, 128] {
+            assert!(
+                matches!(&generate(n), Verdict::Unknown { why } if why.ends_with("16, 24, 32, 64 bytes only")),
+                "{n} bytes: {:?}",
+                generate(n)
+            );
+        }
+        assert!(matches!(generate(48), Verdict::Yes { .. }));
     }
 
     /// A mechanism is usable when the module advertises it or the profile adds it, and no

@@ -153,8 +153,14 @@ pub fn plan_templates(
 ///
 /// # Errors
 ///
-/// What `lock`'s capability check refuses, the provider's templates included.
+/// What `lock`'s capability check refuses, the provider's templates included; `Validation` (17)
+/// for a key the module cannot place under its locator (`Provider::placement`).
 pub fn check_import(t: &Target, tok: &Token) -> Result<()> {
+    // Where the module can place it (ykcs11: a PIV slot by CKA_ID, never f9's attestation key),
+    // before the write: a PIV slot's imported key cannot be erased (review 2026-11-23 B-3).
+    if t.object.class.is_key() {
+        tok.provider.placement(&t.on_token.locator)?;
+    }
     check_imported_attestation(t, tok.provider.as_ref()).map_err(|m| tok.unsupported(m))?;
     check_capabilities(t, tok, plan_mode(t)?, Verb::Lock)
 }

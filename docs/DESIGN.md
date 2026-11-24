@@ -319,7 +319,11 @@ Outcomes:
 The lock records the binding per realisation (`pop-sign`, `pop-sign-pin`, `pop-ecdh`,
 `pop-decrypt`, `pop-unwrap` or `token-asserted`). The `pop-*` methods share the top rank — each proves possession of the same
 key — so a realisation never weakens unless it drops to `token-asserted`, which is refused
-(exit 14), also when the lock is written — `binding_downgrade_is_refused`.
+(exit 14), also when the lock is written — `binding_downgrade_is_refused`. Another spec whose
+locator finds the same token object (the same object, token and locator) is held to the same
+binding, attestation and mode: a second spec is no way to record that object weaker. A spec
+with another locator realises another copy, which may differ
+(`a_second_spec_of_the_same_object_cannot_record_it_weaker`).
 
 ### 3.7 Attestation commitments (`piv-attestation`, `tpm-certify`)
 
@@ -329,7 +333,7 @@ content-addressed identity — one per token type that can produce it:
 
 | Scheme | Token | Evidence | Anchor pinned in the lock |
 |---|---|---|---|
-| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen`; under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while every other verb only warns about a chain out of its dates. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
+| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen` whose `keyUsage`, when present, has `keyCertSign`, and no certificate of the chain with a critical extension cakeys does not process (RFC 5280 §4.2; the same walk holds an EK certificate, which must also name `tcg-kp-EKCertificate` when it names purposes); under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while every other verb only warns about a chain out of its dates. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
 | `tpm-certify` | tpm2-pkcs11 tokens | a `TPM2_Certify` over the object's Name with a fresh random nonce, host-verified. A module with the vendor mechanism `CKM_TPM2_CERTIFY` (upstream/tpm2-pkcs11/) runs it itself (`C_Sign` on the object; the signer is a persistent AK by handle, or with `options.akLabel` a token object through `CKM_TPM2_CERTIFY_OBJECT`, which needs no TCTI or store); the object's public area is its `CKA_TPM2_PUB_BLOB`, whose Name the statement must carry. Any other module is attested natively (tss-esapi) as follows: the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the EK certificate's root, when one verifies and the AK activates a credential with that EK (§3.7); else the Attestation Key's SPKI |
 
 - **The commitment hashes asserted content, never signed bytes.** A PIV certificate is minted
@@ -368,7 +372,8 @@ content-addressed identity — one per token type that can produce it:
   no Attestation Key, no attestation certificate — fails (14) as a scheme downgrade, while
   evidence that is *wrong* keeps its own code (13). That strictness is chosen, not sprung, and
   it is one-way: opting out again (`attestation = false`) is a downgrade too, also when
-  the lock is written; a realisation that should stop attesting needs a new object name. A provider
+  the lock is written, and so is a second spec of the same token object without it (§3.6); a
+  realisation that should stop attesting needs a new object name. A provider
   that attests nothing (SoftHSM, kryoptic, p11-kit) refuses the opt-in up front (15, before
   anything is created), as does a class it cannot attest (PIV: asymmetric keys only; TPM:
   private and secret keys — a public-key object is stored without a private blob, and
@@ -395,7 +400,12 @@ content-addressed identity — one per token type that can produce it:
   the host does not have the Name of the module's primary without the TPM or the store, so the
   signature under the pinned key is what identifies the signer (for the persistent AK, a primary
   of the owner hierarchy, it is `H(0x40000001 ‖ Name)`, and the host compares it with what the TPM reads). Trust in it is TOFU through the pinned
-  `root`, unless the next paragraph's EK → AK activation chains it to the manufacturer.
+  `root`, unless the next paragraph's EK → AK activation chains it to the manufacturer. With
+  `akLabel` the TOFU is the module's, not the TPM's: the AK's public area and its restricted,
+  fixedTPM attributes are what the module reports (`CKA_TPM2_PUB_BLOB`), never read from the TPM,
+  and the module route takes no EK activation, so a module with no TPM behind it could sign any
+  statement under a key it made. Every run that attests this way warns so; `akHandle` reads the
+  AK from the TPM (review 2026-11-23 B-2).
 - **EK → AK activation** (review D5). With an Endorsement Key certificate, the AK is proven to
   reside in a TPM its manufacturer certified, on every attestation. The certificate is
   `options.ekCertificate` (a PEM file, leaf then intermediates), else the one the TPM keeps in
@@ -553,9 +563,12 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
   updaters on different tokens queue instead of losing each other's realisations (one that waits
   says so first: `note: waiting for <lock>.lck`). Readers never
   take it: the rename makes each read a consistent snapshot. A leftover `.lck` is harmless
-  (advisory, released when its holder exits) — `update_lock_waits_for_the_sidecar_lock`. The guard,
+  (advisory, released when its holder exits) — `update_lock_waits_for_the_sidecar_lock` — and is
+  opened read-only when it exists, so another user's never refuses the run. The guard,
   the write and the writability check go to the file the lock path resolves to: a symlinked lock
-  is written through, and its two names share one guard.
+  is written through, and its two names share one guard. A rewritten lock keeps the old one's
+  mode, and its owner and group as far as the writer may set them
+  (`a_saved_lock_keeps_its_mode_and_a_read_only_sidecar_guards`).
 - **`gc`** collects entries the config no longer names (finding D3): every
   `[realisations.<spec>.<token>]` whose spec dropped the token and every `[objects.<name>]` gone
   from `keys.toml`. It prints the stale table names and removes exactly those with `--apply`; live

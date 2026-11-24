@@ -118,9 +118,15 @@ impl Provider for Ykcs11 {
         PlaintextKind::PivImport
     }
 
+    /// A key, generated or imported, goes into the PIV slot its locator's `CKA_ID` names, by
+    /// that alone: never f9's attestation key (`CKA_ID` 19), which cannot be restored.
+    fn placement(&self, loc: &Locator) -> Result<()> {
+        Self::check_create(loc)
+    }
+
     /// A key goes where its locator says (by `CKA_ID` alone, a PIV slot), as SO.
     fn create(&self, tok: &Token, req: &Create<'_>) -> Result<Option<cakeys_pkcs11::token::CreateNote>> {
-        Self::check_create(req.locator)?;
+        self.placement(req.locator)?;
         tok.create_declared(req)
     }
 
@@ -151,30 +157,17 @@ impl Provider for Ykcs11 {
         }
     }
 
-    /// ykcs11's own placeholder: when it generates a key it stores a self-issued certificate
-    /// with serial 0 and subject `CN=YubiKey PIV Slot <slot>` (`token_generate_key`,
-    /// ykcs11/token.c) \[src\]; beside it the device's on-demand attestation certificate
-    /// (`CN=YubiKey PIV Attestation <slot>`) shares the `CKA_ID` \[run\]. A slot is scratch only
-    /// with the placeholder present and nothing else: a certificate anyone issued — a real one,
-    /// or one `ykman` made — is not it, and a key with no certificate is never presumed scratch.
-    fn scratch_occupant(&self, id: &[u8], certs: &[Vec<u8>]) -> bool {
+    /// The device's on-demand attestation certificate of the slot (`CN=YubiKey PIV Attestation
+    /// <slot>`), which shares the `CKA_ID` of any key there \[run\]. ykcs11's placeholder
+    /// (`CN=YubiKey PIV Slot <slot>`, serial 0, self-issued) is no companion: ykcs11 writes it
+    /// for every key it generates (`token_generate_key`, ykcs11/token.c) \[src\], so a real key
+    /// `cakeys create` made carries it as much as a probe's (review 2026-11-23 D-1).
+    fn scratch_companion(&self, id: &[u8], cert: &[u8]) -> bool {
         use x509_cert::der::Decode;
         let [id] = id else { return false };
         let Some(slot) = piv_slot(&format!("{id:02x}")) else { return false };
-        let subjects: Option<Vec<(String, bool)>> = certs
-            .iter()
-            .map(|der| {
-                let c = x509_cert::Certificate::from_der(der).ok()?;
-                let tbs = c.tbs_certificate();
-                let placeholder = tbs.serial_number().as_bytes() == [0] && tbs.subject() == tbs.issuer();
-                Some((tbs.subject().to_string(), placeholder))
-            })
-            .collect();
-        let Some(subjects) = subjects else { return false };
-        let placeholder = format!("CN=YubiKey PIV Slot {slot:x}");
-        let attestation = format!("CN=YubiKey PIV Attestation {slot:x}");
-        subjects.iter().any(|(s, own)| *own && *s == placeholder)
-            && subjects.iter().all(|(s, own)| (*own && *s == placeholder) || *s == attestation)
+        x509_cert::Certificate::from_der(cert)
+            .is_ok_and(|c| c.tbs_certificate().subject().to_string() == format!("CN=YubiKey PIV Attestation {slot:x}"))
     }
 
     fn attestation(&self) -> Option<AttestationCap> {
@@ -203,7 +196,7 @@ impl Provider for Ykcs11 {
         let device = find_device_cert(ctx)?;
         let (a, warning) =
             ctx.chain_time.verify(|at| verify_piv_attestation(&slot, &device, &ANCHORS, &INTERMEDIATES, spki, at))?;
-        Ok(Attested { scheme: Scheme::PivAttestation, id: a.id, root: a.root, warning })
+        Ok(Attested { scheme: Scheme::PivAttestation, id: a.id, root: a.root, warning, caveat: None })
     }
 }
 
@@ -360,6 +353,12 @@ mod tests {
         assert!(Ykcs11::check_create(&loc(None, Some("01"))).is_ok());
         assert!(matches!(Ykcs11::check_create(&loc(Some("x"), Some("01"))), Err(KmError::Validation(_))));
         assert!(matches!(Ykcs11::check_create(&loc(None, Some("19"))), Err(KmError::Validation(_))));
+        // The same rule is the provider's static placement, which the gate and imports ask
+        // (review 2026-11-23 B-3): never f9 (19), never by label.
+        assert!(Ykcs11.placement(&loc(None, Some("18"))).is_ok());
+        for bad in [loc(None, Some("19")), loc(Some("k"), None), loc(Some("k"), Some("05")), loc(None, None)] {
+            assert!(matches!(Ykcs11.placement(&bad), Err(KmError::Validation(_))), "{bad:?}");
+        }
         assert!(Ykcs11::keeps_destroyed_keys(&loc(None, Some("18"))).contains("ykman piv keys delete 95"));
     }
 
@@ -368,27 +367,23 @@ mod tests {
         x509_cert::der::pem::decode_vec(pem.as_bytes()).unwrap().1
     }
 
-    /// The probe's scratch guard: a slot is overwritable only while it holds ykcs11's own
-    /// placeholder (and the device's attestation of that slot), exported from slot 95 of the
-    /// `YubiKey` here; a real certificate, or a key with none, never is.
+    /// Beside the probe's own certificate in its scratch slot, only the device's attestation of
+    /// that slot may sit (exported from slot 95 of the `YubiKey` here). ykcs11's placeholder is
+    /// never one: every key ykcs11 generates has it, a real key's too (review 2026-11-23 D-1:
+    /// it used to mark a slot as scratch). Nor is a real certificate, another slot's
+    /// attestation, or no PIV slot at all (f9's CKA_ID, a two-byte ID).
     #[test]
-    fn only_ykcs11s_own_placeholder_marks_a_scratch_slot() {
+    fn only_the_slots_attestation_sits_beside_the_probes_certificate() {
         let placeholder = der(include_str!("../tests/fixtures/placeholder95.pem"));
         let attestation = der(include_str!("../tests/fixtures/attest95.pem"));
         let real = der(include_str!("../tests/fixtures/slot.pem"));
         let slot95 = [0x18];
-        assert!(Ykcs11.scratch_occupant(&slot95, std::slice::from_ref(&placeholder)));
-        assert!(Ykcs11.scratch_occupant(&slot95, &[placeholder.clone(), attestation.clone()]));
-        // Another slot's placeholder is not this slot's.
-        assert!(!Ykcs11.scratch_occupant(&[0x17], std::slice::from_ref(&placeholder)));
-        // An attestation alone is a key without its placeholder: possibly real.
-        assert!(!Ykcs11.scratch_occupant(&slot95, &[attestation]));
-        assert!(!Ykcs11.scratch_occupant(&slot95, &[placeholder.clone(), real.clone()]));
-        assert!(!Ykcs11.scratch_occupant(&slot95, &[real]));
-        assert!(!Ykcs11.scratch_occupant(&slot95, &[]));
-        assert!(!Ykcs11.scratch_occupant(&slot95, &[b"not DER".to_vec()]));
-        // No PIV slot at all (f9's CKA_ID, a two-byte ID).
-        assert!(!Ykcs11.scratch_occupant(&[0x19], std::slice::from_ref(&placeholder)));
-        assert!(!Ykcs11.scratch_occupant(&[0x00, 0x18], &[placeholder]));
+        assert!(Ykcs11.scratch_companion(&slot95, &attestation));
+        assert!(!Ykcs11.scratch_companion(&[0x17], &attestation));
+        for other in [&placeholder, &real, &b"not DER".to_vec()] {
+            assert!(!Ykcs11.scratch_companion(&slot95, other));
+        }
+        assert!(!Ykcs11.scratch_companion(&[0x19], &attestation));
+        assert!(!Ykcs11.scratch_companion(&[0x00, 0x18], &attestation));
     }
 }

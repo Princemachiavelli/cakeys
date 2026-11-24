@@ -27,6 +27,7 @@ The biggest simplification wins:
 ## Findings
 
 ### C-1. A transport file may name any RSA key the lock pins, not only the target's transport key. — high — 2 — verified
+
 `crates/camigrate/src/tokens.rs:772-778`, `:594-601`, `:613-630`; `crates/camigrate/src/lib.rs:558-564`, `:845-848`
 
 **What the check does.** For an offline export, D3 says the source wraps only to the target's transport key, with the lock as the authenticated channel. `tokens::pinned` checks only two things: the file's `object` names some lock object, and its `rfc7093m4` equals that object's.
@@ -48,6 +49,7 @@ This is untested: `transport_files_and_bundle_entries_are_checked` (dry_run.rs:1
 **Fix.** In `pinned`, resolve the spec as `--transport-key`, else keys.toml's `tokens.<t.token>.migrate.transportWith`. Then require `transport_spec(lock, &t.token, Some(spec))` to pass (`transport_fault`), with `lock.realisation(spec, &t.token).object == t.object`. Honour `--transport-key` there. Add the dev/prod substitution as a refusal test.
 
 ### C-2. `migrate --dry-run` accepts a `--spec` that the real run refuses (17). — medium — 1/6 — verified
+
 `crates/camigrate/src/lib.rs:348-351` against `:675-683`; `:1126-1143`
 
 The dry-run arm calls only `specs_import`. That function skips a name keys.toml does not have, and a spec of an object that is not moving (`cfg.specs.get(name)` is `None`, or the spec is not on `to`). Only the real `migrate` calls `specs_select` after planning, which refuses both with 17.
@@ -59,6 +61,7 @@ There is a second, latent divergence of the same kind. The real run refuses any 
 Fix: run `specs_select` in `plan_opening` for a `Dest::Token`, which serves both arms. Move the `built` check into the plan as a blocking reason.
 
 ### C-3. `verify` is an alias of `check`, but the docs describe it as a separate verb. — medium — 5/6 — verified
+
 `crates/cli/src/lib.rs:100-106`; `README.md:27`, `:41`; `docs/ARCHITECTURE.md:83`, `:112`; `docs/CAKEYS.md:21`, `:38`, `:42`
 
 `#[command(visible_alias = "verify")]` makes `verify` exactly `check`: it prints the URI, and it enforces the attestation dates. The docs say otherwise in several places:
@@ -89,6 +92,7 @@ Fix:
 - `requires_all = ["out", "passphrase_file"]` on `--to-file`, except with `--dry-run` (an `ArgGroup`).
 
 ### C-5. Which token a flag names depends on the verb, and arity and repeatability differ. — medium — 6/5 — verified
+
 `crates/camigrate/src/lib.rs:140-238`; `crates/cli/src/lib.rs:155-166`; `crates/caprobe/src/lib.rs:119-196`
 
 | Flag | Verb | Means |
@@ -112,6 +116,7 @@ Other inconsistencies:
 A user who switches between `migrate` and `export` and `import` has to relearn which flag is the source. See "CLI surface" below for one scheme.
 
 ### C-6. The flag `--passphrase-file`, not the file, decides how `import --in` parses its file; key files have two readers. — medium — 6/4 — verified
+
 `crates/camigrate/src/lib.rs:185-197`, `:339-347`; `crates/camigrate/src/file.rs:166-182`; `crates/camigrate/src/keyfile.rs:66-104`
 
 `--in X` is read as a bundle unless `--passphrase-file` is given:
@@ -129,6 +134,7 @@ Fix:
 - This also simplifies `reads_key_file` in `dispatch` (`:291-292`).
 
 ### C-7. Notes are held until the run ends. A killed or crashed run prints nothing, and stderr comes out of order. — medium — 6/1 — verified
+
 `crates/cli-common/src/lib.rs:71-84`; `crates/core/src/reconcile.rs:63-89`; `crates/camigrate/src/lib.rs:641-652`, `:755-766`; `crates/cli/src/lib.rs:397-399`, `:469-471`, `:506`
 
 `Notes` collects lines in a `Vec`, and `cakeys_cli_common::main` prints them after `dispatch` returns. That loses output in several cases:
@@ -143,6 +149,7 @@ Fix:
 - Have `import`, `migrate` and `delete` print a JSON result per object (object, spec, token, outcome, method, exit code), as `create` already does (`crates/cli/src/lib.rs:546`).
 
 ### C-8. The shipped package is the regular build, which no check and no CI job builds; on first use it runs the whole token suite. — medium — 8/3 — verified
+
 `flake.nix:99`, `:123`, `:193-207`; `pkgs.nix:22`, `:31`, `:86`; `checks.nix:16-19`; `nix/package.nix:1-62`; `nix/package-crane.nix:30-47`; `.github/workflows/checks.yml:29-33`
 
 These all come from `nix/package.nix` (`buildRustPackage`):
@@ -165,6 +172,7 @@ README.md:163 also says `checks-crane-only` is "the same without the fuzz smoke 
 Fix: make `packages.cakeys` the crane `buildPackage` with `doCheck = false`, since `checks.cakeys` runs the tests. Move `passthru.patchedCryptoki` there; `scripts/local-tests.sh:54` reads it. Delete `nix/package.nix` and fold `package-common.nix` into the crane file.
 
 ### C-9. A PC/SC or TPM grant reaches every card or the whole TPM, not only "that token". — medium — 2/5 — verified
+
 `nix/module.nix:51-55`, `:280-296`, `:302-315`; `README.md:141-143`; `docs/CAKEYS.md:163-172`
 
 `tokens.<n>.pcscd = true` adds `/run/pcscd` to `<prefix><n>`'s grant. The pcscd socket serves every reader on the host. The polkit rule allows `access_pcsc` and `access_card` to every build user for every reader. A token whose `sandboxPaths` list `/dev/tpmrm0` hands over the whole TPM.
@@ -176,6 +184,7 @@ This is not the known gap "features are self-declared" (DESIGN §8.2). That gap 
 Fix: say in README, CAKEYS.md and the option descriptions that a pcscd or TPM grant is host-wide. Alternatively, refuse two `pcscd = true` tokens with an assertion.
 
 ### C-10. The exit codes in each tool's `--help` are three hand-written lists, and cakeys' is missing 21. — low — 5 — verified
+
 `crates/cli/src/lib.rs:19-25`; `crates/caprobe/src/lib.rs:101-102`; `crates/camigrate/src/lib.rs:112-115`, `:1365-1370`
 
 - cakeys lists 0 and 10–20, and leaves out 21. Yet `read_lock` returns 21 for any writing verb (`cli-common/src/lib.rs:250`), and `save_lock` returns it too.
@@ -186,6 +195,7 @@ Fix: say in README, CAKEYS.md and the option descriptions that a pcscd or TPM gr
 Fix: put one `EXIT_CODES` table in cli-common, render it into each command's `after_long_help`, and test it against CAKEYS.md's table, which `crates/core/tests/exit_codes.rs` already parses.
 
 ### C-11. Help text uses jargon and internal review IDs; `caprobe probe --write` reads as "write the profile". — low — 6 — verified
+
 `crates/cli/src/lib.rs:100`; `crates/camigrate/src/lib.rs:198`, `:218-220`, `:247`, `:254`; `crates/caprobe/src/lib.rs:163`, `:173-179`, `:187`
 
 - `check` is introduced as a "Pseudo-FOD pre-use check".
@@ -197,6 +207,7 @@ None of these mean anything to a user without the repository. In caprobe, `probe
 Fix: plain-language one-liners, with the design IDs kept in docs only. Rename the caprobe flag to `--write-probes` (or `--destructive`).
 
 ### C-12. Inside a Nix build, camigrate exits 14 for some verbs and 21 for others; the 21 message offers no way out. — low — 5/6 — verified
+
 `crates/camigrate/src/lib.rs:294-312`; `crates/camigrate/tests/dry_run.rs:1094-1095`
 
 `export`, an import of a key file and `transport --trusted` are refused as `PreconditionFailed` (14). `migrate` and `import` are refused by `read_lock` as 21, with the reason "moving keys records them there". That reason does not say what to do; cakeys' equivalent says "pass --no-update-lock". The cause is the same, `in_nix_build()`, but there are two codes. CAKEYS.md defines 14 as "the realisation moved, retry after review".
@@ -204,6 +215,7 @@ Fix: plain-language one-liners, with the design IDs kept in docs only. Rename th
 Fix: one code for "refused inside a Nix build". The codes are frozen (DESIGN §10), but lock v1 is still a draft. Make the 21 message say "run outside the sandbox, or pass --dry-run".
 
 ### C-13. The `tpm2_ptool` path writes the key into the TPM before checking its identity on the host. — low — 2 — verified
+
 `crates/camigrate/src/host.rs:161-188`, against `:44-50` and `:65-85`
 
 `host::import` and `create_and_record` run `check_identity` (10 before anything is written) between `hand_over` and the write. `import_ptool` does not: it runs `to.import_plaintext(...)` (`tpm2_ptool`, with the user PIN on its command line) first. Only after a reopen does `lock_import` find a mismatch, which `destroy` then undoes. tpm2-pkcs11 can delete, so nothing is left behind. But a lying source module costs a write into the TPM and a PIN on argv for nothing, and the path differs from the documented rule (CAMIGRATE.md D6: "On every `host` path the identity is checked on the host first").
@@ -211,6 +223,7 @@ Fix: one code for "refused inside a Nix build". The codes are frozen (DESIGN §1
 Fix: call `check_identity(dst, lock, &plain)?` before `import_plaintext`.
 
 ### C-14. Prior F6's fix is incomplete: an empty `passphraseEnv` is not refused. — low — 7 — verified
+
 `crates/camigrate/src/file_verbs.rs:283-289`, `:303-311`; `crates/core/src/secret.rs:19-35`
 
 The 2026-11-18 fix says "the empty passphrase is refused in one place". It is refused only in `read_passphrase`, which handles files. The `passphraseEnv` branch returns `secret::read(...)` directly, so `X=""` passes. The run then fails as "it does not open under this passphrase" (17), which hides the real cause.
@@ -218,6 +231,7 @@ The 2026-11-18 fix says "the empty passphrase is refused in one place". It is re
 Fix: one `non_empty` check after `file_passphrase`, or in `secret::read`.
 
 ### C-15. `pub mod bundle` and its `pub` items are used only inside the crate. — low — 7 — verified
+
 `crates/camigrate/src/lib.rs:6`; `crates/camigrate/src/bundle.rs:24-26`, `:31`, `:53`, `:119`, `:236-301`
 
 The fuzz targets use `camigrate::fuzzing`, which is in-crate. Nothing outside the crate names `camigrate::bundle`, yet `Bundle`, `Entry`, `parse`, `to_toml`, `encode` and the accessors are public API.
@@ -225,13 +239,15 @@ The fuzz targets use `camigrate::fuzzing`, which is in-crate. Nothing outside th
 Fix: make it `pub(crate)`.
 
 ### C-16. A `--lock` path that does not exist is read as an empty lock; `lib.mkKeys` refuses the same thing. — low — 6 — verified
+
 `crates/core/src/config/io.rs:12-18`; `nix/lib.nix:66-71`; `crates/cli/src/lib.rs:236`
 
-`cakeys lock x -l keys.lok` (a typo) writes a new one-object lock beside the real one and exits 0. `check -l typo` reports a first use (18), and camigrate reports "no realisation" (14). `lib.mkKeys` throws on the same mistake.
+`cakeys lock x -l keys.look` (a typo) writes a new one-object lock beside the real one and exits 0. `check -l typo` reports a first use (18), and camigrate reports "no realisation" (14). `lib.mkKeys` throws on the same mistake.
 
 Fix: an explicit `--lock` naming a missing file is 17 for a verb that does not write. A writing verb notes "creating <path>".
 
 ### C-17. The planner competes vendor methods that nothing produces. — low — 4 — verified
+
 `crates/camigrate/src/plan.rs:142-151`, `:768-794`; `crates/core/src/migrate.rs:332`; `crates/camigrate/src/lib.rs:684-704`
 
 `Side.vendor` is only ever `vec![]` (`Side::pkcs11`); no profile or provider fills it. Even so:
@@ -244,6 +260,7 @@ Phase 7 (D10) is not built.
 Fix: delete the vendor loop, its test and `VendorMethod` until a provider declares one. Keep `Method::Vendor`'s name parsing only if the frozen lock names need it. About 40 lines in camigrate, plus core's.
 
 ### C-18. FILE.md has drifted from the code. — low — 5 — verified
+
 `docs/FILE.md:93-94`, `:322-323`, `:362-365`
 
 - **Load rule.** FILE.md lists "`attestation = true` on a `file` pair is refused when the provider cannot attest" among its load rules (17). It is a run-time check (`ops::check_import` → `check_imported_attestation`, prior F2); `check_origins` has no such rule.
@@ -253,6 +270,7 @@ Fix: delete the vendor loop, its test and `VendorMethod` until a provider declar
 CAMIGRATE.md:19 shows `--out <bundle>` as required, but it defaults to stdout. Fix the text.
 
 ### C-19. The test-environment variables are written out twice. — low — 8/4 — verified
+
 `nix/package-common.nix:197-236`; `scripts/local-tests.sh:112-130`
 
 The `CAKEYS_*_MODULE`, `*_REQUIRE`, `CAKEYS_TOKEN_TEMPLATE`, `CAKEYS_P11KIT_ENV_SH`/`CAKEYS_TPM_ENV_SH`, `CAKEYS_P11KIT_CLIENT` and `CAKEYS_PKCS11_PROVIDER_DIR` exports, and the template copy, appear in both files. A new suite variable has to be added to both, or the local runner silently skips that suite. `nix/token-env.sh` already unifies the token initialisation.
@@ -260,6 +278,7 @@ The `CAKEYS_*_MODULE`, `*_REQUIRE`, `CAKEYS_TOKEN_TEMPLATE`, `CAKEYS_P11KIT_ENV_
 Fix: a `test_env <softhsm> <kryoptic> <p11kit> <tpm2> <tpm2-vendor> <provider-dir>` function in token-env.sh, used by both.
 
 ### C-20. The transport key's 2048-bit minimum is counted in bytes. — low — 2 — verified
+
 `crates/camigrate/src/sealed.rs:765-773`
 
 `bits = rsa_parts(spki)?.0.len() * 8` counts the modulus's bytes, so a key of 2041–2047 bits counts as 2048 and passes. Practical weakening is nil, but the rule says "at least 2048 bits".
@@ -267,6 +286,7 @@ Fix: a `test_env <softhsm> <kryoptic> <p11kit> <tpm2> <tpm2-vendor> <provider-di
 Fix: use `key.n().bits()`.
 
 ### C-21. After a failed per-object save, the remaining objects and the earlier failure are dropped without a recovery hint; the lock is also saved twice. — low — 6/4 — verified
+
 `crates/camigrate/src/lib.rs:449-468`, `:641-643`, `:756-758`
 
 When `Run::record` fails, the run returns 21 at once: "X is on the token, but the lock could not record it". The objects not yet tried are skipped, and the tally's first failure is lost. The message does not name the recovery (`cakeys lock --spec S --token T` records it, without provenance). The next camigrate run hits 13 at the locator, again with no hint.
@@ -276,6 +296,7 @@ When `Run::record` fails, the run returns 21 at once: "X is on the token, but th
 Fix: name the `cakeys lock` command in both messages. Have `finish` only print.
 
 ### C-22. A PKCS#12 with a plain `keyBag` is refused confusingly, and its key is left unzeroized. — low — 2/7 — plausible
+
 `crates/camigrate/src/file.rs:205-224`, `:252-266`
 
 `encrypted_octets` returns the decrypted SafeContents in a plain `Vec`. Take a file from `openssl pkcs12 -export -keypbe NONE`, whose unencrypted `keyBag` may sit in an encrypted container. Its key bytes are decrypted, never zeroized, and skipped, because only the shrouded bag OID is read. The file is then refused as "a PKCS#12 without a shrouded key bag".
@@ -285,6 +306,7 @@ I did not build such a file to confirm where OpenSSL puts the bag.
 Fix: return `Zeroizing<Vec<u8>>`, and refuse `PKCS_12_KEY_BAG_OID` by name ("an unencrypted key bag; re-export with a key PBE").
 
 ### C-23. camigrate's lib.rs holds the planner's rules: about 450 lines that ARCHITECTURE says the CLI does not have. — medium — 3/4 — verified
+
 `crates/camigrate/src/lib.rs:470-490`, `:770-1217`; `crates/camigrate/src/file_verbs.rs:5-9`; `docs/ARCHITECTURE.md:88`
 
 ARCHITECTURE.md:88 says "The CLI only parses, reads and writes files, and prints". lib.rs contains, among others: `plan_opening`, `landing_checks`, `no_import_pair`, `import_target`, `specs_select`, `specs_import`, `no_export`, `unprovable`, `limit_bundle_plans`, `limit_file_plans`, `transport_target`/`transport_choice`/`locked_spki`, `realised_target` and `import_checks`. They block plans in a third layer, after `plan::plan` and `tokens::plan_moves`. The same `p.ready = false; p.reasons.push(...)` appears about 8 times.

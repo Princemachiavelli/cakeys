@@ -55,10 +55,15 @@ const RSA_KEYS: [(u32, &[u8]); 7] = [
 ];
 
 /// AES values of each length, in bytes.
-const AES_KEYS: [&[u8]; 3] = [fixture!("aes-16.key"), fixture!("aes-24.key"), fixture!("aes-32.key")];
+pub(super) const AES_KEYS: [&[u8]; 3] = [fixture!("aes-16.key"), fixture!("aes-24.key"), fixture!("aes-32.key")];
 
 /// A self-signed certificate under the P-256 key.
 const CERTIFICATE: &[u8] = fixture!("certificate.der");
+
+/// What marks a scratch slot as one the probe used: its own certificate (`CN=cakeys-probe`),
+/// written over the slot's last key ([`mark_slot`]) and the one occupant the next run's guard
+/// accepts (`super::check_slot`).
+pub(super) const SLOT_MARKER: &[u8] = CERTIFICATE;
 
 /// A data object's value.
 const DATA: &[u8] = b"cakeys probe: a data object";
@@ -123,18 +128,52 @@ pub(super) fn probe_moves(made: &mut Made, profile: &mut Draft, transport: Trans
     match made.scratch.target {
         Target::Labels => create_public(made, profile, Class::Data, DATA)?,
         // PIV's data objects are the device's own (CHUID, CCC): never written. The slot gets a
-        // generated key again, which also puts its placeholder certificate back.
+        // generated key again, and then the probe's own certificate over ykcs11's placeholder.
         Target::Slot(_) => {
             let p256 = ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(Class::PrivateKey, Some(Kt::Ec)) };
-            if let Created::Refused(e) | Created::Lost(e) = made.create(&p256, &spec(&[], &[]))? {
+            if let Created::Refused(e) | Created::Lost(e) | Created::Undecided(e) =
+                made.create(&p256, &spec(&[], &[]))?
+            {
                 made.undetermined.push(format!(
                     "the scratch slot holds the last key the import probes put there: generating over it: {}",
                     evidence(made.tok, &e)
                 ));
             }
+            mark_slot(made)?;
         }
     }
     Ok(())
+}
+
+/// Leave the scratch slot marked as the probe's: its own certificate ([`SLOT_MARKER`]) over the
+/// placeholder ykcs11 wrote with the last generation. ykcs11 writes that placeholder for every
+/// key it generates, so it tells a probe's slot from no real key's; the next run's guard
+/// (`super::check_slot`) accepts only this certificate (review 2026-11-23 D-1). A slot left
+/// unmarked is refused by the next run until it is emptied, and this run says so.
+fn mark_slot(made: &mut Made) -> Result<()> {
+    let object = ObjectCfg::new(Class::Certificate, None);
+    let (loc, _) = made.locator();
+    let mut t = vec![Attribute::Token(true)];
+    t.extend(host_encoding(&loc, &object, SLOT_MARKER)?);
+    let (probe_spec, session) = (spec(&[], &[]), made.session);
+    let on = Declared { object: &object, spec: &probe_spec, locator: &loc };
+    let marked = made.tok.provider.adjusted(&Template::Object(on), t).and_then(|t| {
+        made.tok.managing("marking the scratch slot", || {
+            session.create_object(&t).map_err(|e| KmError::Unsupported(format!("C_CreateObject: {}", ckr(&e)).into()))
+        })
+    });
+    match marked {
+        Ok(_) => Ok(()),
+        Err(e) if so_login(&e) => Err(e),
+        Err(e) => {
+            made.undetermined.push(format!(
+                "the scratch slot is left without the probe's certificate, so the next run refuses it until it is \
+                 emptied: {}",
+                evidence(made.tok, &e)
+            ));
+            Ok(())
+        }
+    }
 }
 
 /// The curves cakeys names (`id::Curve::ALL`) with no test key in [`CURVE_KEYS`]: no import
@@ -646,7 +685,7 @@ fn host_kcv(value: &[u8]) -> Option<Vec<u8>> {
 /// `Unavailable` when the check itself fails: it takes `CKM_AES_ECB`, which the module may
 /// lack while it imports AES keys, so the message names the check, not the import. `Conflict`
 /// for another key's check value.
-fn same_aes(made: &Made, h: ObjectHandle, value: &[u8]) -> Result<()> {
+pub(super) fn same_aes(made: &Made, h: ObjectHandle, value: &[u8]) -> Result<()> {
     let token = made.session.encrypt(&Mechanism::AesEcb, h, &[0; 16]).map_err(|e| {
         KmError::Unavailable(
             format!("the host's check of the key needs C_Encrypt with CKM_AES_ECB, which fails: {}", ckr(&e)).into(),

@@ -179,9 +179,14 @@ fn transport_files_carry_the_locked_identity() {
     // Only an RSA private key can be a transport key.
     assert_eq!(code(&e.cakeys(kry, &["create", "--spec", "ec-k", "--token", "kryoptic"])), 0);
     assert_eq!(code(&e.km(kry, &["transport", "--spec", "ec-k", "--token", "kryoptic"])), 17);
-    // A source plans from the file alone.
+    // A source plans from the file alone, sealing to the transport key it names for the file's
+    // token (keys.toml names none for kryoptic here, so --transport-key does).
     assert_eq!(code(&e.cakeys(soft, &["create", "--spec", "movable", "--token", "softhsm"])), 0);
-    let o = e.km(soft, &["export", "mv", "--token", "softhsm", "--transport", path, "--dry-run", "--json"]);
+    let export = ["export", "mv", "--token", "softhsm", "--transport", path, "--dry-run", "--json"];
+    let o = e.km(soft, &export);
+    assert_eq!(code(&o), 15, "no transport key named for kryoptic: {}", stdout(&o));
+    assert!(stdout(&o).contains("no transport key is named for 'kryoptic'"), "{}", stdout(&o));
+    let o = e.km(soft, &[&export[..], &["--transport-key", "kek"]].concat());
     assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
     let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(v["capabilities"]["to"], "transport file");
@@ -466,6 +471,18 @@ fn objects_sharing_a_locator_move_in_any_order() {
         let v = e.cakeys(kry, &["verify", "--spec", spec, "--token", "kryoptic"]);
         assert_eq!(code(&v), 0, "{spec}: {}", stderr(&v));
     };
+    // A --spec that selects nothing, unknown or another object's pair, is refused (17) by the dry
+    // run as by the run, which exits as its dry run did (D9; review 2026-11-23 C-2: the dry run
+    // said ready). Nothing moves.
+    for spec in ["nope", "k2-kry"] {
+        let named = ["migrate", "k1", "--from", "softhsm", "--to", "kryoptic", "--spec", spec];
+        for extra in [&["--dry-run"][..], &[]] {
+            let o = e.km(soft, &[&named[..], extra].concat());
+            assert_eq!(code(&o), 17, "{spec} {extra:?}: {}", stderr(&o));
+            assert!(stderr(&o).contains(&format!("--spec '{spec}'")), "{spec} {extra:?}: {}", stderr(&o));
+        }
+    }
+    assert_eq!(on_target("sl-a"), 0, "a refused --spec moved something");
     // The key first: its import creates the public half, which the public key object then is.
     mv("k1", "k1-kry");
     mv("k1-pub", "k1-pub-kry");
@@ -1226,9 +1243,10 @@ fn transport_files_and_bundle_entries_are_checked(e: &Env, soft: &Ref, transport
     assert!(stderr(&o).contains("provider 'nope' is not in this build"), "{}", stderr(&o));
     let o = plan("other.transport.toml", "object = \"tk-kryoptic\"", "object = \"tk-other\"");
     assert_eq!(code(&o), 15, "{}", stdout(&o));
-    assert!(stdout(&o).contains("the lock pins no key for its object 'tk-other'"), "{}", stdout(&o));
+    assert!(stdout(&o).contains("its object 'tk-other' is not the transport key of 'kryoptic'"), "{}", stdout(&o));
     let o = plan("generic.transport.toml", provider, "provider = \"generic\"");
     assert_eq!(code(&o), 0, "{} {}", stdout(&o), stderr(&o));
+    a_transport_file_of_another_pinned_key_is_refused(e, soft, &text);
 
     // The certificate has a spec on SoftHSM and on kryoptic, and none on the third token.
     let bundle = export_bundle(e, soft, &["crt"]);
@@ -1257,6 +1275,40 @@ fn transport_files_and_bundle_entries_are_checked(e: &Env, soft: &Ref, transport
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("the transport key's spec 'tk-kryoptic' is gone from keys.toml"), "{}", stderr(&o));
     assert!(!out.exists(), "a refused export wrote a bundle");
+}
+
+/// A transport file swapped in transit for another key the lock pins, with that key's real
+/// identity and public key (here the certificate's RSA subject key; a dev token's transport key
+/// beside prod's would do the same), is refused by the plan and by the export: the file must name
+/// its token's transport key, the one `transportWith` or `--transport-key` names, else whoever
+/// holds the other key's private half unwraps the bundle (review 2026-11-23 C-1).
+fn a_transport_file_of_another_pinned_key_is_refused(e: &Env, soft: &Ref, text: &str) {
+    use base64::Engine as _;
+    let lock: toml::Table = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
+    let pinned = lock["objects"]["crt"]["ids"]["rfc7093m4"].as_str().unwrap();
+    let cert = x509_cert::Certificate::from_der(CERT_RSA).unwrap();
+    let spki =
+        cakeys_core::id::spki_canonical(&cert.tbs_certificate().subject_public_key_info().to_der().unwrap()).unwrap();
+    assert_eq!(cakeys_core::id::sri(&spki), pinned, "the lock pins the certificate's subject key");
+    let mut swapped: toml::Table = toml::from_str(text).unwrap();
+    swapped["object"] = "crt".into();
+    swapped["rfc7093m4"] = pinned.into();
+    swapped["spki"] = base64::engine::general_purpose::STANDARD.encode(&spki).into();
+    let path = e.dir.join("swapped.transport.toml");
+    std::fs::write(&path, toml::to_string(&swapped).unwrap()).unwrap();
+    let export = ["export", "sk1", "--token", "softhsm", "--transport", path.to_str().unwrap()];
+    let o = e.km(soft, &[&export[..], &["--dry-run"]].concat());
+    assert_eq!(code(&o), 15, "{}", stdout(&o));
+    assert!(stdout(&o).contains("its object 'crt' is not the transport key of 'kryoptic'"), "{}", stdout(&o));
+    let out = e.dir.join("swapped.bundle.toml");
+    let o = e.km(soft, &[&export[..], &["--out", out.to_str().unwrap()]].concat());
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(!out.exists(), "a bundle was sealed to another pinned key");
+    // Naming another key with --transport-key does not make it one (no unwrap-only RSA key, or
+    // none realised there: refused either way, naming it).
+    let o = e.km(soft, &[&export[..], &["--dry-run", "--transport-key", "crt-kry"]].concat());
+    assert_eq!(code(&o), 15, "{}", stdout(&o));
+    assert!(stdout(&o).contains("'crt-kry'"), "{}", stdout(&o));
 }
 
 /// A move lands only on a pair that says `origin = "import"`: a target pair that says the key is

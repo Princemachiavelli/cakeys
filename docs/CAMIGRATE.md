@@ -90,7 +90,10 @@ the admin credential `soCredentialFile`/`soCredentialEnv`, read only by SO steps
 (`CKA_UNWRAP = true`, non-extractable) declared in keys.toml like any other key and named by the
 target token's `migrate.transportWith`. Nothing is picked by what a key can do; `--transport-key`
 overrides it per run. Its `rfc7093m4` is in the reviewed lock, and the source wraps only to a
-public key that hashes to it: the lock is the authenticated channel.
+public key that hashes to it: the lock is the authenticated channel. A transport file is held to
+the same: its object must be the transport key `transportWith` (or `--transport-key`) names for
+the file's token, realised there, not merely some key the lock pins, which whoever swapped the
+file may hold (`a_transport_file_of_another_pinned_key_is_refused`).
 
 - **The lock records its public key** (`objects.<name>.publicKey`, base64 SPKI) when it is
   realised as a `migrate.transportWith` key, held to its `rfc7093m4` on load. Any host can then plan and

@@ -47,8 +47,9 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
   the tree so `Cargo.lock` stays as it is), refuses to run when cryptoki does not resolve to
   that copy, and requires every reference token, so nothing skips. A Nix check still decides.
 - `nix flake check` sees only files git knows: `git add` new files first.
-- `packages.cakeys` is the regular `buildRustPackage` build, `packages.cakeys-crane` the crane
-  build the checks use; `nix/package-common.nix` holds what they share.
+- `packages.cakeys-crane` is the crane build the checks use, its test suites included;
+  `packages.cakeys` is the same build without its check phase, what users and the NixOS module
+  get. `nix/package-common.nix` holds the source, outputs, patches, features and test environment.
 - Generated profiles must stay byte-identical to the committed ones, and only the Nix-built
   binary carries the patched cryptoki the probe needs: `scripts/regen-profiles.sh` gives the
   commands. The baseline is regenerated with `CAKEYS_UPDATE_BASELINE=1`, then `nix fmt`.
@@ -93,6 +94,9 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
   describes those keys: do not `lock` it against the device.
 - Test keys go in retired slots 90–95 only (`CKA_ID` 13–18). The scratch slot for write probes
   is `probe.scratchId = "17"`; camigrate's import test uses slot 95 (ask before running it).
+  The probe accepts that slot only empty or holding its own certificate (`CN=cakeys-probe`), which
+  each run leaves there: a slot from before that rule, or from a run that stopped part way, is
+  refused until emptied (`scripts/yubikey-empty-slots.py <mgm file> 94`).
 - The credentials are files in `/data/srcs/waste/yubikey_data`: `PIN.txt` is the PIN and
   `piv_mnmgt_key.current.txt` the management key. Pass them as file paths (`pinFile`,
   `soCredentialFile`). Never print them, copy them into the repository, or put them in a commit, a

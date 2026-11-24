@@ -484,7 +484,7 @@ pub const SOFTHSM: Reference = Reference {
 
 /// kryoptic 1.5.4 (its `OpenSSL` backend) generates none of secp256k1 or the brainpool curves, and
 /// has no DES mechanism at all (`pkcs11-tool -M` \[run\], 2026-11-15). The harness
-/// (nix/package.nix) ends `KRYOPTIC_CONF` with the token's `[[slots]]` table, so an appended key
+/// (nix/package-common.nix) ends `KRYOPTIC_CONF` with the token's `[[slots]]` table, so an appended key
 /// belongs to it.
 pub const KRYOPTIC: Reference = Reference {
     module_var: "CAKEYS_KRYOPTIC_MODULE",

@@ -53,8 +53,9 @@ pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
     lock.check(path).map_err(|e| KmError::Validation(format!("not writing a lock that would not load: {e}").into()))?;
     let text =
         toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display()).into()))?;
-    // Created like any new file (0666 under the umask).
-    write_whole(path, text.as_bytes(), 0o666).map_err(|e| match e {
+    // A new lock is created like any new file (0666 under the umask); one that exists keeps its
+    // mode, and its owner and group where this user may set them (review 2026-11-23 A-4).
+    write_file(path, text.as_bytes(), 0o666, true).map_err(|e| match e {
         KmError::Io(m) => KmError::LockUnwritable(m),
         other => other,
     })
@@ -68,6 +69,13 @@ pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
 ///
 /// `Io` if the temporary write, sync or rename fails.
 pub fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+    write_file(path, bytes, mode, false)
+}
+
+/// [`write_whole`]; with `keep`, a file already at `path` passes its permission bits to the new
+/// one exactly (not under the umask), and its owner and group as far as this user may set them:
+/// a 0600 lock stays 0600, and a lock a group shares stays the group's.
+fn write_file(path: &Path, bytes: &[u8], mode: u32, keep: bool) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
     // Through a symlink to the file it names, which the rename would otherwise replace.
@@ -80,6 +88,18 @@ pub fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
         .permissions(std::fs::Permissions::from_mode(mode))
         .tempfile_in(dir)
         .map_err(KmError::io(format!("creating a temporary file in {}", dir.display())))?;
+    if keep && let Ok(old) = std::fs::metadata(path) {
+        use std::os::unix::fs::MetadataExt as _;
+        // Best effort, owner before mode (a chown may clear bits the mode then sets): only root
+        // gives a file another user, and a user gives it only a group it is in. What cannot be
+        // kept is the writer's, as for a new file.
+        let file = tmp.as_file();
+        if std::os::unix::fs::fchown(file, Some(old.uid()), Some(old.gid())).is_err() {
+            let _ = std::os::unix::fs::fchown(file, None, Some(old.gid()));
+        }
+        file.set_permissions(std::fs::Permissions::from_mode(old.mode() & 0o777))
+            .map_err(KmError::io(format!("setting the mode of {}", tmp.path().display())))?;
+    }
     tmp.write_all(bytes)
         .and_then(|()| tmp.as_file().sync_all())
         .map_err(KmError::io(format!("writing {}", tmp.path().display())))?;
@@ -114,7 +134,9 @@ pub struct UpdateGuard(
 /// Take the exclusive advisory lock on `<lock>.lck`, waiting for any other updater; `waiting` is
 /// told the sidecar's path first when another holds it, so a run can say why it stopped. The
 /// sidecar file is created if absent; a leftover one is harmless (the lock is advisory and
-/// released when its holder exits).
+/// released when its holder exits). One that exists is opened read-only, since `flock` needs no
+/// write access: a sidecar another user left (0644 under their umask) never refuses a run that
+/// [`lock_unwritable`] let through (review 2026-11-23 A-12).
 ///
 /// # Errors
 ///
@@ -123,12 +145,13 @@ pub fn lock_for_update(lock_path: &Path, waiting: impl FnOnce(&Path)) -> Result<
     // The lock file's own sidecar, however the run names it ([`resolved`]).
     let mut sidecar = resolved(lock_path).into_os_string();
     sidecar.push(".lck");
-    let file = std::fs::File::options()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&sidecar)
-        .map_err(KmError::io(format!("opening {}", sidecar.to_string_lossy())))?;
+    let file = match std::fs::File::open(&sidecar) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::File::options().write(true).create(true).truncate(false).open(&sidecar)
+        }
+        opened => opened,
+    }
+    .map_err(KmError::io(format!("opening {}", sidecar.to_string_lossy())))?;
     let locking = || KmError::io(format!("locking {}", sidecar.to_string_lossy()));
     match file.try_lock() {
         Ok(()) => {}

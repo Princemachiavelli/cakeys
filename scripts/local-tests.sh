@@ -49,8 +49,8 @@ provider=$(path_of pkcs11-provider)
 export PATH=$softhsm/bin:$nextest/bin:$rsync/bin:$gnupatch/bin:$jq/bin:$openssl/bin:$PATH
 
 # The cryptoki the Nix build patches (its version and patches, as store paths) and the features
-# it enables with them, as the build itself has them (nix/package.nix `patchedCryptoki`, from
-# nix/package-common.nix): evaluated, not read from the Nix source.
+# it enables with them, as the build itself has them (nix/package-crane.nix `patchedCryptoki`,
+# from nix/package-common.nix): evaluated, not read from the Nix source.
 build=$(nix eval --json .#cakeys.patchedCryptoki)
 version=$(jq -r .version <<<"$build")
 mapfile -t patches < <(jq -r '.patches[]' <<<"$build")

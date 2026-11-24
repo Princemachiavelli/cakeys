@@ -165,13 +165,17 @@ behaviour or reach outside PKCS#11:
   (`with_public_default_dropped`; AWS `CloudHSM`), and an object already gone when its turn
   comes in one `destroy` is destroyed (kmsp11 removes a public half with its private one).
 - **Beside them:** `name`, `matches(&ModuleInfo)`, `hint` (error advice), `check_options` (the
-  token's `[tokens.<t>.options]`; the default refuses any), and two facts read before acting:
+  token's `[tokens.<t>.options]`; the default refuses any), and three facts read before acting:
   `manages_as_so` (create and destroy only in an SO session, ykcs11; `Token::managing` runs a
-  step that way, camigrate's imports too) and `generation` (create's static half, read by the
+  step that way, camigrate's imports too), `placement` (where a key may be made, generated or
+  imported: ykcs11's PIV slots by `CKA_ID` alone; asked by the capability gate for every pair
+  keys.toml makes on the token and by `ops::check_import` before every import's write) and
+  `generation` (create's static half, read by the
   capability gate before any token opens: a module's own template chosen from the spec, refused
   before creating what could not be proven, kmsp11). The probe alone reads `bound_keys` (what it
-  generates on a module whose keys are bound to one purpose) and `scratch_occupant` (its
-  scratch slot's guard): no operation of the verbs does either. What `stand_in` covers is
+  generates on a module whose keys are bound to one purpose) and `scratch_companion` (what may
+  sit beside the probe's own certificate in its scratch slot): no operation of the verbs does
+  either. What `stand_in` covers is
   derived from it (`stand_ins`), not declared beside it.
 - **Data providers:** a module with none of these needs no code. The family of the module
   profile whose `[match] manufacturer` it reports is its provider (`provider::Data`). softhsm

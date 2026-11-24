@@ -245,7 +245,7 @@ struct MoveArgs {
     #[arg(long)]
     dry_run: bool,
     /// The target's transport key, by its spec (docs/CAMIGRATE.md D3); default: the target token's
-    /// `transportWith`.
+    /// `transportWith`. A transport file must name that key of its token.
     #[arg(long)]
     transport_key: Option<String>,
     /// Print the plan as JSON.
@@ -558,7 +558,7 @@ impl Run<'_> {
             // The plan checked this same parsed file against the lock; sealing checks it again,
             // so nothing wraps to a key the lock does not pin, whatever the plan let through.
             Destination::Transport(path, t) => {
-                tokens::pinned(&self.lock, t)
+                tokens::pinned(&self.lock, t, transport_choice(cfg, &t.token, how))
                     .map_err(|why| KmError::PreconditionFailed(format!("{}: {why}", path.display()).into()))?;
                 Some(t.key()?)
             }
@@ -679,29 +679,8 @@ impl Run<'_> {
         let dest = Destination::Token(to);
         let (moves, source, planned) =
             self.plan_opening(object.as_slice(), from, &dest, specs, how, true, source, Access::Write, notes)?;
+        // The plan blocked a method not built yet, and checked every --spec (`plan_opening`).
         moves.ready()?;
-        specs_select(&self.opener.cfg, specs, moves.plans.iter().map(|p| p.object.as_str()), to, MOVE)?;
-        let built = |m: &Method| {
-            matches!(
-                m,
-                Method::Public
-                    | Method::RsaOaepAesKwp(_)
-                    | Method::RsaOaep(_)
-                    | Method::HostPkcs8
-                    | Method::HostRaw
-                    | Method::Tpm2Ptool
-                    | Method::PivImport
-            )
-        };
-        if let Some(p) = moves.plans.iter().find(|p| !p.method.as_ref().is_some_and(built)) {
-            let method = p.method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
-            return Err(KmError::Unsupported(format!(
-                "{}: moving by {method} is a later docs/CAMIGRATE.md phase; public objects, sealed keys and the host path into PKCS#11 tokens \
-                 move (pass --dry-run for the plan)",
-                p.object
-            ).into())
-            .into());
-        }
         let source = self.source(from, source, notes)?;
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
         // The one the plan opened; else opened now, which says why it does not open.
@@ -842,9 +821,12 @@ impl Run<'_> {
             tokens::Dest::File(format) => Some(format),
             _ => None,
         };
+        // A transport file is held to its token's transport key, as a target token is (review
+        // 2026-11-23 C-1): the one --transport-key or keys.toml's transportWith names.
         let transport_key = match dest {
             tokens::Dest::Token(name) => transport_choice(cfg, name, how),
-            _ => how.transport_key.as_deref(),
+            tokens::Dest::Transport(t, _) => transport_choice(cfg, &t.token, how),
+            tokens::Dest::File(_) => how.transport_key.as_deref(),
         };
         let spki = match &dest {
             // No transport key named is the plan's own reason (`plan_moves`); a recorded one that
@@ -929,10 +911,18 @@ impl Run<'_> {
         match file_format {
             Some(format) => self.limit_file_plans(&mut moves.plans, format, from),
             None if bundle => limit_bundle_plans(&mut moves.plans),
-            None => {}
+            None => limit_token_plans(&mut moves.plans),
         }
         if show {
             show_plans(from, &moves, how.json)?;
+        }
+        // Every --spec selects an object moving to the token, checked where the run checked it:
+        // once nothing is blocked (15 first). Here, so the dry run exits as the run does (D9;
+        // review 2026-11-23 C-2: it said ready for a --spec the run refused).
+        if let (false, Some(to)) = (bundle, target_token)
+            && moves.plans.iter().all(|p| p.ready)
+        {
+            specs_select(cfg, specs, moves.plans.iter().map(|p| p.object.as_str()), to, MOVE)?;
         }
         Ok((moves, source, target))
     }
@@ -1023,6 +1013,36 @@ fn limit_bundle_plans(plans: &mut [plan::Plan]) {
             p.reasons.push(format!(
                 "a bundle carries sealed keys and public objects, not {}: move it with `camigrate migrate`",
                 method.name()
+            ));
+        }
+    }
+}
+
+/// The methods a move onto a token runs today: a public object, a sealed key, the host path, a
+/// `tpm2_ptool` or PIV import. A vendor's own method is a later docs/CAMIGRATE.md phase.
+fn built(method: &Method) -> bool {
+    matches!(
+        method,
+        Method::Public
+            | Method::RsaOaepAesKwp(_)
+            | Method::RsaOaep(_)
+            | Method::HostPkcs8
+            | Method::HostRaw
+            | Method::Tpm2Ptool
+            | Method::PivImport
+    )
+}
+
+/// A move onto a token runs only a [`built`] method: another blocks the plan, so the dry run
+/// says what the run refuses (D9; review 2026-11-23 C-2: only the run refused it).
+fn limit_token_plans(plans: &mut [plan::Plan]) {
+    for p in plans.iter_mut().filter(|p| p.ready) {
+        if !p.method.as_ref().is_some_and(built) {
+            let method = p.method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
+            p.ready = false;
+            p.reasons.push(format!(
+                "moving by {method} is a later docs/CAMIGRATE.md phase; public objects, sealed keys and the host \
+                 path into PKCS#11 tokens move"
             ));
         }
     }
@@ -1335,7 +1355,7 @@ mod tests {
     fn the_kwp_feature_comes_with_the_patched_binding() {
         assert!(
             !cakeys_pkcs11::binding::patched() || cfg!(feature = "kwp"),
-            "the patched cryptoki is linked without camigrate's `kwp` feature (nix/package.nix buildFeatures)"
+            "the patched cryptoki is linked without camigrate's `kwp` feature (nix/package-common.nix features)"
         );
     }
 

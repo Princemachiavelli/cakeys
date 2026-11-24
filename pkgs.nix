@@ -19,9 +19,11 @@ let
     rustBin.stable.${if pkgs.lib.length (pkgs.lib.splitString "." v) == 2 then "${v}.0" else v}.minimal;
 in
 rec {
-  cakeys = pkgs.callPackage ./nix/package.nix { };
-  # The same build with crane (nix/package-crane.nix): its dependencies built once per
-  # Cargo.lock, so the checks (and their clippy and minimal builds) rebuild only cakeys' crates.
+  # What users get (packages.default, the NixOS module's default, the apps): the build every check
+  # and CI job builds, without running its test suites again (review 2026-11-23 C-8).
+  cakeys = cakeys-crane.unchecked;
+  # The build with crane (nix/package-crane.nix) and its test suites: its dependencies built once
+  # per Cargo.lock, so the checks (and their clippy and minimal builds) rebuild only cakeys' crates.
   cakeys-crane = pkgs.callPackage ./nix/package-crane.nix {
     inherit craneLib msrvToolchain;
     kani = if pkgs.stdenv.hostPlatform.system == "x86_64-linux" then kani else null;

@@ -625,7 +625,7 @@ pub(crate) fn plan_moves(
             }
             Ok(_) => None,
         },
-        Dest::Transport(t, shown) => pinned(lock, t).err().map(|e| format!("{shown}: {e}")),
+        Dest::Transport(t, shown) => pinned(lock, t, req.transport_key).err().map(|e| format!("{shown}: {e}")),
         Dest::File(_) => None,
     };
     if let Some(why) = missing {
@@ -764,12 +764,27 @@ fn warn_decrypting(t: &Target, lock: &Lock, notes: &mut Notes) {
     }
 }
 
-/// A transport file's key is the one the lock pins for its object.
+/// A transport file's key is its token's transport key as the lock pins it (docs/CAMIGRATE.md D3:
+/// the lock is the authenticated channel): the spec `chosen` names (`--transport-key`, else the
+/// file's token's `transportWith`) is realised on the file's token as a transport key
+/// ([`transport_spec`]), on the file's object, whose locked identity is the file's key. Any
+/// other key the lock pins (another token's transport key, a certificate's subject key) is
+/// refused, since whoever swapped the file may hold it (review 2026-11-23 C-1).
 ///
 /// # Errors
 ///
 /// Why it is not.
-pub(crate) fn pinned(lock: &Lock, t: &Transport) -> std::result::Result<(), String> {
+pub(crate) fn pinned(lock: &Lock, t: &Transport, chosen: Option<&str>) -> std::result::Result<(), String> {
+    let spec = transport_spec(lock, &t.token, chosen)?;
+    let realised = lock.realisation(spec, &t.token).map(|r| r.object.as_str());
+    if realised != Some(t.object.as_str()) {
+        return Err(format!(
+            "its object '{}' is not the transport key of '{}': the lock realises '{spec}' there as '{}'",
+            t.object,
+            t.token,
+            realised.unwrap_or("nothing")
+        ));
+    }
     match lock.objects.get(&t.object).and_then(|o| o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name())) {
         Some(id) if *id == t.rfc7093m4 => Ok(()),
         Some(id) => Err(format!("its key {} is not the {id} the lock pins for '{}'", t.rfc7093m4, t.object)),

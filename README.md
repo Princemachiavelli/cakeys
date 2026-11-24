@@ -140,7 +140,9 @@ A cached consumer is not rebuilt, so the token is not re-contacted; `nix build -
 
 The NixOS module (`nixosModules.default`, `services.cakeys`) gives a token's sandbox paths,
 and pcscd or the TPM, **only to builds that require that token's feature** (through a
-pre-build-hook). It also defines check units that gate services on the key's identity. Real builds
+pre-build-hook). Those two are host-wide, though: pcscd serves every reader and `/dev/tpmrm0` is
+the whole TPM, so a build granted either reaches every card plugged in, or every TPM object its
+authorization allows, not only that token's. It also defines check units that gate services on the key's identity. Real builds
 reach tokens only through p11-kit forwarding or a real TPM, never through a token database.
 
 ## Documentation
@@ -161,7 +163,7 @@ reach tokens only through p11-kit forwarding or a real TPM, never through a toke
 ```console
 $ nix flake check                # every check: token suites, VMs, module, minimal build, formatting, fuzz smoke run
 $ nix build .#checks-crane-only  # the same without the fuzz smoke run, on the crane build
-$ nix build .#cakeys             # the regular buildRustPackage build
+$ nix build .#cakeys             # what users get: the checks' crane build, its tests not rerun
 $ nix fmt                        # treefmt.nix
 $ nix run .#demo                 # the walkthrough (nix/demo.sh)
 $ nix run .#fuzz -- lock         # fuzz one target until stopped

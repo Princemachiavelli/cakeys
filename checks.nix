@@ -13,9 +13,8 @@
   softhsm-unwrap-value-len-tested,
 }:
 {
-  # The crane build (nix/package-crane.nix) with its tests; every check below runs it. The
-  # regular build (packages.cakeys, nix/package.nix) shares its source, patches, features and
-  # test environment (nix/package-common.nix) and is built on demand: `nix build .#cakeys`.
+  # The crane build (nix/package-crane.nix) with its tests; every check below runs it.
+  # packages.cakeys is the same build without its check phase (`unchecked`), what users get.
   inherit cakeys;
   # `nix fmt` would change nothing: every formatter and linter in treefmt.nix passes.
   formatting = treefmt.config.build.check self;
@@ -402,6 +401,14 @@
         // extra;
       };
       says = needle: m: builtins.any (pkgs.lib.hasInfix needle) (refused m);
+      # The module's own warnings.
+      warns = m: builtins.filter (pkgs.lib.hasPrefix "services.cakeys") (eval m).warnings;
+      pcscd = names: {
+        services.cakeys.sandbox.pcscd.enable = true;
+        services.cakeys.tokens = pkgs.lib.genAttrs names (_: {
+          pcscd = true;
+        });
+      };
     in
     assert refused (check { }) == [ ];
     assert says "--uri-pin value" (check {
@@ -430,6 +437,15 @@
         services.cakeys.sandbox.pcscd.enable = true;
         services.cakeys.tokens.p.pcscd = true;
       } == [ ];
+    # pcscd serves every reader: two tokens granted it share every card, which is said (review
+    # 2026-11-23 C-9); one token alone is not.
+    assert warns (pcscd [ "p" ]) == [ ];
+    assert builtins.any (pkgs.lib.hasInfix "serves every reader") (
+      warns (pcscd [
+        "a"
+        "b"
+      ])
+    );
     pkgs.runCommand "cakeys-module-assertions" { } "touch $out";
 }
 # x86_64-linux only, as Kani is packaged (nix/kani.nix): the Kani proofs in cakeys_core::fuzzing.

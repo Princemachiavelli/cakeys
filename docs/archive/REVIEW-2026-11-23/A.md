@@ -26,6 +26,7 @@ and split the 2,084-line `config/mod.rs` (≈320 lines of its tests belong to `l
 ## Findings
 
 ### A-1. `Effective::commit` (and `generate_secret`) answer *yes* from absence for free-length key types — medium — 1, 4 — verified
+
 `crates/profile/src/effective.rs:267-273`, `:206-211`; doc at `:233-237`
 `commit` returns `Yes` for *any* length of a free-length type once *any* row says yes
 (`if free && rows.iter().any(yes)`), although its own doc says "any length that did stands for one
@@ -44,6 +45,7 @@ helper `between_tried(can, cannot, n)` (nearest *tried* size below and above, bo
 `generate` (bits), `generate_secret` and `commit` (bytes); pin `commit` verdicts in `answers.rs`.
 
 ### A-2. Downgrade protection is per (spec, token), not per object: a second spec on the same token records a weaker realisation silently — medium — 2, 3 — verified
+
 `crates/core/src/reconcile.rs:198-211`, `:541-552`; `docs/DESIGN.md:320-322`, `:369-371`
 `compare` judges mode, binding, attestation, lost schemes and replaced immutables only against
 `lock.realisation(t.spec_name, t.token_name)`. Object `a` locked on token `t` by spec `s` with
@@ -58,6 +60,7 @@ token (any spec) for binding/attestation/immutables, or at least `notes.warn` th
 records it stronger; correct DESIGN §3.6/§3.7 wording either way.
 
 ### A-3. The attestation chain walker ignores critical extensions, keyUsage and EKU — medium — 2 — verified
+
 `crates/core/src/chain.rs:145-166` (`may_issue`: basicConstraints only), `:265-306`, `:318-358`
 No code in the workspace reads `Extension::critical`, `keyUsage` or `extendedKeyUsage`
 (`rg critical|KeyUsage|NameConstraints crates` hits only a test's openssl config). RFC 5280 §4.2
@@ -73,6 +76,7 @@ subjectAltName — TCG EK leaves mark SAN critical — extendedKeyUsage, certifi
 `tpm2-pkcs11/attest/ek.rs` require the EK EKU where present.
 
 ### A-4. `save_lock` replaces the lock with a new 0666&umask file: mode, owner and group are lost — medium — 2, 1 — verified
+
 `crates/core/src/config/io.rs:57`, `:70-89`
 `write_whole` creates a fresh temp file with `0o666` under the umask and renames it over the lock.
 A deployment that keeps `keys.lock` at 0600 (DESIGN §8.2: commitment IDs and private `valuehash`
@@ -83,6 +87,7 @@ target's permission bits (and best-effort `fchown` to its uid/gid), falling back
 for a new lock.
 
 ### A-5. Adding a descriptive `modulusBits` to a locked RSA object is refused forever as "different material" — medium — 3, 6 — verified
+
 `crates/core/src/reconcile.rs:186-197`, `crates/core/src/config/mod.rs:321-342` (derived `PartialEq`),
 `crates/core/src/migrate.rs:198-201`, `crates/camigrate/src/tokens.rs:352`
 The type check compares the whole `ObjectCfg`, so `modulusBits` (which the SPKI already fixes and
@@ -95,6 +100,7 @@ identity-bearing fields (`class`, `keyType`, `curve`, `valueLen`, `certificateTy
 declared `modulusBits` as a gap `record_object` fills, since the token check verifies it.
 
 ### A-6. camigrate's capability model lives in core with a single user — medium — 3, 4 — verified
+
 `crates/core/src/migrate.rs:163-352` (+ tests `:411-462`)
 `Side`, `Accept`, `Probed`, `ProbedWays`, `PlaintextImport` and `VendorMethod` are used only by
 `crates/camigrate/src/{plan,tokens,lib,sealed}.rs` (rg). Core's own need is `Method`/`Exposure`
@@ -105,6 +111,7 @@ into `camigrate::tokens`, keep `Method`/`Exposure` in core, and move `OaepHash` 
 `migrate` (prior pop.rs design note: the frozen names currently import from the proof module).
 
 ### A-7. `config/mod.rs` (2,084 lines) still mixes five concerns; a third of its tests test other modules — medium — 4 — verified
+
 `crates/core/src/config/mod.rs`
 Prior F5 split the sources but left: `ModuleInfo`/`TokenInfo` (`:1346-1389`, observation types,
 belong in `observe.rs`); verb addressing `select`/`address` (`:1280-1343`, used by
@@ -118,6 +125,7 @@ belong in `observe.rs`); verb addressing `select`/`address` (`:1280-1343`, used 
 to `observe.rs`, `select`/`address` to `cli-common` or `pkcs11::ops::planner`. mod.rs ≈ 900 lines.
 
 ### A-8. Object types are modelled three times and re-parsed after load — medium — 3, 4 — verified
+
 `crates/core/src/config/mod.rs:57-88` (`ObjectEntry`), `:320-474` (`ObjectCfg`, `kind`, `curve`,
 `checked_key_type`), `:476-529` (`ObjectKind`)
 Load parses every object into `ObjectKind` (`:901`) and throws it away; consumers then re-parse the
@@ -132,6 +140,7 @@ as the serialized/digest form, store the parsed `ObjectKind` beside it in `Confi
 unreachable error arms.
 
 ### A-9. Four hand-synced commitment tables, with names that disagree — low — 4, 5 — verified
+
 `crates/core/src/id.rs:326-363` (`Commit::scheme`, `Commit::mechanism`),
 `crates/pkcs11/src/token/identity.rs:374-400` (`commit_kind`, `commit_mechanism`),
 `crates/profile/src/capability.rs:315-329` (`commit_mechanism(kind)`)
@@ -142,6 +151,7 @@ commitment needs four edits plus the pinning tests. Fix: put `Commit::profile_ki
 rename the profile kinds to the scheme names (profiles are regenerated).
 
 ### A-10. A proof the declared `CKA_ALLOWED_MECHANISMS` forbids is refused only at token time (15), unlike commitments (17 at load) — low — 3, 5 — verified
+
 `crates/core/src/plan.rs:154-217` vs `:281-311`, `:320-324`
 `plan_mode` refuses a secret key whose declared allowed list permits none of its commitments
 (17, at load), but `check_binding` never consults the list: an EC key with
@@ -152,6 +162,7 @@ declared list contains none of the binding's mechanisms (the table `possession.r
 lists them per binding; move it to core).
 
 ### A-11. Host-side RSA encryption failures are "unavailable" (16) — low — 1, 5 — verified
+
 `crates/core/src/pop.rs:245-262`; caller `crates/pkcs11/src/token/possession.rs:295`, `OAEP` at `:632`
 `rsa_encrypt` maps every `rsa` error to `Unavailable`. The pop challenge is 78 bytes
 (14 + 32 + 32); OAEP-SHA-256 on RSA-1024 carries at most 62. A 1024-bit decrypt-only key on a token
@@ -160,6 +171,7 @@ token cannot be used now") instead of 15 naming the size. Fix: map the size/`Mes
 `Unsupported` naming key size and hash, keep `Unavailable` for the RNG.
 
 ### A-12. The `.lck` sidecar is opened for writing and not covered by the writability pre-check — low — 1, 6 — verified
+
 `crates/core/src/config/io.rs:122-131`, `:226-244`
 `lock_for_update` opens `<lock>.lck` with `write(true).create(true)`; a sidecar left by another
 user (0644 under umask 022) makes every writing run of a shared lock fail with exit 1 "opening
@@ -168,6 +180,7 @@ keys.lock.lck: Permission denied", while `lock_unwritable` (which promises the u
 descriptor. Fix: open read-only when the sidecar exists, or include it in `unwritable`.
 
 ### A-13. Test-only and dead API in library code — low — 4, 7 — verified
+
 `crates/core/src/pop.rs:52-62` (`verify`), `:175-185` (`oaep_challenge`), `:196-208`
 (`unwrap_challenge`): no caller outside core's tests (production uses `verify_with`, `rsa_encrypt`,
 `unwrap_challenge_with`); `crates/core/src/config/lock.rs:72-75` (`validate` wraps `check`);
@@ -178,6 +191,7 @@ variant). Fix: delete the three pop wrappers (rename the `_with` forms), inline 
 one `Baseline`, make `Restrict.operation` a plain `"generate"` check. ~60 lines.
 
 ### A-14. An unset environment variable for the PIN is 16 or 17 depending on how it is named — low — 5, 6 — verified
+
 `crates/core/src/secret.rs:45-46` (`pinEnv` unset → `Unavailable` 16) vs
 `crates/core/src/config/mod.rs:1218-1220` via `TokenCfg::pin_path` (`pinFile = "$VAR"` unset →
 `Validation` 17). Both mean "this host's environment does not provide the PIN"; scripts must
@@ -185,6 +199,7 @@ handle two codes. CONFIG.md documents both (`:65`, `:86`). Fix: one code (16) fo
 at use, 17 only for a malformed reference at load.
 
 ### A-15. Doc-vs-code drift in the core's documents — low — 5 — verified
+
 - `docs/CONFIG.md:283-284` "a `$NAME` path reference must name a set variable" at load: since
   34969c4 only the form is checked at load (`config/mod.rs:904-928`); the same file says so at
   `:85-87`. `:37` "valid … with `TPM_PIN_FILE` set" is stale, and no test loads this example.
@@ -199,6 +214,7 @@ at use, 17 only for a malformed reference at load.
 Fix: correct the text; add a test that loads CONFIG.md's annotated example.
 
 ### A-16. Test-quality gaps in core tests — low — 7 — verified
+
 - `crates/core/tests/exit_codes.rs:84-106` lists `KmError` variants by scraping `src/error.rs`'s
   text for match arms and keeps a hand list in `code_of` (`:8-27`); a `#[cfg(test)]` exhaustive
   `match` in error.rs gives the same guarantee at compile time.
@@ -211,6 +227,7 @@ Fix: correct the text; add a test that loads CONFIG.md's annotated example.
   no `commit` verdict (A-1 went unseen).
 
 ### A-17. A lock that fails validation on save after a token write exits 17, not 21 — low — 1 — verified (latent)
+
 `crates/core/src/config/io.rs:53`, `crates/core/src/error.rs:128-132`
 `save_lock` maps only I/O errors to `LockUnwritable` (21, "the token may hold what the lock does not
 record"); a `check` failure stays `Validation` (17) even after `create` made a key. Reachable only
@@ -218,7 +235,8 @@ through a `record` bug, which is what the save-time check exists to catch. Fix: 
 the validation reason.
 
 ### A-18. No fuzz target for the PEM/DER certificate reader of user-named files — low — 7 — plausible
-`crates/core/src/chain.rs:177-210`; `fuzz/fuzz_targets/` 
+
+`crates/core/src/chain.rs:177-210`; `fuzz/fuzz_targets/`
 `certs_of`/`pem_certs` hand-split PEM blocks of `options.ekCertificate`/`ekRoots` files (new with
 912a06d); the `piv_chain` target feeds DER only and `certificate` only `id::cert_spki`. The slicing
 is on ASCII delimiters and looks safe; a target is cheap insurance. Fix: `fuzz_targets/cert_bundle.rs`
@@ -269,6 +287,7 @@ Local:
 
 Every numbered prior finding in scope is Fixed or Decided (properties.rs F3: Decided, moot). Open
 design notes (no ID):
+
 - plan.rs design: `Target::schemes` and `plan_mode` still derive "which commitments" by two paths (`plan.rs:57-69` vs `:281-311`).
 - plaintext.rs design: `private_from_pkcs8` still takes `curve: Option<&str>` (folded into A-8).
 - pop.rs/migrate.rs design: `migrate::Method` still imports `OaepHash` from `pop` (`migrate.rs:8`) (folded into A-6).

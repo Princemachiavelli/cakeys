@@ -313,23 +313,31 @@ fn a_secret_key_to_create_is_decided_by_its_recorded_lengths() {
         object("des3", "CKK_DES3", None),
         object("mac", "CKK_GENERIC_SECRET", Some(48)),
         object("huge", "CKK_GENERIC_SECRET", Some(4096)),
+        object("short", "CKK_GENERIC_SECRET", Some(8)),
         spec("aes", "CKA_SIGN"),
         spec("des3", "CKA_ENCRYPT"),
         spec("mac", "CKA_SIGN"),
         spec("huge", "CKA_SIGN"),
+        spec("short", "CKA_SIGN"),
     ]
     .concat();
     w.write_config(&text);
     let out = w.km(&["validate"]);
     let err = stderr(&out);
     assert_eq!(code(&out), 0, "{err}");
-    let decided =
-        |object: &str| err.lines().any(|l| l.contains(&format!("'{object}' (spec")) && l.contains("generation"));
-    for object in ["aes", "des3", "mac"] {
-        assert!(!decided(object), "{object}: {err}");
+    let noted = |object: &str, what: &str| {
+        err.lines().any(|l| l.contains(&format!("'{object}' (spec")) && l.contains(what) && l.contains("not decided"))
+    };
+    for object in ["aes", "des3", "mac", "short"] {
+        assert!(!noted(object, "generation"), "{object}: {err}");
     }
-    assert!(decided("huge"), "{err}");
+    assert!(noted("huge", "generation"), "{err}");
     assert!(err.contains("probed 1, 16, 32, 64, 128, 256, 512, 1024 bytes only"), "{err}");
+    // SoftHSM computes the HMAC commitment at 32 and 64 bytes and refuses 16: 48 lies between two
+    // that worked, 8 below one refused, which is unknown, never a yes (review 2026-11-23 A-1).
+    assert!(!noted("mac", "commitments"), "{err}");
+    assert!(noted("short", "commitments"), "{err}");
+    assert!(err.contains("probed hmac-sha256 at 16, 32, 64 bytes only"), "{err}");
 }
 
 /// What the gate refuses or leaves open, from keys.toml alone: a hash-bound HMAC key to
@@ -364,11 +372,17 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
         ec("soft"),
         ec("gen"),
         ec("tpm"),
+        ec("yk"),
+        ec("yk-in"),
         spec("mac-soft", "mac", "soft", ""),
         spec("p-soft", "soft", "soft", ", attestation = true"),
         spec("p-gen", "gen", "gen", ""),
         spec("p-tpm", "tpm", "tpm", ""),
         spec("aes-yk", "aes", "yk", ", origin = \"adopt\", attestation = true"),
+        // A key ykcs11 would make under a label, created or imported: it places keys in PIV slots
+        // by CKA_ID alone (review 2026-11-23 B-3: only `create` itself, token open, said so).
+        spec("p-yk", "yk", "yk", ""),
+        spec("in-yk", "yk-in", "yk", ", origin = \"import\""),
     ]
     .concat();
     w.write_config(&text);
@@ -389,5 +403,9 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
         "validate: 'tpm' (spec 'p-tpm') on token 'tpm': generation not decided",
     ] {
         assert!(err.contains(line), "expected {line:?} in\n{err}");
+    }
+    for pair in ["'yk' (spec 'p-yk') on token 'yk': provider 'ykcs11'", "'yk-in' (spec 'in-yk') on token 'yk'"] {
+        let refused = err.lines().find(|l| l.contains(pair)).unwrap_or_else(|| panic!("{pair}: {err}"));
+        assert!(refused.contains("ykcs11 ignores CKA_LABEL when generating"), "{refused}");
     }
 }
