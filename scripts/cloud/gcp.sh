@@ -174,7 +174,8 @@ EOF
     if ((write)); then
       out=$repo/profiles/modules/$name.toml
       mkdir -p "$(dirname "$out")"
-      args+=(--write-probes --out "$out")
+      # RSA up to 4096 bits, as every regeneration probes (profiles/LEDGER.toml, [regen]).
+      args+=(--write-probes --rsa-max-bits 4096 --out "$out")
       [[ -f $out ]] && args+=(--diff "$name")
     else
       out=$state/${variant}-read-only.toml

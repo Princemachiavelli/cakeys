@@ -51,8 +51,13 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
   `packages.cakeys` is the same build without its check phase, what users and the NixOS module
   get. `nix/package-common.nix` holds the source, outputs, patches, features and test environment.
 - Generated profiles must stay byte-identical to the committed ones, and only the Nix-built
-  binary carries the patched cryptoki the probe needs: `scripts/regen-profiles.sh` gives the
-  commands. The baseline is regenerated with `CAKEYS_UPDATE_BASELINE=1`, then `nix fmt`.
+  binary carries the patched cryptoki the probe needs: `profiles/LEDGER.toml` names each
+  profile's command (`scripts/regen-profiles.sh` for the software tokens). The baseline is
+  regenerated with `CAKEYS_UPDATE_BASELINE=1`, then `nix fmt`.
+- What only hardware or a cloud can measure is in `profiles/LEDGER.toml`, with its last run. A
+  change to the code on its path, or a hand edit, fails `checks.ledger` until the ledger records
+  it: an `[artifact.acknowledged]` saying who, why and what needs a run, or a hand-edit row.
+  After a run on the device, record it there (CAPROBE.md, "The ledger").
 - Port 23211 on the development machine belongs to another process's swtpm: pass another port
   (`TPM_PORT`, or the third argument of `nix/tpm2-test-env.sh`).
 
@@ -135,6 +140,7 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 | `checks.doc` | package build | rustdoc over every crate, private items included, with `-D warnings`: no doc link that does not resolve. An evidence tag in a doc comment is written `\[run\]`, or rustdoc reads it as a link |
 | `checks.msrv` | package build | `cargo check --all-targets` with the toolchain at `Cargo.toml`'s `rust-version` (rust-overlay), the dependencies built with it too |
 | `checks.doc-references` | sandbox | what the docs cite exists (`nix/doc-references.py`): a test or function named in backticks is a `fn` in `crates/` or `fuzz/`, every `docs/*.md` and Rust source (`crates/…/*.rs`) cited from docs, sources, scripts or Nix is a file, and every relative Markdown link resolves. Names and paths of other software are listed in the script with what they are |
+| `checks.ledger` | sandbox | `nix/ledger.py` and its fixture tests (`nix/ledger-test.py`): every file `profiles/LEDGER.toml` records from a run on hardware or a cloud is the one recorded, a hand edit since the run is listed, and the code on its path is the run's or an acknowledged change; every module profile has an entry; every regeneration probes RSA up to `[regen] rsa-max-bits` (CAPROBE.md, "The ledger") |
 | `checks.formatting` | treefmt | `nix fmt` would change nothing: the formatters and linters in `treefmt.nix` (rustfmt with `rustfmt.toml`, nixfmt, taplo, shfmt, rumdl, keep-sorted, statix, deadnix, shellcheck, typos) |
 | `scripts/xversion.sh` | by hand, per refactor | a lock recorded by one build verifies, compares and re-records byte-identically with another (every class) |
 

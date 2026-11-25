@@ -34,9 +34,10 @@ $ caprobe probe --token <t> [--write-probes] [--out <file>] [--diff <profile>] [
 Other exit codes are the shared ones ([CAKEYS.md](CAKEYS.md#exit-codes)); 17 includes a write
 probe on a token not marked scratch.
 
-Regenerating the committed profiles: `scripts/regen-profiles.sh` sets up the three reference
-tokens as the check phase does and regenerates their files; the YubiKey test regenerates
-ykcs11/2.7. Only the Nix-built binary carries the patched cryptoki the probe needs.
+Regenerating the committed profiles: `profiles/LEDGER.toml` names the command for each
+(["The ledger"](#the-ledger)). `scripts/regen-profiles.sh` sets up the three reference tokens as the check phase does and
+regenerates their files; the others take the device or the cloud. Only the Nix-built binary
+carries the patched cryptoki the probe needs.
 
 ## Why data, and what stays code
 
@@ -158,8 +159,8 @@ module profile decides. The binary embeds the profiles this repo ships.
 - **`caprobe --profiles <dir>`** adds or replaces entries; regeneration needs to replace.
 - **keys.toml's `profileDirs`** add module profiles at run time for all three tools: a new
   vendor, and its provider, without a rebuild. They only add, and may not replace an embedded
-  profile, a layer or the baseline: those are re-probed on every build. The run says which
-  profiles came from there.
+  profile, a layer or the baseline: those are this repository's, each measured as
+  `profiles/LEDGER.toml` records. The run says which profiles came from there.
 
 ## What the probe measures
 
@@ -281,9 +282,11 @@ generated, never edited, and pinned like the baseline:
   (refused with 17 otherwise): key pairs per baseline curve, and per RSA size from 512 to 16384
   bits (512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384), whatever the module
   reports — what it reports is a claim, `[reported."CKK_RSA"]`, and cryptoki the only limit;
-  `--rsa-max-bits` stops earlier (the test suites pass 4096: 16384 bits take a software token
-  over a minute, so the committed reference profiles stop there too, and the gate answers
-  unknown above). A curve family whose generation mechanism the module does not list is tried
+  `--rsa-max-bits` stops earlier. Every regeneration passes 4096 (`[regen]` in
+  `profiles/LEDGER.toml`, which `checks.ledger` holds each script to): 16384 bits take a
+  software token over a minute, so the committed profiles stop there, and the gate answers
+  unknown above. The cloud profiles keep rows to 16384 from before that rule (review 2026-11-24
+  E-8) until their next probe. A curve family whose generation mechanism the module does not list is tried
   all the same, an `add` row where it generates. Each key that generates with its usage proves
   possession by every binding of its kind, a `prove.*` row each. Every secret key type cakeys
   manages (AES, generic secret, Triple DES, the five hash-bound HMAC types) the module lists a
@@ -340,8 +343,39 @@ generated, never edited, and pinned like the baseline:
 | `ykcs11/2.7` (YubiKey 5C NFC FIPS, 5.7.4) | Reports version 2.73, manufacturer `Yubico (www.yubico.com)`. P-256, P-384, Ed25519 (by name only), RSA 2048–4096; refuses RSA-1024, P-521, secp256k1, brainpool, Ed448, X25519 (its template wants a malformed `PrintableString` [src]). ECDH only into an extractable secret, no HMAC; every key reports `CKA_DERIVE = false` (repaired by its provider's `repair`). OAEP decrypts with SHA-1, SHA-256 and SHA-512. Nothing unwraps: `pop-sign`, `pop-decrypt` and `pop-ecdh` prove, `pop-unwrap` cannot. FIPS mode is a `[manual]` finding until D12 |
 | `aws-cloudhsm/5.18+hsm2m-fips` (AWS CloudHSM, us-west-1, 2026-11-15) | Reports manufacturer `CloudHSM`, model `LS2`, firmware 10.23, Cryptoki 2.40. Refuses a public key with `CKA_PRIVATE = false`: generated without it, the public key reads `CKA_PRIVATE = true` (the probe retries and notes it). P-256, P-384, P-521, secp256k1, RSA 2048–4096; refuses RSA-1024, brainpool, every Edwards and Montgomery curve. OAEP SHA-1 and SHA-256 wrap; SHA-1, SHA-256 and SHA-512 decrypt. `CKM_ECDSA_SHA1` fails: FIPS refuses an 80-bit digest on a 128-bit key (the client's `enable_ecdsa_with_weak_hash`). Raw ECDH needs the client option `ecdh_without_kdf` (`aws.sh activate` sets it); the derived secret refuses `CKA_EXTRACTABLE = false` (dropped, `CKA_VALUE_LEN` added: `derive.template`), reads sensitive and extractable, and MACs (`derive.sealed`); derivation needs a read-write session. `CKM_AES_KEY_WRAP` and `_PAD` are listed with `CKF_WRAP \| CKF_UNWRAP` and refused (`subtract`) [run]; the client option `--aes-key-wrap-mapping` maps the first to a vendor padding [doc], untried; `CKM_RSA_AES_KEY_WRAP` round-trips, and camigrate moves by it. Even a session object needs a read-write session (camigrate's `Access::Scratch`). Vendor mechanisms (EdDSA `0x80001057`, ML-DSA, AES-GCM, `0x8000216F` = RFC 5649, `0x8000210A` = RFC 3394 over PKCS#5 padding) are listed but cryptoki drops vendor IDs from the list [run]. RSA PKCS#1 v1.5 decryption fails. An unwrap template may not carry `CKA_VALUE_LEN`. Regenerated by `scripts/cloud/aws.sh probe` |
 | `aws-cloudhsm/5.18+hsm2m-non-fips` (same, a NON_FIPS cluster) | As the FIPS profile, except that `CKM_ECDSA_SHA1` and RSA PKCS#1 v1.5 decryption work. Ed25519 through the aws-cloudhsm provider's stand-ins, which the probe measures and records in `add` (`CKM_EC_EDWARDS_KEY_PAIR_GEN`, `CKM_EDDSA`): the module lists neither, generates Ed25519 as `CKM_EC_KEY_PAIR_GEN` with the Ed25519 OID, reports `CKK_EC` with the whole SPKI as `CKA_EC_POINT`, and signs pure Ed25519 with the vendor `0x80001057` (no parameters) [run]. It never imports one (`[migration] refuses`: a `CKK_EC_EDWARDS` public half is `CKR_ATTRIBUTE_VALUE_INVALID` [run]); it exports one. The FIPS cluster refuses the stand-in generation (`CKR_ATTRIBUTE_VALUE_INVALID`, "Ed25519 key generation not available"), so its profile adds nothing and cakeys refuses an Ed25519 key there before creating. Its match keys equal the FIPS profile's, since PKCS#11 reports no mode (D12): a tie resolves to the FIPS profile, embedded first, the stricter, and the run says so in a note naming both (`caprobe caps` lists it). A NON_FIPS cluster pins this one with `moduleProfile` (`aws.sh cakeys` and `camigrate` do). `CAKEYS_AWS_MODE=NON_FIPS scripts/cloud/aws.sh probe` |
-| `kmsp11/1.9+hsm`, `kmsp11/1.9+hsm-fips` (Google Cloud KMS, HSM protection level, us-west1, 2026-11-15) | Probed through the provider's bound keys: one key per Cloud KMS algorithm, each with its own mechanisms. The FIPS build of the library measures the same, with the same `C_GetInfo` (`Google`, 1.9, `Cloud KMS Token`, firmware 0.0), so it is embedded first and the two tie. P-256 and P-384 (signing only), RSA 2048–4096. RSA-1024, P-521, secp256k1 and brainpool have no algorithm (`CKR_TEMPLATE_INCOMPLETE` without one); Edwards and Montgomery are `CKR_MECHANISM_INVALID`. OAEP decrypts with SHA-256 or SHA-512, each key only with its algorithm's hash (`CKR_MECHANISM_PARAM_INVALID` for the others); there is no wrap, unwrap or derive. `C_GetMechanismList` repeats `CKM_RSA_PKCS_KEY_PAIR_GEN` 24 times. `C_DestroyObject` takes a version out of view. Regenerated by `scripts/cloud/gcp.sh probe --write-probes` |
+| `kmsp11/1.9+hsm`, `kmsp11/1.9+hsm-fips` (Google Cloud KMS, HSM protection level, us-west1, 2026-11-15) | Probed through the provider's bound keys: one key per Cloud KMS algorithm, each with its own mechanisms. The FIPS build of the library measures the same, with the same `C_GetInfo` (`Google`, 1.9, `Cloud KMS Token`, firmware 0.0), so it is embedded first and the two tie. P-256 and P-384 (signing only), RSA 2048–4096. RSA-1024, P-521, secp256k1 and brainpool have no algorithm (`CKR_TEMPLATE_INCOMPLETE` without one); Edwards and Montgomery are `CKR_MECHANISM_INVALID`. OAEP decrypts with SHA-256 or SHA-512, each key only with its algorithm's hash (`CKR_MECHANISM_PARAM_INVALID` for the others); there is no wrap, unwrap or derive. `C_GetMechanismList` repeats `CKM_RSA_PKCS_KEY_PAIR_GEN` 24 times. `C_DestroyObject` takes a version out of view. Regenerated by `scripts/cloud/gcp.sh probe --write` |
 | `p11-kit/0.26` (layer) | Hides eight of SoftHSM's mechanisms, plus `CKM_RSA_AES_KEY_WRAP`; reports version 1.1 (detected by manufacturer) |
+
+## The ledger
+
+`profiles/LEDGER.toml` records what was measured on hardware or a cloud and no build repeats:
+the hardware and cloud profiles, the device certificates the tests read, and the example
+YubiKey lock. It also lists the profiles a build re-probes (`verified-by`), so every module
+profile has an entry, and each entry names its regeneration command (`regen`). The profile
+header points there rather than claim either (review 2026-11-24 E-7, E-8).
+
+For a file no build re-derives, the entry holds its run (`[artifact.probed]`: the commit, the
+date, the file as written, the hash of the code on its path then), every hand edit since
+(`[[artifact.hand-edits]]`) and the file now (`hash`). `code` lists the globs whose change can
+change the file: for a profile, the probe, the token operations it drives, the host-side checks
+and the provider crate (`[groups] probe`), and for a cloud its script and module build. Not the
+emitter: every build holds the committed text to it.
+
+`checks.ledger` (`nix/ledger.py`, in CI's light job; locally `nix develop -c python3 -I
+nix/ledger.py .`) hashes the tree, not git, and fails when:
+
+- a file changed and its entry did not;
+- a file is not its run's output and no hand-edit row says so;
+- the code on its path changed since the run and no `[artifact.acknowledged]` names that code's
+  hash, with who, why and what still needs a run on the hardware (`reprobe`);
+- a module profile has no entry, a glob names no file, or a regeneration passes another
+  `--rsa-max-bits` than `[regen]`.
+
+Acknowledging is the reviewable act: the diff carries the new code hash and the reason, and the
+check reports the file `STALE` until the next run. After a run on the hardware: set
+`[artifact.probed]` `by` and `date`, drop the hand edits and the acknowledgement, and take the
+file's hash (`hash`, `probed.hash`) and the code's (`probed.code-hash`) from what the check then
+prints. On 2026-11-25 every hardware and cloud profile and the lock are stale, acknowledged.
 
 ## Tests
 
@@ -352,7 +386,8 @@ generated, never edited, and pinned like the baseline:
 - **Conformance**, in every Nix build's check phase: a fresh probe of SoftHSM, kryoptic and
   tpm2-pkcs11-on-swtpm conforms to its committed profile and regenerates it byte for byte; the
   scratch guard refuses; through p11-kit SoftHSM advertises its profile minus the layer. The
-  YubiKey and fTPM checks are opt-in.
+  YubiKey and fTPM checks are opt-in, and the cloud profiles have none: `checks.ledger` says
+  when the code on their path changed since their last run.
 - **Drift**: one edited row makes the diff non-empty and names the row.
 - **The static gate** (`cakeys validate`, and `cakeys create` before it opens a token): kryoptic
   generating secp256k1 for a pair with `origin = "create"`, or a `kw` commitment through p11-kit,

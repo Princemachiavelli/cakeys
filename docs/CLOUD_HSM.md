@@ -338,8 +338,9 @@ the source.
 
 ### Conformance and the Nix build
 
-CAPROBE.md says the conformance test re-probes on every build. A cloud profile cannot: the
-sandbox has no network, and a probe costs money. The repo already has the escape: the hardware
+The conformance test re-probes the software tokens' profiles on every build. A cloud profile
+cannot: the sandbox has no network, and a probe costs money. `profiles/LEDGER.toml` records its
+last probe instead, and `checks.ledger` fails when the code on its path changes since. The repo already has the escape: the hardware
 tests are opt-in, skipped when their module variable is unset, "never in the Nix build"
 (`crates/cli/tests/ftpm.rs`, `yubikey.rs`). Cloud follows it:
 
@@ -373,8 +374,8 @@ Two layers, because their lifetimes differ.
   backup. One entry point per provider with the same three verbs:
   `scripts/cloud/<provider> up | probe | down`, and `scripts/cloud/status`.
 
-`probe` runs `caprobe probe --token <t> --write-probes --rsa-max-bits 4096 --diff <profile> --out <file>`
-on the runner (or here, for GCP) and copies the generated TOML back.
+`probe` runs the write probe `profiles/LEDGER.toml` names for the profile, on the runner (or
+here, for GCP), and copies the generated TOML back.
 
 ### Safety against a leaked bill
 

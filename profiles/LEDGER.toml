@@ -1,0 +1,407 @@
+# What was measured on hardware or a cloud, and what changed since (docs/CAPROBE.md, "The
+# ledger"). nix/ledger.py holds this file to the tree on every build (checks.ledger).
+#
+# - `verified-by`: a build re-derives the file and compares it byte for byte. Nothing else is
+#   recorded; every module profile under profiles/modules/ has an entry, of this kind or the next.
+# - Otherwise the file came from a run no build repeats. [artifact.probed] is that run: the
+#   commit that recorded it, its date, the file as the run wrote it (`hash`) and the code on its
+#   path then (`code-hash`). `hash` is the file now, and any difference from the run's is a
+#   [[artifact.hand-edits]] row. `code` lists the globs whose change can change the file; when
+#   their hash is no longer the run's, the check fails until [artifact.acknowledged] names the
+#   new hash, who, why and what still needs a run on the hardware.
+# - After a run on the hardware: [artifact.probed] and `hash` take the hashes the check prints,
+#   and the hand edits and the acknowledgement go.
+#
+# Review 2026-11-24 E-7: every hardware and cloud profile is stale. The probe fixes of review
+# 2026-11-23 (fce5432, fcaa6aa, 61b7000) came after their probes, and edited them by hand.
+
+# Every regeneration probes RSA up to this size (review 2026-11-24 E-8): caprobe's default runs
+# to 16384, which takes a software token over a minute per size. Each source passes it, and no
+# `regen` below names another.
+[regen]
+rsa-max-bits = 4096
+sources = [
+  "scripts/regen-profiles.sh",
+  "scripts/cloud/aws.sh",
+  "scripts/cloud/gcp.sh",
+  "crates/cli/tests/common/mod.rs",
+]
+
+[groups]
+# What decides a probed row (docs/CAPROBE.md, "The probe"): the probe and its command; the token
+# operations it drives as the verbs do, the provider seam it calls and which provider claims the
+# module; the host-side checks that make a row yes (signatures, proofs, commitments, the moves'
+# key handling); the keys it imports; the vocabulary it iterates; the binding's patches, which
+# decide what it can name. Not the emitter or the profile crate: every build holds the
+# committed text to them (emit.rs, `every_committed_profile_is_what_the_emitter_writes`).
+probe = [
+  "crates/caprobe/src/lib.rs",
+  "crates/caprobe/src/probe.rs",
+  "crates/caprobe/src/probe/*.rs",
+  "crates/pkcs11/src/token/*.rs",
+  "crates/pkcs11/src/templates.rs",
+  "crates/pkcs11/src/binding.rs",
+  "crates/pkcs11/src/provider.rs",
+  "crates/pkcs11/src/providers.rs",
+  "crates/pkcs11/src/registry.rs",
+  "crates/core/src/pop.rs",
+  "crates/core/src/sig.rs",
+  "crates/core/src/id.rs",
+  "crates/core/src/plaintext.rs",
+  "crates/core/src/migrate.rs",
+  "crates/caprobe/fixtures/import/*",
+  "profiles/baselines/pkcs11-3.2.toml",
+  "nix/patches/cryptoki-*.patch",
+]
+# What a lock records of a token, and how: the format, the observations, the rules of a run and
+# the identity schemes.
+lock = [
+  "crates/core/src/config/lock.rs",
+  "crates/core/src/config/observe.rs",
+  "crates/core/src/reconcile.rs",
+  "crates/core/src/id.rs",
+  "crates/pkcs11/src/token/*.rs",
+]
+
+# The profiles a build re-probes.
+
+[[artifact]]
+path = "profiles/modules/softhsm/2.7.toml"
+from = "SoftHSM 2.7, the flake's patched build (.#softhsm-unwrap-value-len)"
+regen = "scripts/regen-profiles.sh"
+verified-by = "every build: crates/caprobe/tests/reference.rs probes a fresh token and compares (checks.cakeys)"
+
+[[artifact]]
+path = "profiles/modules/kryoptic/1.5.toml"
+from = "kryoptic 1.5"
+regen = "scripts/regen-profiles.sh"
+verified-by = "every build: crates/caprobe/tests/reference.rs probes a fresh token and compares (checks.cakeys)"
+
+[[artifact]]
+path = "profiles/modules/tpm2-pkcs11/1.10+swtpm.toml"
+from = "tpm2-pkcs11 1.10 on swtpm"
+regen = "scripts/regen-profiles.sh"
+verified-by = "every Linux build: crates/caprobe/tests/tpm2.rs probes a fresh swtpm and compares (checks.cakeys; darwin builds no tpm2)"
+
+# The hardware and cloud profiles.
+
+[[artifact]]
+path = "profiles/modules/ykcs11/2.7.toml"
+from = "YubiKey 5C NFC FIPS (firmware 5.7.4) through ykcs11 2.7, scratch slot 94"
+regen = "the Nix-built caprobe on the YubiKey (docs/DEVELOPMENT.md, hardware rules; probe.scratchId = \"17\"): caprobe probe --token <t> --write-probes --rsa-max-bits 4096 --diff ykcs11/2.7 --out profiles/modules/ykcs11/2.7.toml; then crates/caprobe/tests/yubikey.rs conforms (nix run .#coverage-full with CAKEYS_TEST_YUBIKEY_*)"
+code = ["@probe", "crates/ykcs11/src/*.rs"]
+hash = "sha256:d3b4244fedc0a4ece72de0f7f608444d2a5ef1865978a35803c72d085be2da48"
+
+[artifact.probed]
+by = "798f58f"
+date = "2026-11-19"
+hash = "sha256:22db38335ae339816e6f6b5d67d97b807ac1dbdd20a0ca48c3088f947b79fa24"
+code-hash = "sha256:ed2f5d1da3a5aed211b2d976a131a839cfbf433ee64f127c616fb54d187e0f26"
+
+[[artifact.hand-edits]]
+by = "fcaa6aa"
+what = "header: the regeneration command gained --rsa-max-bits 4096"
+
+[[artifact.hand-edits]]
+by = "6d4beab"
+what = "header: --write became --write-probes"
+
+[[artifact.hand-edits]]
+by = "61b7000"
+what = "rows: the Montgomery generation evidence moved from [notes] into the rows; Max(16) became 16"
+
+[[artifact.hand-edits]]
+by = "review 2026-11-24 E-7 (p0-ledger)"
+what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
+
+[artifact.acknowledged]
+code-hash = "sha256:f6c4999eae36f389ea1570ecb5db5ca7d8a9687d85e4ee747d612818795d1591"
+by = "review 2026-11-24 E-7 (the ledger's first entry)"
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000) and the token operations changed after the probe; rows the old logic wrote stand unchecked: the add row CKM_ECDSA_SHA224, and the import rows refused with CKR_DEVICE_ERROR (review 2026-11-24 E-2)"
+reprobe = "the whole profile, by the regen command"
+
+[[artifact]]
+path = "profiles/modules/tpm2-pkcs11/1.10+amd-ftpm.toml"
+from = "the development machine's AMD fTPM (firmware 3.87) through tpm2-pkcs11 1.10"
+regen = "through nix/ftpm-test-env.sh on the host's TPM (docs/DEVELOPMENT.md, hardware rules): caprobe probe --token <t> --write-probes --rsa-max-bits 4096 --diff tpm2-pkcs11/1.10+amd-ftpm --out profiles/modules/tpm2-pkcs11/1.10+amd-ftpm.toml; then crates/caprobe/tests/ftpm.rs conforms (CAKEYS_FTPM_PROFILE=tpm2-pkcs11/1.10+amd-ftpm nix run .#coverage-full)"
+code = ["@probe", "crates/tpm2-pkcs11/src/**/*.rs"]
+hash = "sha256:ba982c118e483fd85a8a4914fe65fd0a093dadad58d8f384928aeab16520c6e3"
+
+[artifact.probed]
+by = "8aeaa8d"
+date = "2026-11-19"
+hash = "sha256:d58abd64fcf731f45d23df078bb2dc0666382dd0a8829aa475196b2705efd733"
+code-hash = "sha256:1f719f179a05a705ee24ae24a21baa6593b01732c392ded484ebfde21d3e848c"
+
+[[artifact.hand-edits]]
+by = "7785424"
+what = "the `unprobed` notes reworded; its message says the fTPM was regenerated, but only the notes changed and review 2026-11-24 E-7 dates the last probe 8aeaa8d"
+
+[[artifact.hand-edits]]
+by = "fcaa6aa"
+what = "header: the regeneration command gained --rsa-max-bits 4096"
+
+[[artifact.hand-edits]]
+by = "6d4beab"
+what = "header: --write became --write-probes"
+
+[[artifact.hand-edits]]
+by = "61b7000"
+what = "rows: the Montgomery generation evidence moved from [notes] into the rows; pop-unwrap evidence reworded; Max(1024) became 1024"
+
+[[artifact.hand-edits]]
+by = "review 2026-11-24 E-7 (p0-ledger)"
+what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
+
+[artifact.acknowledged]
+code-hash = "sha256:80b5acbd55869afd55b3637a53e7e33e924093c741aeb5d915b5b387703d4902"
+by = "review 2026-11-24 E-7 (the ledger's first entry)"
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the tpm2-pkcs11 provider changed after the probe; rows the old logic wrote stand unchecked: the add rows CKM_SHA384_RSA_PKCS and CKM_SHA512_RSA_PKCS, and the no rows of review 2026-11-24 E-2"
+reprobe = "the whole profile, by the regen command"
+
+[[artifact]]
+path = "profiles/modules/aws-cloudhsm/5.18+hsm2m-fips.toml"
+from = "an AWS CloudHSM hsm2m.medium FIPS cluster, us-west-1, through the CloudHSM client SDK 5.18"
+regen = "scripts/cloud/aws.sh create, init, activate, probe, destroy (docs/CLOUD_HSM.md; it bills)"
+code = [
+  "@probe",
+  "crates/aws-cloudhsm/src/*.rs",
+  "nix/cloudhsm.nix",
+  "scripts/cloud/aws.sh",
+  "scripts/cloud/aws/main.tf",
+]
+hash = "sha256:82182b674b1fd54a763cc7fbc84ed833cad439678f03f2a0781e5d0353852d56"
+
+[artifact.probed]
+by = "7785424"
+date = "2026-11-19"
+hash = "sha256:cf5f92ae0135e4c713264235f115ba082784d06a48edbd8e2f7498dfe574312b"
+code-hash = "sha256:ca243c909e24d9a0ca111eb9585da5499bf8c75f3777fee968e666d118ced8c8"
+
+[[artifact.hand-edits]]
+by = "43e79fb"
+what = "nix fmt wrapped a [mechanism-info] row"
+
+[[artifact.hand-edits]]
+by = "fcaa6aa"
+what = "header: the regeneration command gained --rsa-max-bits 4096; the wrapped row unwrapped"
+
+[[artifact.hand-edits]]
+by = "6d4beab"
+what = "header: --write became --write-probes"
+
+[[artifact.hand-edits]]
+by = "61b7000"
+what = "rows: the Montgomery generation evidence moved from [notes] into the rows; commit.kcv-ecb-decrypt renamed commit.kcv-ecb-dec; Max(1024) became 1024"
+
+[[artifact.hand-edits]]
+by = "review 2026-11-24 E-7 (p0-ledger)"
+what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
+
+[artifact.acknowledged]
+code-hash = "sha256:7dece4435ca93095e97446ef3abfa5841800fcb4b36a97250133b6a661dae94c"
+by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the aws-cloudhsm provider changed after the probe; rows the old logic wrote stand unchecked: the add row CKM_SHA224_RSA_PKCS, wrap.rsa-oaep.SHA-1 and SHA-256 = yes from before the host-blob check, and the RsaAes export rows of review 2026-11-24 E-3; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote"
+reprobe = "the whole profile, by the regen command"
+
+[[artifact]]
+path = "profiles/modules/aws-cloudhsm/5.18+hsm2m-non-fips.toml"
+from = "an AWS CloudHSM hsm2m.medium NON_FIPS cluster, us-west-1, through the CloudHSM client SDK 5.18"
+regen = "CAKEYS_AWS_MODE=NON_FIPS scripts/cloud/aws.sh create, init, activate, probe, destroy (docs/CLOUD_HSM.md; it bills)"
+code = [
+  "@probe",
+  "crates/aws-cloudhsm/src/*.rs",
+  "nix/cloudhsm.nix",
+  "scripts/cloud/aws.sh",
+  "scripts/cloud/aws/main.tf",
+]
+hash = "sha256:8c5c9a9569ef484ef42865069770fc08b2569a860727d7f842c911398f33566d"
+
+[artifact.probed]
+by = "7785424"
+date = "2026-11-19"
+hash = "sha256:f3d7534e0f6d580ed5570f00e7ca772ff336e68765c82bcce5a1883e58ddf572"
+code-hash = "sha256:ca243c909e24d9a0ca111eb9585da5499bf8c75f3777fee968e666d118ced8c8"
+
+[[artifact.hand-edits]]
+by = "43e79fb"
+what = "nix fmt wrapped a [mechanism-info] row"
+
+[[artifact.hand-edits]]
+by = "fcaa6aa"
+what = "header: the regeneration command gained --rsa-max-bits 4096; the wrapped row unwrapped"
+
+[[artifact.hand-edits]]
+by = "6d4beab"
+what = "header: --write became --write-probes"
+
+[[artifact.hand-edits]]
+by = "61b7000"
+what = "rows: the Montgomery generation evidence moved from [notes] into the rows; commit.kcv-ecb-decrypt renamed commit.kcv-ecb-dec, and the DES3 kcv-des3-ecb rows kcv-ecb and kcv-ecb-dec; Max(1024) became 1024"
+
+[[artifact.hand-edits]]
+by = "review 2026-11-24 E-7 (p0-ledger)"
+what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
+
+[artifact.acknowledged]
+code-hash = "sha256:7dece4435ca93095e97446ef3abfa5841800fcb4b36a97250133b6a661dae94c"
+by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the aws-cloudhsm provider changed after the probe; rows the old logic wrote stand unchecked: the add rows, wrap.rsa-oaep from before the host-blob check, and the RsaAes export rows of review 2026-11-24 E-3; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote"
+reprobe = "the whole profile, by the regen command"
+
+[[artifact]]
+path = "profiles/modules/kmsp11/1.9+hsm.toml"
+from = "Google Cloud KMS, protection level HSM, us-west1, through libkmsp11 1.9"
+regen = "scripts/cloud/gcp.sh probe --write, both builds in one run (docs/CLOUD_HSM.md; it bills)"
+code = ["@probe", "crates/kmsp11/src/*", "nix/kmsp11.nix", "scripts/cloud/gcp.sh", "scripts/cloud/gcp/main.tf"]
+hash = "sha256:9c5867db23825464375d4e28ea7ed9c37c748a8201f4327fef9815cdd0551544"
+
+[artifact.probed]
+by = "7785424"
+date = "2026-11-19"
+hash = "sha256:07f92481be5c7ea54d02de4032bfc64896d05fe02bf18e7d4266380d1e59c99e"
+code-hash = "sha256:0cd1952c95b787f2d999549f4dce7db23bb15cc2cae3d63ccfbc8ab0521c7a74"
+
+[[artifact.hand-edits]]
+by = "fcaa6aa"
+what = "header: the regeneration command gained --rsa-max-bits 4096"
+
+[[artifact.hand-edits]]
+by = "6d4beab"
+what = "header: --write became --write-probes"
+
+[[artifact.hand-edits]]
+by = "61b7000"
+what = "rows: the provider hint dropped from the evidence of 13 prove rows; Infinite became infinite"
+
+[[artifact.hand-edits]]
+by = "review 2026-11-24 E-7 (p0-ledger)"
+what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
+
+[artifact.acknowledged]
+code-hash = "sha256:da3800281a59bbed37e4af3e2ab3a9d31a25b5b71dc59983c91a6af3cd3835a0"
+by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the kmsp11 provider changed after the probe; the cannot rows of review 2026-11-24 E-5 come from cakeys' own table; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote"
+reprobe = "the whole profile, by the regen command"
+
+[[artifact]]
+path = "profiles/modules/kmsp11/1.9+hsm-fips.toml"
+from = "Google Cloud KMS, protection level HSM, us-west1, through libkmsp11 1.9 in FIPS mode"
+regen = "scripts/cloud/gcp.sh probe --write, both builds in one run (docs/CLOUD_HSM.md; it bills)"
+code = ["@probe", "crates/kmsp11/src/*", "nix/kmsp11.nix", "scripts/cloud/gcp.sh", "scripts/cloud/gcp/main.tf"]
+hash = "sha256:791b1b971c36abfa8048bbcaf399882d00b7d690d67b4c8f259e97b734190a71"
+
+[artifact.probed]
+by = "7785424"
+date = "2026-11-19"
+hash = "sha256:b062a619ad180f86f2600abc12a6950d0b33129f45bd67bcb789ed8bcf42da6b"
+code-hash = "sha256:0cd1952c95b787f2d999549f4dce7db23bb15cc2cae3d63ccfbc8ab0521c7a74"
+
+[[artifact.hand-edits]]
+by = "fcaa6aa"
+what = "header: the regeneration command gained --rsa-max-bits 4096"
+
+[[artifact.hand-edits]]
+by = "6d4beab"
+what = "header: --write became --write-probes"
+
+[[artifact.hand-edits]]
+by = "61b7000"
+what = "rows: the provider hint dropped from the evidence of 13 prove rows; Infinite became infinite"
+
+[[artifact.hand-edits]]
+by = "review 2026-11-24 E-7 (p0-ledger)"
+what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
+
+[artifact.acknowledged]
+code-hash = "sha256:da3800281a59bbed37e4af3e2ab3a9d31a25b5b71dc59983c91a6af3cd3835a0"
+by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the kmsp11 provider changed after the probe; the cannot rows of review 2026-11-24 E-5 come from cakeys' own table; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote"
+reprobe = "the whole profile, by the regen command"
+
+# Captured from devices: nothing in this repository produces them, so no code is on their path.
+
+[[artifact]]
+path = "crates/ykcs11/tests/fixtures/attest95.pem"
+from = "the YubiKey: its attestation of slot 95"
+regen = "export the attestation of slot 95 (ykcs11, read-only)"
+code = []
+hash = "sha256:f2fb9a237276493141eae40776dcfd747a936adf0e72b3f17ad2e896e2dc4ab4"
+
+[artifact.probed]
+by = "3ce84ce"
+date = "2026-11-13"
+hash = "sha256:f2fb9a237276493141eae40776dcfd747a936adf0e72b3f17ad2e896e2dc4ab4"
+
+[[artifact]]
+path = "crates/core/tests/fixtures/attest95.pem"
+from = "the YubiKey: its attestation of slot 95, copied from crates/ykcs11/tests/fixtures/attest95.pem (captured in 3ce84ce)"
+regen = "export the attestation of slot 95 (ykcs11, read-only)"
+code = []
+hash = "sha256:f2fb9a237276493141eae40776dcfd747a936adf0e72b3f17ad2e896e2dc4ab4"
+
+[artifact.probed]
+by = "912a06d"
+date = "2026-11-19"
+hash = "sha256:f2fb9a237276493141eae40776dcfd747a936adf0e72b3f17ad2e896e2dc4ab4"
+
+[[artifact]]
+path = "crates/ykcs11/tests/fixtures/placeholder95.pem"
+from = "the YubiKey: ykcs11's placeholder certificate in slot 95"
+regen = "read slot 95's certificate after a ykcs11 generation there (ykcs11)"
+code = []
+hash = "sha256:4a121da80415bc9ea25b4602ac9f6e4c7187e512f3443eb3d72f1671e1287b32"
+
+[artifact.probed]
+by = "3ce84ce"
+date = "2026-11-13"
+hash = "sha256:4a121da80415bc9ea25b4602ac9f6e4c7187e512f3443eb3d72f1671e1287b32"
+
+[[artifact]]
+path = "crates/tpm2-pkcs11/tests/fixtures/amd-ftpm-ek-ecc.pem"
+from = "the development machine's AMD fTPM: its ECC EK certificate and PRG-RN intermediate, from AMD's key distribution server (crates/tpm2-pkcs11/roots/README.md)"
+regen = "tpm2_getekcertificate, then the intermediate from the certificate's authorityInfoAccess (crates/tpm2-pkcs11/roots/README.md)"
+code = []
+hash = "sha256:1c55318e250b7092b4abd2dd3b411e22083a99d1b32271af78051bcc027ec204"
+
+[artifact.probed]
+by = "912a06d"
+date = "2026-11-19"
+hash = "sha256:1c55318e250b7092b4abd2dd3b411e22083a99d1b32271af78051bcc027ec204"
+
+[[artifact]]
+path = "crates/tpm2-pkcs11/tests/fixtures/amd-ftpm-ek-rsa.pem"
+from = "the development machine's AMD fTPM: its RSA EK certificate and PRG-RN intermediate, from AMD's key distribution server (crates/tpm2-pkcs11/roots/README.md)"
+regen = "tpm2_getekcertificate, then the intermediate from the certificate's authorityInfoAccess (crates/tpm2-pkcs11/roots/README.md)"
+code = []
+hash = "sha256:7e840f5bcf12a760311a3ea580a7bc5484943a3dbbcb39bd056445c94997d10d"
+
+[artifact.probed]
+by = "912a06d"
+date = "2026-11-19"
+hash = "sha256:7e840f5bcf12a760311a3ea580a7bc5484943a3dbbcb39bd056445c94997d10d"
+
+# A lock recorded on the YubiKey: the user's keys in slots 82-84.
+
+[[artifact]]
+path = "examples/yubikey-secureboot.lock"
+from = "the YubiKey: the Whonix secure-boot keys and certificates in slots 82-84, adopted read-only"
+regen = "only the user: cakeys --config examples/yubikey-secureboot.toml check on the YubiKey shows whether it still verifies; re-recording takes lock, which docs/DEVELOPMENT.md (hardware rules) forbids against that device"
+code = ["@lock", "crates/ykcs11/src/*.rs"]
+hash = "sha256:0d6fd2beac70811db525971b03f68808fe75810356f6d111ae1e8111a1dba740"
+
+[artifact.probed]
+by = "83d4d21"
+date = "2026-11-12"
+hash = "sha256:d0448b633a894e0f714088774f73657b6b8c84c090d76f7f76d2bc83be6573ed"
+code-hash = "sha256:3cabffc339bda55cab944882b1a54e1e709dc9b84fac6aa0920e07d3b5e0aba5"
+
+[[artifact.hand-edits]]
+by = "714ef3e"
+what = "converted to the observation table without a token (its message: a throwaway conversion checked lossless both ways)"
+
+[artifact.acknowledged]
+code-hash = "sha256:b7b4f73d8dd2f696f22c98329349db833a2b62c4de5070223d2a08f56e685419"
+by = "review 2026-11-24 E-7 (the ledger's first entry)"
+why = "recorded before the lock's observation table, the config split (8aaba2e) and every lock rule since; the lock round trip reads it on every build (cakeys_core::fuzzing), so only its values, not its form, wait on the device"
+reprobe = "a read-only check against the YubiKey, by the user"

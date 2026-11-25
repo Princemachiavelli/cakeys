@@ -52,6 +52,27 @@
       python3 -I ${src}/nix/doc-references.py ${src}
       touch $out
     '';
+  # What was measured on hardware or a cloud and no build repeats (profiles/LEDGER.toml,
+  # nix/ledger.py): a file changed, or the code on its path changed since its run, fails until
+  # the ledger records it. Its fixture tests first. Its own fileset, like doc-references.
+  ledger =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./profiles
+          ./crates
+          ./nix
+          ./scripts
+          ./examples
+        ];
+      };
+    in
+    pkgs.runCommand "cakeys-ledger" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      set -o pipefail
+      python3 -I ${src}/nix/ledger-test.py
+      python3 -I ${src}/nix/ledger.py ${src} | tee $out
+    '';
   # The software tokens are set up in one place, nix/token-env.sh (review D9): no other script
   # writes a SoftHSM configuration or initialises a token by hand, but those its header leaves
   # out (VM tests, old SoftHSM releases, upstream repros, a cloud host, p11-kit's own token).

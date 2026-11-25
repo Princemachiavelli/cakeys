@@ -354,8 +354,9 @@ EOF
   if [[ -f $out ]]; then
     runner install -D -m 644 /dev/stdin /run/caprobe/profile.toml <"$out"
   fi
+  # RSA up to 4096 bits, as every regeneration probes (profiles/LEDGER.toml, [regen]).
   runner "$(realpath "$bin")" --config /run/caprobe/keys.toml probe --profiles /run/caprobe/profiles \
-    --token cloudhsm --write-probes --name "$name" "${diff[@]}" --out /run/caprobe/profile.toml || rc=$?
+    --token cloudhsm --write-probes --rsa-max-bits 4096 --name "$name" "${diff[@]}" --out /run/caprobe/profile.toml || rc=$?
   runner rm -f /run/caprobe/pin
   # 15 is drift against the committed profile: written anyway, for review.
   [[ $rc == 0 || $rc == 15 ]] || exit "$rc"
