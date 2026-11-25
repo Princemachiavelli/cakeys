@@ -35,8 +35,9 @@
   # build is x86_64-linux's and CI's kani job's, this comparison every system's and the light
   # job's.
   inherit kani-library-lock;
-  # Every test and function the docs name is a `fn`, and every docs/*.md cited exists
-  # (nix/doc-references.py). Its own fileset, so a docs edit does not rebuild crane.
+  # Every test and function the docs name is a `fn`, every name and path a doc or a Rust comment
+  # cites is in the sources, and every docs/*.md cited exists (nix/doc-references.py, its fixture
+  # tests first). Its own fileset, so a docs edit does not rebuild crane.
   doc-references =
     let
       src = pkgs.lib.fileset.toSource {
@@ -58,8 +59,33 @@
       };
     in
     pkgs.runCommand "cakeys-doc-references" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      python3 -I ${src}/nix/doc-references-test.py
       python3 -I ${src}/nix/doc-references.py ${src}
       touch $out
+    '';
+  # A universal claim of the documents that say what the tools guarantee (every, never, always,
+  # … about a PIN, the lock, a slot, …) names the tests that hold it in docs/claims.toml, or is
+  # counted against its max-unregistered, which only goes down (nix/claims.py, its fixture tests
+  # first). Its own fileset, like doc-references: the docs, and the sources the tests are in.
+  claims =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./docs
+          ./Cargo.toml
+          ./crates
+          ./fuzz
+          ./nix/doc-references.py
+          ./nix/claims.py
+          ./nix/claims-test.py
+        ];
+      };
+    in
+    pkgs.runCommand "cakeys-claims" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      set -o pipefail
+      python3 -I ${src}/nix/claims-test.py
+      python3 -I ${src}/nix/claims.py ${src} | tee $out
     '';
   # What was measured on hardware or a cloud and no build repeats (profiles/LEDGER.toml,
   # nix/ledger.py): a file changed, or the code on its path changed since its run, fails until
