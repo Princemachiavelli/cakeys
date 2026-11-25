@@ -3,6 +3,7 @@
 
 use super::{Config, KeyOrigin, ObjectCfg, TokenCfg, secret_in_store};
 use crate::error::{KmError, Result};
+use crate::known::{Known, Permission};
 use crate::types::{KeyType, ObjectClass};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -135,7 +136,8 @@ pub(super) fn check_transport_keys(cfg: &Config) -> std::result::Result<(), Stri
         if let Some(bits) = cfg.objects.get(&s.object).and_then(|o| o.modulus_bits).filter(|b| *b < 2048) {
             return Err(format!("{what}: a transport key has at least 2048 bits, and '{}' declares {bits}", s.object));
         }
-        if s.flag("CKA_UNWRAP") != Some(true) || s.flag("CKA_EXTRACTABLE") != Some(false) {
+        // Unwrap granted, and extraction known refused: undeclared is neither.
+        if !s.permitted(Permission::Unwrap) || s.known(Permission::Extractable.attr()) != Known::Is(false) {
             return Err(format!(
                 "{what}: a transport key declares CKA_UNWRAP = true and CKA_EXTRACTABLE = false in its attributes"
             ));

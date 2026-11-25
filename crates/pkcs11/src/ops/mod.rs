@@ -113,6 +113,7 @@ fn resolve_with(
     let mode = plan_mode(t)?;
     let public_only = t.on_token.public_only;
     let Some(h) = tok.find_key(&t.object, &t.on_token.locator, public_only)? else {
+        rules::needs_login(t, tok, lock, "it is not there")?;
         return Ok(None);
     };
     tok.check(h, t.object, t.spec)?;
@@ -395,19 +396,8 @@ fn create_absent(
     // generating into an occupied slot would silently replace its key. A session without login
     // sees no private object, so it cannot tell the locator is free — nor that a private or
     // secret key the lock pins is gone, which D1 below would say.
-    let no_login = || {
-        KmError::Unavailable(
-            format!(
-                "{t}: a session without login cannot see private objects under the locator, so it cannot \
-             tell the locator is free; configure pinFile or pinEnv for token '{}'",
-                t.token_name
-            )
-            .into(),
-        )
-    };
-    if !tok.logged_in && matches!(t.object.class, Class::PrivateKey | Class::SecretKey) {
-        return Err(no_login());
-    }
+    let free = "the locator is free";
+    rules::needs_login(t, tok, lock, free)?;
     // D1: the lock already pins this object's material, so a fresh generation can only end in a
     // mismatch; refuse before anything is created. (Had this token held the same material,
     // resolve would have found it.)
@@ -420,8 +410,17 @@ fn create_absent(
             ids.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
         ).into()));
     }
+    // Whatever the object is, another class under the locator may be private.
     if !tok.logged_in {
-        return Err(no_login());
+        let e = KmError::Unavailable(
+            format!(
+                "{t}: a session without login cannot see private objects, so it cannot tell {free}; configure \
+                 pinFile or pinEnv for token '{}'",
+                t.token_name
+            )
+            .into(),
+        );
+        return Err(Refusal::new(Rule::NeedsLogin, e).into());
     }
     // Any class, unlike an import (`Token::occupied`): a certificate already there certifies
     // some other key, never one generated now.
@@ -610,15 +609,8 @@ pub fn delete(
             notes
                 .note(format_args!("left {left} public key object(s) under the locator of {t}: they hold another key"));
         }
-    } else if !tok.logged_in && matches!(t.object.class, Class::PrivateKey | Class::SecretKey) {
-        return Err(KmError::Unavailable(
-            format!(
-                "{t}: a session without login cannot see private objects, so it cannot tell the key is absent; \
-             configure pinFile or pinEnv for token '{}'",
-                t.token_name
-            )
-            .into(),
-        ));
+    } else {
+        rules::needs_login(t, tok, lock, "it is absent")?;
     }
     let mut changed = false;
     if !dry_run && let Some(m) = lock.realisations.get_mut(t.spec_name) {

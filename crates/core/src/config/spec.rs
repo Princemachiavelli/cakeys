@@ -2,6 +2,7 @@
 //! origins and locators it carries (docs/CONFIG.md).
 
 use super::{BTreeMap, BTreeSet, Binding, Deserialize, Serialize};
+use crate::known::{Known, Permission, Restriction, Why};
 
 /// A spec's settings for camigrate (`[specs.<s>.migrate]`, docs/CAMIGRATE.md).
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -38,13 +39,32 @@ pub struct SpecCfg {
 }
 
 impl SpecCfg {
-    /// A declared boolean attribute.
+    /// A declared boolean attribute, where absent means "not declared" (a usage, a declaration
+    /// to check). A security attribute is asked through [`Self::restricted`] and
+    /// [`Self::permitted`], which say which way an undeclared one falls.
     #[must_use]
     pub fn flag(&self, name: &str) -> Option<bool> {
         match self.attributes.get(name) {
             Some(AttrValue::Bool(b)) => Some(*b),
             _ => None,
         }
+    }
+
+    /// A declared boolean attribute, or that it is not declared.
+    pub fn known(&self, name: &str) -> Known<bool> {
+        Known::or(self.flag(name), Why::Undeclared)
+    }
+
+    /// Whether the spec leaves `r` in force: unless it declares it `false`.
+    #[must_use]
+    pub fn restricted(&self, r: Restriction) -> bool {
+        self.known(r.attr()).restricts()
+    }
+
+    /// Whether the spec grants `p`: only if it declares it `true`.
+    #[must_use]
+    pub fn permitted(&self, p: Permission) -> bool {
+        self.known(p.attr()).permits()
     }
 
     /// The declared `CKA_ALLOWED_MECHANISMS`, if any: the mechanisms the key may run.

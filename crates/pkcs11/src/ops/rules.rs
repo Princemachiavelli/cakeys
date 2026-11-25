@@ -211,6 +211,28 @@ impl Verdicts {
     }
 }
 
+/// Refuse (16) where `t`'s object was not found and a session without login could not have seen
+/// it ([`Target::needs_login`]): such a session never reports it absent, nor a locator free
+/// (review 2026-11-24 B-4). `cannot` says what it cannot tell.
+///
+/// # Errors
+///
+/// `Unavailable` (16), naming the rule, on a session without login.
+pub(crate) fn needs_login(t: &Target, tok: &Token, lock: &Lock, cannot: &str) -> Result<()> {
+    if tok.logged_in || !t.needs_login(lock) {
+        return Ok(());
+    }
+    let e = KmError::Unavailable(
+        format!(
+            "{t}: a session without login cannot see private objects, so it cannot tell {cannot}; configure \
+             pinFile or pinEnv for token '{}'",
+            t.token_name
+        )
+        .into(),
+    );
+    Err(Refusal::new(Rule::NeedsLogin, e).into())
+}
+
 /// Whether a key may be made under `loc` on `provider`'s module ([`Provider::placement`]): the
 /// one place it is asked, for a pair's key ([`static_rules`]) and for every creation
 /// (`Token::create`).
