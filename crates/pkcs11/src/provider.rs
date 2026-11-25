@@ -397,12 +397,12 @@ impl dyn Provider + '_ {
         Ok(attrs.0)
     }
 
-    /// The session template `t` as the provider adjusts it ([`Self::adjusted`]), asked as the
+    /// The session template `t` as the provider adjusts it (`adjusted`), asked as the
     /// session key it was built for, so the two cannot disagree.
     ///
     /// # Errors
     ///
-    /// As [`Self::adjusted`].
+    /// As `adjusted`.
     pub fn adjusted_session(&self, t: crate::templates::SessionTemplate) -> Result<Vec<Attribute>> {
         self.adjusted(&Template::Session(t.key()), t.into())
     }
