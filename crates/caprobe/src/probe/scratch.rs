@@ -2,7 +2,7 @@
 //! (docs/CAPROBE.md).
 
 use super::{
-    Answer, Attribute, AttributeType, BTreeMap, BoundKey, Capability, Draft, Made, ObjectHandle, Result, Session,
+    Attribute, AttributeType, BTreeMap, BoundKey, Capability, Checked, Draft, Made, ObjectHandle, Result, Session,
     Target, ckr, extras, moves, probe_bound, probe_curves, probe_key_wraps, probe_rsa, probe_secrets, probe_wrapping,
     secrets,
 };
@@ -192,8 +192,16 @@ pub(super) fn destroy_all(made: &mut Made, profile: &mut Draft) {
     let after = count_by_class(made);
     match delete_rows(!made.scratch.labels.is_empty(), before, after) {
         Ok(rows) => {
+            // The host counted what is left after `C_DestroyObject`: its finding either way.
             for (class, deleted, why) in rows {
-                profile.set(Capability::Delete(class), Answer::of(deleted), why, None);
+                if deleted {
+                    profile.yes(Capability::Delete(class), Checked::Host, None);
+                } else {
+                    profile.wrong(
+                        Capability::Delete(class),
+                        why.unwrap_or_else(|| "still there after C_DestroyObject".into()),
+                    );
+                }
             }
         }
         Err(why) => made.undetermined.push(format!("no delete rows: {why}")),

@@ -81,12 +81,12 @@
   CKK_ACTI: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_ACTI generation
   CKK_AES: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_AES 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 8, 16, 24, 32, 48, 64 bytes only
-  CKK_AES 8 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 8: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_AES 8 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 8: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_AES 48 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 48: CKR_ATTRIBUTE_VALUE_INVALID
-  CKK_AES 64 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 64: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_AES 48 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 48: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  CKK_AES 64 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 64: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_AES 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 8, 16, 24, 32, 48, 64 bytes only
   CKK_AES 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 8, 16, 24, 32, 48, 64 bytes only
   CKK_AES 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 8, 16, 24, 32, 48, 64 bytes only
@@ -111,7 +111,7 @@
   CKK_DES3 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
   CKK_DES3 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
   CKK_DES3 16 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
-  CKK_DES3 24 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 24: CKR_FUNCTION_FAILED
+  CKK_DES3 24 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 24: CKR_FUNCTION_FAILED (a legacy row: provenance unknown)
   CKK_DES3 32 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
   CKK_DES3 48 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
   CKK_DES3 64 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 24 bytes only
@@ -121,16 +121,16 @@
   CKK_DH: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_DH generation
   CKK_DSA: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_DSA generation
   CKK_EC: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  CKK_EC brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  CKK_EC brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_EC curve25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC curve448: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC edwards25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC edwards448: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
-  CKK_EC secp256k1: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC secp256r1: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC secp384r1: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_EC secp521r1: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  CKK_EC secp256k1: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  CKK_EC secp256r1: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  CKK_EC secp384r1: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  CKK_EC secp521r1: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
   CKK_EC 512: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_EC 1024: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_EC 2048: yes (aws-cloudhsm/5.18+hsm2m-fips)
@@ -145,8 +145,8 @@
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve448: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS edwards25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  CKK_EC_EDWARDS edwards448: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC_EDWARDS edwards25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  CKK_EC_EDWARDS edwards448: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_EC_EDWARDS secp256k1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
@@ -162,8 +162,8 @@
   CKK_EC_MONTGOMERY: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY curve25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_MECHANISM_INVALID
-  CKK_EC_MONTGOMERY curve448: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  CKK_EC_MONTGOMERY curve448: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
   CKK_EC_MONTGOMERY edwards25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY edwards448: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp256k1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
@@ -179,7 +179,7 @@
   CKK_EC_MONTGOMERY 15360: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
   CKK_EC_MONTGOMERY 16384: no — aws-cloudhsm/5.18+hsm2m-fips: refused curve25519, curve448
   CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_GENERIC_SECRET 1 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 1: CKR_FUNCTION_FAILED
+  CKK_GENERIC_SECRET 1 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 1: CKR_FUNCTION_FAILED (a legacy row: provenance unknown)
   CKK_GENERIC_SECRET 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 1, 16, 32, 64, 128, 256, 512, 1024 bytes only
   CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_GENERIC_SECRET 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
@@ -187,7 +187,7 @@
   CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_GENERIC_SECRET 128 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_GENERIC_SECRET 1024 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 1024: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_GENERIC_SECRET 1024 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: valueLen = 1024: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed 1, 16, 32, 64, 128, 256, 512, 1024 bytes only
   CKK_GOST28147: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_GOST28147 generation
   CKK_GOSTR3410: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_GOSTR3410 generation
@@ -218,14 +218,14 @@
   CKK_RSA secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — aws-cloudhsm/5.18+hsm2m-fips: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID
-  CKK_RSA 1024: no — aws-cloudhsm/5.18+hsm2m-fips: modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_RSA 512: no — aws-cloudhsm/5.18+hsm2m-fips: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  CKK_RSA 1024: no — aws-cloudhsm/5.18+hsm2m-fips: modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_RSA 2048: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_RSA 3072: yes (aws-cloudhsm/5.18+hsm2m-fips)
   CKK_RSA 4096: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  CKK_RSA 8192: no — aws-cloudhsm/5.18+hsm2m-fips: modulusBits = 8192: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_RSA 8192: no — aws-cloudhsm/5.18+hsm2m-fips: modulusBits = 8192: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_RSA 15360: no — aws-cloudhsm/5.18+hsm2m-fips
-  CKK_RSA 16384: no — aws-cloudhsm/5.18+hsm2m-fips: modulusBits = 16384: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_RSA 16384: no — aws-cloudhsm/5.18+hsm2m-fips: modulusBits = 16384: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_SALSA20: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SALSA20 generation
   CKK_SECURID: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SECURID generation
   CKK_SEED: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_SEED generation
@@ -248,54 +248,117 @@
   CKK_X9_42_DH: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_X9_42_DH generation
   CKK_XMSS: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_XMSS generation
   CKK_XMSSMT: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips records no CKK_XMSSMT generation
-  curve brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve curve25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_MECHANISM_INVALID
-  curve curve448: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_MECHANISM_INVALID
-  curve edwards25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve edwards448: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve secp256k1: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  curve secp256r1: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  curve secp384r1: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  curve secp521r1: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  curve brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  curve brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  curve curve25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve curve448: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve edwards25519: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  curve edwards448: no — aws-cloudhsm/5.18+hsm2m-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  curve secp256k1: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  curve secp256r1: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  curve secp384r1: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  curve secp521r1: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
   oaep SHA-1: yes (aws-cloudhsm/5.18+hsm2m-fips)
   oaep SHA-256: yes (aws-cloudhsm/5.18+hsm2m-fips)
   commit cmac CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed cmac at 16, 24, 32 bytes only
-  commit cmac CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit cmac CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit cmac CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit cmac CKK_AES 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit cmac CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit cmac CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit cmac CKK_AES 48 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 64 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed cmac at 16, 24, 32 bytes only
   commit hmac-sha1 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha1 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha1 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha1 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha1 CKK_GENERIC_SECRET 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha1 CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha1 CKK_GENERIC_SECRET 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha1 at 16, 32, 64 bytes only
   commit hmac-sha224 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha224 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha224 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha224 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha224 CKK_GENERIC_SECRET 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha224 CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha224 CKK_GENERIC_SECRET 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha224 at 16, 32, 64 bytes only
   commit hmac-sha256 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha256 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha256 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha256 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha256 CKK_GENERIC_SECRET 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha256 CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha256 CKK_GENERIC_SECRET 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha256 at 16, 32, 64 bytes only
   commit hmac-sha384 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha384 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha384 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha384 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha384 CKK_GENERIC_SECRET 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha384 CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha384 CKK_GENERIC_SECRET 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha384 at 16, 32, 64 bytes only
   commit hmac-sha512 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha512 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha512 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit hmac-sha512 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha512 CKK_GENERIC_SECRET 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha512 CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit hmac-sha512 CKK_GENERIC_SECRET 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed hmac-sha512 at 16, 32, 64 bytes only
   commit kcv-ecb CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb at 16, 24, 32 bytes only
-  commit kcv-ecb CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit kcv-ecb CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit kcv-ecb CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit kcv-ecb CKK_AES 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit kcv-ecb CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit kcv-ecb CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit kcv-ecb CKK_AES 48 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 64 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb at 16, 24, 32 bytes only
   commit kcv-ecb-dec CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
-  commit kcv-ecb-dec CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit kcv-ecb-dec CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit kcv-ecb-dec CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
-  commit kw CKK_AES: no — aws-cloudhsm/5.18+hsm2m-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
-  commit kw CKK_AES 16 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
-  commit kw CKK_AES 24 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
-  commit kw CKK_AES 32 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
+  commit kcv-ecb-dec CKK_AES 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit kcv-ecb-dec CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit kcv-ecb-dec CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips): a legacy row: provenance unknown
+  commit kcv-ecb-dec CKK_AES 48 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 64 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kw CKK_AES: no — aws-cloudhsm/5.18+hsm2m-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject (a legacy row: provenance unknown)
+  commit kw CKK_AES 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 16 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject (a legacy row: provenance unknown)
+  commit kw CKK_AES 24 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject (a legacy row: provenance unknown)
+  commit kw CKK_AES 32 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject (a legacy row: provenance unknown)
+  commit kw CKK_AES 48 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 64 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kw at 16, 24, 32 bytes only
 # aws-cloudhsm/5.18+hsm2m-non-fips
   wrap.oaep Some("[\"SHA-1\", \"SHA-256\"]")
   decrypt.oaep Some("[\"SHA-1\", \"SHA-256\", \"SHA-512\"]")
@@ -315,12 +378,12 @@
   CKK_ACTI: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_ACTI generation
   CKK_AES: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_AES 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 8, 16, 24, 32, 48, 64 bytes only
-  CKK_AES 8 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: valueLen = 8: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_AES 8 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: valueLen = 8: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_AES 48 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: valueLen = 48: CKR_ATTRIBUTE_VALUE_INVALID
-  CKK_AES 64 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: valueLen = 64: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_AES 48 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: valueLen = 48: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  CKK_AES 64 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: valueLen = 64: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_AES 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 8, 16, 24, 32, 48, 64 bytes only
   CKK_AES 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 8, 16, 24, 32, 48, 64 bytes only
   CKK_AES 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 8, 16, 24, 32, 48, 64 bytes only
@@ -355,16 +418,16 @@
   CKK_DH: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_DH generation
   CKK_DSA: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_DSA generation
   CKK_EC: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_EC brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  CKK_EC brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  CKK_EC brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_EC curve25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC curve448: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC edwards25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC edwards448: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
-  CKK_EC secp256k1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_EC secp256r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_EC secp384r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_EC secp521r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  CKK_EC secp256k1: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  CKK_EC secp256r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  CKK_EC secp384r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  CKK_EC secp521r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
   CKK_EC 512: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_EC 1024: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_EC 2048: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
@@ -379,8 +442,8 @@
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve448: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS edwards25519: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_EC_EDWARDS edwards448: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC_EDWARDS edwards25519: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  CKK_EC_EDWARDS edwards448: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_EC_EDWARDS secp256k1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
@@ -396,8 +459,8 @@
   CKK_EC_MONTGOMERY: no — aws-cloudhsm/5.18+hsm2m-non-fips: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY curve25519: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_MECHANISM_INVALID
-  CKK_EC_MONTGOMERY curve448: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve25519: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  CKK_EC_MONTGOMERY curve448: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
   CKK_EC_MONTGOMERY edwards25519: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY edwards448: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp256k1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
@@ -421,7 +484,7 @@
   CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_GENERIC_SECRET 128 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_GENERIC_SECRET 1024 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: valueLen = 1024: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_GENERIC_SECRET 1024 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: valueLen = 1024: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed 1, 16, 32, 64, 128, 256, 512, 1024 bytes only
   CKK_GOST28147: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_GOST28147 generation
   CKK_GOSTR3410: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_GOSTR3410 generation
@@ -452,14 +515,14 @@
   CKK_RSA secp256r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — aws-cloudhsm/5.18+hsm2m-non-fips: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID
-  CKK_RSA 1024: no — aws-cloudhsm/5.18+hsm2m-non-fips: modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_RSA 512: no — aws-cloudhsm/5.18+hsm2m-non-fips: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  CKK_RSA 1024: no — aws-cloudhsm/5.18+hsm2m-non-fips: modulusBits = 1024: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_RSA 2048: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_RSA 3072: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   CKK_RSA 4096: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  CKK_RSA 8192: no — aws-cloudhsm/5.18+hsm2m-non-fips: modulusBits = 8192: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_RSA 8192: no — aws-cloudhsm/5.18+hsm2m-non-fips: modulusBits = 8192: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_RSA 15360: no — aws-cloudhsm/5.18+hsm2m-non-fips
-  CKK_RSA 16384: no — aws-cloudhsm/5.18+hsm2m-non-fips: modulusBits = 16384: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_RSA 16384: no — aws-cloudhsm/5.18+hsm2m-non-fips: modulusBits = 16384: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_SALSA20: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SALSA20 generation
   CKK_SECURID: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SECURID generation
   CKK_SEED: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_SEED generation
@@ -482,58 +545,139 @@
   CKK_X9_42_DH: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_X9_42_DH generation
   CKK_XMSS: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_XMSS generation
   CKK_XMSSMT: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips records no CKK_XMSSMT generation
-  curve brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve curve25519: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_MECHANISM_INVALID
-  curve curve448: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_MECHANISM_INVALID
-  curve edwards25519: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  curve edwards448: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve secp256k1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  curve secp256r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  curve secp384r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  curve secp521r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  curve brainpoolP256r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  curve brainpoolP384r1: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  curve curve25519: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve curve448: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve edwards25519: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  curve edwards448: no — aws-cloudhsm/5.18+hsm2m-non-fips: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  curve secp256k1: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  curve secp256r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  curve secp384r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  curve secp521r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
   oaep SHA-1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   oaep SHA-256: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   commit cmac CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed cmac at 16, 24, 32 bytes only
-  commit cmac CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit cmac CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit cmac CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit cmac CKK_AES 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit cmac CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit cmac CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit cmac CKK_AES 48 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 64 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed cmac at 16, 24, 32 bytes only
   commit hmac-sha1 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha1 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha1 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha1 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha1 CKK_GENERIC_SECRET 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha1 CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha1 CKK_GENERIC_SECRET 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha1 at 16, 32, 64 bytes only
   commit hmac-sha224 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha224 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha224 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha224 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha224 CKK_GENERIC_SECRET 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha224 CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha224 CKK_GENERIC_SECRET 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha224 at 16, 32, 64 bytes only
   commit hmac-sha256 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha256 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha256 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha256 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha256 CKK_GENERIC_SECRET 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha256 CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha256 CKK_GENERIC_SECRET 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha256 at 16, 32, 64 bytes only
   commit hmac-sha384 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha384 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha384 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha384 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha384 CKK_GENERIC_SECRET 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha384 CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha384 CKK_GENERIC_SECRET 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha384 at 16, 32, 64 bytes only
   commit hmac-sha512 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha512 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha512 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit hmac-sha512 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha512 CKK_GENERIC_SECRET 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha512 CKK_GENERIC_SECRET 48 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit hmac-sha512 CKK_GENERIC_SECRET 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed hmac-sha512 at 16, 32, 64 bytes only
   commit kcv-ecb CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 16, 24, 32 bytes only
-  commit kcv-ecb CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit kcv-ecb CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit kcv-ecb CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit kcv-ecb CKK_AES 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit kcv-ecb CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit kcv-ecb CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit kcv-ecb CKK_AES 48 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 64 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 16, 24, 32 bytes only
   commit kcv-ecb CKK_DES3: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 24 bytes only
-  commit kcv-ecb CKK_DES3 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit kcv-ecb CKK_DES3 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 16 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit kcv-ecb CKK_DES3 32 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 48 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 64 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 24 bytes only
   commit kcv-ecb-dec CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
-  commit kcv-ecb-dec CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit kcv-ecb-dec CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit kcv-ecb-dec CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit kcv-ecb-dec CKK_AES 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit kcv-ecb-dec CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit kcv-ecb-dec CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit kcv-ecb-dec CKK_AES 48 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 64 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
   commit kcv-ecb-dec CKK_DES3: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 24 bytes only
-  commit kcv-ecb-dec CKK_DES3 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
-  commit kw CKK_AES: no — aws-cloudhsm/5.18+hsm2m-non-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
-  commit kw CKK_AES 16 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
-  commit kw CKK_AES 24 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
-  commit kw CKK_AES 32 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
+  commit kcv-ecb-dec CKK_DES3 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 16 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips): a legacy row: provenance unknown
+  commit kcv-ecb-dec CKK_DES3 32 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 48 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 64 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 24 bytes only
+  commit kw CKK_AES: no — aws-cloudhsm/5.18+hsm2m-non-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject (a legacy row: provenance unknown)
+  commit kw CKK_AES 1 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 8 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 16 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject (a legacy row: provenance unknown)
+  commit kw CKK_AES 24 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject (a legacy row: provenance unknown)
+  commit kw CKK_AES 32 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject (a legacy row: provenance unknown)
+  commit kw CKK_AES 48 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 64 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 128 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 1024 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 4096 bytes: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kw at 16, 24, 32 bytes only
 # kmsp11/1.9+hsm-fips
   wrap.oaep None
   decrypt.oaep Some("[\"SHA-256\", \"SHA-512\"]")
@@ -581,16 +725,16 @@
   CKK_DH: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_DH generation
   CKK_DSA: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_DSA generation
   CKK_EC: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC brainpoolP256r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
-  CKK_EC brainpoolP384r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_EC brainpoolP256r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
+  CKK_EC brainpoolP384r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
   CKK_EC curve25519: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC curve448: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC edwards25519: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC edwards448: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
-  CKK_EC secp256k1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
-  CKK_EC secp256r1: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC secp384r1: yes (kmsp11/1.9+hsm-fips)
-  CKK_EC secp521r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_EC secp256k1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
+  CKK_EC secp256r1: yes (kmsp11/1.9+hsm-fips): a legacy row: provenance unknown
+  CKK_EC secp384r1: yes (kmsp11/1.9+hsm-fips): a legacy row: provenance unknown
+  CKK_EC secp521r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
   CKK_EC 512: yes (kmsp11/1.9+hsm-fips)
   CKK_EC 1024: yes (kmsp11/1.9+hsm-fips)
   CKK_EC 2048: yes (kmsp11/1.9+hsm-fips)
@@ -605,8 +749,8 @@
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve448: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS edwards25519: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
-  CKK_EC_EDWARDS edwards448: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
+  CKK_EC_EDWARDS edwards25519: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  CKK_EC_EDWARDS edwards448: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
   CKK_EC_EDWARDS secp256k1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
@@ -622,8 +766,8 @@
   CKK_EC_MONTGOMERY: no — kmsp11/1.9+hsm-fips: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY curve25519: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
-  CKK_EC_MONTGOMERY curve448: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve25519: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  CKK_EC_MONTGOMERY curve448: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
   CKK_EC_MONTGOMERY edwards25519: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY edwards448: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp256k1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
@@ -668,14 +812,14 @@
   CKK_RSA secp256r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile kmsp11/1.9+hsm-fips records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
-  CKK_RSA 1024: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_RSA 512: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
+  CKK_RSA 1024: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
   CKK_RSA 2048: yes (kmsp11/1.9+hsm-fips)
   CKK_RSA 3072: yes (kmsp11/1.9+hsm-fips)
   CKK_RSA 4096: yes (kmsp11/1.9+hsm-fips)
-  CKK_RSA 8192: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_RSA 8192: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
   CKK_RSA 15360: no — kmsp11/1.9+hsm-fips
-  CKK_RSA 16384: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_RSA 16384: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
   CKK_SALSA20: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SALSA20 generation
   CKK_SECURID: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SECURID generation
   CKK_SEED: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_SEED generation
@@ -698,16 +842,16 @@
   CKK_X9_42_DH: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_X9_42_DH generation
   CKK_XMSS: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_XMSS generation
   CKK_XMSSMT: unknown — module profile kmsp11/1.9+hsm-fips records no CKK_XMSSMT generation
-  curve brainpoolP256r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
-  curve brainpoolP384r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
-  curve curve25519: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
-  curve curve448: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
-  curve edwards25519: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
-  curve edwards448: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID
-  curve secp256k1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
-  curve secp256r1: yes (kmsp11/1.9+hsm-fips)
-  curve secp384r1: yes (kmsp11/1.9+hsm-fips)
-  curve secp521r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  curve brainpoolP256r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
+  curve brainpoolP384r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
+  curve curve25519: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve curve448: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve edwards25519: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve edwards448: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve secp256k1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
+  curve secp256r1: yes (kmsp11/1.9+hsm-fips): a legacy row: provenance unknown
+  curve secp384r1: yes (kmsp11/1.9+hsm-fips): a legacy row: provenance unknown
+  curve secp521r1: no — kmsp11/1.9+hsm-fips: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
   oaep OAEP: unknown — module profile kmsp11/1.9+hsm-fips records no OAEP probe
 # kmsp11/1.9+hsm
   wrap.oaep None
@@ -756,16 +900,16 @@
   CKK_DH: unknown — module profile kmsp11/1.9+hsm records no CKK_DH generation
   CKK_DSA: unknown — module profile kmsp11/1.9+hsm records no CKK_DSA generation
   CKK_EC: yes (kmsp11/1.9+hsm)
-  CKK_EC brainpoolP256r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
-  CKK_EC brainpoolP384r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_EC brainpoolP256r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
+  CKK_EC brainpoolP384r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
   CKK_EC curve25519: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC curve448: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC edwards25519: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC edwards448: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
-  CKK_EC secp256k1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
-  CKK_EC secp256r1: yes (kmsp11/1.9+hsm)
-  CKK_EC secp384r1: yes (kmsp11/1.9+hsm)
-  CKK_EC secp521r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_EC secp256k1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
+  CKK_EC secp256r1: yes (kmsp11/1.9+hsm): a legacy row: provenance unknown
+  CKK_EC secp384r1: yes (kmsp11/1.9+hsm): a legacy row: provenance unknown
+  CKK_EC secp521r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
   CKK_EC 512: yes (kmsp11/1.9+hsm)
   CKK_EC 1024: yes (kmsp11/1.9+hsm)
   CKK_EC 2048: yes (kmsp11/1.9+hsm)
@@ -780,8 +924,8 @@
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve448: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS edwards25519: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
-  CKK_EC_EDWARDS edwards448: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
+  CKK_EC_EDWARDS edwards25519: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  CKK_EC_EDWARDS edwards448: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
   CKK_EC_EDWARDS secp256k1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
@@ -797,8 +941,8 @@
   CKK_EC_MONTGOMERY: no — kmsp11/1.9+hsm: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY curve25519: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
-  CKK_EC_MONTGOMERY curve448: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve25519: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  CKK_EC_MONTGOMERY curve448: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
   CKK_EC_MONTGOMERY edwards25519: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY edwards448: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp256k1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
@@ -843,14 +987,14 @@
   CKK_RSA secp256r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile kmsp11/1.9+hsm records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
-  CKK_RSA 1024: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_RSA 512: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
+  CKK_RSA 1024: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
   CKK_RSA 2048: yes (kmsp11/1.9+hsm)
   CKK_RSA 3072: yes (kmsp11/1.9+hsm)
   CKK_RSA 4096: yes (kmsp11/1.9+hsm)
-  CKK_RSA 8192: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_RSA 8192: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
   CKK_RSA 15360: no — kmsp11/1.9+hsm
-  CKK_RSA 16384: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  CKK_RSA 16384: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
   CKK_SALSA20: unknown — module profile kmsp11/1.9+hsm records no CKK_SALSA20 generation
   CKK_SECURID: unknown — module profile kmsp11/1.9+hsm records no CKK_SECURID generation
   CKK_SEED: unknown — module profile kmsp11/1.9+hsm records no CKK_SEED generation
@@ -873,16 +1017,16 @@
   CKK_X9_42_DH: unknown — module profile kmsp11/1.9+hsm records no CKK_X9_42_DH generation
   CKK_XMSS: unknown — module profile kmsp11/1.9+hsm records no CKK_XMSS generation
   CKK_XMSSMT: unknown — module profile kmsp11/1.9+hsm records no CKK_XMSSMT generation
-  curve brainpoolP256r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
-  curve brainpoolP384r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
-  curve curve25519: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
-  curve curve448: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
-  curve edwards25519: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
-  curve edwards448: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID
-  curve secp256k1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
-  curve secp256r1: yes (kmsp11/1.9+hsm)
-  curve secp384r1: yes (kmsp11/1.9+hsm)
-  curve secp521r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE
+  curve brainpoolP256r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
+  curve brainpoolP384r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
+  curve curve25519: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve curve448: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve edwards25519: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve edwards448: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve secp256k1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
+  curve secp256r1: yes (kmsp11/1.9+hsm): a legacy row: provenance unknown
+  curve secp384r1: yes (kmsp11/1.9+hsm): a legacy row: provenance unknown
+  curve secp521r1: no — kmsp11/1.9+hsm: no binding for it; without one: CKR_TEMPLATE_INCOMPLETE (a legacy row: provenance unknown)
   oaep OAEP: unknown — module profile kmsp11/1.9+hsm records no OAEP probe
 # kryoptic/1.5
   wrap.oaep Some("[\"SHA-1\", \"SHA-256\"]")
@@ -941,13 +1085,13 @@
   CKK_DH: unknown — module profile kryoptic/1.5 records no CKK_DH generation
   CKK_DSA: unknown — module profile kryoptic/1.5 records no CKK_DSA generation
   CKK_EC: yes (kryoptic/1.5)
-  CKK_EC brainpoolP256r1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
-  CKK_EC brainpoolP384r1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  CKK_EC brainpoolP256r1: no — kryoptic/1.5: unknown, not the module's no: the probe could not decide it (device: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
+  CKK_EC brainpoolP384r1: no — kryoptic/1.5: unknown, not the module's no: the probe could not decide it (device: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
   CKK_EC curve25519: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
   CKK_EC curve448: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
   CKK_EC edwards25519: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
   CKK_EC edwards448: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
-  CKK_EC secp256k1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  CKK_EC secp256k1: no — kryoptic/1.5: unknown, not the module's no: the probe could not decide it (device: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
   CKK_EC secp256r1: yes (kryoptic/1.5)
   CKK_EC secp384r1: yes (kryoptic/1.5)
   CKK_EC secp521r1: yes (kryoptic/1.5)
@@ -1128,74 +1272,172 @@
   CKK_X9_42_DH: unknown — module profile kryoptic/1.5 records no CKK_X9_42_DH generation
   CKK_XMSS: unknown — module profile kryoptic/1.5 records no CKK_XMSS generation
   CKK_XMSSMT: unknown — module profile kryoptic/1.5 records no CKK_XMSSMT generation
-  curve brainpoolP256r1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
-  curve brainpoolP384r1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  curve brainpoolP256r1: no — kryoptic/1.5: unknown, not the module's no: the probe could not decide it (device: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
+  curve brainpoolP384r1: no — kryoptic/1.5: unknown, not the module's no: the probe could not decide it (device: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
   curve curve25519: yes (kryoptic/1.5)
   curve curve448: yes (kryoptic/1.5)
   curve edwards25519: yes (kryoptic/1.5)
   curve edwards448: yes (kryoptic/1.5)
-  curve secp256k1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  curve secp256k1: no — kryoptic/1.5: unknown, not the module's no: the probe could not decide it (device: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
   curve secp256r1: yes (kryoptic/1.5)
   curve secp384r1: yes (kryoptic/1.5)
   curve secp521r1: yes (kryoptic/1.5)
   oaep SHA-1: yes (kryoptic/1.5)
   oaep SHA-256: yes (kryoptic/1.5)
   commit cmac CKK_AES: unknown — module profile kryoptic/1.5 probed cmac at 16, 24, 32 bytes only
-  commit cmac CKK_AES 16 bytes: yes (kryoptic/1.5)
-  commit cmac CKK_AES 24 bytes: yes (kryoptic/1.5)
-  commit cmac CKK_AES 32 bytes: yes (kryoptic/1.5)
+  commit cmac CKK_AES 1 bytes: unknown — module profile kryoptic/1.5 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 8 bytes: unknown — module profile kryoptic/1.5 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit cmac CKK_AES 24 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit cmac CKK_AES 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit cmac CKK_AES 48 bytes: unknown — module profile kryoptic/1.5 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 64 bytes: unknown — module profile kryoptic/1.5 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 128 bytes: unknown — module profile kryoptic/1.5 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 1024 bytes: unknown — module profile kryoptic/1.5 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 4096 bytes: unknown — module profile kryoptic/1.5 probed cmac at 16, 24, 32 bytes only
   commit hmac-sha1 CKK_GENERIC_SECRET: yes (kryoptic/1.5)
-  commit hmac-sha1 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5)
-  commit hmac-sha1 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5)
-  commit hmac-sha1 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_GENERIC_SECRET 1 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 8 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha1 CKK_GENERIC_SECRET 24 bytes: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha1 CKK_GENERIC_SECRET 48 bytes: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha1 CKK_GENERIC_SECRET 128 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha1 at 16, 32, 64 bytes only
   commit hmac-sha1 CKK_SHA_1_HMAC: yes (kryoptic/1.5)
-  commit hmac-sha1 CKK_SHA_1_HMAC 16 bytes: yes (kryoptic/1.5)
-  commit hmac-sha1 CKK_SHA_1_HMAC 32 bytes: yes (kryoptic/1.5)
-  commit hmac-sha1 CKK_SHA_1_HMAC 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_SHA_1_HMAC 1 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_SHA_1_HMAC 8 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_SHA_1_HMAC 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha1 CKK_SHA_1_HMAC 24 bytes: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_SHA_1_HMAC 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha1 CKK_SHA_1_HMAC 48 bytes: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_SHA_1_HMAC 64 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha1 CKK_SHA_1_HMAC 128 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_SHA_1_HMAC 1024 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_SHA_1_HMAC 4096 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha1 at 16, 32, 64 bytes only
   commit hmac-sha224 CKK_GENERIC_SECRET: yes (kryoptic/1.5)
-  commit hmac-sha224 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5)
-  commit hmac-sha224 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5)
-  commit hmac-sha224 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_GENERIC_SECRET 1 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 8 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha224 CKK_GENERIC_SECRET 24 bytes: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha224 CKK_GENERIC_SECRET 48 bytes: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha224 CKK_GENERIC_SECRET 128 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha224 at 16, 32, 64 bytes only
   commit hmac-sha224 CKK_SHA224_HMAC: yes (kryoptic/1.5)
-  commit hmac-sha224 CKK_SHA224_HMAC 16 bytes: yes (kryoptic/1.5)
-  commit hmac-sha224 CKK_SHA224_HMAC 32 bytes: yes (kryoptic/1.5)
-  commit hmac-sha224 CKK_SHA224_HMAC 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_SHA224_HMAC 1 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_SHA224_HMAC 8 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_SHA224_HMAC 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha224 CKK_SHA224_HMAC 24 bytes: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_SHA224_HMAC 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha224 CKK_SHA224_HMAC 48 bytes: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_SHA224_HMAC 64 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha224 CKK_SHA224_HMAC 128 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_SHA224_HMAC 1024 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_SHA224_HMAC 4096 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha224 at 16, 32, 64 bytes only
   commit hmac-sha256 CKK_GENERIC_SECRET: yes (kryoptic/1.5)
-  commit hmac-sha256 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5)
-  commit hmac-sha256 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5)
-  commit hmac-sha256 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_GENERIC_SECRET 1 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 8 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha256 CKK_GENERIC_SECRET 24 bytes: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha256 CKK_GENERIC_SECRET 48 bytes: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha256 CKK_GENERIC_SECRET 128 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha256 at 16, 32, 64 bytes only
   commit hmac-sha256 CKK_SHA256_HMAC: yes (kryoptic/1.5)
-  commit hmac-sha256 CKK_SHA256_HMAC 16 bytes: yes (kryoptic/1.5)
-  commit hmac-sha256 CKK_SHA256_HMAC 32 bytes: yes (kryoptic/1.5)
-  commit hmac-sha256 CKK_SHA256_HMAC 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_SHA256_HMAC 1 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_SHA256_HMAC 8 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_SHA256_HMAC 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha256 CKK_SHA256_HMAC 24 bytes: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_SHA256_HMAC 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha256 CKK_SHA256_HMAC 48 bytes: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_SHA256_HMAC 64 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha256 CKK_SHA256_HMAC 128 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_SHA256_HMAC 1024 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_SHA256_HMAC 4096 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha256 at 16, 32, 64 bytes only
   commit hmac-sha384 CKK_GENERIC_SECRET: yes (kryoptic/1.5)
-  commit hmac-sha384 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5)
-  commit hmac-sha384 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5)
-  commit hmac-sha384 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_GENERIC_SECRET 1 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 8 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha384 CKK_GENERIC_SECRET 24 bytes: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha384 CKK_GENERIC_SECRET 48 bytes: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha384 CKK_GENERIC_SECRET 128 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha384 at 16, 32, 64 bytes only
   commit hmac-sha384 CKK_SHA384_HMAC: yes (kryoptic/1.5)
-  commit hmac-sha384 CKK_SHA384_HMAC 16 bytes: yes (kryoptic/1.5)
-  commit hmac-sha384 CKK_SHA384_HMAC 32 bytes: yes (kryoptic/1.5)
-  commit hmac-sha384 CKK_SHA384_HMAC 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_SHA384_HMAC 1 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_SHA384_HMAC 8 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_SHA384_HMAC 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha384 CKK_SHA384_HMAC 24 bytes: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_SHA384_HMAC 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha384 CKK_SHA384_HMAC 48 bytes: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_SHA384_HMAC 64 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha384 CKK_SHA384_HMAC 128 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_SHA384_HMAC 1024 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_SHA384_HMAC 4096 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha384 at 16, 32, 64 bytes only
   commit hmac-sha512 CKK_GENERIC_SECRET: yes (kryoptic/1.5)
-  commit hmac-sha512 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5)
-  commit hmac-sha512 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5)
-  commit hmac-sha512 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_GENERIC_SECRET 1 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 8 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha512 CKK_GENERIC_SECRET 24 bytes: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha512 CKK_GENERIC_SECRET 48 bytes: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha512 CKK_GENERIC_SECRET 128 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha512 at 16, 32, 64 bytes only
   commit hmac-sha512 CKK_SHA512_HMAC: yes (kryoptic/1.5)
-  commit hmac-sha512 CKK_SHA512_HMAC 16 bytes: yes (kryoptic/1.5)
-  commit hmac-sha512 CKK_SHA512_HMAC 32 bytes: yes (kryoptic/1.5)
-  commit hmac-sha512 CKK_SHA512_HMAC 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_SHA512_HMAC 1 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_SHA512_HMAC 8 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_SHA512_HMAC 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha512 CKK_SHA512_HMAC 24 bytes: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_SHA512_HMAC 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha512 CKK_SHA512_HMAC 48 bytes: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_SHA512_HMAC 64 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit hmac-sha512 CKK_SHA512_HMAC 128 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_SHA512_HMAC 1024 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_SHA512_HMAC 4096 bytes: unknown — module profile kryoptic/1.5 probed hmac-sha512 at 16, 32, 64 bytes only
   commit kcv-ecb CKK_AES: unknown — module profile kryoptic/1.5 probed kcv-ecb at 16, 24, 32 bytes only
-  commit kcv-ecb CKK_AES 16 bytes: yes (kryoptic/1.5)
-  commit kcv-ecb CKK_AES 24 bytes: yes (kryoptic/1.5)
-  commit kcv-ecb CKK_AES 32 bytes: yes (kryoptic/1.5)
+  commit kcv-ecb CKK_AES 1 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 8 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit kcv-ecb CKK_AES 24 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit kcv-ecb CKK_AES 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit kcv-ecb CKK_AES 48 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 64 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 128 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 1024 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 4096 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb at 16, 24, 32 bytes only
   commit kcv-ecb-dec CKK_AES: unknown — module profile kryoptic/1.5 probed kcv-ecb-dec at 16, 24, 32 bytes only
-  commit kcv-ecb-dec CKK_AES 16 bytes: yes (kryoptic/1.5)
-  commit kcv-ecb-dec CKK_AES 24 bytes: yes (kryoptic/1.5)
-  commit kcv-ecb-dec CKK_AES 32 bytes: yes (kryoptic/1.5)
+  commit kcv-ecb-dec CKK_AES 1 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 8 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit kcv-ecb-dec CKK_AES 24 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit kcv-ecb-dec CKK_AES 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit kcv-ecb-dec CKK_AES 48 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 64 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 128 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 1024 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 4096 bytes: unknown — module profile kryoptic/1.5 probed kcv-ecb-dec at 16, 24, 32 bytes only
   commit kw CKK_AES: unknown — module profile kryoptic/1.5 probed kw at 16, 24, 32 bytes only
-  commit kw CKK_AES 16 bytes: yes (kryoptic/1.5)
-  commit kw CKK_AES 24 bytes: yes (kryoptic/1.5)
-  commit kw CKK_AES 32 bytes: yes (kryoptic/1.5)
+  commit kw CKK_AES 1 bytes: unknown — module profile kryoptic/1.5 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 8 bytes: unknown — module profile kryoptic/1.5 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 16 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit kw CKK_AES 24 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit kw CKK_AES 32 bytes: yes (kryoptic/1.5): unverified: only the module says so
+  commit kw CKK_AES 48 bytes: unknown — module profile kryoptic/1.5 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 64 bytes: unknown — module profile kryoptic/1.5 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 128 bytes: unknown — module profile kryoptic/1.5 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 1024 bytes: unknown — module profile kryoptic/1.5 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 4096 bytes: unknown — module profile kryoptic/1.5 probed kw at 16, 24, 32 bytes only
 # softhsm/2.7
   wrap.oaep Some("[\"SHA-1\"]")
   decrypt.oaep Some("[\"SHA-1\"]")
@@ -1394,45 +1636,126 @@
   curve secp521r1: yes (softhsm/2.7)
   oaep SHA-1: yes (softhsm/2.7): SHA-256: wrapping fails: CKR_ARGUMENTS_BAD
   commit cmac CKK_AES: unknown — module profile softhsm/2.7 probed cmac at 16, 24, 32 bytes only
-  commit cmac CKK_AES 16 bytes: yes (softhsm/2.7)
-  commit cmac CKK_AES 24 bytes: yes (softhsm/2.7)
-  commit cmac CKK_AES 32 bytes: yes (softhsm/2.7)
+  commit cmac CKK_AES 1 bytes: unknown — module profile softhsm/2.7 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 8 bytes: unknown — module profile softhsm/2.7 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 16 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit cmac CKK_AES 24 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit cmac CKK_AES 32 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit cmac CKK_AES 48 bytes: unknown — module profile softhsm/2.7 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 64 bytes: unknown — module profile softhsm/2.7 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 128 bytes: unknown — module profile softhsm/2.7 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 1024 bytes: unknown — module profile softhsm/2.7 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 4096 bytes: unknown — module profile softhsm/2.7 probed cmac at 16, 24, 32 bytes only
   commit hmac-sha1 CKK_GENERIC_SECRET: yes (softhsm/2.7)
+  commit hmac-sha1 CKK_GENERIC_SECRET 1 bytes: unknown — module profile softhsm/2.7 probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 8 bytes: unknown — module profile softhsm/2.7 probed hmac-sha1 at 16, 32, 64 bytes only
   commit hmac-sha1 CKK_GENERIC_SECRET 16 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA_1_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
-  commit hmac-sha1 CKK_GENERIC_SECRET 32 bytes: yes (softhsm/2.7)
-  commit hmac-sha1 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7)
+  commit hmac-sha1 CKK_GENERIC_SECRET 24 bytes: unknown — module profile softhsm/2.7 probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 32 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit hmac-sha1 CKK_GENERIC_SECRET 48 bytes: yes (softhsm/2.7)
+  commit hmac-sha1 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit hmac-sha1 CKK_GENERIC_SECRET 128 bytes: unknown — module profile softhsm/2.7 probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile softhsm/2.7 probed hmac-sha1 at 16, 32, 64 bytes only
+  commit hmac-sha1 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile softhsm/2.7 probed hmac-sha1 at 16, 32, 64 bytes only
   commit hmac-sha224 CKK_GENERIC_SECRET: yes (softhsm/2.7)
+  commit hmac-sha224 CKK_GENERIC_SECRET 1 bytes: unknown — module profile softhsm/2.7 probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 8 bytes: unknown — module profile softhsm/2.7 probed hmac-sha224 at 16, 32, 64 bytes only
   commit hmac-sha224 CKK_GENERIC_SECRET 16 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA224_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
-  commit hmac-sha224 CKK_GENERIC_SECRET 32 bytes: yes (softhsm/2.7)
-  commit hmac-sha224 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7)
+  commit hmac-sha224 CKK_GENERIC_SECRET 24 bytes: unknown — module profile softhsm/2.7 probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 32 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit hmac-sha224 CKK_GENERIC_SECRET 48 bytes: yes (softhsm/2.7)
+  commit hmac-sha224 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit hmac-sha224 CKK_GENERIC_SECRET 128 bytes: unknown — module profile softhsm/2.7 probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile softhsm/2.7 probed hmac-sha224 at 16, 32, 64 bytes only
+  commit hmac-sha224 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile softhsm/2.7 probed hmac-sha224 at 16, 32, 64 bytes only
   commit hmac-sha256 CKK_GENERIC_SECRET: yes (softhsm/2.7)
+  commit hmac-sha256 CKK_GENERIC_SECRET 1 bytes: unknown — module profile softhsm/2.7 probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 8 bytes: unknown — module profile softhsm/2.7 probed hmac-sha256 at 16, 32, 64 bytes only
   commit hmac-sha256 CKK_GENERIC_SECRET 16 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA256_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
-  commit hmac-sha256 CKK_GENERIC_SECRET 32 bytes: yes (softhsm/2.7)
-  commit hmac-sha256 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7)
+  commit hmac-sha256 CKK_GENERIC_SECRET 24 bytes: unknown — module profile softhsm/2.7 probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 32 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit hmac-sha256 CKK_GENERIC_SECRET 48 bytes: yes (softhsm/2.7)
+  commit hmac-sha256 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit hmac-sha256 CKK_GENERIC_SECRET 128 bytes: unknown — module profile softhsm/2.7 probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile softhsm/2.7 probed hmac-sha256 at 16, 32, 64 bytes only
+  commit hmac-sha256 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile softhsm/2.7 probed hmac-sha256 at 16, 32, 64 bytes only
   commit hmac-sha384 CKK_GENERIC_SECRET: yes (softhsm/2.7)
+  commit hmac-sha384 CKK_GENERIC_SECRET 1 bytes: unknown — module profile softhsm/2.7 probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 8 bytes: unknown — module profile softhsm/2.7 probed hmac-sha384 at 16, 32, 64 bytes only
   commit hmac-sha384 CKK_GENERIC_SECRET 16 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA384_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
+  commit hmac-sha384 CKK_GENERIC_SECRET 24 bytes: unknown — module profile softhsm/2.7 probed hmac-sha384 at 16, 32, 64 bytes only
   commit hmac-sha384 CKK_GENERIC_SECRET 32 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA384_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
-  commit hmac-sha384 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7)
+  commit hmac-sha384 CKK_GENERIC_SECRET 48 bytes: unknown — module profile softhsm/2.7 probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit hmac-sha384 CKK_GENERIC_SECRET 128 bytes: unknown — module profile softhsm/2.7 probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile softhsm/2.7 probed hmac-sha384 at 16, 32, 64 bytes only
+  commit hmac-sha384 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile softhsm/2.7 probed hmac-sha384 at 16, 32, 64 bytes only
   commit hmac-sha512 CKK_GENERIC_SECRET: yes (softhsm/2.7)
+  commit hmac-sha512 CKK_GENERIC_SECRET 1 bytes: unknown — module profile softhsm/2.7 probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 8 bytes: unknown — module profile softhsm/2.7 probed hmac-sha512 at 16, 32, 64 bytes only
   commit hmac-sha512 CKK_GENERIC_SECRET 16 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA512_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
+  commit hmac-sha512 CKK_GENERIC_SECRET 24 bytes: unknown — module profile softhsm/2.7 probed hmac-sha512 at 16, 32, 64 bytes only
   commit hmac-sha512 CKK_GENERIC_SECRET 32 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA512_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
-  commit hmac-sha512 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7)
+  commit hmac-sha512 CKK_GENERIC_SECRET 48 bytes: unknown — module profile softhsm/2.7 probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit hmac-sha512 CKK_GENERIC_SECRET 128 bytes: unknown — module profile softhsm/2.7 probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 1024 bytes: unknown — module profile softhsm/2.7 probed hmac-sha512 at 16, 32, 64 bytes only
+  commit hmac-sha512 CKK_GENERIC_SECRET 4096 bytes: unknown — module profile softhsm/2.7 probed hmac-sha512 at 16, 32, 64 bytes only
   commit kcv-ecb CKK_AES: unknown — module profile softhsm/2.7 probed kcv-ecb at 16, 24, 32 bytes only
-  commit kcv-ecb CKK_AES 16 bytes: yes (softhsm/2.7)
-  commit kcv-ecb CKK_AES 24 bytes: yes (softhsm/2.7)
-  commit kcv-ecb CKK_AES 32 bytes: yes (softhsm/2.7)
+  commit kcv-ecb CKK_AES 1 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 8 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 16 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit kcv-ecb CKK_AES 24 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit kcv-ecb CKK_AES 32 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit kcv-ecb CKK_AES 48 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 64 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 128 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 1024 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 4096 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 16, 24, 32 bytes only
   commit kcv-ecb CKK_DES3: unknown — module profile softhsm/2.7 probed kcv-ecb at 24 bytes only
-  commit kcv-ecb CKK_DES3 24 bytes: yes (softhsm/2.7)
+  commit kcv-ecb CKK_DES3 1 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 8 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 16 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 24 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit kcv-ecb CKK_DES3 32 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 48 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 64 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 128 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 1024 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 4096 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb at 24 bytes only
   commit kcv-ecb-dec CKK_AES: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 16, 24, 32 bytes only
-  commit kcv-ecb-dec CKK_AES 16 bytes: yes (softhsm/2.7)
-  commit kcv-ecb-dec CKK_AES 24 bytes: yes (softhsm/2.7)
-  commit kcv-ecb-dec CKK_AES 32 bytes: yes (softhsm/2.7)
+  commit kcv-ecb-dec CKK_AES 1 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 8 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 16 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit kcv-ecb-dec CKK_AES 24 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit kcv-ecb-dec CKK_AES 32 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit kcv-ecb-dec CKK_AES 48 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 64 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 128 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 1024 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 4096 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 16, 24, 32 bytes only
   commit kcv-ecb-dec CKK_DES3: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 24 bytes only
-  commit kcv-ecb-dec CKK_DES3 24 bytes: yes (softhsm/2.7)
+  commit kcv-ecb-dec CKK_DES3 1 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 8 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 16 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 24 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit kcv-ecb-dec CKK_DES3 32 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 48 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 64 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 128 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 1024 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 4096 bytes: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 24 bytes only
   commit kw CKK_AES: unknown — module profile softhsm/2.7 probed kw at 16, 24, 32 bytes only
-  commit kw CKK_AES 16 bytes: yes (softhsm/2.7)
-  commit kw CKK_AES 24 bytes: yes (softhsm/2.7)
-  commit kw CKK_AES 32 bytes: yes (softhsm/2.7)
+  commit kw CKK_AES 1 bytes: unknown — module profile softhsm/2.7 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 8 bytes: unknown — module profile softhsm/2.7 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 16 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit kw CKK_AES 24 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit kw CKK_AES 32 bytes: yes (softhsm/2.7): unverified: only the module says so
+  commit kw CKK_AES 48 bytes: unknown — module profile softhsm/2.7 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 64 bytes: unknown — module profile softhsm/2.7 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 128 bytes: unknown — module profile softhsm/2.7 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 1024 bytes: unknown — module profile softhsm/2.7 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 4096 bytes: unknown — module profile softhsm/2.7 probed kw at 16, 24, 32 bytes only
 # tpm2-pkcs11/1.10+amd-ftpm
   wrap.oaep None
   decrypt.oaep Some("[\"SHA-1\", \"SHA-256\"]")
@@ -1450,12 +1773,12 @@
   CKK_ACTI: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_ACTI generation
   CKK_AES: no — tpm2-pkcs11/1.10+amd-ftpm: refused 8, 16, 24, 32, 48, 64 bytes
   CKK_AES 1 bytes: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm probed 8, 16, 24, 32, 48, 64 bytes only
-  CKK_AES 8 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 8: CKR_FUNCTION_NOT_SUPPORTED
-  CKK_AES 16 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 16: CKR_FUNCTION_NOT_SUPPORTED
-  CKK_AES 24 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 24: CKR_FUNCTION_NOT_SUPPORTED
-  CKK_AES 32 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 32: CKR_FUNCTION_NOT_SUPPORTED
-  CKK_AES 48 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 48: CKR_FUNCTION_NOT_SUPPORTED
-  CKK_AES 64 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 64: CKR_FUNCTION_NOT_SUPPORTED
+  CKK_AES 8 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 8: CKR_FUNCTION_NOT_SUPPORTED (a legacy row: provenance unknown)
+  CKK_AES 16 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 16: CKR_FUNCTION_NOT_SUPPORTED (a legacy row: provenance unknown)
+  CKK_AES 24 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 24: CKR_FUNCTION_NOT_SUPPORTED (a legacy row: provenance unknown)
+  CKK_AES 32 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 32: CKR_FUNCTION_NOT_SUPPORTED (a legacy row: provenance unknown)
+  CKK_AES 48 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 48: CKR_FUNCTION_NOT_SUPPORTED (a legacy row: provenance unknown)
+  CKK_AES 64 bytes: no — tpm2-pkcs11/1.10+amd-ftpm: valueLen = 64: CKR_FUNCTION_NOT_SUPPORTED (a legacy row: provenance unknown)
   CKK_AES 128 bytes: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm probed 8, 16, 24, 32, 48, 64 bytes only
   CKK_AES 1024 bytes: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm probed 8, 16, 24, 32, 48, 64 bytes only
   CKK_AES 4096 bytes: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm probed 8, 16, 24, 32, 48, 64 bytes only
@@ -1480,16 +1803,16 @@
   CKK_DH: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_DH generation
   CKK_DSA: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_DSA generation
   CKK_EC: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC brainpoolP256r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
-  CKK_EC brainpoolP384r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
+  CKK_EC brainpoolP256r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED (a legacy row: provenance unknown)
+  CKK_EC brainpoolP384r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED (a legacy row: provenance unknown)
   CKK_EC curve25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC curve448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC edwards25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC edwards448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
-  CKK_EC secp256k1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
-  CKK_EC secp256r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC secp384r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC secp521r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_GENERAL_ERROR
+  CKK_EC secp256k1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED (a legacy row: provenance unknown)
+  CKK_EC secp256r1: yes (tpm2-pkcs11/1.10+amd-ftpm): a legacy row: provenance unknown
+  CKK_EC secp384r1: yes (tpm2-pkcs11/1.10+amd-ftpm): a legacy row: provenance unknown
+  CKK_EC secp521r1: no — tpm2-pkcs11/1.10+amd-ftpm: unknown, not the module's no: CKR_GENERAL_ERROR is the device failing (a legacy row: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
   CKK_EC 512: yes (tpm2-pkcs11/1.10+amd-ftpm)
   CKK_EC 1024: yes (tpm2-pkcs11/1.10+amd-ftpm)
   CKK_EC 2048: yes (tpm2-pkcs11/1.10+amd-ftpm)
@@ -1504,8 +1827,8 @@
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
-  CKK_EC_EDWARDS edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_EDWARDS edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  CKK_EC_EDWARDS edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
   CKK_EC_EDWARDS secp256k1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
@@ -1521,8 +1844,8 @@
   CKK_EC_MONTGOMERY: no — tpm2-pkcs11/1.10+amd-ftpm: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
-  CKK_EC_MONTGOMERY curve448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
+  CKK_EC_MONTGOMERY curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  CKK_EC_MONTGOMERY curve448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
   CKK_EC_MONTGOMERY edwards25519: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY edwards448: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp256k1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
@@ -1567,11 +1890,11 @@
   CKK_RSA secp256r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — tpm2-pkcs11/1.10+amd-ftpm: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_RSA 512: no — tpm2-pkcs11/1.10+amd-ftpm: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_RSA 1024: yes (tpm2-pkcs11/1.10+amd-ftpm)
   CKK_RSA 2048: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_RSA 3072: no — tpm2-pkcs11/1.10+amd-ftpm: modulusBits = 3072: CKR_ATTRIBUTE_VALUE_INVALID
-  CKK_RSA 4096: no — tpm2-pkcs11/1.10+amd-ftpm: modulusBits = 4096: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_RSA 3072: no — tpm2-pkcs11/1.10+amd-ftpm: modulusBits = 3072: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  CKK_RSA 4096: no — tpm2-pkcs11/1.10+amd-ftpm: modulusBits = 4096: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_RSA 8192: no — tpm2-pkcs11/1.10+amd-ftpm
   CKK_RSA 15360: no — tpm2-pkcs11/1.10+amd-ftpm
   CKK_RSA 16384: no — tpm2-pkcs11/1.10+amd-ftpm
@@ -1597,16 +1920,16 @@
   CKK_X9_42_DH: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_X9_42_DH generation
   CKK_XMSS: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_XMSS generation
   CKK_XMSSMT: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no CKK_XMSSMT generation
-  curve brainpoolP256r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
-  curve brainpoolP384r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
-  curve curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
-  curve curve448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
-  curve edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
-  curve edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID
-  curve secp256k1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
-  curve secp256r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  curve secp384r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  curve secp521r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_GENERAL_ERROR
+  curve brainpoolP256r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED (a legacy row: provenance unknown)
+  curve brainpoolP384r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED (a legacy row: provenance unknown)
+  curve curve25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve curve448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve edwards25519: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve edwards448: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_MECHANISM_INVALID (a legacy row: provenance unknown)
+  curve secp256k1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED (a legacy row: provenance unknown)
+  curve secp256r1: yes (tpm2-pkcs11/1.10+amd-ftpm): a legacy row: provenance unknown
+  curve secp384r1: yes (tpm2-pkcs11/1.10+amd-ftpm): a legacy row: provenance unknown
+  curve secp521r1: no — tpm2-pkcs11/1.10+amd-ftpm: unknown, not the module's no: CKR_GENERAL_ERROR is the device failing (a legacy row: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
   oaep OAEP: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no OAEP probe
 # tpm2-pkcs11/1.10+swtpm
   wrap.oaep None
@@ -1819,16 +2142,16 @@
   CKK_DH: unknown — module profile ykcs11/2.7 records no CKK_DH generation
   CKK_DSA: unknown — module profile ykcs11/2.7 records no CKK_DSA generation
   CKK_EC: yes (ykcs11/2.7)
-  CKK_EC brainpoolP256r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  CKK_EC brainpoolP384r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC brainpoolP256r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  CKK_EC brainpoolP384r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_EC curve25519: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC curve448: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC edwards25519: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC edwards448: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
-  CKK_EC secp256k1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  CKK_EC secp256r1: yes (ykcs11/2.7)
-  CKK_EC secp384r1: yes (ykcs11/2.7)
-  CKK_EC secp521r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC secp256k1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  CKK_EC secp256r1: yes (ykcs11/2.7): a legacy row: provenance unknown
+  CKK_EC secp384r1: yes (ykcs11/2.7): a legacy row: provenance unknown
+  CKK_EC secp521r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_EC 512: yes (ykcs11/2.7)
   CKK_EC 1024: yes (ykcs11/2.7)
   CKK_EC 2048: yes (ykcs11/2.7)
@@ -1843,8 +2166,8 @@
   CKK_EC_EDWARDS brainpoolP384r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve25519: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS curve448: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
-  CKK_EC_EDWARDS edwards25519: yes (ykcs11/2.7)
-  CKK_EC_EDWARDS edwards448: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC_EDWARDS edwards25519: yes (ykcs11/2.7): a legacy row: provenance unknown
+  CKK_EC_EDWARDS edwards448: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_EC_EDWARDS secp256k1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp256r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC_EDWARDS secp384r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
@@ -1860,8 +2183,8 @@
   CKK_EC_MONTGOMERY: no — ykcs11/2.7: refused curve25519, curve448
   CKK_EC_MONTGOMERY brainpoolP256r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY brainpoolP384r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
-  CKK_EC_MONTGOMERY curve25519: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  CKK_EC_MONTGOMERY curve448: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  CKK_EC_MONTGOMERY curve25519: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  CKK_EC_MONTGOMERY curve448: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   CKK_EC_MONTGOMERY edwards25519: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY edwards448: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_EC_MONTGOMERY secp256k1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
@@ -1906,8 +2229,8 @@
   CKK_RSA secp256r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_RSA secp384r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
   CKK_RSA secp521r1: unknown — module profile ykcs11/2.7 records neither can nor cannot for it (partial)
-  CKK_RSA 512: no — ykcs11/2.7: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID
-  CKK_RSA 1024: no — ykcs11/2.7: modulusBits = 1024: CKR_ARGUMENTS_BAD
+  CKK_RSA 512: no — ykcs11/2.7: modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  CKK_RSA 1024: no — ykcs11/2.7: modulusBits = 1024: CKR_ARGUMENTS_BAD (a legacy row: provenance unknown)
   CKK_RSA 2048: yes (ykcs11/2.7)
   CKK_RSA 3072: yes (ykcs11/2.7)
   CKK_RSA 4096: yes (ykcs11/2.7)
@@ -1936,14 +2259,14 @@
   CKK_X9_42_DH: unknown — module profile ykcs11/2.7 records no CKK_X9_42_DH generation
   CKK_XMSS: unknown — module profile ykcs11/2.7 records no CKK_XMSS generation
   CKK_XMSSMT: unknown — module profile ykcs11/2.7 records no CKK_XMSSMT generation
-  curve brainpoolP256r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve brainpoolP384r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve curve25519: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve curve448: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve edwards25519: yes (ykcs11/2.7)
-  curve edwards448: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve secp256k1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
-  curve secp256r1: yes (ykcs11/2.7)
-  curve secp384r1: yes (ykcs11/2.7)
-  curve secp521r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID
+  curve brainpoolP256r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  curve brainpoolP384r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  curve curve25519: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  curve curve448: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  curve edwards25519: yes (ykcs11/2.7): a legacy row: provenance unknown
+  curve edwards448: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  curve secp256k1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
+  curve secp256r1: yes (ykcs11/2.7): a legacy row: provenance unknown
+  curve secp384r1: yes (ykcs11/2.7): a legacy row: provenance unknown
+  curve secp521r1: no — ykcs11/2.7: generation refused: CKR_ATTRIBUTE_VALUE_INVALID (a legacy row: provenance unknown)
   oaep OAEP: unknown — module profile ykcs11/2.7 records no OAEP probe

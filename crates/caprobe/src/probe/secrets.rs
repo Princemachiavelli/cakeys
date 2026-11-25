@@ -3,13 +3,13 @@
 //! derivations (`derive.CKM_*.*`). Each writes a row, yes or no, per key type it tried; a
 //! mechanism the module does not list is not tried, and so is left to `[untested]`.
 
-use super::{Draft, Made, ck_said, evidence, refused, spec};
+use super::{Checked, Draft, Made, ck_said, evidence, refused, spec};
 use cakeys_core::config::ObjectCfg;
 use cakeys_core::id::{BlockCipher, Commit, HmacHash};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{Msg, Result};
 use cakeys_pkcs11::token;
-use cakeys_profile::{Answer, Capability, KeyKind};
+use cakeys_profile::{Capability, KeyKind};
 use cryptoki::error::RvError;
 use cryptoki::mechanism::aead::GcmParams;
 use cryptoki::mechanism::aes_ctr::AesCtrParams;
@@ -67,17 +67,10 @@ fn generated(profile: &Draft, kt: Kt) -> Vec<u32> {
     profile.generate.get(&KeyKind::from(kt.name())).map(|r| r.can_bytes.clone()).unwrap_or_default()
 }
 
-/// A refusal's row: the module's `CKR_*` is the answer, no; a refusal without one (the provider's
-/// or this build's) says nothing of the module, and a session left busy by an earlier operation
-/// says nothing of this one.
+/// A refusal's row, as [`Draft::refused`] classes it: the module's `CKR_*` is the answer, no;
+/// anything else says nothing of the module.
 fn refusal_row(made: &mut Made, profile: &mut Draft, cap: Capability, e: &cakeys_core::KmError, what: &str) {
-    if token::rv_is(e.rv(), RvError::OperationActive) {
-        made.undetermined.push(format!("no {cap} row: {what}: an earlier operation left the session busy"));
-    } else if e.rv().is_some() {
-        profile.set(cap, Answer::No, Some(format!("{what}: {}", evidence(made.tok, e))), None);
-    } else {
-        made.undetermined.push(format!("no {cap} row: {what}: {}", evidence(made.tok, e)));
-    }
+    profile.refused(&mut made.undetermined, cap, e.rv(), format!("{what}: {}", evidence(made.tok, e)));
 }
 
 /// `commit.<kind>.<key type>.<bytes>`: each commitment the module lists, on a key made with the
@@ -129,7 +122,7 @@ fn commit_row(made: &mut Made, profile: &mut Draft, kt: Kt, c: Commit, bytes: u3
         }
     };
     if again != first {
-        profile.set(cap, Answer::No, Some("the same key does not give the same commitment twice".into()), None);
+        profile.wrong(cap, "the same key does not give the same commitment twice".into());
         return Ok(());
     }
     if distinct {
@@ -137,16 +130,18 @@ fn commit_row(made: &mut Made, profile: &mut Draft, kt: Kt, c: Commit, bytes: u3
             Ok(h) => h,
             Err(e) => {
                 made.undetermined.push(format!("no distinctness check of {cap}: {}", refused(made.tok, &e)));
-                profile.set(cap, Answer::Yes, None, None);
+                profile.yes(cap, Checked::Unverified, None);
                 return Ok(());
             }
         };
         if made.tok.commit(other, &object, c, COMMIT_LABEL).ok().as_ref() == Some(&first) {
-            profile.set(cap, Answer::No, Some("another key gives the same commitment".into()), None);
+            profile.wrong(cap, "another key gives the same commitment".into());
             return Ok(());
         }
     }
-    profile.set(cap, Answer::Yes, None, None);
+    // Stable and distinct, but never compared with a value the host computed (review
+    // 2026-11-24 E-3): the module's word.
+    profile.yes(cap, Checked::Unverified, None);
     Ok(())
 }
 
@@ -231,9 +226,10 @@ fn ctr_variants<'a>(iv: [u8; 16]) -> Variants<'a> {
 }
 
 /// One `crypt.*` row: the first of `variants` the module takes, round-tripped on `key`: yes when
-/// the plaintext comes back, no with the module's `CKR_*` when it refuses every choice. Only
-/// `CKR_MECHANISM_PARAM_INVALID` moves on to the next choice, and a yes on any but the first
-/// says which one worked. A session an earlier operation left busy says nothing.
+/// the plaintext comes back (on this module alone: unverified, review 2026-11-24 E-3), no with
+/// the module's `CKR_*` when it refuses every choice, or the host's word when what came back is
+/// wrong. Only `CKR_MECHANISM_PARAM_INVALID` moves on to the next choice, and a yes on any but
+/// the first says which one worked. Any other failure is [`Draft::refused`]'s to class.
 fn crypt_row(
     made: &mut Made,
     profile: &mut Draft,
@@ -254,13 +250,12 @@ fn crypt_row(
                         format!("refused the first parameters tried (CKR_MECHANISM_PARAM_INVALID); works with {label}"),
                     );
                 }
-                profile.set(cap, Answer::Yes, None, None);
-            }
-            Err(e) if token::rv_is(e.rv(), RvError::OperationActive) => {
-                made.undetermined.push(format!("no {cap} row: an earlier operation left the session busy"));
+                profile.yes(cap, Checked::Unverified, None);
             }
             Err(e) if token::rv_is(e.rv(), RvError::MechanismParamInvalid) && i + 1 < variants.len() => continue,
-            Err(e) => profile.set(cap, Answer::No, Some(e.to_string()), None),
+            // `round_trip`'s own findings carry no return value: the host's check.
+            Err(e) if e.rv().is_none() => profile.wrong(cap, e.to_string()),
+            Err(e) => profile.refused(&mut made.undetermined, cap, e.rv(), e.to_string()),
         }
         return;
     }
@@ -493,18 +488,9 @@ fn run_derivations(made: &mut Made, profile: &mut Draft, tries: &[Derivation]) {
         }
         let cap = Capability::Kdf { mechanism: mt.to_string(), key_type: d.key_type.clone() };
         match derived_value(made.session, &d.mechanism, d.base, d.len) {
-            Ok(v) if v == d.expected => profile.set(cap, Answer::Yes, None, None),
-            Ok(v) => profile.set(
-                cap,
-                Answer::No,
-                Some(format!("it derives {} bytes that are not what the host computes", v.len())),
-                None,
-            ),
-            Err(e) if token::rv_is(e.rv(), RvError::OperationActive) => {
-                made.undetermined.push(format!("no {cap} row: an earlier operation left the session busy"));
-            }
-            Err(e) if e.rv().is_some() => profile.set(cap, Answer::No, Some(e.to_string()), None),
-            Err(e) => made.undetermined.push(format!("no {cap} row: {e}")),
+            Ok(v) if v == d.expected => profile.yes(cap, Checked::Host, None),
+            Ok(v) => profile.wrong(cap, format!("it derives {} bytes that are not what the host computes", v.len())),
+            Err(e) => profile.refused(&mut made.undetermined, cap, e.rv(), e.to_string()),
         }
     }
 }

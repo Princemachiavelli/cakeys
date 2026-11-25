@@ -17,6 +17,8 @@
 #     env KRYOPTIC_MODULE=... TPM2_PKCS11_MODULE=... scripts/regen-profiles.sh /tmp/cakeys-caprobe/bin/caprobe <dir>
 # SoftHSM is the flake's own patched build (.#softhsm-unwrap-value-len), which this script
 # builds: the one the conformance test re-probes, and pkcs11-check-compare's (apps.nix).
+# SOFTHSM_PACKAGE names that build's store path instead, where nix cannot run (inside a
+# derivation on the Linux builder).
 set -euo pipefail
 
 [ $# -eq 2 ] || {
@@ -26,7 +28,7 @@ set -euo pipefail
 bin=$(realpath "$1") dir=$(realpath -m "$2")
 repo=$(realpath "$(dirname "$(realpath "$0")")/..")
 : "${KRYOPTIC_MODULE:?the path to libkryoptic_pkcs11.so}" "${TPM2_PKCS11_MODULE:?the path to libtpm2_pkcs11.so}"
-softhsm_pkg=$(nix build --no-link --print-out-paths "$repo#softhsm-unwrap-value-len")
+softhsm_pkg=${SOFTHSM_PACKAGE:-$(nix build --no-link --print-out-paths "$repo#softhsm-unwrap-value-len")}
 softhsm=$softhsm_pkg/lib/softhsm/libsofthsm2.so
 # Its softhsm2-util initialises the token (nix/token-env.sh), so module and tool are one build.
 export PATH=$softhsm_pkg/bin:$PATH
@@ -71,7 +73,8 @@ for t in softhsm:softhsm/2.7:softhsm/2.7.toml kryoptic:kryoptic/1.5:kryoptic/1.5
   echo "== $name"
   # 15 is drift, the rows named: the file is written anyway, the diff is for review.
   rc=0
-  "$bin" --config "$dir/keys.toml" probe --profiles "$repo/profiles" --token "$token" --write-probes --rsa-max-bits 4096 \
+  # The module profiles alone: profiles/ also holds LEDGER.toml, which is no profile.
+  "$bin" --config "$dir/keys.toml" probe --profiles "$repo/profiles/modules" --token "$token" --write-probes --rsa-max-bits 4096 \
     --diff "$name" --out "$repo/profiles/modules/$file" || rc=$?
   [ "$rc" = 0 ] || [ "$rc" = 15 ] || status=$rc
 done

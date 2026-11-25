@@ -234,7 +234,7 @@ fn a_delete_the_module_did_not_do_keeps_the_lock() {
 /// `SoftHSM`'s profile is given the row here; tests/tpm2.rs holds it on tpm2-pkcs11's own.
 #[test]
 fn a_profile_row_that_says_the_module_keeps_keys_refuses_the_delete() {
-    use cakeys_profile::{Answer, Capability};
+    use cakeys_profile::{Answer, By, Capability, Row};
     let Some((_w, mut cfg, _token)) = suite("row", "generic", &ec_key("rules-row")) else { return };
     // The module's own profile, as a token with no provider named resolves it.
     let tc = cfg.tokens.get_mut("t").unwrap();
@@ -244,7 +244,8 @@ fn a_profile_row_that_says_the_module_keeps_keys_refuses_the_delete() {
     let row = Capability::Delete("CKO_PRIVATE_KEY".into());
     let module = tok.profiles.module.as_mut().expect("softhsm/2.7, named");
     assert_eq!(module.answer(&row), Some(true), "the committed row");
-    module.set(row, Answer::No, Some("C_DestroyObject leaves 1 of 1 behind".into()), None);
+    let evidence = Some("C_DestroyObject leaves 1 of 1 behind".into());
+    module.set(row, Row { answer: Answer::No, by: Some(By::Host), evidence, via: None });
     let mut lock = Lock { version: cakeys_core::config::LOCK_VERSION, ..Lock::default() };
     let mut notes = Notes::default();
     ops::create(&t, &tok, &mut lock, LockWrite::Record, &mut notes).unwrap();
