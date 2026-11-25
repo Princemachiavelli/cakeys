@@ -5,7 +5,9 @@ development machine.
 
 ## Environment and the checks
 
-The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
+Development happens on NixOS or on macOS with Determinate Nix. Neither provides a usable system
+`cargo` or `python3`: macOS's `python3` lacks `tomllib`, so run the repository's scripts through
+`nix develop -c`.
 
 - Build and test with `nix develop -c cargo …`; any other tool with `nix shell nixpkgs#<name> -c …`.
   Use `rg`, not `grep`; shell scripts start with `#!/usr/bin/env bash`.
@@ -15,7 +17,8 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
   exemptions are per-site `#[expect(lint, reason = "…")]`.
 - **After a significant change:** `nix build .#checks-crane-only`, every check except the fuzz
   smoke run, on the crane build (its dependencies cached per `Cargo.lock`).
-- **At the end of a piece of work:** `nix flake check`, all checks passing.
+- **At the end of a piece of work:** the tiers below. T0 must pass, and T1 and T2 are run or
+  recorded as not run.
 - **CI** (GitHub Actions, on pushes to `main` and pull requests, x86_64 Linux):
   `.github/workflows/checks.yml` builds every check once, over three runners: `.#checks-no-vm`
   (every check but the VM tests, the fuzz run and Kani) after `nix flake check --no-build`,
@@ -74,6 +77,31 @@ its SHA-256 in the code that uses it, not trusted to git: Yubico's roots in
 `crates/ykcs11/build.rs` (a changed file fails the build), Google's kmsp11 release key in
 `nix/kmsp11.nix` (fails evaluation). A new one gets the same pin, its hash taken from the
 publisher's copy, not the repository's. Test fixtures need none.
+
+## The gate, in tiers
+
+Hardware is scarce, so not every merge can run every check. What each tier runs, and when it
+must pass:
+
+| Tier | What | Needs | Must pass |
+|---|---|---|---|
+| T0 | `.#checks-no-vm`: the crane build and its software-token suites (SoftHSM, kryoptic, p11-kit, swtpm, the fault shim), clippy, rustdoc, formatting, `doc-references`, `test-count`, `ledger` | Linux, no hardware | before a merge to `main` |
+| T1 | `.#checks-vm`: the NixOS VM tests and the fuzz smoke run | Linux with KVM | before a merge, or within a day of it; red is fixed forward first |
+| T2 | the YubiKey, AMD fTPM, Cloud KMS and CloudHSM suites and probes (`nix run .#coverage-full`, `scripts/cloud/*.sh`) | the device or a billed cloud account | on a schedule or before a release; recorded in the [ledger](CAPROBE.md#the-ledger) |
+
+- **A change does not merge on red T0.** On macOS, single Linux checks build locally through
+  Determinate Nix's Linux builder: `nix build --option builders '' -L .#checks.aarch64-linux.<name>`.
+  CI builds the same set for x86_64 on every pull request. `checks.aarch64-linux.examples` and
+  the VM tests need x86_64 or KVM, so they are left to CI.
+- **What T2 did not see stays visible.** A change to code on a hardware path fails `checks.ledger`
+  until it is re-probed, or until an `acknowledged` record says why it is not yet re-probed.
+- **Nothing skips silently.** Under `CAKEYS_REQUIRE_ALL`, set in every T0 test run, only the T2
+  suites may skip (Testing, below). `checks.test-count` fails when a test disappears without a
+  manifest edit.
+- **Every commit says what ran.** Use `Ran:` and `Not run:` trailers, and follow the fix protocol
+  in [REVIEWING.md](REVIEWING.md).
+- **On GitHub, `checks / light` is a required status check for `main`,** and `checks / vm` is
+  recommended. That is a repository setting, not a file.
 
 ## Hardware rules
 
