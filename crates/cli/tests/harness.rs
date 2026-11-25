@@ -1,10 +1,11 @@
 //! The test harness's own tests (crates/cli/tests/common): the `YubiKey` latch, the scrubbed
-//! environment, the opt-in variables, bounded runs, and the lints over every crate's test
-//! sources. Moved out of tests/validate.rs, whose header is the static gate (review 2026-11-23
+//! environment, the opt-in variables, bounded runs, the refusal oracle, and the lints over every
+//! crate's test sources. Moved out of tests/validate.rs, whose header is the static gate (review 2026-11-23
 //! D-21). No token, module or environment needed.
 
 mod common;
 
+use common::state::{Row, TokenView, refusal};
 use common::test_skip::{HARDWARE, TPM};
 use common::*;
 use std::collections::BTreeSet;
@@ -289,4 +290,58 @@ fn every_hardware_suite_opts_in_through_the_harness() {
         }
     }
     assert!(found.is_empty(), "these read an opt-in variable themselves: {found:?}");
+}
+
+/// What a run refused by `rule` with `exit` prints: that exit, and its one row.
+fn refused_by(exit: u8, rule: &str) -> Output {
+    use std::os::unix::process::ExitStatusExt as _;
+    let row = Row { exit, rule: Some(rule.into()), ..Row::passed("o", "s", "ref", "failed") };
+    let stdout = serde_json::to_vec(&[row]).unwrap();
+    Output { status: std::process::ExitStatus::from_raw(i32::from(exit) << 8), stdout, stderr: vec![] }
+}
+
+/// The refusal oracle (`Workdir::refused`) fails a refusal that writes the lock (review
+/// 2026-11-24 C-9: only two tests compared it). Its exit and its row's rule are right, so only
+/// the lock compared before and after can fail it; the same refusal leaving the lock alone
+/// passes first.
+#[test]
+#[should_panic(expected = "a refusal changed")]
+fn a_refusal_that_changes_the_lock_is_caught() {
+    let w = Workdir::new("refusal-changes-the-lock");
+    let lock = w.dir.join("keys.lock");
+    refusal(&[&lock], &[], "a refusal", || refused_by(13, "locator-free"), 13, "locator-free");
+    let writes = || {
+        std::fs::write(&lock, "version = 1\n\n[objects.k]\nclass = \"CKO_DATA\"\n").unwrap();
+        refused_by(13, "locator-free")
+    };
+    refusal(&[&lock], &[], "a refusal", writes, 13, "locator-free");
+}
+
+/// The refusal oracle fails a refusal that changes the token, here one that is its database
+/// file, as kryoptic's is (`state::objects`), so no module is needed; the same refusal leaving it
+/// alone passes first.
+#[test]
+#[should_panic(expected = "a refusal changed token kmtest")]
+fn a_refusal_that_changes_the_token_is_caught() {
+    let w = Workdir::new("refusal-changes-the-token");
+    let (lock, db) = (w.dir.join("keys.lock"), w.dir.join("token.sql"));
+    std::fs::write(&db, "one object").unwrap();
+    let token = || TokenView { name: "kmtest", module: "", label: "kmtest", env: &[], db: Some(db.clone()) };
+    refusal(&[&lock], &[token()], "a refusal", || refused_by(14, "pinned-lost"), 14, "pinned-lost");
+    let writes = || {
+        std::fs::write(&db, "two objects").unwrap();
+        refused_by(14, "pinned-lost")
+    };
+    refusal(&[&lock], &[token()], "a refusal", writes, 14, "pinned-lost");
+}
+
+/// The refusal oracle fails a refusal by another rule than the one named, the exit the same: the
+/// rule is the oracle, not the exit that several rules share (review 2026-11-24 A root cause 6).
+#[test]
+#[should_panic(expected = "a refusal: the refused row")]
+fn a_refusal_by_another_rule_is_caught() {
+    let w = Workdir::new("refusal-by-another-rule");
+    let lock = w.dir.join("keys.lock");
+    refusal(&[&lock], &[], "a refusal", || refused_by(15, "capability"), 15, "capability");
+    refusal(&[&lock], &[], "a refusal", || refused_by(15, "templates"), 15, "capability");
 }

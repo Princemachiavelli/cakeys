@@ -750,10 +750,8 @@ fn private_data_objects_are_identified_when_declared() {
     let realisation = lock["realisations"]["secret"]["ref"].clone();
     lock["realisations"]["secret"].as_table_mut().unwrap().insert("ref-anon".into(), realisation);
     e.write_lock(&lock);
-    let before = std::fs::read(e.dir.join("keys.lock")).unwrap();
-    assert_eq!(e.code(&["delete", "--spec", "secret", "--token", "ref-anon"]), 16);
-    assert_eq!(e.code(&["delete", "--spec", "secret", "--token", "ref-anon", "--dry-run"]), 16);
-    assert_eq!(std::fs::read(e.dir.join("keys.lock")).unwrap(), before, "the lock is kept");
+    e.refused(&["delete", "--spec", "secret", "--token", "ref-anon"], 16, "needs-login");
+    e.refused(&["delete", "--spec", "secret", "--token", "ref-anon", "--dry-run"], 16, "needs-login");
     // A data object whose spec does not say counts as private (review 2026-11-24 §9.2).
     assert_eq!(e.code(&["check", "--spec", "unsaid", "--token", "ref-anon"]), 16);
     // The escape: lock it once where it shows, and the lock's recorded CKA_PRIVATE = false says
