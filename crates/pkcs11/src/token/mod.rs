@@ -485,7 +485,7 @@ impl Token {
     }
 
     /// Create the trusted copy of a transport key on this token (`camigrate transport
-    /// --trusted`): an RSA public token object of `modulus` and `exponent`, labelled `label`,
+    /// --trust-on`): an RSA public token object of `modulus` and `exponent`, labelled `label`,
     /// that may wrap, marked `CKA_TRUSTED` — which only the SO can set, and only at creation.
     ///
     /// # Errors

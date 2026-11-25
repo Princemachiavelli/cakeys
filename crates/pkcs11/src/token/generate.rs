@@ -5,7 +5,11 @@
     reason = "the token/ split files work on the parent module's imports (R9); `expect` is not fulfilled on a `use` item"
 )]
 use super::rv::device_failed;
-use super::{Token, Object, SpecCfg, Locator, Binding, Result, Create, CkError, KmError, rv_of, Topic, Generation, keygen_mechanism, rv_name, Declared, Attribute, templates, Template, Half, key_type_of, KeyType, Mechanism, secret_key_gen, ObjectCfg, class_of, ObjectClass, ObjectHandle, Destroy, RvError, ck, Msg};
+use super::{
+    Attribute, Binding, CkError, Create, Declared, Destroy, Generation, Half, KeyType, KmError, Locator, Mechanism,
+    Msg, Object, ObjectCfg, ObjectClass, ObjectHandle, Result, RvError, SpecCfg, Template, Token, Topic, ck, class_of,
+    key_type_of, keygen_mechanism, rv_name, rv_of, secret_key_gen, templates,
+};
 use cakeys_profile::{Capability, On};
 
 impl Token {
@@ -42,6 +46,7 @@ impl Token {
     /// As [`Self::create`].
     ///
     /// [`Provider::create`]: crate::Provider::create
+    /// [`Provider::generation`]: crate::Provider::generation
     pub fn create_declared(&self, req: &Create<'_>) -> Result<Option<CreateNote>> {
         let own = self.provider.generation(req.object, req.spec, req.locator, req.binding)?;
         self.managing("generating a key", || match &own {

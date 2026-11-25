@@ -1,12 +1,17 @@
 //! The bound probes: keys whose template a provider chose whole (`bound_keys`), and
 //! the unbound pass that probes the rest (docs/CAPROBE.md).
 
-use super::{Made, Draft, GenerateRow, KeyKind, keygen_mechanism, ckr, On, secrets, operate, Attribute, Mechanism, Curve, MONTGOMERY};
+use super::{
+    Attribute, Curve, Draft, GenerateRow, KeyKind, MONTGOMERY, Made, Mechanism, On, ckr, keygen_mechanism, operate,
+    secrets,
+};
 
 /// A module that binds every key to one purpose at creation ([`BoundKey`], Google Cloud KMS):
 /// one key per binding, generated from the provider's exact template (no public template), and
 /// probed with only the mechanisms its binding serves. The curves and sizes no binding covers
 /// are tried without one ([`probe_unbound`]), so their `cannot` rows are observations too.
+///
+/// [`BoundKey`]: super::BoundKey
 pub(super) fn probe_bound(made: &mut Made, profile: &mut Draft) {
     let session = made.session;
     profile.note(

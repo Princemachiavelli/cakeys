@@ -343,3 +343,21 @@ impl Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A class or key type cakeys does not manage is invalid when keys.toml loads (17), not when
+    /// a token is first asked for it.
+    #[test]
+    fn unknown_classes_and_key_types_are_invalid_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("keys.toml");
+        for object in ["class = \"CKO_OTP_KEY\"", "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES2\""] {
+            std::fs::write(&p, format!("[objects.o]\n{object}\n")).unwrap();
+            let err = load_config(&p).unwrap_err();
+            assert!(matches!(err, KmError::Validation(_)), "{err}");
+        }
+    }
+}

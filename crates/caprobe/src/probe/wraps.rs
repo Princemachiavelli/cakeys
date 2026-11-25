@@ -1,7 +1,11 @@
 //! The wrap probes: key wrapping and unwrapping under the transport key, and the host's
 //! own blobs they must agree with (docs/CAPROBE.md).
 
-use super::{Made, Draft, ObjectHandle, token, Mechanism, OaepHash, ckr, Attribute, ObjectClass, KeyType, CkError, RvError, MechanismType, PkcsMgfType, PkcsOaepParams, PkcsOaepSource, secret_template, Kt, refused, Session, moves, evidence, pop, RsaPadding, KmError};
+use super::{
+    Attribute, CkError, Draft, KeyType, KmError, Kt, Made, Mechanism, MechanismType, OaepHash, ObjectClass,
+    ObjectHandle, PkcsMgfType, PkcsOaepParams, PkcsOaepSource, RsaPadding, RvError, Session, ckr, evidence, moves, pop,
+    refused, secret_template, token,
+};
 
 /// The OAEP hashes the module actually implements — wrap the fresh AES key to the fresh RSA
 /// transport key (public half) and unwrap it back with the private half, only a round trip

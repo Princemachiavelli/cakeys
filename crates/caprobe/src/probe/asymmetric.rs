@@ -1,7 +1,13 @@
 //! The asymmetric probes: the EC and Edwards curves, Montgomery pairs, RSA, and the
 //! operations and derivations each key's usage allows (docs/CAPROBE.md).
 
-use super::{Attribute, ObjectClass, Made, Draft, Result, Curve, KeyKind, Mechanism, GenerateRow, On, ckr, MechanismType, Kt, spec, ObjectCfg, Digest, Created, token, refused, ObjectHandle, Target, extras, HashAlg, EddsaParams, EddsaSignatureScheme, MSG, sig, Binding, AttributeType, Object, Capability, RvError, evidence, Answer, Session, Msg, ck_refusal, Sha224, Encoding, pop, Ecdh1DeriveParams, EcKdf, KeyType, derive_any, ck_said, show, CkError, PkcsPssParams, Sha256, Sha384, Sha512, PkcsMgfType, RsaPadding};
+use super::{
+    Answer, Attribute, AttributeType, Binding, Capability, CkError, Created, Curve, Digest, Draft, EcKdf,
+    Ecdh1DeriveParams, EddsaParams, EddsaSignatureScheme, Encoding, GenerateRow, HashAlg, KeyKind, KeyType, Kt, MSG,
+    Made, Mechanism, MechanismType, Msg, Object, ObjectCfg, ObjectClass, ObjectHandle, On, PkcsMgfType, PkcsPssParams,
+    Result, RsaPadding, RvError, Session, Sha224, Sha256, Sha384, Sha512, Target, ck_refusal, ck_said, ckr, derive_any,
+    evidence, extras, pop, refused, show, sig, spec, token,
+};
 
 /// The RSA key sizes the write probes generate, in bits, whatever the module reports (a claim,
 /// `[reported."CKK_RSA"]`): the sizes in use from 512 to 16384. The gate answers yes for a size

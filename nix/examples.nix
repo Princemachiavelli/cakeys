@@ -1,7 +1,7 @@
 # checks.examples: every example under examples/ played on throwaway tokens (its run.sh, each
-# step's exit code required), the YubiKey adoption validated, and the Nix files evaluated
-# (examples/tls/configuration.nix's two units, examples/secure-boot/sign.nix's derivation), so
-# no example drifts from cakeys.
+# step's exit code required), the YubiKey adoption validated against its lock, and the Nix files
+# evaluated (examples/tls/configuration.nix's two units, examples/secure-boot/sign.nix's
+# derivation), so no example drifts from cakeys.
 {
   pkgs,
   lib,
@@ -79,6 +79,8 @@ pkgs.runCommand "cakeys-examples"
       bash ${../examples}/$e/run.sh
     done 2>&1 | tee $out
     echo "━━ examples/yubikey-secureboot.toml" | tee -a $out
-    cakeys --config ${../examples/yubikey-secureboot.toml} validate 2>&1 | tee -a $out
+    # Against the lock the device produced, as a deployment validates (without one, 17).
+    cakeys --config ${../examples/yubikey-secureboot.toml} --lock ${../examples/yubikey-secureboot.lock} \
+      validate 2>&1 | tee -a $out
     echo "evaluated: $signDrv $tlsUnits" | tee -a $out
   ''

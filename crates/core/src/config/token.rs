@@ -1,7 +1,7 @@
 //! Token declarations: `[tokens.<name>]` in keys.toml, the probe and Nix settings, and the
 //! module options each provider reads (docs/CONFIG.md).
 
-use super::{Deserialize, PathBuf, Result, env_ref, secret_path, KmError};
+use super::{Deserialize, KmError, PathBuf, Result, env_ref, secret_path};
 
 /// One token (`[tokens.<name>]`): the module that reaches it, its label and credentials, and what
 /// its provider needs.
@@ -43,7 +43,7 @@ pub struct TokenCfg {
     pub pin_env: Option<String>,
     /// The Security Officer credential, for modules that create and destroy objects only in an
     /// SO session — ykcs11: the PIV management key in hex, or the PIN on a device whose
-    /// management key is PIN-protected; elsewhere the SO PIN (camigrate's `transport --trusted`).
+    /// management key is PIN-protected; elsewhere the SO PIN (camigrate's `transport --trust-on`).
     /// `pinFile`/`pinEnv` remain the *user* credential. Read just before such a step, never by
     /// `resolve` or `check`; the user session is restored afterwards, so a user PIN is
     /// required. `soCredentialEnv` wins if both are set; `soCredentialFile` may be `$NAME`, like
@@ -79,8 +79,8 @@ pub struct ProbeCfg {
     /// creates only as Security Officer into fixed device slots named by `CKA_ID` (ykcs11): such
     /// a token holds real keys beside the scratch slot, so `scratch` cannot mark all of it. Each
     /// probe generation replaces the slot's key, and what the last one generated stays (PIV
-    /// cannot erase a key). The probe still refuses a slot holding anything but its provider's
-    /// own placeholder (`Provider::scratch_occupant`).
+    /// cannot erase a key). The probe refuses a slot holding anything but its own certificate
+    /// (`CN=cakeys-probe`, which each run leaves there) or nothing (review 2026-11-23 D-1).
     pub scratch_id: Option<String>,
 }
 

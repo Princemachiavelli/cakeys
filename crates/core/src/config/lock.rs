@@ -402,7 +402,7 @@ pub struct LockRealisation {
 
 /// Offline-verifiable attestation evidence pinned per realisation (§3.7 of docs/DESIGN.md).
 /// `kind` names the attestation (`yubico-piv`, `tpm-certify` — one per scheme, see
-/// `id::ATTESTATION_KINDS`), `root` is the SRI digest of the trust anchor the chain was verified
+/// `Scheme::attestation_kind`), `root` is the SRI digest of the trust anchor the chain was verified
 /// to: the pinned Yubico root's SPKI for PIV (never the device's own overwritable slot f9), or
 /// the Attestation Key's SPKI for TPM. `id` is the attestation commitment of this device.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -479,7 +479,7 @@ impl std::fmt::Display for Immutables {
 
 /// Lock entries `cfg` no longer names (finding D3): every `[realisations.<spec>.<token>]` whose
 /// spec or token is gone from keys.toml, and every `[objects.<name>]` absent from it — printed by
-/// `gc` as table names, removed with `--apply`. Live objects keep their `ids` however few specs
+/// `gc --dry-run` as table names, removed by `gc`. Live objects keep their `ids` however few specs
 /// use them; only entries whose whole subject is gone are collected, and every
 /// `[observations."<key>"]` no remaining realisation names. A realisation of an object keys.toml
 /// no longer defines goes with it (a renamed object, a spec pointed at another one), so what is

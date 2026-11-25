@@ -337,7 +337,7 @@ pub enum Template<'a> {
     PublicHalf(Declared<'a>),
     /// A certificate, data object or public key object created from its value.
     Object(Declared<'a>),
-    /// The trusted copy of a transport key, made as SO (`camigrate transport --trusted`).
+    /// The trusted copy of a transport key, made as SO (`camigrate transport --trust-on`).
     TrustedCopy,
     /// A session object cakeys makes for one step and destroys after it.
     Session(SessionKey),

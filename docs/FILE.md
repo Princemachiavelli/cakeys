@@ -120,13 +120,13 @@ thing that notices.
 **F3. The file's identity is the object's first use.** When the lock pins nothing for the
 object, the file sets its identity. The first `file` pair imported records the identity
 through `ops::lock_import`, with `LockWrite::Record`, the same path `cakeys lock` uses for an
-adopted key. It exits 0; 18 stays `check`'s alone. Once the lock pins the identity, the file
-is checked against the lock on the host before anything is written (10). That check covers
-every pair not realised yet, on any token and in any later run. A pair already realised is
-verified on its token and its file is not read again, so a file replaced on disk is caught
-only when it is next imported somewhere. Reading it on every re-run would need
-`--allow-host-plaintext` on every re-run. New material needs a new object name, as
-[CONFIG.md](CONFIG.md) already says for any object.
+adopted key. It exits 22, the lock written; 18 stays `check`'s alone. Once the lock pins the
+identity, the file is checked against the lock on the host before anything is written
+(10). That check covers every pair not realised yet, on any token and in any later run. A
+pair already realised is verified on its token and its file is not read again, so a file
+replaced on disk is caught only when it is next imported somewhere. Reading it on every
+re-run would need `--allow-host-plaintext` on every re-run. New material needs a new object
+name, as [CONFIG.md](CONFIG.md) already says for any object.
 
 - A private key is identified by `rfc7093m4` of the SPKI derived from the file's key, which
   is computed already (`plaintext::spki_of_pkcs8`). After the import, the token's own public
@@ -271,7 +271,7 @@ legacy formats come from the tool that writes them in the field.
 - **Population.** One P-256 PEM key plus certificate populates two SoftHSM tokens. The first
   pair records the identity, the second verifies against it, and `cakeys check` then passes on
   both.
-- **Re-run.** A second `import --token` writes nothing and exits 0.
+- **Re-run.** A second `import --to` writes nothing and exits 0.
 - **Changed file.** Another key under a pinned object gives 10, with nothing written on the
   token, checked by listing its objects.
 - **Formats.** Each row of F4 round-trips to the same `rfc7093m4`: PKCS#8, PKCS#1, SEC1 with
