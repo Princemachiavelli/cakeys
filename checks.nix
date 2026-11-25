@@ -52,6 +52,26 @@
       python3 -I ${src}/nix/doc-references.py ${src}
       touch $out
     '';
+  # No test binary has fewer tests in its source than nix/test-count.toml says (nix/test-count.py,
+  # its own tests first): a test that goes fails here, on every system, unless the diff lowers
+  # the manifest (review 2026-11-24 F §2.1: 8aaba2e lost 8 and no check saw it).
+  test-count =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./Cargo.toml
+          ./crates
+          ./nix/test-count.py
+          ./nix/test-count-tests.py
+          ./nix/test-count.toml
+        ];
+      };
+    in
+    pkgs.runCommand "cakeys-test-count" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      python3 -I ${src}/nix/test-count-tests.py
+      python3 -I ${src}/nix/test-count.py ${src} | tee $out
+    '';
   # The software tokens are set up in one place, nix/token-env.sh (review D9): no other script
   # writes a SoftHSM configuration or initialises a token by hand, but those its header leaves
   # out (VM tests, old SoftHSM releases, upstream repros, a cloud host, p11-kit's own token).

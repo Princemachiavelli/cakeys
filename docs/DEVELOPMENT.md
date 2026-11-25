@@ -135,6 +135,7 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 | `checks.doc` | package build | rustdoc over every crate, private items included, with `-D warnings`: no doc link that does not resolve. An evidence tag in a doc comment is written `\[run\]`, or rustdoc reads it as a link |
 | `checks.msrv` | package build | `cargo check --all-targets` with the toolchain at `Cargo.toml`'s `rust-version` (rust-overlay), the dependencies built with it too |
 | `checks.doc-references` | sandbox | what the docs cite exists (`nix/doc-references.py`): a test or function named in backticks is a `fn` in `crates/` or `fuzz/`, every `docs/*.md` and Rust source (`crates/…/*.rs`) cited from docs, sources, scripts or Nix is a file, and every relative Markdown link resolves. Names and paths of other software are listed in the script with what they are |
+| `checks.test-count` | sandbox | no test binary has fewer tests in its source than `nix/test-count.toml` says (`nix/test-count.py`, its own tests in `nix/test-count-tests.py` first); "No test goes unnoticed" below |
 | `checks.formatting` | treefmt | `nix fmt` would change nothing: the formatters and linters in `treefmt.nix` (rustfmt with `rustfmt.toml`, nixfmt, taplo, shfmt, rumdl, keep-sorted, statix, deadnix, shellcheck, typos) |
 | `scripts/xversion.sh` | by hand, per refactor | a lock recorded by one build verifies, compares and re-records byte-identically with another (every class) |
 
@@ -152,6 +153,14 @@ and `scripts/local-tests.sh` set them all. The hardware suites' are `CAKEYS_YUBI
 together or not at all, and its require variable without them fails rather than passing having
 run nothing. `scripts/coverage-full.sh` sets each beside the suite's variables, and only for that
 suite's pass.
+
+**No test goes unnoticed.** `checks.test-count` counts each test binary's tests in the source
+(`nix/test-count.py`: every `#[test]` its root reaches through `mod` and `#[path]`, whatever its
+`cfg`, under nextest's name for the binary) and fails where one has fewer than
+`nix/test-count.toml` says. A test that goes is brought back, or the same diff lowers the manifest
+(`--write`) and says why; a new test needs no edit. It runs on every system in seconds:
+`nix develop -c python3 -I nix/test-count.py .` names the tests gone since the manifest's commit
+(or `--base <rev>`).
 
 ## Verification beyond tests
 
