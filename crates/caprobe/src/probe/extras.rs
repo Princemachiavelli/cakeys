@@ -519,7 +519,7 @@ fn kem_row(made: &mut Made, profile: &mut Draft, set: &str, public: ObjectHandle
             made.undetermined.push(format!("no {cap} row: C_EncapsulateKey cannot be called: {e}"));
         }
         Err(e) => {
-            profile.refused(&mut made.undetermined, cap, token::rv_of(&e), format!("C_EncapsulateKey: {}", ckr(&e)))
+            profile.refused(&mut made.undetermined, cap, token::rv_of(&e), format!("C_EncapsulateKey: {}", ckr(&e)));
         }
         Ok((ciphertext, encapsulated)) => match s.decapsulate_key(&mech, private, &template, &ciphertext) {
             Err(e) if !from_module(&e) => {

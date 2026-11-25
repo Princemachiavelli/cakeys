@@ -219,7 +219,8 @@ fn the_probe_records_what_a_misbehaving_module_does() {
             rule("fn = \"C_UnwrapKey\"\nrv = \"CKR_DEVICE_ERROR\""),
             &[
                 "\"wrap.rsa-oaep.SHA-1\" = { why = \"device\", note = \"wraps but does not unwrap: CKR_DEVICE_ERROR\" }",
-                "\"wrap.rsa-oaep.SHA-256\" = { why = \"device\", note = \"wraps but does not unwrap: CKR_DEVICE_ERROR\" }",
+                // SoftHSM's own no, at the wrap, before any unwrap: still the module's.
+                "\"wrap.rsa-oaep.SHA-256\" = { answer = \"no\", by = \"module\", evidence = \"wrapping fails: CKR_ARGUMENTS_BAD\" }",
             ],
             "no wrap.rsa-oaep.SHA-1 row: wraps but does not unwrap: CKR_DEVICE_ERROR (the device failed",
             &[OAEP_SHA1],
@@ -246,6 +247,41 @@ fn the_probe_records_what_a_misbehaving_module_does() {
 /// template, and the one that took is the profile's note: `CKA_VALUE_LEN` added; then each
 /// policy default dropped from the template as asked; then from the one with `CKA_VALUE_LEN`. A
 /// refusal that is not about the template ends the tries, first or later.
+/// A device failure on every call of each function the probe's answers come from, one function
+/// at a time: no row the probe writes is a no on a device failure (review 2026-11-24 E-2,
+/// phase1-design §2.3). What it writes loads, which a `module` no citing one would not, no `no`
+/// row of any provenance cites one, and the steps the device failed are `[untested]` `device`
+/// entries.
+#[test]
+fn a_device_failure_is_never_a_no() {
+    use cakeys_profile::{Answer, Why, names_device_failure};
+    let Some(w) = scratch("fault-device-sweep") else { return };
+    let functions = [
+        "C_GenerateKey",
+        "C_GenerateKeyPair",
+        "C_CreateObject",
+        "C_WrapKey",
+        "C_UnwrapKey",
+        "C_DeriveKey",
+        "C_SignInit",
+    ];
+    for f in functions {
+        let plan = rule(&format!("fn = \"{f}\"\nrv = \"CKR_DEVICE_ERROR\""));
+        let (exit, profile, said, fired) = probed(&w, f, &plan, &[]);
+        assert_fired(f, &plan, &fired, &said);
+        assert_eq!(exit, 0, "{f}: {said}");
+        let loaded = cakeys_profile::Profile::from_toml(&profile).unwrap_or_else(|e| panic!("{f}: {e}"));
+        let cited: Vec<String> = loaded
+            .capabilities
+            .iter()
+            .filter(|(_, r)| r.answer == Answer::No && r.evidence.as_deref().and_then(names_device_failure).is_some())
+            .map(|(c, _)| c.to_string())
+            .collect();
+        assert_eq!(cited, Vec::<String>::new(), "{f}: a no on a device failure");
+        assert!(loaded.untested.values().any(|u| u.why == Why::Device), "{f}: no step left undecided");
+    }
+}
+
 #[test]
 fn the_probe_notes_which_derive_template_took() {
     let Some(w) = scratch("fault-probe-derive") else { return };
