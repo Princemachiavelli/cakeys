@@ -284,8 +284,9 @@ legacy formats come from the tool that writes them in the field.
 - **Secret keys.** An AES-256 raw file whose host commitments match the token's. The same key
   as hex and as base64, with and without `encoding`, imports as that key; an encoding said
   wrongly is 17 (`every_spelling_of_a_secret_key_imports_as_the_same_key`).
-- **Private data objects.** One with `CKA_PRIVATE = true` imports only behind
-  `--allow-host-plaintext`, and its `valuehash` is read back under the login.
+- **Private data objects.** One with `CKA_PRIVATE = true`, or whose spec does not declare it
+  public, imports only behind `--allow-host-plaintext`, and its `valuehash` is read back under
+  the login (`undeclared_data_objects_count_as_private`).
 - **The file is left alone.** After a run, success or failure, the source file's bytes and mode
   are unchanged.
 - **Load rules.** Each F2 rule's 17, including `create` beside `file`, a `/nix/store` key path,
@@ -338,8 +339,11 @@ Where each part lives:
     (`absent`, `crates/pkcs11/src/ops/mod.rs`).
 
 Found by running it: SoftHSM makes a data object private unless told otherwise [run]. So a
-data object whose spec declares no `CKA_PRIVATE` is now created with `CKA_PRIVATE = false`
-(`public::template`). This applies to moves between tokens too.
+data object whose spec declares no `CKA_PRIVATE` is created with `CKA_PRIVATE = false` when it
+moves between tokens, which it does only where the source's lock records it public
+(`templates::object`). From its own file such an object is not known to be public before it is
+made, so its import needs `--allow-host-plaintext` and is recorded as `raw`, exposure `file`;
+it is made as above (review 2026-11-24 D-7).
 
 Tests:
 

@@ -8,6 +8,7 @@
 use crate::side::{PlaintextImport, ProbedWays, Side};
 use cakeys_core::KmError;
 use cakeys_core::config::{AttrValue, Immutables, ObjectCfg};
+use cakeys_core::known::{Known, Permission, Restriction, Why};
 use cakeys_core::migrate::{Exposure, Method, OaepHash};
 use cakeys_core::types::ObjectClass;
 use serde::Serialize;
@@ -40,11 +41,26 @@ pub(crate) struct Material<'a> {
 }
 
 impl Material<'_> {
-    fn flag(&self, name: &str) -> Option<bool> {
-        match self.policy.get(name) {
-            Some(AttrValue::Bool(b)) => Some(*b),
-            _ => None,
-        }
+    /// A flag as the source's lock recorded it, or that it did not (review 2026-11-24 D-7: an
+    /// unrecorded one was read as `false`).
+    fn known(&self, name: &str) -> Known<bool> {
+        Known::or(
+            match self.policy.get(name) {
+                Some(AttrValue::Bool(b)) => Some(*b),
+                _ => None,
+            },
+            Why::Unrecorded,
+        )
+    }
+
+    /// Whether restriction `r` holds: unrecorded, it does.
+    fn restricted(&self, r: Restriction) -> bool {
+        self.known(r.attr()).restricts()
+    }
+
+    /// Whether permission `p` is granted: unrecorded, it is not.
+    fn permitted(&self, p: Permission) -> bool {
+        self.known(p.attr()).permits()
     }
 }
 
@@ -168,14 +184,15 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     let ty = m.ty;
     // A private data object's value is a secret, and the public method would write it into a
     // bundle and recreate it under whatever CKA_PRIVATE the target defaults to (docs/OPEN.md).
-    if ty.class == ObjectClass::Data && m.flag("CKA_PRIVATE") == Some(true) {
+    // One the lock does not record as public is not known to be public, so it is not (D-7).
+    if ty.class == ObjectClass::Data && m.restricted(Restriction::Private) {
         return Plan::impossible(
             m,
-            vec![
-                "a private data object (CKA_PRIVATE = true): its value is a secret, and camigrate moves \
-                  data objects only as public ones"
-                    .into(),
-            ],
+            vec![format!(
+                "a private data object (CKA_PRIVATE = {}): its value is a secret, and camigrate moves data objects \
+                 only as public ones",
+                m.known(Restriction::Private.attr())
+            )],
         );
     }
     if is_public(ty) {
@@ -184,13 +201,16 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     if let Some(why) = stays(from, ty) {
         return Plan::impossible(m, vec![why]);
     }
-    if m.flag("CKA_EXTRACTABLE") != Some(true) || m.immutables.never_extractable == Some(true) {
+    // CKA_NEVER_EXTRACTABLE true is a key once made non-extractable: CKA_EXTRACTABLE true, as
+    // it must be known here, says it was not; unrecorded, it decides nothing more.
+    if !m.permitted(Permission::Extractable) || m.immutables.never_extractable == Some(true) {
         return Plan::impossible(
             m,
             vec!["not extractable: exportability is fixed when a key is created (CKA_EXTRACTABLE = false; docs/CAMIGRATE.md D1)".into()],
         );
     }
-    let trusted_only = m.flag("CKA_WRAP_WITH_TRUSTED") == Some(true);
+    // Unrecorded, it restricts: only a trusted transport key may wrap the key (D-7).
+    let trusted_only = m.restricted(Restriction::WrapWithTrusted);
     let mut ways = Ways::default();
     match to {
         // Before anything is offered: a target that takes the type in by no import.
@@ -553,7 +573,18 @@ mod tests {
         Side::pkcs11("cloudhsm", "aws-cloudhsm", mech.map(String::from))
     }
 
+    /// The plan of an object whose source realisation records `flags`, and
+    /// `CKA_WRAP_WITH_TRUSTED = false` where they do not name it, as every reference module
+    /// records it ([`plan_exact`] records only `flags`).
     fn plan_of(ty: &ObjectCfg, flags: &[(&str, bool)], from: &Side, to: &To, allow: Allow) -> Plan {
+        let mut flags = flags.to_vec();
+        if !flags.iter().any(|(n, _)| *n == "CKA_WRAP_WITH_TRUSTED") {
+            flags.push(("CKA_WRAP_WITH_TRUSTED", false));
+        }
+        plan_exact(ty, &flags, from, to, allow)
+    }
+
+    fn plan_exact(ty: &ObjectCfg, flags: &[(&str, bool)], from: &Side, to: &To, allow: Allow) -> Plan {
         let policy = policy(flags);
         let immutables = Immutables::default();
         plan(&Material { object: "k", ty, policy: &policy, immutables: &immutables }, from, to, allow)
@@ -590,6 +621,31 @@ mod tests {
             Allow::default(),
         );
         assert!(!p.ready && p.reasons[0].contains("not extractable"));
+    }
+
+    /// What the source's lock does not record restricts (review 2026-11-24 D-7): a data object
+    /// whose `CKA_PRIVATE` it did not record is never planned public, whatever is allowed; a key
+    /// whose `CKA_WRAP_WITH_TRUSTED` it did not record leaves only under a trusted transport key,
+    /// never through the host nor into a file. Recorded `false`, each moves.
+    #[test]
+    fn unrecorded_restrictions_restrict() {
+        let everything = Allow { host_plaintext: true, trusted_transport: false };
+        let data = obj(ObjectClass::Data, None);
+        for to in [To::Token(&kryoptic()), To::File(FileFormat::Pkcs8)] {
+            let p = plan_exact(&data, &[], &softhsm(), &to, everything);
+            assert!(!p.ready && p.method != Some(Method::Public), "{p:?}");
+            assert!(p.reasons[0].contains("CKA_PRIVATE"), "{p:?}");
+        }
+        let p = plan_exact(&data, &[("CKA_PRIVATE", false)], &softhsm(), &To::Token(&kryoptic()), everything);
+        assert_eq!((p.method.clone(), p.ready), (Some(Method::Public), true), "{p:?}");
+        for to in [To::Token(&kryoptic()), To::File(FileFormat::Pkcs8)] {
+            let p = plan_exact(&p256(), &[("CKA_EXTRACTABLE", true)], &softhsm(), &to, everything);
+            assert!(!p.ready, "{p:?}");
+            assert!(p.reasons.iter().all(|r| r.contains("CKA_WRAP_WITH_TRUSTED")), "{p:?}");
+        }
+        let recorded = [("CKA_EXTRACTABLE", true), ("CKA_WRAP_WITH_TRUSTED", false)];
+        let p = plan_exact(&p256(), &recorded, &softhsm(), &To::Token(&kryoptic()), everything);
+        assert!(p.ready, "{p:?}");
     }
 
     #[test]

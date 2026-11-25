@@ -80,6 +80,28 @@ fn body(refs: &[&Ref], key_file: &str) -> String {
         + &Env::spec("note", "note", "", refs, "ff-note", FROM_FILE)
 }
 
+/// A data object whose spec does not say it is public is not known to be (review 2026-11-24 D-7;
+/// docs/archive/REVIEW-2026-11-24/phase1-design.md §9.2): its value from its file is a secret,
+/// which passes through this process only behind --allow-host-plaintext, dry or not (15), with
+/// nothing made and no lock written; and it is recorded as a raw value from a file, not as a
+/// public object (it is made as `templates::object` makes an undeclared one).
+#[test]
+fn undeclared_data_objects_count_as_private() {
+    let Some(e) = env("from-files-data") else { return };
+    let soft = &e.refs[0];
+    e.config(&body(&[soft], "p256.bundle.pem"));
+    let lock = || std::fs::read(e.dir.join("keys.lock")).ok();
+    let o = e.km(soft, &["import", "note", "--to", "softhsm"]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(open_session(&soft.module, soft.token_label, "1234").labelled("ff-note").is_empty(), "made");
+    assert_eq!(lock().as_deref(), Some(EMPTY_LOCK.as_bytes()), "a refused import wrote the lock");
+    let o = e.km(soft, &["import", "note", "--to", "softhsm", "--allow-host-plaintext"]);
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
+    let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
+    let origin = &lock["realisations"]["note"]["softhsm"]["provenance"]["origin"];
+    assert_eq!((origin["method"].as_str(), origin["exposure"].as_str()), (Some("raw"), Some("file")), "{origin}");
+}
+
 /// One server bundle (curve parameters, the key as SEC1, its certificate and the CA's), an AES
 /// key's bytes and a data file populate `SoftHSM`: the keys only behind --allow-host-plaintext,
 /// each recorded with where it came from, its identity the file's. `cakeys check` then
@@ -124,7 +146,8 @@ fn files_populate_tokens_with_their_material() {
         ("web", "sec1", "file"),
         ("web-cert", "public", "public"),
         ("kek", "raw", "file"),
-        ("note", "public", "public"),
+        // Its spec does not say it is public, so it is not known to be: a raw value from a file.
+        ("note", "raw", "file"),
     ] {
         let origin = &lock["realisations"][spec]["softhsm"]["provenance"]["origin"];
         assert_eq!(

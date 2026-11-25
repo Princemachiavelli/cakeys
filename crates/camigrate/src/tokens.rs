@@ -511,7 +511,7 @@ pub(crate) struct Request<'a> {
 
 /// Where a side's capabilities came from, as a plan says it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Known {
+pub(crate) enum KnownFrom {
     /// The open token.
     Token,
     /// What the lock recorded of a token that did not open.
@@ -522,14 +522,14 @@ pub(crate) enum Known {
     Nowhere,
 }
 
-impl Known {
+impl KnownFrom {
     /// The word a plan prints.
     pub(crate) fn name(self) -> &'static str {
         match self {
-            Known::Token => "token",
-            Known::Lock => "lock",
-            Known::TransportFile => "transport file",
-            Known::Nowhere => "-",
+            KnownFrom::Token => "token",
+            KnownFrom::Lock => "lock",
+            KnownFrom::TransportFile => "transport file",
+            KnownFrom::Nowhere => "-",
         }
     }
 }
@@ -539,8 +539,8 @@ pub(crate) struct Moves {
     /// The destination's name: the target token, or the file format.
     pub to: String,
     /// Where each side's capabilities came from.
-    pub source_from: Known,
-    pub target_from: Known,
+    pub source_from: KnownFrom,
+    pub target_from: KnownFrom,
     pub plans: Vec<Plan>,
     /// The source's capabilities, to check the templates its export will send.
     pub source: Side,
@@ -654,9 +654,9 @@ pub(crate) fn plan_moves(
                     KmError::Unsupported(format!("{shown}: provider '{}' is not in this build", t.provider).into())
                 })?
                 .map_err(|e| KmError::Validation(format!("{shown}: {e}").into()))?;
-            (Some(side), Known::TransportFile, t.token.clone())
+            (Some(side), KnownFrom::TransportFile, t.token.clone())
         }
-        Dest::File(f) => (None, Known::Nowhere, format!("{f:?} file").to_lowercase()),
+        Dest::File(f) => (None, KnownFrom::Nowhere, format!("{f:?} file").to_lowercase()),
     };
     let to = match (&target, req.dest) {
         (Some(side), _) => To::Token(side),
@@ -673,7 +673,7 @@ pub(crate) fn plan_moves(
             match trust::planned(BoundTransport::from_lock(req.cfg, lock, name, req.transport_spec))? {
                 Err(why) => Some(why),
                 // Not open here: the export seals to the public key the lock recorded, or cannot.
-                Ok(bound) if target_from == Known::Lock && bound.spki().is_none() => {
+                Ok(bound) if target_from == KnownFrom::Lock && bound.spki().is_none() => {
                     Some(format!("'{name}' is not open, and {}", trust::reason(bound.no_public_key())))
                 }
                 Ok(_) => None,
@@ -701,11 +701,11 @@ fn side_or_lock(
     lock: &Lock,
     registry: &Registry,
     notes: &mut Notes,
-) -> Result<(Side, Known, Option<Token>)> {
+) -> Result<(Side, KnownFrom, Option<Token>)> {
     let e = match opened {
         Ok(tok) => {
             warn_hidden(name, &tok.profiles, notes);
-            return Ok((side(&tok)?, Known::Token, Some(tok)));
+            return Ok((side(&tok)?, KnownFrom::Token, Some(tok)));
         }
         Err(e) => e,
     };
@@ -723,7 +723,7 @@ fn side_or_lock(
     match side_from_lock(name, observed, registry, notes) {
         Some(side) => {
             notes.note(format_args!("capabilities of '{name}' come from the lock: the token did not open ({e})"));
-            Ok((side?, Known::Lock, None))
+            Ok((side?, KnownFrom::Lock, None))
         }
         None => Err(e),
     }

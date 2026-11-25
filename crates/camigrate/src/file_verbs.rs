@@ -336,7 +336,9 @@ fn from_its_file(
         return Ok(Filed::Moved(public::Moved::AlreadyThere, String::new()));
     }
     let class = dst.object.class;
-    let private_data = class == Class::Data && dst.spec.flag("CKA_PRIVATE") == Some(true);
+    // A data object is private unless the spec says it is public (`Target::needs_login`: the lock
+    // records nothing of it here yet; review 2026-11-24 D-7, §9.2).
+    let private_data = class == Class::Data && dst.needs_login(lock);
     if (matches!(class, Class::PrivateKey | Class::SecretKey) || private_data) && !how.plaintext {
         return Err(KmError::Unsupported(
             format!(

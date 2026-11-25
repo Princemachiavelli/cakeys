@@ -83,7 +83,7 @@ file, on one that says `origin = "file"` ([FILE.md](FILE.md)).
 
 | Exposure | What it means |
 |---|---|
-| `public` | Certificates, public keys, public data objects. Nothing secret moves: a private data object (`CKA_PRIVATE = true`) has no method between tokens (15, [OPEN.md](OPEN.md)); from its own file it is `raw`, exposure `file`. |
+| `public` | Certificates, public keys, public data objects. Nothing secret moves: a private data object has no method between tokens (15, [OPEN.md](OPEN.md)), and one the source's lock does not record as `CKA_PRIVATE = false` counts as private; from its own file, one whose spec does not declare it public is `raw`, exposure `file`. |
 | `enforced` | `sealed`, and the source token allows no other wrapping: the key carries `CKA_WRAP_WITH_TRUSTED`, and the only wrapping key the source trusts is the target's transport key (D3). |
 | `sealed` | The material leaves the source only wrapped under a key that lives on the target, and is unwrapped there. The host never sees it. The default. |
 | `host` | Plaintext in camigrate's memory, never on disk or the wire, zeroized after. Wherever the target imports only plaintext (a YubiKey, `tpm2_ptool`). Only with `--allow-host-plaintext`, and only within `migrate`. |
@@ -93,7 +93,9 @@ file, on one that says `origin = "file"` ([FILE.md](FILE.md)).
 `enforced` is its own level because a key with only `CKA_EXTRACTABLE = true` can be wrapped by
 any logged-in session under a key that session made: `sealed` describes what camigrate does,
 not what someone holding the PIN could do. `CKA_WRAP_WITH_TRUSTED` is the restriction the token
-itself enforces. It needs the source's SO once per transport key (`transport --trust-on`, with
+itself enforces; a key whose lock does not record it as `false` is planned as one that carries
+it, as a key whose `CKA_EXTRACTABLE` is not recorded is planned as one that stays: what the
+lock does not record restricts. It needs the source's SO once per transport key (`transport --trust-on`, with
 the admin credential `soCredentialFile`/`soCredentialEnv`, read only by SO steps).
 
 **D3. The transport key is an ordinary locked object.** The target holds an RSA key pair
