@@ -483,11 +483,10 @@ fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("needs a Security Officer session"), "{}", stderr(&o));
     // ykcs11 clears only a slot's certificate on delete and keeps the key: a delete is refused (15)
-    // with the tool that does remove it, never reported as done.
+    // before it destroys anything, naming the tool that does remove it, never reported as done.
     assert_eq!(e.code(&["lock", "--spec", "sig", "--token", "yk"]), 22);
-    let o = e.km(&["delete", "--spec", "sig", "--token", "yk"]);
-    assert_eq!(code(&o), 15, "{}", stderr(&o));
-    assert!(stderr(&o).contains("ykman piv keys delete"), "{}", stderr(&o));
+    let rows = e.refused(&["delete", "--spec", "sig", "--token", "yk"], 15, "delete-refused");
+    assert!(rows[0].error.as_deref().is_some_and(|e| e.contains("ykman piv keys delete")), "{rows:?}");
     // An admin credential the module refuses: the SO step is unavailable (16), never retried.
     std::fs::write(e.dir.join("bad-so"), "0000\n").unwrap();
     let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();

@@ -18,8 +18,8 @@
 "crates/cli/tests/p11kit.rs" = 2
 "crates/cli/tests/reference/adoption.rs" = 5
 "crates/cli/tests/reference/check.rs" = 10
-"crates/cli/tests/reference/create.rs" = 17
-"crates/cli/tests/reference/delete.rs" = 6
+"crates/cli/tests/reference/create.rs" = 13
+"crates/cli/tests/reference/delete.rs" = 5
 "crates/cli/tests/reference/drift.rs" = 9
 "crates/cli/tests/reference/identity.rs" = 9
 "crates/cli/tests/reference/lockfile.rs" = 15
