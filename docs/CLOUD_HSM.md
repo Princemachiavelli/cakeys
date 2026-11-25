@@ -338,8 +338,9 @@ the source.
 
 ### Conformance and the Nix build
 
-CAPROBE.md says the conformance test re-probes on every build. A cloud profile cannot: the
-sandbox has no network, and a probe costs money. The repo already has the escape: the hardware
+The conformance test re-probes the software tokens' profiles on every build. A cloud profile
+cannot: the sandbox has no network, and a probe costs money. `profiles/LEDGER.toml` records its
+last probe instead, and `checks.ledger` fails when the code on its path changes since. The repo already has the escape: the hardware
 tests are opt-in, skipped when their module variable is unset, "never in the Nix build"
 (`crates/cli/tests/ftpm.rs`, `yubikey.rs`). Cloud follows it:
 

@@ -82,8 +82,9 @@ impl Set {
     /// Load every module profile under `dir` (recursively) as [`Set::with_dir`] does, but only
     /// to add: what keys.toml's `profileDirs` name at run time. A file there may bring a new
     /// module profile, and with it a new family, never a baseline, a layer or hardware profile,
-    /// or a name already loaded: the embedded profiles are re-probed on every build, and a
-    /// file outside the build must not silently stand in for one.
+    /// or a name already loaded: the embedded profiles are this repository's, each measured as
+    /// profiles/LEDGER.toml records, and a file outside the build must not silently stand in
+    /// for one.
     ///
     /// # Errors
     ///

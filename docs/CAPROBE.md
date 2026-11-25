@@ -158,8 +158,8 @@ module profile decides. The binary embeds the profiles this repo ships.
 - **`caprobe --profiles <dir>`** adds or replaces entries; regeneration needs to replace.
 - **keys.toml's `profileDirs`** add module profiles at run time for all three tools: a new
   vendor, and its provider, without a rebuild. They only add, and may not replace an embedded
-  profile, a layer or the baseline: those are re-probed on every build. The run says which
-  profiles came from there.
+  profile, a layer or the baseline: those are this repository's, each measured as
+  `profiles/LEDGER.toml` records. The run says which profiles came from there.
 
 ## What the probe measures
 
