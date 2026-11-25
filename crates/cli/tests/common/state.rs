@@ -1,10 +1,86 @@
 //! "Nothing changed" (review 2026-11-24 C-9: the one such oracle was private to the dry-run twin):
 //! a [`Snapshot`] of the files and the tokens a run must leave as they were, and
 //! [`assert_unchanged`], which names what changed. The dry-run twin ([`super::xref`]) takes its
-//! snapshots here.
+//! snapshots here, and so does the refusal oracle ([`Workdir::refused`]): the exit, the rule
+//! the refused row names, and the lock and the token as they were. It costs one argument more
+//! than an exit and a phrase of stderr, so the strongest assertion is also the cheapest.
 
+use super::{Suite, Workdir, code, stderr, stdout};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+
+/// A row of a per-object verb (`lock`, `create`, `delete`), as it prints them.
+pub type Row = cakeys_cli_common::Outcome;
+
+/// The rows a per-object verb printed on stdout (a JSON array); none where it printed nothing.
+///
+/// # Panics
+///
+/// When stdout is something else.
+pub fn rows(o: &Output) -> Vec<Row> {
+    if o.stdout.trim_ascii().is_empty() {
+        return Vec::new();
+    }
+    serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("stdout is no rows ({e}): {}", stdout(o)))
+}
+
+/// A refusal's oracle, over `run`, which `what` names: it exits `exit`, the row it refused (the
+/// first that did not pass) names `rule` and the same exit, and `files` and `tokens` are as they
+/// were before it. Returns the rows. [`Workdir::refused`] runs it on the tool; the harness's own
+/// tests hand it runs that change what they must not.
+///
+/// # Panics
+///
+/// When any of the three does not hold.
+pub fn refusal(
+    files: &[&Path],
+    tokens: &[TokenView],
+    what: &str,
+    run: impl FnOnce() -> Output,
+    exit: i32,
+    rule: &str,
+) -> Vec<Row> {
+    let before = snapshot(files, tokens);
+    let out = run();
+    let rows = rows(&out);
+    assert_eq!(code(&out), exit, "{what}: {}", stderr(&out));
+    let refused = rows.iter().find(|r| r.exit != 0).unwrap_or_else(|| panic!("{what}: no row refused: {rows:?}"));
+    let got = (i32::from(refused.exit), refused.rule.as_deref());
+    assert_eq!(got, (exit, Some(rule)), "{what}: the refused row: {refused:?}");
+    assert_unchanged(&before, &snapshot(files, tokens), what);
+    rows
+}
+
+impl Workdir {
+    /// Run `args`, with `--json`, as a refusal ([`refusal`]): it exits `exit`, the row it refused
+    /// names `rule`, and the lock (keys.lock, or `--lock`'s) is as it was; a token suite's token
+    /// too ([`Suite::refused`]). Returns the rows.
+    pub fn refused(&self, args: &[&str], exit: i32, rule: &str) -> Vec<Row> {
+        self.refused_on(&[], args, exit, rule)
+    }
+
+    /// [`Self::refused`], `tokens` as they were too.
+    pub fn refused_on(&self, tokens: &[TokenView], args: &[&str], exit: i32, rule: &str) -> Vec<Row> {
+        let lock = args.iter().position(|a| *a == "--lock").and_then(|i| args.get(i + 1));
+        let lock = lock.map_or_else(|| self.dir.join("keys.lock"), PathBuf::from);
+        let args = [&["--json"], args].concat();
+        refusal(&[&lock], tokens, &format!("cakeys {}", args.join(" ")), || self.km(&args), exit, rule)
+    }
+}
+
+impl Suite {
+    /// Its token `kmtest` (`ref` and `ref-anon` of [`super::reference_tokens`]), as a snapshot
+    /// sees it.
+    pub fn token_view(&self) -> TokenView<'_> {
+        TokenView { name: "kmtest", module: &self.module, label: "kmtest", env: &[], db: database(&self.module) }
+    }
+
+    /// [`Workdir::refused`], the suite's token ([`Self::token_view`]) as it was too: it shadows
+    /// [`Workdir::refused`].
+    pub fn refused(&self, args: &[&str], exit: i32, rule: &str) -> Vec<Row> {
+        self.refused_on(&[self.token_view()], args, exit, rule)
+    }
+}
 
 /// What a run must leave as it was, each with its name: a file's bytes, a token's objects
 /// ([`objects`]).
