@@ -89,14 +89,17 @@
     '';
   # What was measured on hardware or a cloud and no build repeats (profiles/LEDGER.toml,
   # nix/ledger.py): a file changed, or the code on its path changed since its run, fails until
-  # the ledger records it. Its fixture tests first. Its own fileset, like doc-references: what
-  # the ledger's `code` names, lock entries included (a path it lacks names no file and fails).
+  # the ledger records it; and a golden file a build regenerates changed without a record of the
+  # rows that moved and why (review 2026-11-24 C-8). Its fixture tests first. Its own fileset,
+  # like doc-references: what the ledger's `code` and `generator` name, lock entries included (a
+  # path it lacks names no file and fails).
   ledger =
     let
       src = pkgs.lib.fileset.toSource {
         root = ./.;
         fileset = pkgs.lib.fileset.unions [
           ./profiles
+          ./spec-coverage
           ./crates
           ./nix
           ./scripts

@@ -415,6 +415,17 @@ check reports the file `STALE` until the next run. After a run on the hardware: 
 file's hash (`hash`, `probed.hash`) and the code's (`probed.code-hash`) from what the check then
 prints. On 2026-11-25 every hardware and cloud profile and the lock are stale, acknowledged.
 
+The files a build regenerates and compares with are golden: the `verified-by` profiles, the
+object matrix's tables, `spec-coverage/cakeys.toml` and the baseline. The code under test writes
+them, so a regeneration in the commit that changed the code moves the expectation with it
+(review 2026-11-24 C-8). Each has a `[golden."<path>"]` entry: its `generator` (globs, as `code`)
+and a record per change, `[[golden."<path>".regenerated]]` or `[[golden."<path>".hand-edits]]`,
+naming the file it made (`hash`), who, and each row that moved with what it `was` and `why` the
+new value is right. `checks.ledger` fails a golden file that no record names as it is, a `why`
+left empty or `"TODO"`, and a listed row that did not move; in CI, `nix/golden-rows.py` checks
+that the listed rows are exactly the ones the pull request moved ([DEVELOPMENT.md](DEVELOPMENT.md),
+"Golden files").
+
 ## Tests
 
 - **Algebra and the baseline**: modes, intersection, by-class queries; the baseline the vendored
