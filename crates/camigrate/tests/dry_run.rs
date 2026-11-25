@@ -1466,10 +1466,15 @@ fn the_transport_file_is_read_once(e: &Env, soft: &Ref, transport: &str) {
             for (i, text) in [pinned, rogue].into_iter().enumerate() {
                 // Do not write the second text while the first read is still open, because the
                 // reader would take both texts as one. When no reader is left, a nonblocking open
-                // for writing fails with ENXIO, and the loop waits for that.
+                // for writing fails with ENXIO, and the loop waits for that. When the run never
+                // reads the file, the main thread's own reader stays open and that moment never
+                // comes, so the writer gives up after 10 seconds. The run's exit code then fails
+                // the test, and the join does not hang.
                 if i > 0 {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
                     loop {
                         match std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&fifo) {
+                            Ok(_) if std::time::Instant::now() > deadline => return,
                             Ok(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
                             Err(e) if e.raw_os_error() == Some(libc::ENXIO) => break,
                             Err(e) => panic!("{e}"),

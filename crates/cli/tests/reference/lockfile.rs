@@ -71,7 +71,9 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     assert_eq!(module_path(&e.km(&[&["--module", via_link.as_str()][..], &r[..]].concat())), loaded);
     let module = std::path::Path::new(&e.module);
     let bare = format!("ref={}", module.file_name().unwrap().to_str().unwrap());
-    let search = [("LD_LIBRARY_PATH", module.parent().unwrap())];
+    // The loader's search variable: LD_LIBRARY_PATH on Linux, DYLD_LIBRARY_PATH on darwin.
+    let dir = module.parent().unwrap();
+    let search = [("LD_LIBRARY_PATH", dir), ("DYLD_LIBRARY_PATH", dir)];
     assert_eq!(module_path(&e.km_env(&[&["--module", bare.as_str()][..], &r[..]].concat(), &search)), loaded);
     // A per-machine `module = "$NAME"`: when the variable is unset, the module is unavailable
     // (16, because this host's environment does not provide it: review A-14), unless --module

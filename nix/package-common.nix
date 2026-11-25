@@ -148,17 +148,20 @@ in
     postInstall = ''
       moveToOutput bin/caprobe "$caprobe"
       moveToOutput bin/camigrate "$camigrate"
-      moveToOutput lib/libp11_fault.so "$p11fault"
+      moveToOutput lib/libp11_fault${sharedLibrary} "$p11fault"
       # The rlib half of the crate (its unit tests) is no output.
       rm -rf "$out/lib"
 
       # Tab completion, each tool's own (`COMPLETE=<shell> tool`, clap_complete), in the output
       # that holds the tool. Written from the output's final place: fish's script names the binary.
       completions() { # tool output
-        local bin="$2/bin/$1" share="$2/share"
-        COMPLETE=bash "$bin" | install -D /dev/stdin "$share/bash-completion/completions/$1"
-        COMPLETE=zsh "$bin" | install -D /dev/stdin "$share/zsh/site-functions/_$1"
-        COMPLETE=fish "$bin" | install -D /dev/stdin "$share/fish/vendor_completions.d/$1.fish"
+        local bin="$2/bin/$1" share="$2/share" tmp
+        # Through a file: BSD install (darwin) cannot copy from a pipe (/dev/stdin).
+        tmp=$(mktemp)
+        COMPLETE=bash "$bin" >"$tmp" && install -D "$tmp" "$share/bash-completion/completions/$1"
+        COMPLETE=zsh "$bin" >"$tmp" && install -D "$tmp" "$share/zsh/site-functions/_$1"
+        COMPLETE=fish "$bin" >"$tmp" && install -D "$tmp" "$share/fish/vendor_completions.d/$1.fish"
+        rm -f "$tmp"
       }
       completions cakeys "$out"
       completions caprobe "$caprobe"
