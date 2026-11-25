@@ -10,13 +10,14 @@
 use crate::Fatal;
 use crate::plan::Call;
 use cryptoki_sys::{
-    CK_ATTRIBUTE, CK_ATTRIBUTE_TYPE, CK_C_INITIALIZE_ARGS, CK_ECDH1_DERIVE_PARAMS, CK_FLAGS, CK_MECHANISM,
+    CK_ATTRIBUTE, CK_ATTRIBUTE_TYPE, CK_BYTE, CK_C_INITIALIZE_ARGS, CK_ECDH1_DERIVE_PARAMS, CK_FLAGS, CK_MECHANISM,
     CK_MECHANISM_INFO, CK_MECHANISM_TYPE, CK_OBJECT_HANDLE, CK_RSA_AES_KEY_WRAP_PARAMS, CK_RSA_PKCS_OAEP_PARAMS,
     CK_RSA_PKCS_PSS_PARAMS, CK_RV, CK_SESSION_HANDLE, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CK_USER_TYPE,
     CKA_CERTIFICATE_TYPE, CKA_CLASS, CKA_KEY_TYPE, CKM_ECDH1_COFACTOR_DERIVE, CKM_ECDH1_DERIVE, CKM_RSA_AES_KEY_WRAP,
     CKM_RSA_PKCS_OAEP, CKM_RSA_PKCS_PSS, CKM_SHA1_RSA_PKCS_PSS, CKM_SHA224_RSA_PKCS_PSS, CKM_SHA256_RSA_PKCS_PSS,
     CKM_SHA384_RSA_PKCS_PSS, CKM_SHA512_RSA_PKCS_PSS,
 };
+use std::fmt::Write as _;
 use std::io::Write;
 use std::os::raw::c_void;
 use std::path::Path;
@@ -54,13 +55,18 @@ pub(crate) struct Detail {
     slot_flags: Option<CK_FLAGS>,
     token_flags: Option<CK_FLAGS>,
     mechanism_flags: Option<CK_FLAGS>,
-    attributes: Vec<CK_ATTRIBUTE_TYPE>,
+    pub(crate) attributes: Vec<CK_ATTRIBUTE_TYPE>,
     pub(crate) classes: Vec<CK_ULONG>,
     pub(crate) key_types: Vec<CK_ULONG>,
     certificate_types: Vec<CK_ULONG>,
     /// The session and the objects the call names (`of_label` looks at them; not traced).
     pub(crate) session: Option<CK_SESSION_HANDLE>,
     pub(crate) objects: Vec<CK_OBJECT_HANDLE>,
+    /// What may be recorded of the values the call returned (`P11_FAULT_RECORD_VALUES`), and
+    /// what was: the attribute values, and `C_Sign`'s data and signature.
+    pub(crate) record: crate::record::Recording,
+    values: Vec<(CK_ATTRIBUTE_TYPE, Vec<u8>)>,
+    signed: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 impl Detail {
@@ -219,6 +225,57 @@ impl Detail {
     pub(crate) unsafe fn filled_template(&mut self, template: *const CK_ATTRIBUTE, count: CK_ULONG) {
         // SAFETY: the caller's contract, passed on.
         unsafe { self.read_template(template, count, self.ok) };
+        let Ok(count) = usize::try_from(count) else { return };
+        if !self.ok || template.is_null() || count == 0 || self.record.attributes.is_empty() {
+            return;
+        }
+        // SAFETY: not null, and the caller's contract makes it `count` readable entries, each
+        // value filled to its length by the call.
+        for e in unsafe { std::slice::from_raw_parts(template, count) } {
+            let Ok(len) = usize::try_from(e.ulValueLen) else { continue };
+            if self.record.attributes.contains(&e.type_) && !e.pValue.is_null() && e.ulValueLen != CK_ULONG::MAX {
+                // SAFETY: the call filled `ulValueLen` bytes there.
+                let value = unsafe { std::slice::from_raw_parts(e.pValue.cast::<u8>(), len) };
+                self.values.push((e.type_, value.to_vec()));
+            }
+        }
+    }
+
+    /// The attribute values recorded.
+    #[cfg(test)]
+    pub(crate) fn values(&self) -> &[(CK_ATTRIBUTE_TYPE, Vec<u8>)] {
+        &self.values
+    }
+
+    /// `C_Sign`'s data and signature recorded.
+    #[cfg(test)]
+    pub(crate) fn recorded_signature(&self) -> Option<&(Vec<u8>, Vec<u8>)> {
+        self.signed.as_ref()
+    }
+
+    /// `C_Sign`'s data and the signature it returned, where they may be recorded
+    /// ([`Detail::record`]) and the call filled the signature.
+    ///
+    /// # Safety
+    ///
+    /// `data` is null or `data_len` readable bytes; `signature_len` null or readable, and
+    /// `signature` null or that many readable bytes once the call has filled them.
+    pub(crate) unsafe fn signed(
+        &mut self,
+        data: *const CK_BYTE,
+        data_len: CK_ULONG,
+        signature: *const CK_BYTE,
+        signature_len: *const CK_ULONG,
+    ) {
+        if !self.ok || !self.record.signed || data.is_null() || signature.is_null() || signature_len.is_null() {
+            return;
+        }
+        // SAFETY: as the contract says; the call wrote the signature's length and bytes.
+        unsafe {
+            let (Ok(n), Ok(m)) = (usize::try_from(data_len), usize::try_from(*signature_len)) else { return };
+            let read = |p: *const CK_BYTE, n: usize| std::slice::from_raw_parts(p, n).to_vec();
+            self.signed = Some((read(data, n), read(signature, m)));
+        }
     }
 
     /// [`Detail::template`], reading values only when `values`.
@@ -248,6 +305,14 @@ impl Detail {
             }
         }
     }
+}
+
+/// `bytes` in lower-case hex.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
 }
 
 impl Trace {
@@ -310,6 +375,13 @@ impl Trace {
             if !values.is_empty() {
                 fields.insert(name.into(), values.as_slice().into());
             }
+        }
+        if !detail.values.is_empty() {
+            let values: Vec<_> = detail.values.iter().map(|(t, v)| serde_json::json!([t, hex(v)])).collect();
+            fields.insert("values".into(), values.into());
+        }
+        if let Some((data, signature)) = &detail.signed {
+            fields.insert("signed".into(), serde_json::json!({"data": hex(data), "signature": hex(signature)}));
         }
         // One write per line: the processes sharing the file (O_APPEND) then interleave whole
         // lines, where `writeln!` (a write per formatted piece) interleaved their tokens.

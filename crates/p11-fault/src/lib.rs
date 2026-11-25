@@ -14,6 +14,7 @@ mod forward;
 mod hooks;
 pub use p11_names as names;
 pub mod plan;
+mod record;
 mod trace;
 
 pub use forward::Fn;
@@ -62,6 +63,8 @@ struct Shim {
     pub(crate) searches: hooks::Searches,
     /// What the functions a `replay_output` rule names have returned so far.
     pub(crate) outputs: hooks::Outputs,
+    /// `P11_FAULT_RECORD_VALUES=public`: the public values a trace line records.
+    recorder: Option<record::Recorder>,
 }
 
 static SHIM: OnceLock<Result<Shim, Fatal>> = OnceLock::new();
@@ -167,6 +170,8 @@ impl Shim {
         let (trace_var, trace) = setting("P11_FAULT_TRACE");
         let trace =
             trace.map(|p| trace::Trace::open(&trace_var, Path::new(&p), own_tag().map(str::to_owned))).transpose()?;
+        let (record_var, record) = setting("P11_FAULT_RECORD_VALUES");
+        let recorder = record::Recorder::new(&record_var, record, trace.is_some())?;
         let module = |e: &dyn std::fmt::Display| Fatal(format!("{module_var} {}: {e}", path.display()));
         // SAFETY: loading a PKCS#11 module runs its initialisers, as a client loading it directly
         // would; that is what the client asked for by loading the shim.
@@ -186,7 +191,7 @@ impl Shim {
         };
         let table = forward::table(real);
         let (searches, outputs) = (hooks::Searches::default(), hooks::Outputs::default());
-        Ok(Shim { _library: library, real, plan, trace, table, searches, outputs })
+        Ok(Shim { _library: library, real, plan, trace, table, searches, outputs, recorder })
     }
 
     /// One call of `function`: counted, its rules chosen by what `observe` reads from its
@@ -202,7 +207,7 @@ impl Shim {
         observe: impl std::ops::Fn(&mut trace::Detail),
     ) -> Result<CK_RV, Fatal> {
         let mut about = trace::Detail::default();
-        if !self.plan.rules().is_empty() {
+        if !self.plan.rules().is_empty() || self.recorder.is_some() {
             observe(&mut about);
         }
         let (call, chosen) = self.select(function, &about);
@@ -228,6 +233,9 @@ impl Shim {
             let mut detail = trace::Detail::default();
             detail.ok = filled;
             detail.fatal = fatal.as_ref().map(|f| f.0.clone());
+            if let Some(recorder) = &self.recorder {
+                detail.record = recorder.recording(self, function, &about, filled);
+            }
             observe(&mut detail);
             trace.line(&call, rv, rule, &detail);
         }
@@ -301,6 +309,7 @@ pub(crate) fn fake(real: &CK_FUNCTION_LIST, plan: &str, trace: Option<&Path>) ->
         table: forward::table(real),
         searches: hooks::Searches::default(),
         outputs: hooks::Outputs::default(),
+        recorder: None,
     }
 }
 

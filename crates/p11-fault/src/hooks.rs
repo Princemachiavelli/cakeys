@@ -603,7 +603,15 @@ unsafe fn value_of(
 }
 
 /// `CKA_CLASS` of `object`, if the real module gives it.
-unsafe fn class_of(shim: &Shim, session: CK_SESSION_HANDLE, object: CK_OBJECT_HANDLE) -> Option<CK_OBJECT_CLASS> {
+///
+/// # Safety
+///
+/// As `value_of`: a real-module call on the caller's session and handle.
+pub(crate) unsafe fn class_of(
+    shim: &Shim,
+    session: CK_SESSION_HANDLE,
+    object: CK_OBJECT_HANDLE,
+) -> Option<CK_OBJECT_CLASS> {
     // SAFETY: as `value_of`.
     let value = unsafe { value_of(shim, session, object, CKA_CLASS) }.ok()?;
     Some(CK_OBJECT_CLASS::from_ne_bytes(value.try_into().ok()?))

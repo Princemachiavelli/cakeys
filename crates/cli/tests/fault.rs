@@ -661,9 +661,9 @@ fn a_failed_attribute_read_is_never_an_answer() {
 /// material alone: `k`, `k2` and `k-other` (P-256, signing); `s` and `s-other` (generic secrets
 /// with no usage bit, so identified by wrap-rebind: wrapped, unwrapped as a session copy, an HMAC
 /// commitment on the copy); `w` (AES that only wraps: its commitment is a wrap); and `n` (AES),
-/// declared and not made.
-fn told(name: &str) -> Option<Workdir> {
-    suite_var(REF.module_var, REF.require_var, name)?;
+/// declared and not made. With the real module behind the shim.
+fn told(name: &str) -> Option<(Workdir, String)> {
+    let real = suite_var(REF.module_var, REF.require_var, name)?;
     let w = Workdir::new(name);
     let object = |name: &str, kind: &str, attributes: &str| {
         format!(
@@ -694,7 +694,7 @@ fn told(name: &str) -> Option<Workdir> {
         let o = w.km(&["create", "--spec", spec, "--token", "ref"]);
         assert_eq!(code(&o), 22, "{spec}, no plan: {}", stderr(&o));
     }
-    Some(w)
+    Some((w, real))
 }
 
 /// The objects [`told`] makes.
@@ -826,6 +826,54 @@ fn lies(signs: u64) -> Vec<Lie> {
     ]
 }
 
+/// The row of [`each_lie_kind_fires`] for `P11_FAULT_RECORD_VALUES = public`: the trace of a
+/// `check` of k records k's EC point as the token (`real`, read directly) holds it, and no value
+/// outside the public attributes; any other value is refused, never ignored. What is wrong.
+fn public_values_recorded(w: &Workdir, real: &str) -> Vec<String> {
+    let mut wrong = Vec::new();
+    let values = w.dir.join("values.jsonl");
+    let record = |value: &'static str| {
+        let env = [("P11_FAULT_TRACE", values.as_path()), ("P11_FAULT_RECORD_VALUES", std::path::Path::new(value))];
+        w.km_env(&told_check("k"), &env)
+    };
+    let o = record("public");
+    let text = std::fs::read_to_string(&values).unwrap_or_default();
+    let recorded: Vec<(u64, String)> = text
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .flat_map(|l| l["values"].as_array().cloned().unwrap_or_default())
+        .map(|v| (v[0].as_u64().unwrap(), v[1].as_str().unwrap().to_owned()))
+        .collect();
+    let s = open_session(real, "kmtest", "1234");
+    let hex = |bytes: &[u8]| {
+        bytes.iter().fold(String::new(), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+    };
+    let held: Vec<String> = s
+        .labelled("k")
+        .into_iter()
+        .filter_map(|h| s.get_attributes(h, &[cryptoki::object::AttributeType::EcPoint]).ok())
+        .flatten()
+        .filter_map(|a| if let Attribute::EcPoint(point) = a { Some(hex(&point)) } else { None })
+        .collect();
+    // CKA_EC_PARAMS, CKA_EC_POINT, CKA_MODULUS, CKA_PUBLIC_EXPONENT, CKA_PUBLIC_KEY_INFO,
+    // CKA_TPM2_PUB_BLOB: the public attributes (p11-fault's record.rs).
+    let public = [0x180, 0x181, 0x120, 0x122, 0x129, 0x8F00_0002];
+    let points: Vec<&String> = recorded.iter().filter(|(t, _)| *t == 0x181).map(|(_, v)| v).collect();
+    let only_public = recorded.iter().all(|(t, _)| public.contains(t));
+    if code(&o) != 0 || points.is_empty() || !points.iter().all(|p| held.contains(p)) || !only_public {
+        let types: Vec<u64> = recorded.iter().map(|(t, _)| *t).collect();
+        wrong.push(format!("values recorded: exit {}, types {types:?}, points {points:?}, held {held:?}", code(&o)));
+    }
+    let o = record("all");
+    if code(&o) == 0 || !stderr(&o).contains("p11-fault: P11_FAULT_RECORD_VALUES = all: only \"public\"") {
+        wrong.push(format!("all values: exit {}: {}", code(&o), stderr(&o)));
+    }
+    wrong
+}
+
 /// `check` of one of [`told`]'s objects.
 fn told_check(spec: &'static str) -> Vec<&'static str> {
     vec!["check", "--spec", spec, "--token", "ref"]
@@ -898,7 +946,7 @@ fn output_lies() -> Vec<Lie> {
 /// every row that is wrong.
 #[test]
 fn each_lie_kind_fires() {
-    let Some(w) = told("fault-each-lie") else { return };
+    let Some((w, real)) = told("fault-each-lie") else { return };
     let check = |spec: &'static str| vec!["check", "--spec", spec, "--token", "ref"];
     // The run's first `C_SignInit`, honest: the calls up to it are the same under a plan.
     let honest = w.dir.join("honest.jsonl");
@@ -937,6 +985,7 @@ fn each_lie_kind_fires() {
             ));
         }
     }
+    wrong.extend(public_values_recorded(&w, &real));
     // With no plan, the same token still verifies: every effect above was the lie's.
     for spec in TOLD {
         let o = w.km(&check(spec));

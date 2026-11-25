@@ -286,6 +286,17 @@ writers of a test run interleave whole lines):
 `n` is the call's number among its function's in the process, and `seq` among every
 function's (both from 1): what `call`, `nth`/`from` and `from_seq` count.
 
+**Public values.** With `P11_FAULT_RECORD_VALUES=public` (beside `P11_FAULT_TRACE`, which it
+requires), a line also records the values a test compares with what the token holds, and only
+public ones (`record.rs`): `"values": [[type, "hex"], ...]` for what `C_GetAttributeValue`
+returned of `CKA_EC_POINT`, `CKA_EC_PARAMS`, `CKA_PUBLIC_KEY_INFO`, `CKA_MODULUS`,
+`CKA_PUBLIC_EXPONENT` and tpm2-pkcs11's `CKA_TPM2_PUB_BLOB`, and `CKA_VALUE` of a certificate
+only; `"signed": {"data": "hex", "signature": "hex"}` for a `C_Sign` that ends a TPM2
+certification (`CKM_TPM2_CERTIFY`, `CKM_TPM2_CERTIFY_OBJECT`: the nonce and the attestation's
+signature). No template a caller sends is recorded (it may carry key material), nor any other
+signature. Any other value of the variable, or `public` with no trace, is refused, never
+ignored: a test that asks for values never reads a trace without them.
+
 The function and return value are names; what the call was about (`mechanism`, here
 `CKM_ECDSA_SHA256`, attribute types, classes, ...) is numbers, which the reader maps to names
 (`trace.rs`). This is PLAN.md A1's trace if `pkcs11-spy` proves too lossy: which functions, mechanisms,
@@ -352,7 +363,9 @@ the point is what it leaves alone, one where it must not: `of_label` fails k's a
 `mechanism`, `class` and `key_type` each fail the one call (15, 16, 16) and not another.
 Another key pair found (`replace_label`), a wrap commitment corrupted, and a transcoded wrap
 commitment each give 10; a transcoded wrap-rebind still verifies (the unwrap undoes it), and a
-replayed signature fails the second key's proof (13).
+replayed signature fails the second key's proof (13). Under `P11_FAULT_RECORD_VALUES=public`
+a `check` records k's EC point as the token holds it and nothing outside the public
+attributes, and `=all` is refused.
 
 A second test, `a_creation_that_cannot_be_identified_is_undone_or_reported`, takes §8.1's
 "refused operations leave nothing behind": a key created whose proof then fails is removed
