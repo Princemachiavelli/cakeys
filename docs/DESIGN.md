@@ -667,6 +667,11 @@ module and what real builds may reach.
 - **Refused operations leave nothing behind:** checks before creating, and cleanup after a failed
   identity — except a key on a module that cannot delete keys (ykcs11), which stays and is
   reported.
+- **A provider's operation runs after core's rules, never instead of them** (review 2026-11-24
+  B-2). `Token::create` and `Token::destroy` ask `placement` or `deletion` and enter the SO
+  session `manages_as_so` asks for, then call the provider's `create` or `destroy` with a
+  `Checked` request no other crate can build, so an override cannot skip either; the gate, the
+  live checks and the capability check ask the same named rules (`ops::Rule`).
 - **A destroy is verified, never taken on the module's word** (review 2026-11-24 B-13). A
   provider or a module profile that says the module keeps what it is asked to remove
   (`Provider::deletion`, `delete.<class> = no`) refuses the delete before anything is
