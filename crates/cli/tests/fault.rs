@@ -993,5 +993,19 @@ fn each_lie_kind_fires() {
             wrong.push(format!("{spec} with no plan: exit {}: {}", code(&o), stderr(&o)));
         }
     }
+    // OK without effect, on one object (`of_label` on `rv = "CKR_OK"`, phase 2 design §1.1):
+    // the delete of k2 is told each destroy happened, and k2's two objects are still on the
+    // token. Last, as the lock may change; what cakeys then exits is its own to decide.
+    let (plan, trace) = (w.dir.join("plan.toml"), w.dir.join("destroy.jsonl"));
+    std::fs::write(&plan, "[[rule]]\nfn = \"C_DestroyObject\"\nof_label = \"k2\"\nrv = \"CKR_OK\"\n").unwrap();
+    let o = w.km_env(
+        &["delete", "--spec", "k2", "--token", "ref"],
+        &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)],
+    );
+    let destroyed: Vec<serde_json::Value> = fired(&trace).into_iter().map(|l| l["fn"].clone()).collect();
+    let left = open_session(&real, "kmtest", "1234").labelled("k2").len();
+    if destroyed.is_empty() || destroyed.iter().any(|f| f != "C_DestroyObject") || left != 2 {
+        wrong.push(format!("destroy of k2: fired {destroyed:?}, {left} left: exit {}: {}", code(&o), stderr(&o)));
+    }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
