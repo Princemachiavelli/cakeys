@@ -347,7 +347,7 @@ fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
         refused(&e.km(&r), "is not writable");
         assert_eq!(e.code(&compare), 0);
     } else {
-        eprintln!("skipping the read-only lock: this user writes a mode-444 file");
+        skip("lockfile", REF.require_var, "the read-only lock: this user writes a mode-444 file");
     }
     std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
 
@@ -362,7 +362,7 @@ fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
         refused(&e.km(&[&["--new-lock", "--lock", elsewhere][..], &r[..]].concat()), "directory");
         assert_eq!(e.code(&[&["--new-lock", "--lock", elsewhere][..], &compare[..]].concat()), 18);
     } else {
-        eprintln!("skipping the read-only directory: this user writes into a mode-555 one");
+        skip("lockfile", REF.require_var, "the read-only directory: this user writes into a mode-555 one");
     }
     std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
@@ -412,7 +412,7 @@ fn the_variables_name_the_files_and_an_unreadable_lock_is_an_io_failure() {
     // A lock this user cannot read (root reads it anyway).
     std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o000)).unwrap();
     if std::fs::File::open(&elsewhere).is_ok() {
-        eprintln!("skipping the unreadable lock: this user reads a mode-000 file");
+        skip("lock-vars", REF.require_var, "the unreadable lock: this user reads a mode-000 file");
     } else {
         let o = e.km(&[&["--lock", elsewhere.to_str().unwrap()][..], &verify[..]].concat());
         assert_eq!(code(&o), 1, "{}", stderr(&o));

@@ -239,17 +239,14 @@ fn a_legacy_rsa_key_has_an_identity() {
         ],
         &[Attribute::Token(true), label, Attribute::Sign(true), Attribute::Sensitive(true)],
     );
-    // kryoptic makes no RSA key under 1024 bits; any other reference that fails to is a failure,
-    // not a skip (review D9).
-    match made {
-        Err(err) if REF.provider == "kryoptic" => {
-            eprintln!("skipping rsa_legacy: kryoptic makes no RSA-768 key: {err}");
-            return;
-        }
-        made => {
-            made.unwrap();
-        }
+    // kryoptic makes no RSA key under 1024 bits: that refusal is its verdict here, held both
+    // ways, and the rest of the test is the other references' (review 2026-11-24 C-11: it was a
+    // skip). Any other reference that fails to is a failure (review D9).
+    if REF.provider == "kryoptic" {
+        made.expect_err("kryoptic made an RSA-768 key: let the whole test run there");
+        return;
     }
+    made.unwrap();
     e.config(
         r#"
 [objects.r]

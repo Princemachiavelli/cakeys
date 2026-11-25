@@ -8,6 +8,9 @@
 //! provider. camigrate has no entry point a test can give a registry, so its own asks are held
 //! only by its runs with the default providers.
 
+#[path = "../../test-skip.rs"]
+mod test_skip;
+
 use cakeys_core::config::{AttrValue, Binding, Locator, Lock, Object, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
@@ -89,9 +92,8 @@ fn at(label: &str) -> Locator {
 /// without the module.
 fn token(provider: &str) -> Option<String> {
     let Ok(module) = std::env::var("CAKEYS_TEST_MODULE") else {
-        // As every token suite (`common::suite_var`): required where the harness says so.
-        assert!(std::env::var("CAKEYS_TEST_REQUIRE").is_err(), "CAKEYS_TEST_MODULE is required");
-        eprintln!("skipping templates: CAKEYS_TEST_MODULE is not set");
+        // As every token suite (`common::suite_var`): required where the run says so.
+        test_skip::skip("templates", "CAKEYS_TEST_REQUIRE", "CAKEYS_TEST_MODULE is not set");
         return None;
     };
     let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("cakeys-pkcs11-templates-{provider}"));

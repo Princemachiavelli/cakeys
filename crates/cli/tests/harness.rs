@@ -5,6 +5,7 @@
 
 mod common;
 
+use common::test_skip::{HARDWARE, TPM};
 use common::*;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -120,16 +121,74 @@ fn a_half_set_opt_in_fails() {
     // (review common/mod.rs: `xref::Env::needs` skipped without asking).
     let e = common::xref::Env::over("needs-required", vec![created_ref("softhsm", "unused.so".into())]);
     let set = |vars: &'static [&'static str]| move |v: &str| vars.contains(&v);
-    let names = |r: Option<[&common::xref::Ref; 2]>| r.map(|[a, b]| [a.name, b.name]);
-    assert_eq!(e.needs_in("t", ["softhsm", "kryoptic"], &set(&[])).map(names), Ok(None));
-    assert_eq!(e.needs_in("t", ["softhsm", "kryoptic"], &set(&["CAKEYS_TEST_REQUIRE"])).map(names), Ok(None));
+    let names = |r: Result<[&common::xref::Ref; 2], &'static str>| r.map(|[a, b]| [a.name, b.name]);
+    assert_eq!(e.needs_in(["softhsm", "kryoptic"], &set(&[])).map(names), Ok(Err("kryoptic")));
+    assert_eq!(e.needs_in(["softhsm", "kryoptic"], &set(&["CAKEYS_TEST_REQUIRE"])).map(names), Ok(Err("kryoptic")));
     assert_eq!(
-        e.needs_in("t", ["softhsm", "kryoptic-der"], &set(&["CAKEYS_KRYOPTIC_REQUIRE"])).map(names),
+        e.needs_in(["softhsm", "kryoptic-der"], &set(&["CAKEYS_KRYOPTIC_REQUIRE"])).map(names),
         Err("needs the references kryoptic-der (CAKEYS_KRYOPTIC_REQUIRE is set), required but not set up".into())
     );
+    // A run that requires everything requires every software reference (review 2026-11-24 C-11).
+    assert_eq!(
+        e.needs_in(["softhsm", "kryoptic"], &set(&[REQUIRE_ALL])).map(names),
+        Err(format!(
+            "needs the references kryoptic ({REQUIRE_ALL} is set, and CAKEYS_KRYOPTIC_REQUIRE is no hardware \
+             suite's), required but not set up"
+        ))
+    );
     let e = common::xref::Env::over("needs-required", vec![e.refs[0].clone(), created_ref("kryoptic", "k.so".into())]);
-    let found = e.needs_in("t", ["kryoptic", "softhsm"], &set(&["CAKEYS_KRYOPTIC_REQUIRE"])).map(names);
-    assert_eq!(found, Ok(Some(["kryoptic", "softhsm"])));
+    let found = e.needs_in(["kryoptic", "softhsm"], &set(&["CAKEYS_KRYOPTIC_REQUIRE"])).map(names);
+    assert_eq!(found, Ok(Ok(["kryoptic", "softhsm"])));
+}
+
+/// A run that requires everything (`CAKEYS_REQUIRE_ALL`, which `test_env` sets for the check
+/// phase and scripts/local-tests.sh) lets a test skip only where it needs hardware or a cloud
+/// account, the software TPM counting as hardware only in a build without it; any skip, its own
+/// require variable set (review 2026-11-24 C-11: the fault suites' was set by the routing that
+/// started them, so a suite the routing lost skipped, passing).
+#[test]
+fn a_run_that_requires_everything_lets_only_hardware_skip() {
+    let set = |vars: &'static [&'static str]| move |v: &str| vars.contains(&v);
+    let software = ["CAKEYS_TEST_REQUIRE", "CAKEYS_KRYOPTIC_REQUIRE", "CAKEYS_P11KIT_REQUIRE", "CAKEYS_FAULT_REQUIRE"];
+    for require in software.iter().chain(&[REQUIRE_ALL]).chain(&TPM).chain(&HARDWARE) {
+        for tpm in [true, false] {
+            assert_eq!(required(require, tpm, &set(&[])), None, "{require}: nothing required");
+            assert!(required(require, tpm, &|v| v == *require).is_some(), "{require} set, and it skipped");
+        }
+    }
+    for require in software.iter().chain(&[REQUIRE_ALL]) {
+        assert!(required(require, false, &set(&[REQUIRE_ALL])).is_some(), "{require} skipped under {REQUIRE_ALL}");
+    }
+    for require in TPM {
+        assert!(required(require, true, &set(&[REQUIRE_ALL])).is_some(), "{require} skipped in a build with the TPM");
+        assert_eq!(required(require, false, &set(&[REQUIRE_ALL])), None, "{require}: a build without the TPM");
+    }
+    for require in HARDWARE {
+        assert_eq!(required(require, true, &set(&[REQUIRE_ALL])), None, "{require} is hardware");
+    }
+}
+
+/// Every skip is [`skip`]'s (review 2026-11-24 C-11): no test, in any crate, prints its own skip
+/// and returns, which is how ten conditional skips came to have no require variable and to pass
+/// under any run. The text is spelt here so this file is no match.
+#[test]
+fn every_skip_goes_through_the_one_helper() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let own = format!("\"{}ping", "skip");
+    let found: Vec<String> = sources(crates)
+        .into_iter()
+        .filter(|(path, _)| !path.ends_with("test-skip.rs"))
+        .flat_map(|(path, text)| {
+            let lines: Vec<String> = text
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| l.contains(&own))
+                .map(|(n, _)| format!("{}:{}", path.display(), n + 1))
+                .collect();
+            lines
+        })
+        .collect();
+    assert!(found.is_empty(), "these skip on their own, not through `skip`:\n{}", found.join("\n"));
 }
 
 /// A bounded run reads its child's output while the child runs (review common/mod.rs F3): one

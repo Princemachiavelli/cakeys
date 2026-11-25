@@ -6,5 +6,8 @@
 
 mod common;
 mod reference;
+// Here and in tests/kryoptic.rs, not in tests/fault.rs (its header says why).
+#[path = "reference/matrix.rs"]
+mod matrix;
 
 const REF: &common::Reference = &common::SOFTHSM;

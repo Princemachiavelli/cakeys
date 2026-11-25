@@ -87,6 +87,8 @@ in
     "caprobe/ykcs11"
     "camigrate/ykcs11"
   ];
+  # Whether the tests can run here: what preCheck and the check phase's report depend on.
+  inherit canCheck;
   # Without tpm2, the default features (tpm2 and ykcs11) are off and ykcs11 comes back through
   # `features`.
   noDefaultFeatures = !tpm2;

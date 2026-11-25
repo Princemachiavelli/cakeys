@@ -79,9 +79,10 @@ if [ -n "${CAKEYS_TRACE_DIR:-}" ] && [ -z "$untraced" ]; then
   done
 fi
 # tests/fault.rs runs the reference suite again, through p11-fault in front of this test's own
-# SoftHSM token.
+# SoftHSM token. CAKEYS_FAULT_REQUIRE is test_env's, not this arm's: a fault suite this name
+# match misses fails rather than skipping (review 2026-11-24 C-11).
 if [ "$suite" = fault ]; then
-  export P11_FAULT_MODULE=$CAKEYS_TEST_MODULE CAKEYS_FAULT_REQUIRE=1
+  export P11_FAULT_MODULE=$CAKEYS_TEST_MODULE
 fi
 case $suite in
 p11kit | reference | references | dry_run)

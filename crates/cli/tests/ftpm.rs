@@ -3,7 +3,8 @@
 //! Needs `CAKEYS_FTPM_MODULE` (`libtpm2_pkcs11.so`), `CAKEYS_FTPM_PROFILE` (the committed pair
 //! profile of this TPM, e.g. `tpm2-pkcs11/1.10+amd-ftpm`) and the `TPM2_PKCS11_*` environment
 //! of the harness, whose fresh store holds token `kmtest` (user PIN 1234). Skipped when neither
-//! is set — never in the Nix build — unless `CAKEYS_FTPM_REQUIRE` is. Run one test at a time
+//! is set — never in the Nix build — unless `CAKEYS_FTPM_REQUIRE` is; the two attestation tests
+//! also when `CAKEYS_FTPM_ATTEST=1` is not, unless `CAKEYS_FTPM_ATTEST_REQUIRE` is. Run one test at a time
 //! (`--test-threads=1`), and only through the harness:
 //!
 //! ```console
@@ -28,6 +29,23 @@ fn env(name: &str) -> Option<(Suite, String)> {
     let [module, profile] = opted_in(name, FTPM_OPT_IN)?;
     Some((Suite::new(&format!("ftpm-{name}"), module, ftpm_tokens), profile))
 }
+
+/// The attestation tests' own opt-in, `CAKEYS_FTPM_ATTEST=1` (they make the AK at 0x81000016):
+/// unset, test `name` is skipped ([`skip`]) unless `CAKEYS_FTPM_ATTEST_REQUIRE` is set; any other
+/// value fails (review 2026-11-24 C-7: `=true` skipped silently, even under `CAKEYS_FTPM_REQUIRE`).
+fn attest_asked(name: &str) -> bool {
+    match std::env::var("CAKEYS_FTPM_ATTEST").as_deref() {
+        Ok("1") => true,
+        Ok(other) => panic!("{name}: CAKEYS_FTPM_ATTEST is {other:?}: 1 runs the attestation tests, unset skips them"),
+        Err(_) => {
+            skip(name, ATTEST_REQUIRE, "CAKEYS_FTPM_ATTEST=1 not set (it creates the AK at 0x81000016)");
+            false
+        }
+    }
+}
+
+/// What makes a run that skips the attestation tests fail (crates/test-skip.rs: hardware).
+const ATTEST_REQUIRE: &str = "CAKEYS_FTPM_ATTEST_REQUIRE";
 
 /// Each proof of possession on the real TPM, unattended: signing (P-256), deriving (P-384,
 /// tpm2-pkcs11's extractable path, and in a read-write session for the read-only `check`) and
@@ -94,8 +112,7 @@ fn unwrap_only_keys_cannot_prove_possession() {
 #[test]
 fn keys_attest_their_residence_on_the_real_tpm() {
     let Some((e, _)) = env("attest") else { return };
-    if std::env::var("CAKEYS_FTPM_ATTEST").as_deref() != Ok("1") {
-        eprintln!("skipping attest: CAKEYS_FTPM_ATTEST=1 not set (it creates the AK at 0x81000016)");
+    if !attest_asked("attest") {
         return;
     }
     let hmac = e.dir.join("hmac.bin");
@@ -140,10 +157,15 @@ fn keys_attest_their_residence_on_the_real_tpm() {
 #[test]
 fn keys_attest_to_the_manufacturer_on_the_real_tpm() {
     let Some((e, _)) = env("attest-ek") else { return };
-    let (Ok("1"), Ok(certificate)) =
-        (std::env::var("CAKEYS_FTPM_ATTEST").as_deref(), std::env::var("CAKEYS_FTPM_EK_CERTIFICATE"))
-    else {
-        eprintln!("skipping attest-ek: CAKEYS_FTPM_ATTEST=1 and CAKEYS_FTPM_EK_CERTIFICATE are not both set");
+    // The certificate asks for this test, which needs the AK: without CAKEYS_FTPM_ATTEST=1 it
+    // fails (C-7: it skipped).
+    let certificate = std::env::var("CAKEYS_FTPM_EK_CERTIFICATE").ok();
+    let asked = attest_asked("attest-ek");
+    assert!(asked || certificate.is_none(), "CAKEYS_FTPM_EK_CERTIFICATE is set, CAKEYS_FTPM_ATTEST=1 is not");
+    let Some(certificate) = certificate.filter(|_| asked) else {
+        if asked {
+            skip("attest-ek", ATTEST_REQUIRE, "CAKEYS_FTPM_EK_CERTIFICATE not set");
+        }
         return;
     };
     e.config(

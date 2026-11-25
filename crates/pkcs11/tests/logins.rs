@@ -2,6 +2,9 @@
 //! 2026-11-23 B-11), and an "already logged in" answer validates a PIN only when this process
 //! logged in with it (B-12). Skipped without `CAKEYS_TEST_MODULE`.
 
+#[path = "../../test-skip.rs"]
+mod test_skip;
+
 use cakeys_core::config::TokenCfg;
 use cakeys_pkcs11::token::Access;
 use cakeys_pkcs11::{ChainTime, Registry, Token};
@@ -9,8 +12,7 @@ use cakeys_pkcs11::{ChainTime, Registry, Token};
 /// The reference module, or `None` (and a note) where the harness sets none.
 fn module() -> Option<String> {
     let Ok(module) = std::env::var("CAKEYS_TEST_MODULE") else {
-        assert!(std::env::var("CAKEYS_TEST_REQUIRE").is_err(), "CAKEYS_TEST_MODULE is required");
-        eprintln!("skipping logins: CAKEYS_TEST_MODULE is not set");
+        test_skip::skip("logins", "CAKEYS_TEST_REQUIRE", "CAKEYS_TEST_MODULE is not set");
         return None;
     };
     cakeys_profile::Set::activate_embedded().unwrap();

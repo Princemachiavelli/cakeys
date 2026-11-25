@@ -64,7 +64,8 @@ pass() {
   local name=$1
   shift
   ran+=("$name")
-  cargo llvm-cov nextest --no-report --workspace --features "$features" "$@" || failed+=("$name")
+  # A filter that matches no test fails the pass rather than passing it (review 2026-11-24 C-11).
+  cargo llvm-cov nextest --no-report --workspace --features "$features" --no-tests=fail "$@" || failed+=("$name")
 }
 hardware() {
   local name=$1

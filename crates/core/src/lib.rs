@@ -16,6 +16,10 @@ pub mod pop;
 pub mod reconcile;
 pub mod secret;
 pub mod sig;
+// The one way a test skips, every crate's (review 2026-11-24 C-11).
+#[cfg(test)]
+#[path = "../../test-skip.rs"]
+mod test_skip;
 pub mod types;
 
 pub use error::{EXIT_CODES, KmError, LOCK_WRITTEN, Msg, Result};

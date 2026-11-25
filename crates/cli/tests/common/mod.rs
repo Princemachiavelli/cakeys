@@ -5,7 +5,11 @@
 #![expect(unreachable_pub, reason = "its crate is a test binary: pub and pub(crate) say the same")]
 
 pub mod surface;
+#[path = "../../../test-skip.rs"]
+pub(crate) mod test_skip;
 pub mod xref;
+
+pub(crate) use test_skip::{REQUIRE_ALL, TPM_BUILT, required, required_here, skip};
 
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::mechanism::Mechanism;
@@ -166,19 +170,26 @@ pub fn sibling(name: &str) -> PathBuf {
     path
 }
 
-/// The value of `var` (a module path), else `None` — unless `require` is set, which makes a
-/// missing one a failure. Every suite's gate reads its module through this (review D9).
+/// The value of `var` (a module path), else `None` — unless the run requires it ([`required`]:
+/// `require` set, or `CAKEYS_REQUIRE_ALL`), which makes a missing one a failure. Every suite's
+/// gate reads its module through this (review D9).
+///
+/// # Panics
+///
+/// When `var` is missing and required.
 pub fn required_var(var: &str, require: &str) -> Option<String> {
     let v = std::env::var(var).ok();
-    assert!(v.is_some() || std::env::var_os(require).is_none(), "{var} is required ({require} is set)");
+    if let (None, Some(because)) = (&v, required_here(require)) {
+        panic!("{var} is required ({because})");
+    }
     v
 }
 
-/// [`required_var`] for the suite `test` belongs to: `None` says it is skipped.
+/// [`required_var`] for the suite `test` belongs to: `None` says it is skipped ([`skip`]).
 pub fn suite_var(var: &str, require: &str, test: &str) -> Option<String> {
-    let v = required_var(var, require);
+    let v = std::env::var(var).ok();
     if v.is_none() {
-        eprintln!("skipping {test}: {var} not set");
+        skip(test, require, &format!("{var} not set"));
     }
     v
 }
@@ -234,13 +245,13 @@ pub fn opt_in<const N: usize>(
     }
 }
 
-/// [`opt_in`] on the process's environment: `None` with a skip message, a failure when half set
-/// or required.
+/// [`opt_in`] on the process's environment: `None`, skipped ([`skip`]), or a failure when half
+/// set or required.
 pub fn opted_in<const N: usize>(test: &str, o: OptIn<N>) -> Option<[String; N]> {
     match opt_in(o, &|v| std::env::var(v).ok()) {
         Ok(Some(values)) => Some(values),
         Ok(None) => {
-            eprintln!("skipping {test}: {} not set", o.vars.join(", "));
+            skip(test, o.require, &format!("{} not set", o.vars.join(", ")));
             None
         }
         Err(e) => panic!("{test}: {e}"),
@@ -422,19 +433,25 @@ pub fn run_within(config: &Path, args: &[&str], limit: Duration) -> Output {
 /// Without it, tests needing SHA-224/384/512 HMAC keys skip, unless `require` (then they fail).
 /// A suite that may skip says which variable requires it through [`hmac_types_fixed`];
 /// `true` is for one that never skips (a hardware suite, once opted in).
+///
+/// # Panics
+///
+/// When `require` and the fix is missing.
 pub fn cryptoki_hmac_types_fixed(require: bool) -> bool {
     let fixed = std::os::raw::c_ulong::from(cryptoki::object::KeyType::SHA384_HMAC) == 0x2c;
     assert!(fixed || !require, "cryptoki lacks the HMAC key type fix (nix/patches/cryptoki-hmac-key-types.patch)");
-    if !fixed {
-        eprintln!("skipping: cryptoki lacks the HMAC key type fix; run through the Nix build");
-    }
     fixed
 }
 
-/// [`cryptoki_hmac_types_fixed`], required where the suite's `require_var` is set (review
-/// common/mod.rs F7: callers computing the flag passed `false`, or another suite's variable).
+/// [`cryptoki_hmac_types_fixed`], skipped ([`skip`]) unless the run requires the suite through
+/// `require_var` (review common/mod.rs F7: callers computing the flag passed `false`, or another
+/// suite's variable).
 pub fn hmac_types_fixed(require_var: &str) -> bool {
-    cryptoki_hmac_types_fixed(std::env::var_os(require_var).is_some())
+    let fixed = cryptoki_hmac_types_fixed(false);
+    if !fixed {
+        skip("", require_var, "cryptoki lacks the HMAC key type fix; run through the Nix build");
+    }
+    fixed
 }
 
 /// A software PKCS#11 token the shared suite (`tests/reference/`) runs against: the facts the
@@ -1128,9 +1145,9 @@ impl xref::Env {
         xref::Env { dir: Workdir::new(name).dir, refs }
     }
 
-    /// The references `names`, in that order, or `None` with a skip message naming them all
+    /// The references `names`, in that order, or `None`: skipped ([`skip`]), naming them all
     /// (review camigrate `dry_run.rs` F3: the same lookup and skip, written once per test). A
-    /// missing one whose variable requires it ([`xref::require_var_of`]) fails instead, as
+    /// missing one the run requires ([`xref::require_var_of`], [`required`]) fails instead, as
     /// [`suite_var`] does: [`xref::env`] already fails then, but an [`Self::over`] or a test's own
     /// set of references does not.
     ///
@@ -1138,31 +1155,29 @@ impl xref::Env {
     ///
     /// When a missing reference is required, or no reference has one of `names`.
     pub fn needs<const N: usize>(&self, test: &str, names: [&str; N]) -> Option<[&xref::Ref; N]> {
-        self.needs_in(test, names, &|v| std::env::var_os(v).is_some()).unwrap_or_else(|e| panic!("{test}: {e}"))
+        let found = self.needs_in(names, &|v| std::env::var_os(v).is_some()).unwrap_or_else(|e| panic!("{test}: {e}"));
+        if let Err(missing) = found {
+            skip(test, xref::require_var_of(missing), &format!("needs the {} references", names.join(" and ")));
+        }
+        found.ok()
     }
 
-    /// [`Self::needs`] in the environment `set` says which variables are set in: `Err` for a
-    /// required reference missing.
-    pub fn needs_in<const N: usize>(
+    /// [`Self::needs`] in the environment `set` says which variables are set in: the references,
+    /// or the first missing one's name (skip); `Err` for a missing reference the run requires.
+    pub fn needs_in<'a, const N: usize>(
         &self,
-        test: &str,
-        names: [&str; N],
+        names: [&'a str; N],
         set: &dyn Fn(&str) -> bool,
-    ) -> Result<Option<[&xref::Ref; N]>, String> {
+    ) -> Result<Result<[&xref::Ref; N], &'a str>, String> {
         let found = names.map(|n| self.refs.iter().find(|r| r.name == n));
-        let missing = names.iter().zip(&found).filter(|(_, r)| r.is_none()).map(|(n, _)| *n);
+        let missing: Vec<&str> = names.iter().zip(&found).filter(|(_, r)| r.is_none()).map(|(n, _)| *n).collect();
         let required: Vec<String> = missing
-            .map(|n| (n, xref::require_var_of(n)))
-            .filter(|(_, var)| set(var))
-            .map(|(n, var)| format!("{n} ({var} is set)"))
+            .iter()
+            .filter_map(|n| required(xref::require_var_of(n), TPM_BUILT, set).map(|why| format!("{n} ({why})")))
             .collect();
         if !required.is_empty() {
             return Err(format!("needs the references {}, required but not set up", required.join(", ")));
         }
-        if found.iter().any(Option::is_none) {
-            eprintln!("skipping {test}: needs the {} references", names.join(" and "));
-            return Ok(None);
-        }
-        Ok(Some(found.map(Option::unwrap)))
+        Ok(missing.first().map_or_else(|| Ok(found.map(Option::unwrap)), |n| Err(*n)))
     }
 }
