@@ -8,8 +8,8 @@
 # - the sysroots kani-compiler verifies against (lib/, playback/lib, no_core/lib): std and
 #   Kani's libraries compiled by kani-compiler itself with `-Z build-std`, so std's own
 #   dependencies are vendored too — from kani/library-Cargo.lock, the nightly's
-#   library/Cargo.lock checked in (and compared against the toolchain's when building) so
-#   reading it is no import-from-derivation;
+#   library/Cargo.lock checked in (and compared against the nightly's by `libraryLock`, which
+#   the build requires) so reading it is no import-from-derivation;
 # - CBMC and Kissat from nixpkgs (Kani 0.68.0 pins CBMC 6.11.0, which nixpkgs has; Kissat
 #   4.0.1, where nixpkgs has 4.0.4 — Kissat runs only for `--solver kissat`, CaDiCaL inside
 #   CBMC being the default), found on PATH as the bundle's bin/ would be.
@@ -36,7 +36,8 @@ let
   # Kani's rust-toolchain.toml names the nightly (nightly-<date>): read from it, once, so the
   # toolchain and the rustup directory name it is linked under cannot disagree.
   nightly = (lib.importTOML "${kani-src}/rust-toolchain.toml").toolchain.channel;
-  toolchain = rustBin.nightly.${lib.removePrefix "nightly-" nightly}.minimal.override {
+  release = rustBin.nightly.${lib.removePrefix "nightly-" nightly};
+  toolchain = release.minimal.override {
     extensions = [
       "rust-src"
       "rustc-dev"
@@ -45,6 +46,17 @@ let
     ];
   };
   craneNightly = craneLib.overrideToolchain (_: toolchain);
+
+  # kani/library-Cargo.lock is the nightly's library/Cargo.lock (checks.kani-library-lock). Its
+  # own derivation, on the nightly's rust-src alone, so the light job and every system compare
+  # the two copies, not only the Kani build, which requires it before it builds anything.
+  libraryLock = runCommand "kani-library-lock" { } ''
+    if ! cmp -s ${./kani/library-Cargo.lock} ${release.rust-src}/lib/rustlib/src/rust/library/Cargo.lock; then
+      echo "nix/kani/library-Cargo.lock is not ${nightly}'s library/Cargo.lock: copy it again" >&2
+      exit 1
+    fi
+    touch $out
+  '';
 
   # Kani's tree with its charon submodule (an optional dependency of kani-compiler, but cargo
   # reads its manifest all the same); the other submodules are Kani's own tests.
@@ -81,12 +93,8 @@ craneNightly.mkCargoDerivation {
     # A dependency missing from the vendored sources is an error, not a network attempt.
     CARGO_NET_OFFLINE = "true";
   };
-  preBuild = ''
-    if ! cmp -s ${./kani/library-Cargo.lock} ${toolchain}/lib/rustlib/src/rust/library/Cargo.lock; then
-      echo "nix/kani/library-Cargo.lock is not ${nightly}'s library/Cargo.lock: copy it again" >&2
-      exit 1
-    fi
-  '';
+  preBuild = "test -e ${libraryLock}";
+  passthru = { inherit libraryLock; };
   # build-kani: the binaries into target/kani/bin, then the three sysroots.
   buildPhaseCargoCommand = "cargo build-dev --release";
   installPhaseCommand = ''

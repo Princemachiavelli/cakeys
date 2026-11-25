@@ -9,6 +9,7 @@
   deny,
   demo,
   fuzz,
+  kani-library-lock,
   mkTest,
   softhsm-unwrap-value-len-tested,
 }:
@@ -30,6 +31,10 @@
   # `lock`): the fuzz run is Linux's and CI's vm job's, this resolution every system's and the
   # light job's.
   fuzz-lock = fuzz.lock;
+  # nix/kani/library-Cargo.lock is the Kani nightly's own (nix/kani.nix, `libraryLock`): the Kani
+  # build is x86_64-linux's and CI's kani job's, this comparison every system's and the light
+  # job's.
+  inherit kani-library-lock;
   # Every test and function the docs name is a `fn`, and every docs/*.md cited exists
   # (nix/doc-references.py). Its own fileset, so a docs edit does not rebuild crane.
   doc-references =

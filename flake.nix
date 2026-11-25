@@ -228,6 +228,7 @@
             fuzz
             softhsm-unwrap-value-len-tested
             ;
+          kani-library-lock = local.kani.libraryLock;
           # Every check runs the crane build (packages.cakeys-crane).
           cakeys = local.cakeys-crane;
           demo = local.demo-crane;
