@@ -553,12 +553,13 @@ impl MoveCtx<'_> {
 /// kept their own): each object on its own, so one that fails leaves nothing and the others
 /// still move. Each object's outcome, printed as the run's result (review 2026-11-23 C-7);
 /// whether any changed the lock; and the first failure, which the run exits with once the lock
-/// is saved.
+/// is saved. A row is cakeys' ([`cakeys_cli_common::Outcome`]: its exit, the rule that refused it
+/// and whether the device failed), with the method the object moved by beside it.
 #[derive(Default)]
 struct Tally {
     changed: bool,
     failed: Option<KmError>,
-    results: Vec<serde_json::Value>,
+    results: Vec<cakeys_cli_common::Outcome>,
 }
 
 /// Which object an outcome is of: its name, the spec it lands under (once known) and the token.
@@ -579,15 +580,20 @@ impl<'a> Of<'a> {
     fn object(object: &'a str, token: &'a str) -> Of<'a> {
         Of { object, spec: None, token }
     }
+
+    /// Its row, passed with `outcome` (no spec yet: empty).
+    fn row(self, outcome: &str) -> cakeys_cli_common::Outcome {
+        cakeys_cli_common::Outcome::passed(self.object, self.spec.unwrap_or_default(), self.token, outcome)
+    }
 }
 
 impl Tally {
     /// `of`'s outcome (`imported`, `moved`, `already-there`, `ready`), and the method it moved
     /// by, if it did.
     fn done(&mut self, of: Of<'_>, outcome: &str, method: Option<&str>) {
-        self.results.push(serde_json::json!({
-            "object": of.object, "spec": of.spec, "token": of.token, "outcome": outcome, "method": method,
-        }));
+        let mut row = of.row(outcome);
+        row.more.insert("method".into(), method.into());
+        self.results.push(row);
     }
 
     /// `of` written (`outcome`, by `method`): the lock changed.
@@ -600,15 +606,48 @@ impl Tally {
     /// failure.
     fn fail(&mut self, of: Of<'_>, what: impl std::fmt::Display, err: KmError, notes: &mut Notes) {
         notes.say(format!("{what}: {err}"));
-        self.results.push(serde_json::json!({
-            "object": of.object, "spec": of.spec, "token": of.token, "outcome": "failed",
-            "exit": err.exit_code(), "error": err.to_string(),
-        }));
+        let row = of.row("failed").refused_by(Some(&err));
+        self.results.push(cakeys_cli_common::Outcome { error: Some(err.to_string()), ..row });
         self.failed.get_or_insert(err);
     }
 
+    /// `of` written (`outcome`, by `method`), and recorded at once, before the run touches
+    /// another object (the save is atomic): a run killed or failing later never leaves an object
+    /// on a token the lock does not record, and on ykcs11 cakeys cannot remove it. A save that
+    /// fails is the object's failure, 21 (`lock-writable`), saying how to record it once the lock
+    /// can be written (`hint`: [`public::unrecorded_hint`]); `false` then, and the run moves
+    /// nothing more. [`Tally::finish`] still prints every row and exits with the first failure
+    /// (review 2026-11-24 D-9: a failed save returned before it, the rows and an earlier
+    /// object's failure lost).
+    fn record(
+        &mut self,
+        run: &Run<'_>,
+        of: Of<'_>,
+        (outcome, method): (&str, Option<&str>),
+        hint: &str,
+        notes: &mut Notes,
+    ) -> bool {
+        match save_lock(&run.lock_path, &run.lock) {
+            Ok(()) => {
+                self.moved(of, outcome, method);
+                true
+            }
+            Err(e) => {
+                let what = format!("'{}' on token '{}'", of.object, of.token);
+                let e = KmError::LockUnwritable(
+                    format!(
+                        "{what} is on the token, but the lock could not record it ({e}), and the run stops here. {hint}"
+                    )
+                    .into(),
+                );
+                self.fail(of, format_args!("{what}: not recorded"), cakeys_cli_common::lock_rule(e), notes);
+                false
+            }
+        }
+    }
+
     /// Print each object's outcome, say the lock was written if anything moved, then exit with
-    /// the first failure. Each move saved it already ([`Run::record`]): never a second write
+    /// the first failure. Each move saved it already ([`Tally::record`]): never a second write
     /// only to say so (review 2026-11-23 C-21).
     fn finish(self, run: &Run<'_>, notes: &mut Notes) -> anyhow::Result<()> {
         print(&self.results)?;
@@ -620,17 +659,6 @@ impl Tally {
 }
 
 impl Run<'_> {
-    /// Record one object's write at once, before the run touches another (the save is atomic):
-    /// a run killed or failing later never leaves an object on a token the lock does not record,
-    /// and on ykcs11 cakeys cannot remove it. [`Tally::finish`] says so once, at the end. A save
-    /// that fails stops the run (21), saying how to record the object once the lock can be
-    /// written (`hint`: [`public::unrecorded_hint`]); nothing after it is moved.
-    fn record(&self, what: &dyn std::fmt::Display, hint: &str) -> anyhow::Result<()> {
-        save_lock(&self.lock_path, &self.lock).with_context(|| {
-            format!("{what} is on the token, but the lock could not record it, and the run stops here. {hint}")
-        })
-    }
-
     /// `--dry-run`: plan each object's move from `from` to `dest` and print it (docs/CAMIGRATE.md
     /// D9), and end with the real run's own verdict ([`tokens::Moves::verdict`]): an export
     /// without names takes what can move, and fails only when nothing can.
@@ -786,8 +814,10 @@ impl Run<'_> {
                     tally.done(Of::pair(&dst), "ready", Some(&e.method));
                 }
                 Ok(Some(public::Moved::Imported)) => {
-                    tally.moved(Of::pair(&dst), "imported", Some(&e.method));
-                    self.record(&dst, &public::unrecorded_hint(&dst))?;
+                    let hint = public::unrecorded_hint(&dst);
+                    if !tally.record(self, Of::pair(&dst), ("imported", Some(&e.method)), &hint, notes) {
+                        break;
+                    }
                     notes.say(format!(
                         "imported {} from {} ({}) into {dst}",
                         e.object, bundle.source.token, bundle.source.provider
@@ -887,8 +917,9 @@ impl Run<'_> {
             let method = p.method.as_ref().map(Method::name);
             match outcome {
                 Ok(public::Moved::Imported) => {
-                    tally.moved(of, "moved", method.as_deref());
-                    self.record(&format_args!("'{}' on token '{to}'", p.object), &hint)?;
+                    if !tally.record(self, of, ("moved", method.as_deref()), &hint, notes) {
+                        break;
+                    }
                     let how = method.unwrap_or_default();
                     notes.say(format!("moved {} from {from} to {to} ({how})", p.object));
                 }

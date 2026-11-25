@@ -70,6 +70,13 @@ a transport file, a bundle, another key's IDs, a key file that does not open und
 passphrase given: 10 is kept for material that differs from the lock); 21 a lock a writing run
 cannot write; 1 anything else (IO).
 
+`import`, `migrate` and `import` from files print one row per object on stdout, a JSON array,
+whatever happens to each: cakeys' row (its `exit`, the `rule` that refused it, whether the
+`device` failed, the `error`), with the `method` it moved by. A key file's refusals are rows
+too. An object that reached its token but could not be recorded (the lock could not be saved)
+is a row with 21 and the rule `lock-writable`, and says how to record it; nothing after it
+moves. The run exits with the first failure.
+
 ## Decisions
 
 **D1. Exportability is decided when a key is created.** A key with `CKA_EXTRACTABLE = false`

@@ -14,6 +14,7 @@
 mod common;
 
 use cakeys_core::config::ALLOW_NIX_STORE_KEYS;
+use common::state;
 use common::xref::{Env, Plant, Ref, env};
 use common::*;
 use cryptoki::object::{Attribute, CertificateType, KeyType, ObjectClass};
@@ -539,6 +540,90 @@ fn private_data_objects_never_move() {
     let o = e.km(soft, &["export", "--from", "softhsm", "--to", "kryoptic"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("pd: left out of the bundle"), "{}", stderr(&o));
+}
+
+/// A lock that cannot be saved once an object moved (21: the object is on its token, the lock
+/// does not record it) still prints every object's row (review 2026-11-24 D-9: the run returned
+/// before printing any): the unrecorded one's with 21 and its rule, and the run moves nothing
+/// after it. The save is made to fail by the size a write may not pass (`RLIMIT_FSIZE`, its
+/// signal ignored), set at the lock's size: the token's own files are smaller.
+#[test]
+#[expect(unsafe_code, reason = "pre_exec: the limit is set in the child, between fork and exec")]
+fn a_lock_that_cannot_be_saved_mid_run_keeps_the_rows() {
+    use std::os::unix::process::CommandExt as _;
+    let Some(e) = env("lock-mid-run") else { return };
+    let Some([soft, kry]) = e.needs("lock-mid-run", ["softhsm", "kryoptic"]) else { return };
+    let src = open_session(&kry.module, kry.token_label, "1234");
+    let mut body = String::new();
+    for o in ["d1", "d2"] {
+        src.create_object(&[
+            Attribute::Class(ObjectClass::DATA),
+            Attribute::Token(true),
+            Attribute::Private(false),
+            Attribute::Label(format!("lm-{o}").into_bytes()),
+            Attribute::Value(o.as_bytes().to_vec()),
+        ])
+        .unwrap();
+        let public = "attributes = { CKA_PRIVATE = false }\n";
+        body += &(format!("[objects.{o}]\nclass = \"CKO_DATA\"\n\n")
+            + &Env::spec(&format!("{o}-kry"), o, public, &[kry], &format!("lm-{o}"), "")
+            + &Env::spec(&format!("{o}-soft"), o, public, &[soft], &format!("lm-{o}"), IMPORT));
+    }
+    drop(src);
+    e.config(&body);
+    for spec in ["d1-kry", "d2-kry"] {
+        assert_eq!(code(&e.cakeys(kry, &["lock", "--spec", spec, "--token", "kryoptic"])), 22, "{spec}");
+    }
+    let lock = e.dir.join("keys.lock");
+    let limit = std::fs::metadata(&lock).unwrap().len();
+    let mut run = Run::new(BIN, &e.dir.join("keys.toml"))
+        .envs(kry.env.iter().copied())
+        .command(&["migrate", "d1", "d2", "--from", "kryoptic", "--to", "softhsm"]);
+    // SAFETY: between fork and exec, only async-signal-safe calls (signal, setrlimit).
+    unsafe {
+        run.pre_exec(move || {
+            libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+            let l = libc::rlimit { rlim_cur: limit, rlim_max: limit };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &raw const l) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let o = run.output().unwrap();
+    assert_eq!(code(&o), 21, "{}", stderr(&o));
+    let rows = state::rows(&o);
+    let row = |object: &str| rows.iter().find(|r| r.object == object);
+    let d1 = row("d1").unwrap_or_else(|| panic!("no row for d1: {rows:?}"));
+    assert_eq!((d1.exit, d1.rule.as_deref()), (21, Some("lock-writable")), "{d1:?}");
+    assert!(row("d2").is_none(), "moved after the lock could not be saved: {rows:?}");
+    let on_soft = |l: &str| open_session(&soft.module, soft.token_label, "1234").labelled(l).len();
+    assert_eq!((on_soft("lm-d1"), on_soft("lm-d2")), (1, 0));
+}
+
+/// A key file's refusal is its row, as a bundle entry's is (review 2026-11-24 D-9: `import --in`
+/// of a key file returned every refusal before printing a row): dry and real, the run's exit and
+/// the row's are the refusal's, and the row names the rule.
+#[test]
+fn a_key_file_refusal_is_its_row() {
+    let Some(e) = env("key-file-rows") else { return };
+    let Some([soft, kry]) = e.needs("key-file-rows", ["softhsm", "kryoptic"]) else { return };
+    bundle_keys(&e, soft, kry);
+    let (out, pass) = (e.dir.join("ek1.pem"), e.dir.join("pass"));
+    std::fs::write(&pass, "correct horse\n").unwrap();
+    let (out, pass) = (out.to_str().unwrap(), pass.to_str().unwrap());
+    let flags = ["--passphrase-file", pass, "--allow-host-plaintext"];
+    let export = ["export", "ek1", "--from", "softhsm", "--to-key-file", "pkcs8", "--out", out];
+    assert_eq!(code(&e.km(soft, &[&export[..], &flags].concat())), 0);
+    // ek1 is born on softhsm: none of its pairs there takes an import.
+    for dry in [&[][..], &["--dry-run"]] {
+        let o = e.km_alone(soft, &[&["import", "--to", "softhsm", "--in", out][..], &flags, dry].concat());
+        let rows = state::rows(&o);
+        assert_eq!(rows.len(), 1, "{dry:?}: {}", stderr(&o));
+        assert_eq!((code(&o), i32::from(rows[0].exit)), (17, 17), "{dry:?}: {rows:?}");
+        assert_eq!(rows[0].object, "ek1", "{rows:?}");
+    }
 }
 
 /// The transport key of reference `r` (docs/CAMIGRATE.md D3), as keys.toml text: an RSA key that only

@@ -117,38 +117,25 @@ impl Run<'_> {
         let objects = std::iter::once(object.as_str()).chain(pairs.iter().map(String::as_str));
         specs_select(cfg, specs, objects, token, KEY_FILE)?;
         let spec_for = |o: &str| spec_for(cfg, specs, o);
-        let dst = import_target(cfg, &object, token, spec_for(&object), KEY_FILE)?;
+        // Each refusal from here on is a row, as a bundle's entries are (review 2026-11-24 D-9:
+        // a key file's returned before any row was printed).
+        let mut tally = Tally::default();
+        let dst = match import_target(cfg, &object, token, spec_for(&object), KEY_FILE) {
+            Ok(dst) => dst,
+            Err(err) => {
+                tally.fail(Of::object(&object, token), format_args!("{object}: not imported"), err, notes);
+                return tally.finish(self, notes);
+            }
+        };
         // The certificate a PKCS#12 carries for its key goes where the lock pairs one with the key
         // on this token.
         let cert_target = pairs.iter().find_map(|o| import_target(cfg, o, token, spec_for(o), KEY_FILE).ok());
         let certificate = keyfile::key_certificate(&certificates, &spki);
-        let mut tally = Tally::default();
         let method_name = method.name();
         if dry_run {
-            // Everything the import checks before it creates anything, and nothing more.
             let target = opener.open(token, Access::Read, notes)?;
-            if public::already_there(&dst, &target, &self.lock, notes)? {
-                notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
-                tally.done(Of::pair(&dst), "already-there", None);
-            } else {
-                public::free_locator(&dst, &target, Some(&spki))?;
-                import_checks(&dst, &target, &method, opener.registry, notes)?;
-                notes.say(format!("{dst}: {object} by {method} (file) from {}: ready", input.display()));
-                tally.done(Of::pair(&dst), "ready", Some(&method_name));
-            }
-            match (&certificate, &cert_target) {
-                (Some(cert), Some(t)) if !public::already_there(t, &target, &self.lock, notes)? => {
-                    public::preflight(t, &target, cert)?;
-                    import_checks(t, &target, &Method::Public, opener.registry, notes)?;
-                    notes.say(format!("{t}: its certificate: ready"));
-                    tally.done(Of::pair(t), "ready", Some(&Method::Public.name()));
-                }
-                (Some(_), None) => notes.note(format_args!(
-                    "the file's certificate would not be imported: the lock pairs no certificate with '{object}' on \
-                     '{token}'"
-                )),
-                _ => {}
-            }
+            let paired = certificate.as_deref().map(|c| (c, cert_target.as_ref()));
+            self.plan_key_file(&target, &dst, (&spki, &method), paired, input, &mut tally, notes);
             return tally.finish(self, notes);
         }
         let target = opener.open(token, Access::Write, notes)?;
@@ -159,16 +146,22 @@ impl Run<'_> {
             declared: false,
         };
         let pkcs8 = cakeys_pkcs11::ops::Extracted::from_file(pkcs8);
-        let moved = host::create_and_record(&dst, &target, &mut self.lock, pkcs8, Some(&spki), origin, notes)?;
-        match moved {
-            public::Moved::Imported => {
-                tally.moved(Of::pair(&dst), "imported", Some(&method_name));
-                self.record(&dst, &public::unrecorded_hint(&dst))?;
+        match host::create_and_record(&dst, &target, &mut self.lock, pkcs8, Some(&spki), origin, notes) {
+            Ok(public::Moved::Imported) => {
+                let hint = public::unrecorded_hint(&dst);
+                if !tally.record(self, Of::pair(&dst), ("imported", Some(&method_name)), &hint, notes) {
+                    return tally.finish(self, notes);
+                }
                 notes.say(format!("imported {object} from {} into {dst}", input.display()));
             }
-            public::Moved::AlreadyThere => {
+            Ok(public::Moved::AlreadyThere) => {
                 notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
                 tally.done(Of::pair(&dst), "already-there", None);
+            }
+            // Its certificate goes with it, or not at all.
+            Err(err) => {
+                tally.fail(Of::pair(&dst), format_args!("{dst}: not imported"), err, notes);
+                return tally.finish(self, notes);
             }
         }
         // The certificate a PKCS#12 carries, where the lock pairs one with the key on this token.
@@ -177,11 +170,12 @@ impl Run<'_> {
             match cert_target {
                 Some(t) => match public::create(&t, &target, cert, "file", &mut self.lock, notes) {
                     Ok(public::Moved::Imported) => {
-                        tally.moved(Of::pair(&t), "imported", Some(&Method::Public.name()));
                         // Saved as the key was: it was recorded only in memory, and `check` found
                         // a realisation the lock did not record (14).
-                        self.record(&t, &public::unrecorded_hint(&t))?;
-                        notes.say(format!("imported its certificate into {t}"));
+                        let (public, hint) = (Method::Public.name(), public::unrecorded_hint(&t));
+                        if tally.record(self, Of::pair(&t), ("imported", Some(&public)), &hint, notes) {
+                            notes.say(format!("imported its certificate into {t}"));
+                        }
                     }
                     Ok(public::Moved::AlreadyThere) => tally.done(Of::pair(&t), "already-there", None),
                     Err(e) => tally.fail(Of::pair(&t), format_args!("{t}: its certificate is not imported"), e, notes),
@@ -192,6 +186,65 @@ impl Run<'_> {
             }
         }
         tally.finish(self, notes)
+    }
+
+    /// `import --in <key file> --dry-run`: everything the import checks before it creates
+    /// anything, and nothing more, a row each for the key (`dst`, of public key `spki`, by
+    /// `method`) and the certificate the file carries (`paired`: where the lock pairs one).
+    #[expect(clippy::too_many_arguments, reason = "the key file's parts, as import_file read them")]
+    fn plan_key_file(
+        &self,
+        target: &cakeys_pkcs11::Token,
+        dst: &Target,
+        (spki, method): (&[u8], &Method),
+        paired: Option<(&[u8], Option<&Target>)>,
+        input: &Path,
+        tally: &mut Tally,
+        notes: &mut Notes,
+    ) {
+        let (object, token, registry) = (dst.object_name, dst.token_name, self.opener.registry);
+        let key = public::already_there(dst, target, &self.lock, notes).and_then(|there| {
+            if !there {
+                public::free_locator(dst, target, Some(spki))?;
+                import_checks(dst, target, method, registry, notes)?;
+            }
+            Ok(there)
+        });
+        match key {
+            Ok(true) => {
+                notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
+                tally.done(Of::pair(dst), "already-there", None);
+            }
+            Ok(false) => {
+                notes.say(format!("{dst}: {object} by {method} (file) from {}: ready", input.display()));
+                tally.done(Of::pair(dst), "ready", Some(&method.name()));
+            }
+            Err(err) => tally.fail(Of::pair(dst), format_args!("{dst}: not imported"), err, notes),
+        }
+        match paired {
+            Some((cert, Some(t))) => {
+                let ready = public::already_there(t, target, &self.lock, notes).and_then(|there| {
+                    if !there {
+                        public::preflight(t, target, cert)?;
+                        import_checks(t, target, &Method::Public, registry, notes)?;
+                    }
+                    Ok(!there)
+                });
+                match ready {
+                    Ok(true) => {
+                        notes.say(format!("{t}: its certificate: ready"));
+                        tally.done(Of::pair(t), "ready", Some(&Method::Public.name()));
+                    }
+                    Ok(false) => {}
+                    Err(e) => tally.fail(Of::pair(t), format_args!("{t}: its certificate is not imported"), e, notes),
+                }
+            }
+            Some((_, None)) => notes.note(format_args!(
+                "the file's certificate would not be imported: the lock pairs no certificate with '{object}' on \
+                 '{token}'"
+            )),
+            None => {}
+        }
     }
 
     /// `import` without `--in` (docs/FILE.md F6): each object a pair on `token` says is born in a
@@ -250,8 +303,10 @@ impl Run<'_> {
             match from_its_file((cfg, self.opener.registry), &dst, &target, &mut self.lock, how, notes) {
                 Ok(Filed::Ready(method)) => tally.done(Of::pair(&dst), "ready", Some(&method)),
                 Ok(Filed::Moved(public::Moved::Imported, method)) => {
-                    tally.moved(Of::pair(&dst), "imported", Some(&method));
-                    self.record(&dst, &public::unrecorded_hint(&dst))?;
+                    let hint = public::unrecorded_hint(&dst);
+                    if !tally.record(self, Of::pair(&dst), ("imported", Some(&method)), &hint, notes) {
+                        break;
+                    }
                     notes.say(format!("imported {object} from its file into {dst}"));
                 }
                 Ok(Filed::Moved(public::Moved::AlreadyThere, _)) => {
