@@ -52,7 +52,10 @@ impl Resolved {
                     Said::No => Answer::No,
                     Said::Other(_) => return None,
                 };
-                Some((Capability::parse(k).ok()?, Row { answer, evidence: a.evidence.clone(), via: a.via.clone() }))
+                Some((
+                    Capability::parse(k).ok()?,
+                    Row { answer, by: None, evidence: a.evidence.clone(), via: a.via.clone() },
+                ))
             })
             .collect();
         if rows.is_empty() {
@@ -406,13 +409,12 @@ impl Nearness {
     }
 }
 
-/// Drop a pair profile's rows that depend on the hardware it was observed on: what generates,
-/// wraps, unwraps, decrypts, imports and exports there answers unknown on other or unknown
-/// hardware.
+/// Drop a pair profile's rows that depend on the hardware it was observed on, and what the probe
+/// could not decide of them there: what generates, wraps, unwraps, decrypts, imports and exports
+/// there answers unknown on other or unknown hardware.
 fn clear_hardware_rows(p: &mut Profile) {
-    p.reported.clear();
-    p.capabilities.retain(|c, _| {
-        !matches!(
+    let hardware = |c: &Capability| {
+        matches!(
             c,
             Capability::Generate { .. }
                 | Capability::WrapOaep(_)
@@ -423,7 +425,12 @@ fn clear_hardware_rows(p: &mut Profile) {
                 | Capability::Export { .. }
                 | Capability::Unwrap { .. }
         )
-    });
+    };
+    p.reported.clear();
+    p.capabilities.retain(|c, _| !hardware(c));
+    // What the probe could not decide there is that hardware's too (`[untested]`, why device or
+    // cakeys): on other hardware, unknown as the rows are.
+    p.untested.retain(|name, _| Capability::parse(name).map_or(true, |c| !hardware(&c)));
 }
 
 /// How a module profile's match keys meet a token: per key, whether it matches (`None`: the
@@ -498,9 +505,10 @@ mod tests {
         };
         let after = |profile: Option<&str>, recorded: Answered| {
             let mut module = Profile::new("m".into(), Mode::Observed);
-            module
-                .capabilities
-                .insert(row.clone(), Row { answer: Answer::Yes, evidence: None, via: profile.map(Into::into) });
+            module.capabilities.insert(
+                row.clone(),
+                Row { answer: Answer::Yes, by: None, evidence: None, via: profile.map(Into::into) },
+            );
             let mut r = Resolved { module: Some(module), ..Resolved::default() };
             let mut observed = Observation::default();
             observed.capabilities.insert(row.to_string(), recorded);
@@ -541,6 +549,8 @@ mod tests {
         assert!(r.notes[0].contains("manufacturer alone"), "{:?}", r.notes);
         assert!(r.notes[1].contains("are not used"), "{:?}", r.notes);
         assert!(r.module.as_ref().unwrap().generation_key_types().is_empty());
+        // And what the probe could not decide on that hardware (its `[untested]` device entries).
+        assert!(!r.module.as_ref().unwrap().untested.keys().any(|k| k.starts_with("generate.")));
         // No token to compare with (a transport file): flagged, rows kept.
         let r = resolve(&cfg(None, &[]), &module("Kryoptic", "0.0"), None, "kryoptic").unwrap();
         assert!(r.notes[0].contains("manufacturer alone"), "{:?}", r.notes);

@@ -72,11 +72,11 @@ fn assert_fired(name: &str, plan: &str, fired: &[usize], said: &str) {
 type Case<'a> = (&'a str, String, &'a [&'a str], &'a str, &'a [&'a str]);
 
 /// The rows the honest module earns that a case takes away.
-const POP_SIGN: &str = "\"prove.pop-sign.CKK_EC.secp256r1\" = { answer = \"yes\" }";
-const POP_ECDH: &str = "\"prove.pop-ecdh.CKK_EC.secp256r1\" = { answer = \"yes\" }";
-const SEALED: &str = "\"derive.ecdh.sealed\" = { answer = \"yes\" }";
-const READ_ONLY: &str = "\"derive.ecdh.read-only\" = { answer = \"yes\" }";
-const OAEP_SHA1: &str = "\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\" }";
+const POP_SIGN: &str = "\"prove.pop-sign.CKK_EC.secp256r1\" = { answer = \"yes\", by = \"host\" }";
+const POP_ECDH: &str = "\"prove.pop-ecdh.CKK_EC.secp256r1\" = { answer = \"yes\", by = \"host\" }";
+const SEALED: &str = "\"derive.ecdh.sealed\" = { answer = \"yes\", by = \"host\" }";
+const READ_ONLY: &str = "\"derive.ecdh.read-only\" = { answer = \"yes\", by = \"host\" }";
+const OAEP_SHA1: &str = "\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\", by = \"host\" }";
 
 /// The calls the first key's proofs of possession make before the probes of its mechanisms (it
 /// proves first, as the verbs do right after generating): pop-sign's `C_SignInit`, pop-ecdh's
@@ -108,6 +108,10 @@ fn probe_cases(w: &Workdir, cases: &[Case]) {
             assert!(profile.contains(row), "{name}: expected {row:?} in\n{profile}");
         }
         assert!(said.contains(undetermined), "{name}: expected {undetermined:?} in {said}");
+        // What the probe wrote loads: no row's `by` contradicts its answer, the module's no
+        // never cites a device failure, and an undecided capability is no row too (E-2).
+        let loaded = cakeys_profile::Profile::from_toml(&profile).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(loaded.untested_problems(), Vec::<String>::new(), "{name}");
         for row in *earned {
             assert!(honest.contains(row), "{name}: {row:?} is no row of the committed profile");
             assert!(!profile.contains(row), "{name}: the honest module's {row:?} in\n{profile}");
@@ -170,7 +174,7 @@ fn the_probe_records_what_a_misbehaving_module_does() {
                 .map(|n| rule(&format!("fn = \"C_DeriveKey\"\ncall = {n}\nrv = \"CKR_ATTRIBUTE_VALUE_INVALID\"")))
                 .collect(),
             &[
-                "\"derive.ecdh.sealed\" = { answer = \"no\", evidence = \"a sealed (non-extractable) derived secret is refused",
+                "\"derive.ecdh.sealed\" = { answer = \"no\", by = \"module\", evidence = \"a sealed (non-extractable) derived secret is refused",
                 "a sealed (non-extractable) derived secret is refused: CKR_ATTRIBUTE_VALUE_INVALID",
             ],
             "",
@@ -208,12 +212,24 @@ fn the_probe_records_what_a_misbehaving_module_does() {
             "no prove.pop-sign.CKK_EC.secp256r1 row",
             &[POP_SIGN],
         ),
+        // A device failure is no answer of the module's: no `no` row, an `[untested]` entry
+        // naming it (review 2026-11-24 E-2: this case asserted the two `no` rows).
         (
             "wraps but does not unwrap",
             rule("fn = \"C_UnwrapKey\"\nrv = \"CKR_DEVICE_ERROR\""),
             &[
-                "\"wrap.rsa-oaep.SHA-1\" = { answer = \"no\" }\n\"wrap.rsa-oaep.SHA-256\" = { answer = \"no\" }",
-                "wraps but does not unwrap: CKR_DEVICE_ERROR",
+                "\"wrap.rsa-oaep.SHA-1\" = { why = \"device\", note = \"wraps but does not unwrap: CKR_DEVICE_ERROR\" }",
+                // SoftHSM's own no, at the wrap, before any unwrap: still the module's.
+                "\"wrap.rsa-oaep.SHA-256\" = { answer = \"no\", by = \"module\", evidence = \"wrapping fails: CKR_ARGUMENTS_BAD\" }",
+            ],
+            "no wrap.rsa-oaep.SHA-1 row: wraps but does not unwrap: CKR_DEVICE_ERROR (the device failed",
+            &[OAEP_SHA1],
+        ),
+        (
+            "a module refusal of the unwrap is its no",
+            rule("fn = \"C_UnwrapKey\"\nrv = \"CKR_MECHANISM_PARAM_INVALID\""),
+            &[
+                "\"wrap.rsa-oaep.SHA-1\" = { answer = \"no\", by = \"module\", evidence = \"wraps but does not unwrap: CKR_MECHANISM_PARAM_INVALID\" }",
             ],
             "",
             &[OAEP_SHA1],
@@ -231,6 +247,41 @@ fn the_probe_records_what_a_misbehaving_module_does() {
 /// template, and the one that took is the profile's note: `CKA_VALUE_LEN` added; then each
 /// policy default dropped from the template as asked; then from the one with `CKA_VALUE_LEN`. A
 /// refusal that is not about the template ends the tries, first or later.
+/// A device failure on every call of each function the probe's answers come from, one function
+/// at a time: no row the probe writes is a no on a device failure (review 2026-11-24 E-2,
+/// phase1-design §2.3). What it writes loads, which a `module` no citing one would not, no `no`
+/// row of any provenance cites one, and the steps the device failed are `[untested]` `device`
+/// entries.
+#[test]
+fn a_device_failure_is_never_a_no() {
+    use cakeys_profile::{Answer, Why, names_device_failure};
+    let Some(w) = scratch("fault-device-sweep") else { return };
+    let functions = [
+        "C_GenerateKey",
+        "C_GenerateKeyPair",
+        "C_CreateObject",
+        "C_WrapKey",
+        "C_UnwrapKey",
+        "C_DeriveKey",
+        "C_SignInit",
+    ];
+    for f in functions {
+        let plan = rule(&format!("fn = \"{f}\"\nrv = \"CKR_DEVICE_ERROR\""));
+        let (exit, profile, said, fired) = probed(&w, f, &plan, &[]);
+        assert_fired(f, &plan, &fired, &said);
+        assert_eq!(exit, 0, "{f}: {said}");
+        let loaded = cakeys_profile::Profile::from_toml(&profile).unwrap_or_else(|e| panic!("{f}: {e}"));
+        let cited: Vec<String> = loaded
+            .capabilities
+            .iter()
+            .filter(|(_, r)| r.answer == Answer::No && r.evidence.as_deref().and_then(names_device_failure).is_some())
+            .map(|(c, _)| c.to_string())
+            .collect();
+        assert_eq!(cited, Vec::<String>::new(), "{f}: a no on a device failure");
+        assert!(loaded.untested.values().any(|u| u.why == Why::Device), "{f}: no step left undecided");
+    }
+}
+
 #[test]
 fn the_probe_notes_which_derive_template_took() {
     let Some(w) = scratch("fault-probe-derive") else { return };
@@ -260,10 +311,13 @@ fn the_probe_notes_which_derive_template_took() {
             "",
             &[],
         ),
+        // A device failure of the sealed derivation is no `derive.ecdh.sealed = no` (E-2).
         (
             "the sealed derivation fails",
             rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_DEVICE_ERROR\"", DERIVES + 1)),
-            &["a sealed (non-extractable) derived secret is refused: CKR_DEVICE_ERROR"],
+            &[
+                "\"derive.ecdh.sealed\" = { why = \"device\", note = \"a sealed (non-extractable) derived secret is refused: CKR_DEVICE_ERROR\" }",
+            ],
             "",
             &[SEALED],
         ),
@@ -271,7 +325,9 @@ fn the_probe_notes_which_derive_template_took() {
             "the sealed derivation fails after a template refusal",
             rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_TEMPLATE_INCONSISTENT\"", DERIVES + 1))
                 + &rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_DEVICE_ERROR\"", DERIVES + 2)),
-            &["a sealed (non-extractable) derived secret is refused: CKR_DEVICE_ERROR"],
+            &[
+                "\"derive.ecdh.sealed\" = { why = \"device\", note = \"a sealed (non-extractable) derived secret is refused: CKR_DEVICE_ERROR\" }",
+            ],
             "",
             &[SEALED],
         ),
@@ -322,8 +378,9 @@ fn an_oaep_hash_counts_only_when_a_host_made_blob_decodes() {
     assert_fired("blob", &plan, &fired, &said);
     let unwraps: String =
         std::fs::read_to_string(w.dir.join("blob.jsonl")).unwrap().lines().collect::<Vec<_>>().join("\n");
+    // No yes: the module's no, or (a device-failure return value) no row at all.
     assert!(
-        profile.contains("\"wrap.rsa-oaep.SHA-1\" = { answer = \"no\" }"),
+        !profile.contains(OAEP_SHA1),
         "{plan}\nfired {fired:?}\nunwraps in the blob run:\n{unwraps}\n{said}\n{profile}"
     );
     assert!(profile.contains("unwraps its own blob but not one the host made"), "{profile}");
@@ -339,7 +396,8 @@ fn allowed_mechanisms_are_enforced_only_beside_a_working_control() {
     let Some(w) = scratch("fault-probe-allowed") else { return };
     let (exit, profile, said, _) = probed(&w, "clean", "", &[]);
     assert_eq!(exit, 0, "{said}");
-    let enforced = "\"attr.set.CKA_ALLOWED_MECHANISMS.CKK_AES\" = { answer = \"yes\", via = \"enforced\" }";
+    let enforced =
+        "\"attr.set.CKA_ALLOWED_MECHANISMS.CKK_AES\" = { answer = \"yes\", by = \"host\", via = \"enforced\" }";
     assert!(profile.contains(enforced), "the honest module's row: {profile}");
     let trace = std::fs::read_to_string(w.dir.join("clean.jsonl")).unwrap();
     let calls: Vec<serde_json::Value> = trace.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
@@ -354,7 +412,11 @@ fn allowed_mechanisms_are_enforced_only_beside_a_working_control() {
     let (exit, profile, said, fired) = probed(&w, "control", &plan, &[]);
     assert_eq!(exit, 0, "{said}");
     assert_fired("control", &plan, &fired, &said);
-    assert!(profile.contains("\"attr.set.CKA_ALLOWED_MECHANISMS.CKK_AES\" = { answer = \"yes\" }"), "{profile}");
+    // Taken, its enforcement untold: the module's word alone (review 2026-11-24 E-4).
+    assert!(
+        profile.contains("\"attr.set.CKA_ALLOWED_MECHANISMS.CKK_AES\" = { answer = \"yes\", by = \"unverified\" }"),
+        "{profile}"
+    );
     assert!(said.contains("whether it is enforced is not told"), "{said}");
 }
 

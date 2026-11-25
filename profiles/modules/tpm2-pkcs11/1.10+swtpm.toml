@@ -50,6 +50,10 @@ advertise = [
 "CKM_AES_CFB128" = { why = "cryptoki", note = "the pinned cryptoki has no name or parameter type for it; see profiles/layers/cryptoki.toml" }
 "CKM_AES_CTR" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
 "CKM_AES_ECB" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
+"CKM_ECDSA_SHA1" = { why = "unverified", note = "signs, but the host has no verifier for its signatures: only the module says it works" }
+"CKM_RSA_X_509" = { why = "unverified", note = "signs, but the host has no verifier for its signatures: only the module says it works" }
+"CKM_SHA1_RSA_PKCS" = { why = "unverified", note = "signs, but the host has no verifier for its signatures: only the module says it works" }
+"CKM_SHA1_RSA_PKCS_PSS" = { why = "unverified", note = "signs, but the host has no verifier for its signatures: only the module says it works" }
 "CKM_SHA256" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
 "CKM_SHA256_HMAC" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
 "CKM_SHA384" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
@@ -58,6 +62,9 @@ advertise = [
 "CKM_SHA512_HMAC" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
 "CKM_SHA_1" = { why = "scope", note = "the tools hash on the host, so a module's digest is never asked of it" }
 "CKM_SHA_1_HMAC" = { why = "unprobed", note = "advertised, and its limits reported by C_GetMechanismInfo (see [mechanism-info]), but no probe exercised it on this token" }
+"derive.ecdh.sealed" = { why = "device", note = "derives into a sealed secret, but HMAC with it fails: CKR_GENERAL_ERROR" }
+"generate.CKK_RSA.1536" = { why = "device", note = "modulusBits = 1536: CKR_GENERAL_ERROR" }
+"prove.pop-sign.CKK_EC.secp521r1" = { why = "device", note = "unavailable: C_Sign (proof of possession): CKR_HOST_MEMORY: Function::SignInit" }
 
 [match]
 manufacturer = "tpm2-software.github.io"
@@ -69,55 +76,52 @@ firmware = "36.37"
 mechanisms = ["CKM_AES_KEY_GEN"]
 
 [capabilities]
-"generate.CKK_AES.8" = { answer = "no", evidence = "valueLen = 8: CKR_FUNCTION_NOT_SUPPORTED" }
-"generate.CKK_AES.16" = { answer = "no", evidence = "valueLen = 16: CKR_FUNCTION_NOT_SUPPORTED" }
-"generate.CKK_AES.24" = { answer = "no", evidence = "valueLen = 24: CKR_FUNCTION_NOT_SUPPORTED" }
-"generate.CKK_AES.32" = { answer = "no", evidence = "valueLen = 32: CKR_FUNCTION_NOT_SUPPORTED" }
-"generate.CKK_AES.48" = { answer = "no", evidence = "valueLen = 48: CKR_FUNCTION_NOT_SUPPORTED" }
-"generate.CKK_AES.64" = { answer = "no", evidence = "valueLen = 64: CKR_FUNCTION_NOT_SUPPORTED" }
-"generate.CKK_EC.brainpoolP256r1" = { answer = "no", evidence = "generation refused: CKR_CURVE_NOT_SUPPORTED" }
-"generate.CKK_EC.brainpoolP384r1" = { answer = "no", evidence = "generation refused: CKR_CURVE_NOT_SUPPORTED" }
-"generate.CKK_EC.secp256k1" = { answer = "no", evidence = "generation refused: CKR_CURVE_NOT_SUPPORTED" }
-"generate.CKK_EC.secp256r1" = { answer = "yes" }
-"generate.CKK_EC.secp384r1" = { answer = "yes" }
-"generate.CKK_EC.secp521r1" = { answer = "yes" }
-"generate.CKK_EC_EDWARDS.edwards25519" = { answer = "no", evidence = "generation refused: CKR_MECHANISM_INVALID" }
-"generate.CKK_EC_EDWARDS.edwards448" = { answer = "no", evidence = "generation refused: CKR_MECHANISM_INVALID" }
-"generate.CKK_EC_MONTGOMERY.curve25519" = { answer = "no", evidence = "generation refused: CKR_MECHANISM_INVALID" }
-"generate.CKK_EC_MONTGOMERY.curve448" = { answer = "no", evidence = "generation refused: CKR_MECHANISM_INVALID" }
-"generate.CKK_RSA.512" = { answer = "no", evidence = "modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID" }
-"generate.CKK_RSA.1024" = { answer = "yes" }
-"generate.CKK_RSA.1536" = { answer = "no", evidence = "modulusBits = 1536: CKR_GENERAL_ERROR" }
-"generate.CKK_RSA.2048" = { answer = "yes" }
-"generate.CKK_RSA.3072" = { answer = "yes" }
-"generate.CKK_RSA.4096" = { answer = "no", evidence = "modulusBits = 4096: CKR_ATTRIBUTE_VALUE_INVALID" }
-"decrypt.rsa-oaep.SHA-1" = { answer = "yes" }
-"decrypt.rsa-oaep.SHA-256" = { answer = "yes" }
-"decrypt.rsa-oaep.SHA-512" = { answer = "yes" }
-"derive.ecdh.sealed" = { answer = "no", evidence = "derives into a sealed secret, but HMAC with it fails: CKR_GENERAL_ERROR" }
-"derive.ecdh.read-only" = { answer = "no", evidence = "secp256r1: in a read-only session: CKR_SESSION_READ_ONLY" }
+"generate.CKK_AES.8" = { answer = "no", by = "module", evidence = "valueLen = 8: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.16" = { answer = "no", by = "module", evidence = "valueLen = 16: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.24" = { answer = "no", by = "module", evidence = "valueLen = 24: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.32" = { answer = "no", by = "module", evidence = "valueLen = 32: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.48" = { answer = "no", by = "module", evidence = "valueLen = 48: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_AES.64" = { answer = "no", by = "module", evidence = "valueLen = 64: CKR_FUNCTION_NOT_SUPPORTED" }
+"generate.CKK_EC.brainpoolP256r1" = { answer = "no", by = "module", evidence = "generation refused: CKR_CURVE_NOT_SUPPORTED" }
+"generate.CKK_EC.brainpoolP384r1" = { answer = "no", by = "module", evidence = "generation refused: CKR_CURVE_NOT_SUPPORTED" }
+"generate.CKK_EC.secp256k1" = { answer = "no", by = "module", evidence = "generation refused: CKR_CURVE_NOT_SUPPORTED" }
+"generate.CKK_EC.secp256r1" = { answer = "yes", by = "host" }
+"generate.CKK_EC.secp384r1" = { answer = "yes", by = "host" }
+"generate.CKK_EC.secp521r1" = { answer = "yes", by = "host" }
+"generate.CKK_EC_EDWARDS.edwards25519" = { answer = "no", by = "module", evidence = "generation refused: CKR_MECHANISM_INVALID" }
+"generate.CKK_EC_EDWARDS.edwards448" = { answer = "no", by = "module", evidence = "generation refused: CKR_MECHANISM_INVALID" }
+"generate.CKK_EC_MONTGOMERY.curve25519" = { answer = "no", by = "module", evidence = "generation refused: CKR_MECHANISM_INVALID" }
+"generate.CKK_EC_MONTGOMERY.curve448" = { answer = "no", by = "module", evidence = "generation refused: CKR_MECHANISM_INVALID" }
+"generate.CKK_RSA.512" = { answer = "no", by = "module", evidence = "modulusBits = 512: CKR_ATTRIBUTE_VALUE_INVALID" }
+"generate.CKK_RSA.1024" = { answer = "yes", by = "host" }
+"generate.CKK_RSA.2048" = { answer = "yes", by = "host" }
+"generate.CKK_RSA.3072" = { answer = "yes", by = "host" }
+"generate.CKK_RSA.4096" = { answer = "no", by = "module", evidence = "modulusBits = 4096: CKR_ATTRIBUTE_VALUE_INVALID" }
+"decrypt.rsa-oaep.SHA-1" = { answer = "yes", by = "host" }
+"decrypt.rsa-oaep.SHA-256" = { answer = "yes", by = "host" }
+"decrypt.rsa-oaep.SHA-512" = { answer = "yes", by = "host" }
+"derive.ecdh.read-only" = { answer = "no", by = "module", evidence = "secp256r1: in a read-only session: CKR_SESSION_READ_ONLY" }
 "move.export" = { answer = "no" }
 "move.unwrap" = { answer = "no" }
-"prove.pop-decrypt.CKK_RSA.1024" = { answer = "yes" }
-"prove.pop-decrypt.CKK_RSA.2048" = { answer = "yes" }
-"prove.pop-decrypt.CKK_RSA.3072" = { answer = "yes" }
-"prove.pop-ecdh.CKK_EC.secp256r1" = { answer = "yes" }
-"prove.pop-ecdh.CKK_EC.secp384r1" = { answer = "yes" }
-"prove.pop-ecdh.CKK_EC.secp521r1" = { answer = "yes" }
-"prove.pop-sign.CKK_EC.secp256r1" = { answer = "yes" }
-"prove.pop-sign.CKK_EC.secp384r1" = { answer = "yes" }
-"prove.pop-sign.CKK_EC.secp521r1" = { answer = "no", evidence = "unavailable: C_Sign (proof of possession): CKR_HOST_MEMORY: Function::SignInit" }
-"prove.pop-sign.CKK_RSA.1024" = { answer = "yes" }
-"prove.pop-sign.CKK_RSA.2048" = { answer = "yes" }
-"prove.pop-sign.CKK_RSA.3072" = { answer = "yes" }
-"prove.pop-unwrap.CKK_RSA.1024" = { answer = "no", evidence = "unsupported: the token refused to unwrap with the private key (CKR_FUNCTION_NOT_SUPPORTED: Function::UnwrapKey); proving possession needs CKA_UNWRAP, or opt in with binding = \"token-asserted\"" }
-"prove.pop-unwrap.CKK_RSA.2048" = { answer = "no", evidence = "unsupported: the token refused to unwrap with the private key (CKR_FUNCTION_NOT_SUPPORTED: Function::UnwrapKey); proving possession needs CKA_UNWRAP, or opt in with binding = \"token-asserted\"" }
-"prove.pop-unwrap.CKK_RSA.3072" = { answer = "no", evidence = "unsupported: the token refused to unwrap with the private key (CKR_FUNCTION_NOT_SUPPORTED: Function::UnwrapKey); proving possession needs CKA_UNWRAP, or opt in with binding = \"token-asserted\"" }
-"create.CKO_CERTIFICATE" = { answer = "yes" }
-"create.CKO_DATA" = { answer = "no", evidence = "unsupported: C_CreateObject: CKR_ATTRIBUTE_VALUE_INVALID" }
-"delete.CKO_CERTIFICATE" = { answer = "yes" }
-"delete.CKO_PRIVATE_KEY" = { answer = "no", evidence = "C_DestroyObject leaves 4 of 6 behind" }
-"delete.CKO_PUBLIC_KEY" = { answer = "yes" }
+"prove.pop-decrypt.CKK_RSA.1024" = { answer = "yes", by = "host" }
+"prove.pop-decrypt.CKK_RSA.2048" = { answer = "yes", by = "host" }
+"prove.pop-decrypt.CKK_RSA.3072" = { answer = "yes", by = "host" }
+"prove.pop-ecdh.CKK_EC.secp256r1" = { answer = "yes", by = "host" }
+"prove.pop-ecdh.CKK_EC.secp384r1" = { answer = "yes", by = "host" }
+"prove.pop-ecdh.CKK_EC.secp521r1" = { answer = "yes", by = "host" }
+"prove.pop-sign.CKK_EC.secp256r1" = { answer = "yes", by = "host" }
+"prove.pop-sign.CKK_EC.secp384r1" = { answer = "yes", by = "host" }
+"prove.pop-sign.CKK_RSA.1024" = { answer = "yes", by = "host" }
+"prove.pop-sign.CKK_RSA.2048" = { answer = "yes", by = "host" }
+"prove.pop-sign.CKK_RSA.3072" = { answer = "yes", by = "host" }
+"prove.pop-unwrap.CKK_RSA.1024" = { answer = "no", by = "module", evidence = "unsupported: the token refused to unwrap with the private key (CKR_FUNCTION_NOT_SUPPORTED: Function::UnwrapKey); proving possession needs CKA_UNWRAP, or opt in with binding = \"token-asserted\"" }
+"prove.pop-unwrap.CKK_RSA.2048" = { answer = "no", by = "module", evidence = "unsupported: the token refused to unwrap with the private key (CKR_FUNCTION_NOT_SUPPORTED: Function::UnwrapKey); proving possession needs CKA_UNWRAP, or opt in with binding = \"token-asserted\"" }
+"prove.pop-unwrap.CKK_RSA.3072" = { answer = "no", by = "module", evidence = "unsupported: the token refused to unwrap with the private key (CKR_FUNCTION_NOT_SUPPORTED: Function::UnwrapKey); proving possession needs CKA_UNWRAP, or opt in with binding = \"token-asserted\"" }
+"create.CKO_CERTIFICATE" = { answer = "yes", by = "host" }
+"create.CKO_DATA" = { answer = "no", by = "module", evidence = "unsupported: C_CreateObject: CKR_ATTRIBUTE_VALUE_INVALID" }
+"delete.CKO_CERTIFICATE" = { answer = "yes", by = "host" }
+"delete.CKO_PRIVATE_KEY" = { answer = "no", by = "host", evidence = "C_DestroyObject leaves 4 of 6 behind" }
+"delete.CKO_PUBLIC_KEY" = { answer = "yes", by = "host" }
 
 [reported."CKK_RSA"]
 min-bits = 1024

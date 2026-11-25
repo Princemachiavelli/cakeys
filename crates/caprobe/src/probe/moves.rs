@@ -9,7 +9,7 @@
 //! is imported, as SO, and the slot ends holding a freshly generated key and its placeholder,
 //! as the generation probes leave it.
 
-use super::{Created, Draft, Made, Target, ckr, evidence, refused, rsa_aes_key_wrap, so_login, spec};
+use super::{Checked, Created, Draft, Made, Target, ckr, evidence, refused, rsa_aes_key_wrap, so_login, spec, worst};
 use cakeys_core::config::{Binding, Locator, Object, ObjectCfg};
 use cakeys_core::migrate::Method;
 use cakeys_core::migrate::OaepHash;
@@ -19,7 +19,7 @@ use cakeys_core::{KmError, Result, id};
 use cakeys_pkcs11::provider::PlaintextKind;
 use cakeys_pkcs11::token::{self, SessionObject, locator_attrs, public_object_attrs};
 use cakeys_pkcs11::{Declared, SessionKey, Template, Via};
-use cakeys_profile::{Answer, Capability, KeyKind, On, Way};
+use cakeys_profile::{Capability, KeyKind, On, Way};
 use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsOaepParams, PkcsOaepSource};
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass, ObjectHandle};
@@ -159,7 +159,9 @@ fn mark_slot(made: &mut Made) -> Result<()> {
     let on = Declared { object: Object::new(&object)?, spec: &probe_spec, locator: &loc };
     let marked = made.tok.provider.adjusted(&Template::Object(on), t).and_then(|t| {
         made.tok.managing("marking the scratch slot", || {
-            session.create_object(&t).map_err(|e| KmError::Unsupported(format!("C_CreateObject: {}", ckr(&e)).into()))
+            session.create_object(&t).map_err(|e| {
+                KmError::Unsupported(format!("C_CreateObject: {}", ckr(&e)).into()).with_rv(token::rv_of(&e))
+            })
         })
     });
     match marked {
@@ -288,13 +290,13 @@ fn import_private(
         Ok(made_key) => made_key,
         Err(e) if so_login(&e) => return Err(e),
         Err(e) => {
-            profile.set(cap, Answer::No, Some(refused(made.tok, &e)), None);
+            profile.refused(&mut made.undetermined, cap, e.rv(), refused(made.tok, &e));
             return Ok(());
         }
     };
     made.track(h, label.as_ref());
     match made.tok.prove_binding(h, object, &spki, Binding::PopSign) {
-        Ok(()) => profile.set(cap, Answer::Yes, None, Some(kind.name().into())),
+        Ok(()) => profile.yes(cap, Checked::Host, Some(kind.name().into())),
         Err(e) => {
             made.undetermined
                 .push(format!("no {cap} row: imported, but no proof of possession: {}", evidence(made.tok, &e)));
@@ -344,22 +346,20 @@ fn public_half(
         Ok(attrs) => t.extend(attrs),
         Err(e) => return made.undetermined.push(format!("no {cap} row: the host cannot encode it: {e}")),
     }
-    let created = made
-        .tok
-        .provider
-        .adjusted(&Template::PublicHalf(on), t)
-        .map_err(|e| refused(made.tok, &e))
-        .and_then(|t| made.session.create_object(&t).map_err(|e| format!("C_CreateObject: {}", ckr(&e))));
+    let created =
+        made.tok.provider.adjusted(&Template::PublicHalf(on), t).map_err(|e| (e.rv(), refused(made.tok, &e))).and_then(
+            |t| made.session.create_object(&t).map_err(|e| (token::rv_of(&e), format!("C_CreateObject: {}", ckr(&e)))),
+        );
     match created {
         Ok(h) => {
             made.track(h, label);
             match made.tok.material_spki(h) {
-                Ok(Some(s)) if s == spki => profile.set(cap, Answer::Yes, None, None),
-                Ok(_) => profile.set(cap, Answer::No, Some("the object holds no key, or another".into()), None),
+                Ok(Some(s)) if s == spki => profile.yes(cap, Checked::Host, None),
+                Ok(_) => profile.wrong(cap, "the object holds no key, or another".into()),
                 Err(e) => made.undetermined.push(format!("no {cap} row: reading it back: {}", evidence(made.tok, &e))),
             }
         }
-        Err(why) => profile.set(cap, Answer::No, Some(why), None),
+        Err((rv, why)) => profile.refused(&mut made.undetermined, cap, rv, why),
     }
 }
 
@@ -403,22 +403,26 @@ fn host_wraps() -> Vec<(Mechanism<'static>, MechanismType)> {
 /// The `export.host.*` row from handing `h` to the host (`Token::extract`, by RFC 5649): yes
 /// when what arrived is the test key (`same`).
 fn export_host(
-    made: &Made,
+    made: &mut Made,
     profile: &mut Draft,
     (key_type, on): (&KeyKind, &On),
     h: ObjectHandle,
     same: &dyn Fn(&[u8]) -> bool,
 ) {
     let cap = Capability::Export { way: Way::Host, key_type: key_type.clone(), on: on.clone() };
-    let mut refusals = Vec::new();
+    let (mut refusals, mut rvs) = (Vec::new(), Vec::new());
     for (mech, name) in host_wraps() {
         match made.tok.extract(h, &mech) {
-            Ok(plain) if same(&plain) => return profile.set(cap, Answer::Yes, None, Some(name.to_string())),
-            Ok(_) => return profile.set(cap, Answer::No, Some(format!("{name}: what arrived is another key")), None),
-            Err(e) => refusals.push(format!("{name}: {}", evidence(made.tok, &e))),
+            Ok(plain) if same(&plain) => return profile.yes(cap, Checked::Host, Some(name.to_string())),
+            Ok(_) => return profile.wrong(cap, format!("{name}: what arrived is another key")),
+            Err(e) => {
+                refusals.push(format!("{name}: {}", evidence(made.tok, &e)));
+                rvs.push(e.rv());
+            }
         }
     }
-    profile.set(cap, Answer::No, Some(refusals.join("; ")), None);
+    // The module's no only when every way was its refusal.
+    profile.refused(&mut made.undetermined, cap, worst(&rvs), refusals.join("; "));
 }
 
 /// `CKM_RSA_AES_KEY_WRAP`'s parameters: RSA-OAEP of `hash`, MGF1 of the same.
@@ -467,10 +471,10 @@ fn sealed_ways(profile: &Draft, secret: bool) -> Vec<Sealed> {
 
 /// What one sealed round trip did.
 enum Trip {
-    /// The key did not leave: why.
-    WrapRefused(String),
-    /// It left, but did not come back in here: why.
-    UnwrapRefused(String),
+    /// The key did not leave: why, and the return value.
+    WrapRefused(String, Option<u64>),
+    /// It left, but did not come back in here: why, and the return value.
+    UnwrapRefused(String, Option<u64>),
     /// It came back in as this object.
     Unwrapped(ObjectHandle),
 }
@@ -487,9 +491,9 @@ fn trip(
     let one = |mech: &Mechanism| match session.wrap_key(mech, tpub, h) {
         Ok(blob) => match session.unwrap_key(mech, tpriv, &blob, template) {
             Ok(h2) => Trip::Unwrapped(h2),
-            Err(e) => Trip::UnwrapRefused(format!("C_UnwrapKey: {}", ckr(&e))),
+            Err(e) => Trip::UnwrapRefused(format!("C_UnwrapKey: {}", ckr(&e)), token::rv_of(&e)),
         },
-        Err(e) => Trip::WrapRefused(format!("C_WrapKey: {}", ckr(&e))),
+        Err(e) => Trip::WrapRefused(format!("C_WrapKey: {}", ckr(&e)), token::rv_of(&e)),
     };
     match way {
         Sealed::Direct(hash) => one(&Mechanism::RsaPkcsOaep(token::oaep_of(hash).0)),
@@ -497,7 +501,7 @@ fn trip(
             let oaep = rsa_aes(hash);
             match rsa_aes_key_wrap(&oaep) {
                 Some(mech) => one(&mech),
-                None => Trip::WrapRefused("this build cannot name CKM_RSA_AES_KEY_WRAP".into()),
+                None => Trip::WrapRefused("this build cannot name CKM_RSA_AES_KEY_WRAP".into(), None),
             }
         }
         Sealed::Composed(hash) => composed(made, hash, (tpub, tpriv), h, template),
@@ -518,37 +522,38 @@ fn composed(
     let (kek, back) =
         match (made.tok.session_template(SessionKey::ExportKek), made.tok.session_template(SessionKey::ImportKek)) {
             (Ok(kek), Ok(back)) => (kek, back),
-            (Err(e), _) => return Trip::WrapRefused(format!("the KEK: {}", evidence(made.tok, &e))),
-            (_, Err(e)) => return Trip::UnwrapRefused(format!("the KEK: {}", evidence(made.tok, &e))),
+            (Err(e), _) => return Trip::WrapRefused(format!("the KEK: {}", evidence(made.tok, &e)), e.rv()),
+            (_, Err(e)) => return Trip::UnwrapRefused(format!("the KEK: {}", evidence(made.tok, &e)), e.rv()),
         };
     let kek = match session.generate_key(&Mechanism::AesKeyGen, &kek) {
         Ok(k) => SessionObject::new(session, k),
-        Err(e) => return Trip::WrapRefused(format!("the KEK: C_GenerateKey: {}", ckr(&e))),
+        Err(e) => return Trip::WrapRefused(format!("the KEK: C_GenerateKey: {}", ckr(&e)), token::rv_of(&e)),
     };
     let oaep = Mechanism::RsaPkcsOaep(token::oaep_of(hash).0);
-    let mut refusals = Vec::new();
+    let (mut refusals, mut rvs) = (Vec::new(), Vec::new());
     for (kwp, name) in host_wraps() {
         let blob = match session.wrap_key(&kwp, kek.handle(), h) {
             Ok(blob) => blob,
             Err(e) => {
                 refusals.push(format!("{name}: C_WrapKey: {}", ckr(&e)));
+                rvs.push(token::rv_of(&e));
                 continue;
             }
         };
         let kek_blob = match session.wrap_key(&oaep, tpub, kek.handle()) {
             Ok(blob) => blob,
-            Err(e) => return Trip::WrapRefused(format!("the KEK: C_WrapKey: {}", ckr(&e))),
+            Err(e) => return Trip::WrapRefused(format!("the KEK: C_WrapKey: {}", ckr(&e)), token::rv_of(&e)),
         };
         let back = match session.unwrap_key(&oaep, tpriv, &kek_blob, &back) {
             Ok(k) => SessionObject::new(session, k),
-            Err(e) => return Trip::UnwrapRefused(format!("the KEK: C_UnwrapKey: {}", ckr(&e))),
+            Err(e) => return Trip::UnwrapRefused(format!("the KEK: C_UnwrapKey: {}", ckr(&e)), token::rv_of(&e)),
         };
         return match session.unwrap_key(&kwp, back.handle(), &blob, template) {
             Ok(h2) => Trip::Unwrapped(h2),
-            Err(e) => Trip::UnwrapRefused(format!("{name}: C_UnwrapKey: {}", ckr(&e))),
+            Err(e) => Trip::UnwrapRefused(format!("{name}: C_UnwrapKey: {}", ckr(&e)), token::rv_of(&e)),
         };
     }
-    Trip::WrapRefused(refusals.join("; "))
+    Trip::WrapRefused(refusals.join("; "), worst(&rvs))
 }
 
 /// The `export.sealed.*` and `unwrap.*` rows of the test key `h` (imported extractable): each
@@ -577,31 +582,54 @@ fn export_sealed(made: &mut Made, profile: &mut Draft, key: &TestKey, transport:
             }
         };
         match trip(made, way, transport, key.h, &template) {
-            Trip::WrapRefused(why) => ways.wrap_refused.push(format!("{}: {why}", way.via())),
-            Trip::UnwrapRefused(why) => ways.unwrap_refused.push(format!("{}: {why}", way.via())),
+            Trip::WrapRefused(why, rv) => {
+                ways.wrap_refused.push(format!("{}: {why}", way.via()));
+                ways.rvs.push(rv);
+            }
+            Trip::UnwrapRefused(why, rv) => {
+                ways.unwrap_refused.push(format!("{}: {why}", way.via()));
+                ways.rvs.push(rv);
+            }
             Trip::Unwrapped(h2) => {
                 made.track(h2, Some(&label));
                 match (key.same)(made, h2) {
+                    // A round trip on this one module: the blob is never decoded on the host, so
+                    // another token taking it is not shown (review 2026-11-24 E-3).
                     Ok(()) => {
-                        profile.set(export, Answer::Yes, None, Some(way.via()));
-                        profile.set(unwrap, Answer::Yes, None, Some(way.via()));
+                        profile.yes(export, Checked::Unverified, Some(way.via()));
+                        profile.yes(unwrap, Checked::Unverified, Some(way.via()));
                         return;
                     }
-                    Err(e) => ways.unwrap_refused.push(format!(
-                        "{}: not the key wrapped: {}",
-                        way.via(),
-                        evidence(made.tok, &e)
-                    )),
+                    Err(e) => {
+                        ways.unwrap_refused.push(format!(
+                            "{}: not the key wrapped: {}",
+                            way.via(),
+                            evidence(made.tok, &e)
+                        ));
+                        // Another key is the host's finding; a check that failed, no finding.
+                        if matches!(e, KmError::Conflict(_)) {
+                            ways.wrong = true;
+                        } else {
+                            ways.rvs.push(e.rv());
+                        }
+                    }
                 }
             }
         }
     }
+    // The module's no only when each way failed by its refusal; the host's when none returned
+    // a value and one came back as another key.
+    let rv = worst(&ways.rvs);
     match ways.rows() {
         SealedRows::UnwrapNo(why) => {
-            profile.set(unwrap, Answer::No, Some(why), None);
+            if ways.rvs.is_empty() && ways.wrong {
+                profile.wrong(unwrap, why);
+            } else {
+                profile.refused(&mut made.undetermined, unwrap, rv, why);
+            }
             made.undetermined.push(format!("no {export} row: it leaves, but never comes back in here"));
         }
-        SealedRows::ExportNo(why) => profile.set(export, Answer::No, Some(why), None),
+        SealedRows::ExportNo(why) => profile.refused(&mut made.undetermined, export, rv, why),
         SealedRows::Undetermined(why) => {
             made.undetermined
                 .push(format!("no {export} or {unwrap} row: the provider refuses the unwrap template: {why}"));
@@ -643,6 +671,10 @@ struct Ways {
     unwrap_refused: Vec<String>,
     /// Not tried: the provider refuses the unwrap template.
     untried: Vec<String>,
+    /// The return values of the wrap and unwrap refusals, for [`worst`].
+    rvs: Vec<Option<u64>>,
+    /// Whether a way came back as another key: the host's finding.
+    wrong: bool,
 }
 
 /// The rows the failed ways of [`Ways`] give.
@@ -657,7 +689,7 @@ enum SealedRows {
 }
 
 impl Ways {
-    fn rows(self) -> SealedRows {
+    fn rows(&self) -> SealedRows {
         if !self.unwrap_refused.is_empty() {
             SealedRows::UnwrapNo(self.unwrap_refused.join("; "))
         } else if self.untried.is_empty() {
@@ -748,7 +780,7 @@ fn import_secret(made: &mut Made, profile: &mut Draft, kt: Kt, value: &[u8], tra
     let h = match adjusted(&label, Via::CreateObject, base).and_then(|t| made.tok.create_secret(t, value)) {
         Ok(h) => h,
         Err(e) => {
-            profile.set(cap, Answer::No, Some(refused(made.tok, &e)), None);
+            profile.refused(&mut made.undetermined, cap, e.rv(), refused(made.tok, &e));
             return;
         }
     };
@@ -765,7 +797,10 @@ fn import_secret(made: &mut Made, profile: &mut Draft, kt: Kt, value: &[u8], tra
             return;
         }
     };
-    profile.set(cap, Answer::Yes, None, Some(PlaintextKind::CreateObject.name().into()));
+    // AES is checked against the value the host knows; another type by its own commitment, which
+    // the module computes alone (review 2026-11-24 E-3).
+    let checked = if commit.is_none() { Checked::Host } else { Checked::Unverified };
+    profile.yes(cap, checked, Some(PlaintextKind::CreateObject.name().into()));
     let template = |label: &str| {
         let t = vec![
             Attribute::Token(true),
@@ -828,21 +863,23 @@ fn create_public(made: &mut Made, profile: &mut Draft, class: Class, bytes: &[u8
     let on = Declared { object: Object::new(&object)?, spec: &probe_spec, locator: &loc };
     let created = made.tok.provider.adjusted(&Template::Object(on), t).and_then(|t| {
         made.tok.managing("the create probe", || {
-            session.create_object(&t).map_err(|e| KmError::Unsupported(format!("C_CreateObject: {}", ckr(&e)).into()))
+            session.create_object(&t).map_err(|e| {
+                KmError::Unsupported(format!("C_CreateObject: {}", ckr(&e)).into()).with_rv(token::rv_of(&e))
+            })
         })
     });
     let h = match created {
         Ok(h) => h,
         Err(e) if so_login(&e) => return Err(e),
         Err(e) => {
-            profile.set(cap, Answer::No, Some(evidence(made.tok, &e)), None);
+            profile.refused(&mut made.undetermined, cap, e.rv(), evidence(made.tok, &e));
             return Ok(());
         }
     };
     made.track(h, label.as_ref());
     match made.session.get_attributes(h, &[AttributeType::Value]).as_deref() {
-        Ok([Attribute::Value(v)]) if v == bytes => profile.set(cap, Answer::Yes, None, None),
-        Ok(_) => profile.set(cap, Answer::No, Some("CKA_VALUE reads otherwise".into()), None),
+        Ok([Attribute::Value(v)]) if v == bytes => profile.yes(cap, Checked::Host, None),
+        Ok(_) => profile.wrong(cap, "CKA_VALUE reads otherwise".into()),
         Err(e) => made.undetermined.push(format!("no {cap} row: reading CKA_VALUE back: {}", ckr(e))),
     }
     Ok(())
@@ -894,6 +931,8 @@ mod tests {
             wrap_refused: wrap.iter().map(|s| (*s).to_owned()).collect(),
             unwrap_refused: unwrap.iter().map(|s| (*s).to_owned()).collect(),
             untried: untried.iter().map(|s| (*s).to_owned()).collect(),
+            rvs: Vec::new(),
+            wrong: false,
         };
         assert_eq!(ways(&[], &[], &["a: refused"]).rows(), SealedRows::Undetermined("a: refused".into()));
         assert_eq!(ways(&["b: C_WrapKey"], &[], &["a: refused"]).rows(), SealedRows::Undetermined("a: refused".into()));

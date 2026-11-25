@@ -95,6 +95,9 @@ fn capabilities_toml(rows: &BTreeMap<Capability, Row>, s: &mut String) {
     let _ = writeln!(s, "\n[capabilities]");
     for (c, r) in rows {
         let _ = write!(s, "\"{}\" = {{ answer = \"{}\"", toml_str(&c.to_string()), r.answer.name());
+        if let Some(by) = r.by {
+            let _ = write!(s, ", by = \"{}\"", by.name());
+        }
         if let Some(v) = &r.via {
             let _ = write!(s, ", via = \"{}\"", toml_str(v));
         }
@@ -464,6 +467,9 @@ mod tests {
             "[subtract]\nkey-types = [\"CKK_EC\"]\n",
             "[subtract]\nnote = \"why\"\n",
             "[capabilities]\n\"derive.ecdh.sealed\" = { answer = \"no\" }\n",
+            // Provenance (review 2026-11-24 E-2..E-4).
+            "[capabilities]\n\"derive.ecdh.sealed\" = { answer = \"no\", by = \"module\" }\n",
+            "[untested]\n\"derive.ecdh.sealed\" = { why = \"device\", note = \"CKR_GENERAL_ERROR\" }\n",
             "[reported.\"CKK_RSA\"]\nmin-bits = 1024\n",
             "[reported.\"CKK_RSA\"]\nmax-bits = 4096\n",
             "[migration]\n",

@@ -134,9 +134,10 @@ fn answers(set: &Set) -> String {
         for (h, v) in eff.oaep() {
             answer(format!("oaep {h}"), v);
         }
-        // Each commitment the profile has rows for, at no length and at each length its rows
-        // name: no commit verdict was pinned, so a wrong one went unseen (review 2026-11-23
-        // A-16).
+        // Each commitment the profile has rows for, at no length, at each length its rows name
+        // and at the lengths generation is asked at: no commit verdict was pinned, so a wrong one
+        // went unseen (review 2026-11-23 A-16), and one asked only where rows decide never ran
+        // the rule for an untried length (review 2026-11-24 A-9).
         let mut commits = std::collections::BTreeMap::<(String, String), Vec<u32>>::new();
         for c in p.capabilities.keys() {
             if let Capability::Commit { kind, key_type, bytes } = c {
@@ -145,6 +146,7 @@ fn answers(set: &Set) -> String {
         }
         for ((kind, kt), lengths) in commits {
             answer(format!("commit {kind} {kt}"), eff.commit(&kind, &kt, None));
+            let lengths: std::collections::BTreeSet<u32> = lengths.into_iter().chain(BYTES).collect();
             for n in lengths {
                 answer(format!("commit {kind} {kt} {n} bytes"), eff.commit(&kind, &kt, Some(n)));
             }
