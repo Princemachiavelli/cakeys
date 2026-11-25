@@ -185,24 +185,31 @@ impl Shim {
         Ok(Shim { _library: library, real, plan, trace, table, searches: hooks::Searches::default() })
     }
 
-    /// One call of `function`: counted, answered by the plan or forwarded by `forward` (which
-    /// calls the real module and says which rule, if any, changed what it answered), and traced
-    /// with what `observe` reads from its arguments once it has returned. A `Fatal` from
-    /// `forward` (a hook that cannot do what its rule says) is traced too, as the
-    /// `CKR_GENERAL_ERROR` the caller sees, with its message.
+    /// One call of `function`: counted, its rules chosen by what `observe` reads from its
+    /// arguments before it, answered by the plan or forwarded by `forward` (which calls the real
+    /// module and says which rule, if any, changed what it answered), and traced with what
+    /// `observe` reads once it has returned. A `Fatal` from choosing (a label that cannot be
+    /// resolved) or from `forward` (a hook that cannot do what its rule says) is traced too, as
+    /// the `CKR_GENERAL_ERROR` the caller sees, with its message.
     fn call(
         &self,
         function: Fn,
         forward: impl FnOnce(&plan::Call) -> Result<(CK_RV, Option<usize>), Fatal>,
-        observe: impl FnOnce(&mut trace::Detail),
+        observe: impl std::ops::Fn(&mut trace::Detail),
     ) -> Result<CK_RV, Fatal> {
-        let call = self.plan.count(function);
+        let mut about = trace::Detail::default();
+        if !self.plan.rules().is_empty() {
+            observe(&mut about);
+        }
+        let (call, chosen) = self.select(function, &about);
         if self.plan.aborts(&call).is_some() {
             std::process::abort();
         }
         // `filled`: the real call ran and succeeded, so its outputs are the module's to read; a
         // rule that answered before it left them as the caller passed them.
-        let (rv, rule, filled, fatal) = if let Some((rv, rule)) = self.plan.before(&call) {
+        let (rv, rule, filled, fatal) = if let Err(fatal) = chosen {
+            (CKR_GENERAL_ERROR, None, false, Some(fatal))
+        } else if let Some((rv, rule)) = self.plan.before(&call) {
             (rv, Some(rule), false, None)
         } else {
             match forward(&call) {
@@ -221,6 +228,17 @@ impl Shim {
             trace.line(&call, rv, rule, &detail);
         }
         fatal.map_or(Ok(rv), Err)
+    }
+
+    /// Count a call of `function` and choose its rules by what was read from its arguments
+    /// (`about`), resolving `of_label` on the caller's token; and whether a label could not be.
+    fn select(&self, function: Fn, about: &trace::Detail) -> (plan::Call, Result<(), Fatal>) {
+        let mut call = self.plan.counted(function);
+        let session = about.session;
+        // SAFETY: real-module calls on the caller's session and handles, in its call.
+        let is_of = |label: &[u8], objects: &[_]| unsafe { hooks::is_of(self, session, objects, label) };
+        let chosen = self.plan.select(&mut call, about, is_of);
+        (call, chosen)
     }
 }
 

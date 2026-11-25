@@ -701,6 +701,7 @@ fn told(name: &str) -> Option<Workdir> {
 const TOLD: [&str; 6] = ["k", "k2", "k-other", "s", "s-other", "w"];
 
 /// One row of [`each_lie_kind_fires`].
+#[derive(Default)]
 struct Lie {
     /// The rule.
     rule: String,
@@ -710,9 +711,120 @@ struct Lie {
     exit: Option<i32>,
     /// What cakeys says.
     says: &'static str,
-    /// The functions the trace shows the rule fired on: none for a lie aimed past the run, which
-    /// must not fire.
+    /// The functions the trace shows the rule fired on (`*`: any): none for a lie aimed past the
+    /// run, which must not fire.
     fires: &'static [&'static str],
+    /// Which call of its function each line the rule fired on was (`n`), where that is the
+    /// point: a count of calls.
+    n: &'static [u64],
+    /// The process's call (`seq`) from which the rule fired on every call, and on none before.
+    from_seq: Option<u64>,
+}
+
+/// The rows of [`each_lie_kind_fires`]: `signs` is the process's first `C_SignInit` (`seq`) in
+/// an honest `check` of `k`.
+fn lies(signs: u64) -> Vec<Lie> {
+    let check = |spec: &'static str| vec!["check", "--spec", spec, "--token", "ref"];
+    let lock = |a: &'static str, b: &'static str| vec!["lock", "--spec", a, "--spec", b, "--token", "ref"];
+    let k_read = "fn = \"C_GetAttributeValue\"\nof_label = \"k\"\nrv = \"CKR_DEVICE_ERROR\"";
+    let aes = "fn = \"C_GenerateKey\"\nkey_type = \"CKK_AES\"\nrv = \"CKR_DEVICE_ERROR\"";
+    vec![
+        // The key wrapped is another (`wrap_label`): the session copy wrap-rebind commits on is
+        // another key's, so the identity is not the lock's.
+        Lie {
+            rule: "fn = \"C_WrapKey\"\nof_label = \"s\"\nwrap_label = \"s-other\"".into(),
+            run: check("s"),
+            exit: Some(10),
+            says: "hash mismatch in identity of",
+            fires: &["C_WrapKey"],
+            ..Lie::default()
+        },
+        // A return value for the calls on one object (`of_label`): k's attribute reads fail,
+        // and k2's are left alone.
+        Lie {
+            rule: k_read.into(),
+            run: check("k"),
+            exit: Some(16),
+            says: "C_GetAttributeValue",
+            fires: &["C_GetAttributeValue"],
+            ..Lie::default()
+        },
+        Lie { rule: k_read.into(), run: check("k2"), exit: Some(0), ..Lie::default() },
+        // `nth` counts the calls that meet the rule's other matchers: the first signing with k is
+        // the run's second `C_SignInit`, after k2's.
+        Lie {
+            rule: "fn = \"C_SignInit\"\nof_label = \"k\"\nnth = 1\nuse_label = \"k-other\"".into(),
+            run: lock("k2", "k"),
+            exit: Some(13),
+            says: "did not sign for the public key",
+            fires: &["C_SignInit"],
+            n: &[2],
+            ..Lie::default()
+        },
+        // `from`: the third `C_Sign` on, k2's signature (each proof asks the length first, which
+        // is no output to change), and not k's.
+        Lie {
+            rule: "fn = \"C_Sign\"\nfrom = 3\ncorrupt = true".into(),
+            run: lock("k", "k2"),
+            exit: Some(13),
+            says: "did not sign for the public key",
+            fires: &["C_Sign"],
+            n: &[4],
+            ..Lie::default()
+        },
+        // Every function (`fn = "*"`) from the run's first `C_SignInit` on: the module is gone
+        // from there, and was there before.
+        Lie {
+            rule: format!("fn = \"*\"\nfrom_seq = {signs}\nrv = \"CKR_DEVICE_REMOVED\""),
+            run: check("k"),
+            exit: Some(16),
+            says: "CKR_DEVICE_REMOVED",
+            fires: &["*"],
+            from_seq: Some(signs),
+            ..Lie::default()
+        },
+        // `mechanism`: the signing mechanism refused, and another left alone.
+        Lie {
+            rule: "fn = \"C_SignInit\"\nmechanism = \"CKM_ECDSA_SHA256\"\nrv = \"CKR_MECHANISM_INVALID\"".into(),
+            run: check("k"),
+            exit: Some(15),
+            says: "refused to sign",
+            fires: &["C_SignInit"],
+            ..Lie::default()
+        },
+        Lie {
+            rule: "fn = \"C_SignInit\"\nmechanism = \"CKM_ECDSA\"\nrv = \"CKR_MECHANISM_INVALID\"".into(),
+            run: check("k"),
+            exit: Some(0),
+            ..Lie::default()
+        },
+        // `class`: the search for the public key fails, and one for another class would not.
+        Lie {
+            rule: "fn = \"C_FindObjectsInit\"\nclass = \"CKO_PUBLIC_KEY\"\nrv = \"CKR_DEVICE_ERROR\"".into(),
+            run: check("k"),
+            exit: Some(16),
+            says: "C_FindObjects",
+            fires: &["C_FindObjectsInit"],
+            ..Lie::default()
+        },
+        Lie {
+            rule: "fn = \"C_FindObjectsInit\"\nclass = \"CKO_DATA\"\nrv = \"CKR_DEVICE_ERROR\"".into(),
+            run: check("k"),
+            exit: Some(0),
+            ..Lie::default()
+        },
+        // `key_type`: generating an AES key fails; wrap-rebind's session KEK, whose template names
+        // no key type, is made.
+        Lie {
+            rule: aes.into(),
+            run: vec!["create", "--spec", "n", "--token", "ref"],
+            exit: Some(16),
+            says: "generating key on",
+            fires: &["C_GenerateKey"],
+            ..Lie::default()
+        },
+        Lie { rule: aes.into(), run: check("s"), exit: Some(0), ..Lie::default() },
+    ]
 }
 
 /// Each lie kind `p11-fault` tells beyond the first table (`docs/FAULT_SHIM.md`; review 2026-11-24
@@ -725,31 +837,38 @@ struct Lie {
 fn each_lie_kind_fires() {
     let Some(w) = told("fault-each-lie") else { return };
     let check = |spec: &'static str| vec!["check", "--spec", spec, "--token", "ref"];
-    let rows = [
-        // The key wrapped is another (`wrap_label`): the session copy wrap-rebind commits on is
-        // another key's, so the identity is not the lock's.
-        Lie {
-            rule: "fn = \"C_WrapKey\"\nof_label = \"s\"\nwrap_label = \"s-other\"".into(),
-            run: check("s"),
-            exit: Some(10),
-            says: "hash mismatch in identity of",
-            fires: &["C_WrapKey"],
-        },
-    ];
+    // The run's first `C_SignInit`, honest: the calls up to it are the same under a plan.
+    let honest = w.dir.join("honest.jsonl");
+    assert_eq!(code(&w.km_env(&check("k"), &[("P11_FAULT_TRACE", &honest)])), 0);
+    let lines = std::fs::read_to_string(&honest).unwrap();
+    let lines = lines.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap());
+    let signs = lines.filter(|l| l["fn"] == "C_SignInit").map(|l| l["seq"].as_u64().unwrap()).next().unwrap();
+    let rows = lies(signs);
     let lock_path = w.dir.join("keys.lock");
-    let lock = std::fs::read(&lock_path).unwrap();
+    let locked = std::fs::read(&lock_path).unwrap();
     let mut wrong = Vec::new();
-    for (i, Lie { rule, run, exit, says, fires }) in rows.iter().enumerate() {
+    for (i, Lie { rule, run, exit, says, fires, n, from_seq }) in rows.iter().enumerate() {
         let (plan, trace) = (w.dir.join("plan.toml"), w.dir.join(format!("lie-{i}.jsonl")));
         std::fs::write(&plan, format!("[[rule]]\n{rule}\n")).unwrap();
         let o = w.km_env(run, &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)]);
-        let fired: Vec<String> = fired(&trace).iter().map(|l| l["fn"].as_str().unwrap_or("?").to_owned()).collect();
+        let lines = fired(&trace);
+        let fired: Vec<String> = lines.iter().map(|l| l["fn"].as_str().unwrap_or("?").to_owned()).collect();
         let said = stderr(&o);
-        let as_said = fired.is_empty() == fires.is_empty() && fired.iter().all(|f| fires.contains(&f.as_str()));
-        let kept = std::fs::read(&lock_path).unwrap() == lock;
+        let named = |f: &String| fires.contains(&"*") || fires.contains(&f.as_str());
+        let mut as_said = fired.is_empty() == fires.is_empty() && fired.iter().all(named);
+        let counts: Vec<u64> = lines.iter().map(|l| l["n"].as_u64().unwrap_or(0)).collect();
+        as_said &= n.is_empty() || counts == *n;
+        if let Some(from) = from_seq {
+            let all = std::fs::read_to_string(&trace).unwrap_or_default();
+            as_said &= all
+                .lines()
+                .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+                .all(|l| (l["seq"].as_u64() >= Some(*from)) == (l["rule"] == 1 && l["rv"] == "CKR_DEVICE_REMOVED"));
+        }
+        let kept = std::fs::read(&lock_path).unwrap() == locked;
         if exit.is_some_and(|e| e != code(&o)) || !said.contains(says) || !as_said || !kept {
             wrong.push(format!(
-                "row {i}: {rule}\n  {run:?}: exit {}, fired {fired:?}, lock kept {kept}: {said}",
+                "row {i}: {rule}\n  {run:?}: exit {}, fired {fired:?} at {counts:?}, lock kept {kept}: {said}",
                 code(&o)
             ));
         }

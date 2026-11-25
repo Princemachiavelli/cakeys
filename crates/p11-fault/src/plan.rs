@@ -1,30 +1,64 @@
 //! The fault plan (`docs/FAULT_SHIM.md`): TOML naming functions, the n-th call, and what to do
-//! there. Read once per process; calls are counted per function from the process's first.
+//! there. Read once per process; calls are counted per function, per rule and over every
+//! function from the process's first.
 
 use crate::forward::Fn;
-use crate::names;
-use cryptoki_sys::{CK_ATTRIBUTE_TYPE, CK_FLAGS, CK_MECHANISM_TYPE, CK_RV};
+use crate::trace::Detail;
+use crate::{Fatal, names};
+use cryptoki_sys::{
+    CK_ATTRIBUTE_TYPE, CK_FLAGS, CK_KEY_TYPE, CK_MECHANISM_TYPE, CK_OBJECT_CLASS, CK_OBJECT_HANDLE, CK_RV,
+};
 use serde::Deserialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The rules, in file order, and the calls counted so far.
 pub struct Plan {
     rules: Vec<Rule>,
+    /// Per function.
     counts: Vec<AtomicU64>,
+    /// Per rule: the calls that met its other matchers (what `nth` and `from` count).
+    met: Vec<AtomicU64>,
+    /// Every function's.
+    seq: AtomicU64,
 }
 
 /// One rule: which calls it matches, and what it does to them.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Rule {
-    /// The function whose calls it matches.
-    pub(crate) function: Fn,
-    /// Only the n-th call of the process (from 1); every call when `None`.
+    /// The function whose calls it matches; every function's when `None` (`fn = "*"`).
+    pub(crate) function: Option<Fn>,
+    /// Only the n-th call of the function in the process (from 1); every call when `None`.
     pub call: Option<u64>,
-    /// Only calls on an object with this `CKA_LABEL` (attribute and key rules; under
-    /// `wrap_label`, the key wrapped).
+    /// Only the n-th call that meets the rule's other matchers (from 1).
+    pub nth: Option<u64>,
+    /// Only that call and those after it.
+    pub from: Option<u64>,
+    /// Only the process's n-th call of any function (the trace's `seq`), and those after it.
+    pub from_seq: Option<u64>,
+    /// Only calls on an object with this `CKA_LABEL`: the key a `use_label` rule replaces, the
+    /// key wrapped under `wrap_label`, any object the call names otherwise.
     pub of_label: Option<Vec<u8>>,
+    /// Only calls with this mechanism.
+    pub mechanism: Option<CK_MECHANISM_TYPE>,
+    /// Only calls whose input template says this class.
+    pub class: Option<CK_OBJECT_CLASS>,
+    /// Only calls whose input template says this key type.
+    pub key_type: Option<CK_KEY_TYPE>,
     /// What it does to them.
     pub(crate) action: Action,
+}
+
+impl Rule {
+    /// The objects of a call's (in argument order) that its `of_label` looks at: the key used
+    /// (the first) for `use_label` and an attribute rule, the key wrapped (the second) for
+    /// `wrap_label`, every one for the rest.
+    fn looks_at<'a>(&self, objects: &'a [CK_OBJECT_HANDLE]) -> &'a [CK_OBJECT_HANDLE] {
+        match self.action {
+            Action::UseLabel(_) | Action::Attribute { .. } => &objects[..objects.len().min(1)],
+            Action::WrapLabel(_) => objects.get(1..).unwrap_or_default(),
+            _ => objects,
+        }
+    }
 }
 
 /// What a rule does to the calls it matches.
@@ -96,13 +130,17 @@ pub enum When {
     After,
 }
 
-/// One call: the function, and which of its calls in this process it is.
-#[derive(Debug, Clone, Copy)]
+/// One call: the function, which of its calls in this process it is, and the rules it meets.
+#[derive(Debug, Clone)]
 pub struct Call {
     /// The function called.
     pub(crate) function: Fn,
     /// Which of its calls in this process it is (from 1).
     pub(crate) n: u64,
+    /// Which call of the process it is, of any function (from 1).
+    pub(crate) seq: u64,
+    /// The rules it meets (indices into the plan), chosen once, before it reaches the module.
+    rules: Vec<usize>,
 }
 
 #[derive(Deserialize)]
@@ -118,7 +156,13 @@ struct RuleText {
     #[serde(rename = "fn")]
     function: String,
     call: Option<u64>,
+    nth: Option<u64>,
+    from: Option<u64>,
+    from_seq: Option<u64>,
     of_label: Option<String>,
+    mechanism: Option<Value>,
+    class: Option<Value>,
+    key_type: Option<Value>,
     rv: Option<Value>,
     when: Option<When>,
     #[serde(default)]
@@ -172,7 +216,8 @@ impl Default for Plan {
 
 impl Plan {
     fn new(rules: Vec<Rule>) -> Plan {
-        Plan { rules, counts: Fn::ALL.iter().map(|_| AtomicU64::new(0)).collect() }
+        let zeros = |n: usize| (0..n).map(|_| AtomicU64::new(0)).collect();
+        Plan { counts: zeros(Fn::ALL.len()), met: zeros(rules.len()), rules, seq: AtomicU64::new(0) }
     }
 
     /// Parse a plan.
@@ -202,20 +247,64 @@ impl Plan {
         &self.rules
     }
 
-    /// Count a call of `function`: the first is 1.
+    /// Count a call of `function` (the first is 1), with no rule chosen for it yet.
     #[must_use]
-    pub fn count(&self, function: Fn) -> Call {
-        Call { function, n: self.counts[function as usize].fetch_add(1, Ordering::Relaxed) + 1 }
+    pub(crate) fn counted(&self, function: Fn) -> Call {
+        let n = self.counts[function as usize].fetch_add(1, Ordering::Relaxed) + 1;
+        Call { function, n, seq: self.seq.fetch_add(1, Ordering::Relaxed) + 1, rules: Vec::new() }
     }
 
-    /// The rules for `call`'s function and number, each with its number in the plan (from 1).
-    pub fn matching(&self, call: &Call) -> impl Iterator<Item = (usize, &Rule)> {
-        let call = *call;
-        self.rules
-            .iter()
-            .enumerate()
-            .filter(move |(_, r)| r.function == call.function && r.call.is_none_or(|n| n == call.n))
-            .map(|(i, r)| (i + 1, r))
+    /// Count a call of `function` and choose its rules, knowing nothing of its arguments: a
+    /// rule with a matcher on them meets it never.
+    #[must_use]
+    pub fn count(&self, function: Fn) -> Call {
+        let mut call = self.counted(function);
+        let _ = self.select(&mut call, &Detail::default(), |_, _| Ok(false));
+        call
+    }
+
+    /// Choose the rules `call` meets, by what was read from its arguments before it (`about`):
+    /// those whose matchers all hold, `is_of(label, objects)` saying whether one of `objects`
+    /// bears `label`; `nth` and `from` count only the calls that met every other matcher.
+    ///
+    /// # Errors
+    ///
+    /// The label could not be resolved (`is_of`'s error): the rules after it are not chosen.
+    pub(crate) fn select(
+        &self,
+        call: &mut Call,
+        about: &Detail,
+        is_of: impl std::ops::Fn(&[u8], &[CK_OBJECT_HANDLE]) -> Result<bool, Fatal>,
+    ) -> Result<(), Fatal> {
+        for (i, r) in self.rules.iter().enumerate() {
+            let met = r.function.is_none_or(|f| f == call.function)
+                && r.call.is_none_or(|n| n == call.n)
+                && r.from_seq.is_none_or(|n| call.seq >= n)
+                && r.mechanism.is_none_or(|m| about.mechanism == Some(m))
+                && r.class.is_none_or(|c| about.classes.contains(&c))
+                && r.key_type.is_none_or(|k| about.key_types.contains(&k));
+            if !met {
+                continue;
+            }
+            if let Some(label) = &r.of_label
+                && !is_of(label, r.looks_at(&about.objects))?
+            {
+                continue;
+            }
+            if r.nth.is_some() || r.from.is_some() {
+                let k = self.met[i].fetch_add(1, Ordering::Relaxed) + 1;
+                if r.nth.is_some_and(|n| n != k) || r.from.is_some_and(|n| k < n) {
+                    continue;
+                }
+            }
+            call.rules.push(i);
+        }
+        Ok(())
+    }
+
+    /// The rules `call` meets, each with its number in the plan (from 1).
+    pub fn matching<'a>(&'a self, call: &'a Call) -> impl Iterator<Item = (usize, &'a Rule)> {
+        call.rules.iter().map(|&i| (i + 1, &self.rules[i]))
     }
 
     /// What `call` returns instead of reaching the real module, and the rule (from 1) that says
@@ -278,29 +367,75 @@ fn attribute_changes(r: &mut RuleText) -> Result<Vec<AttributeChange>, String> {
     Ok(changes)
 }
 
-fn rule(mut r: RuleText) -> Result<Rule, String> {
-    let function = Fn::ALL.iter().copied().find(|f| f.name() == r.function).ok_or_else(|| {
-        if r.function == "C_GetFunctionList" {
-            "the entry point itself cannot be faulted".to_owned()
-        } else {
-            "no such PKCS#11 2.40 function".to_owned()
-        }
-    })?;
-    if r.call == Some(0) {
-        return Err("calls are counted from 1".into());
+/// The `mechanism`, `class` and `key_type` a rule matches.
+type Arguments = (Option<CK_MECHANISM_TYPE>, Option<CK_OBJECT_CLASS>, Option<CK_KEY_TYPE>);
+
+/// Whether `function` is one of `functions`: if not, that `what` is for those only.
+fn only(function: Option<Fn>, functions: &[Fn], what: &str) -> Result<(), String> {
+    if function.is_some_and(|f| functions.contains(&f)) {
+        Ok(())
+    } else {
+        let names: Vec<&str> = functions.iter().map(|f| f.name()).collect();
+        Err(format!("{what} is for {}", names.join(", ")))
     }
-    let only = |functions: &[Fn], what: &str| {
-        if functions.contains(&function) {
-            Ok(())
-        } else {
-            let names: Vec<&str> = functions.iter().map(|f| f.name()).collect();
-            Err(format!("{what} is for {}", names.join(", ")))
+}
+
+/// A rule's matchers beside its function, checked: the counts, and `of_label`, then the
+/// `mechanism`, `class` and `key_type` it gives (taken from `r`).
+fn matchers(function: Option<Fn>, r: &mut RuleText) -> Result<Arguments, String> {
+    for (name, n) in [("call", r.call), ("nth", r.nth), ("from", r.from), ("from_seq", r.from_seq)] {
+        if n == Some(0) {
+            return Err(format!("{name} = 0: calls are counted from 1"));
         }
+    }
+    if [r.call, r.nth, r.from].iter().flatten().count() > 1 {
+        return Err("one of call, nth and from: each counts its calls another way".into());
+    }
+    let any_argument = r.of_label.is_some() || r.mechanism.is_some() || r.class.is_some() || r.key_type.is_some();
+    if function.is_none() && (r.call.is_some() || any_argument) {
+        return Err("fn = \"*\" matches every function: by from_seq, nth or from, never by call or an argument".into());
+    }
+    // A matcher on the arguments, only where the function's are read before the call
+    // (forward.rs's table): elsewhere it would never match, and the rule never fire.
+    let reading = |kinds: &[&str], what: &str| {
+        let functions: Vec<Fn> =
+            Fn::ALL.iter().copied().filter(|f| f.reads().iter().any(|k| kinds.contains(k))).collect();
+        only(function, &functions, what)
     };
+    if r.of_label.is_some() {
+        reading(&["object"], "of_label")?;
+    }
+    let matcher = |value: Option<Value>, kinds: &[&str], what: &str, by_name: fn(&str) -> Option<u64>| {
+        value.map(|v| reading(kinds, what).and_then(|()| v.resolve(what, by_name))).transpose()
+    };
+    Ok((
+        matcher(r.mechanism.take(), &["mechanism", "mechanism_type"], "mechanism", names::mechanism)?,
+        matcher(r.class.take(), &["template"], "class", names::class)?,
+        matcher(r.key_type.take(), &["template"], "key_type", names::key_type)?,
+    ))
+}
+
+fn rule(mut r: RuleText) -> Result<Rule, String> {
+    let function = if r.function == "*" {
+        None
+    } else {
+        Some(Fn::ALL.iter().copied().find(|f| f.name() == r.function).ok_or_else(|| {
+            if r.function == "C_GetFunctionList" {
+                "the entry point itself cannot be faulted".to_owned()
+            } else {
+                "no such PKCS#11 2.40 function".to_owned()
+            }
+        })?)
+    };
+    let (mechanism, class, key_type) = matchers(function, &mut r)?;
+    let only = |functions: &[Fn], what: &str| only(function, functions, what);
     // A flag of the structure the rule's function returns: the slot's and the token's flag words
     // reuse bit values, so a slot flag on `C_GetTokenInfo` would set another flag (plan.rs F1).
-    let (word, by_name): (_, fn(&str) -> Option<CK_FLAGS>) =
-        if function == Fn::C_GetSlotInfo { ("slot flag", names::slot_flag) } else { ("token flag", names::token_flag) };
+    let (word, by_name): (_, fn(&str) -> Option<CK_FLAGS>) = if function == Some(Fn::C_GetSlotInfo) {
+        ("slot flag", names::slot_flag)
+    } else {
+        ("token flag", names::token_flag)
+    };
     let flags = |values: Vec<Value>| -> Result<CK_FLAGS, String> {
         values.into_iter().try_fold(0, |all, v| Ok(all | v.resolve(word, by_name)?))
     };
@@ -362,11 +497,21 @@ fn rule(mut r: RuleText) -> Result<Rule, String> {
         }
         _ => return Err("one thing per rule".into()),
     };
-    if r.of_label.is_some() && !matches!(action, Action::Attribute { .. } | Action::UseLabel(_) | Action::WrapLabel(_))
-    {
-        return Err("of_label goes with attribute, use_label or wrap_label".into());
+    if function.is_none() && !matches!(action, Action::Rv { .. } | Action::Abort) {
+        return Err("fn = \"*\" gives rv or abort".into());
     }
-    Ok(Rule { function, call: r.call, of_label: r.of_label.map(String::into_bytes), action })
+    Ok(Rule {
+        function,
+        call: r.call,
+        nth: r.nth,
+        from: r.from,
+        from_seq: r.from_seq,
+        of_label: r.of_label.map(String::into_bytes),
+        mechanism,
+        class,
+        key_type,
+        action,
+    })
 }
 
 fn unhex(text: &str) -> Option<Vec<u8>> {
@@ -380,7 +525,8 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use cryptoki_sys::{
-        CKA_EC_POINT, CKF_USER_PIN_FINAL_TRY, CKF_WRITE_PROTECTED, CKR_DEVICE_ERROR, CKR_PIN_INCORRECT,
+        CK_ATTRIBUTE, CKA_EC_POINT, CKA_KEY_TYPE, CKF_USER_PIN_FINAL_TRY, CKF_WRITE_PROTECTED, CKK_AES, CKM_ECDSA,
+        CKM_SHA256_RSA_PKCS, CKR_DEVICE_ERROR, CKR_PIN_INCORRECT,
     };
 
     #[test]
@@ -415,7 +561,11 @@ mod tests {
              [[rule]]\nfn = \"C_FindObjects\"\ncall = 1\nadd_label = \"decoy\"\n\n\
              [[rule]]\nfn = \"C_DecryptInit\"\nof_label = \"shown\"\nuse_label = \"used\"\n\n\
              [[rule]]\nfn = \"C_WrapKey\"\nof_label = \"shown\"\nwrap_label = \"wrapped\"\n\n\
-             [[rule]]\nfn = \"C_WrapKey\"\nuse_label = \"used\"\n",
+             [[rule]]\nfn = \"C_WrapKey\"\nuse_label = \"used\"\n\n\
+             [[rule]]\nfn = \"C_DestroyObject\"\nof_label = \"k\"\nrv = \"CKR_OK\"\n\n\
+             [[rule]]\nfn = \"*\"\nfrom_seq = 40\nrv = \"CKR_DEVICE_REMOVED\"\n\n\
+             [[rule]]\nfn = \"C_SignInit\"\nmechanism = \"CKM_ECDSA\"\nnth = 2\nrv = \"CKR_DEVICE_ERROR\"\n\n\
+             [[rule]]\nfn = \"C_GenerateKey\"\nclass = \"CKO_SECRET_KEY\"\nkey_type = \"CKK_AES\"\nfrom = 3\nabort = true\n",
         )
         .unwrap();
         let actions: Vec<&Action> = plan.rules().iter().map(|r| &r.action).collect();
@@ -438,6 +588,64 @@ mod tests {
         let slot =
             Plan::parse("[[rule]]\nfn = \"C_GetSlotInfo\"\nclear_flags = [\"CKF_TOKEN_PRESENT\", \"CKF_HW_SLOT\"]\n");
         assert_eq!(slot.unwrap().rules()[0].action, Action::Flags { set: 0, clear: 1 | 4 });
+    }
+
+    /// `nth` and `from` count only the calls that meet the rule's other matchers (its function,
+    /// mechanism, label, template), not every call of its function; `fn = "*"` with `from_seq`
+    /// meets every function's calls from the process's n-th on, and none before.
+    #[test]
+    fn nth_counts_only_matching_calls() {
+        let plan = Plan::parse(
+            "[[rule]]\nfn = \"C_SignInit\"\nmechanism = \"CKM_ECDSA\"\nnth = 2\nrv = \"CKR_DEVICE_ERROR\"\n\n\
+             [[rule]]\nfn = \"C_DestroyObject\"\nof_label = \"k\"\nfrom = 2\nrv = \"CKR_OK\"\n\n\
+             [[rule]]\nfn = \"C_GenerateKey\"\nkey_type = \"CKK_AES\"\nnth = 1\nabort = true\n\n\
+             [[rule]]\nfn = \"*\"\nfrom_seq = 12\nrv = \"CKR_DEVICE_REMOVED\"\n",
+        )
+        .unwrap();
+        // Object 7 bears the label `k`; no other does.
+        let k = |_: &[u8], objects: &[CK_OBJECT_HANDLE]| Ok(objects.contains(&7));
+        let rules = |function, about: &Detail| {
+            let mut call = plan.counted(function);
+            plan.select(&mut call, about, k).unwrap();
+            (call.seq, plan.matching(&call).map(|(i, _)| i).collect::<Vec<_>>())
+        };
+        let mechanism = |m| {
+            let mut d = Detail::default();
+            d.mechanism_type(m);
+            d
+        };
+        let object = |o| {
+            let mut d = Detail::default();
+            d.object(o);
+            d
+        };
+        let mut aes = CKK_AES.to_ne_bytes();
+        let template = |value: &mut [u8; 8]| {
+            let entry = CK_ATTRIBUTE { type_: CKA_KEY_TYPE, pValue: value.as_mut_ptr().cast(), ulValueLen: 8 };
+            let mut d = Detail::default();
+            // SAFETY: one entry of ours, its value 8 bytes.
+            unsafe { d.template(&raw const entry, 1) };
+            d
+        };
+        let (rsa, ecdsa) = (mechanism(CKM_SHA256_RSA_PKCS), mechanism(CKM_ECDSA));
+        let calls = [
+            (Fn::C_SignInit, &rsa, vec![]),
+            (Fn::C_SignInit, &ecdsa, vec![]),
+            (Fn::C_SignInit, &rsa, vec![]),
+            (Fn::C_SignInit, &ecdsa, vec![1]),
+            (Fn::C_SignInit, &ecdsa, vec![]),
+            (Fn::C_DestroyObject, &object(8), vec![]),
+            (Fn::C_DestroyObject, &object(7), vec![]),
+            (Fn::C_DestroyObject, &object(8), vec![]),
+            (Fn::C_DestroyObject, &object(7), vec![2]),
+            (Fn::C_GenerateKey, &Detail::default(), vec![]),
+            (Fn::C_GenerateKey, &template(&mut aes), vec![3]),
+            (Fn::C_Login, &Detail::default(), vec![4]),
+            (Fn::C_DestroyObject, &object(7), vec![2, 4]),
+        ];
+        for (seq, (function, about, want)) in (1..).zip(calls) {
+            assert_eq!(rules(function, about), (seq, want), "call {seq}, {}", function.name());
+        }
     }
 
     /// `abort` ends the process at its call only: no return value, and one thing per rule.
@@ -491,7 +699,25 @@ mod tests {
             ("[[rule]]\nfn = \"C_WrapKey\"\nwrap_label = \"x\"\nuse_label = \"y\"\n", "one thing per rule"),
             ("[[rule]]\nfn = \"C_FindObjectsInit\"\nadd_label = \"x\"\n", "add_label is for C_FindObjects"),
             ("[[rule]]\nfn = \"C_FindObjects\"\nadd_label = \"x\"\nrv = 0\n", "one thing per rule"),
-            ("[[rule]]\nfn = \"C_FindObjects\"\nadd_label = \"x\"\nof_label = \"y\"\n", "of_label goes with"),
+            ("[[rule]]\nfn = \"C_FindObjects\"\nadd_label = \"x\"\nof_label = \"y\"\n", "of_label is for C_CopyObject"),
+            ("[[rule]]\nfn = \"C_Login\"\nof_label = \"y\"\nrv = 0\n", "of_label is for"),
+            // Each count counts from 1, and a rule counts its calls one way.
+            ("[[rule]]\nfn = \"C_Login\"\nnth = 0\nrv = 0\n", "nth = 0: calls are counted from 1"),
+            ("[[rule]]\nfn = \"C_Login\"\nfrom = 0\nrv = 0\n", "from = 0: calls are counted from 1"),
+            ("[[rule]]\nfn = \"C_Login\"\nfrom_seq = 0\nrv = 0\n", "from_seq = 0: calls are counted from 1"),
+            ("[[rule]]\nfn = \"C_Login\"\ncall = 1\nnth = 1\nrv = 0\n", "one of call, nth and from"),
+            ("[[rule]]\nfn = \"C_Login\"\nnth = 1\nfrom = 1\nrv = 0\n", "one of call, nth and from"),
+            // Every function: a return value or an abort, from the process's calls.
+            ("[[rule]]\nfn = \"*\"\ncall = 3\nrv = 0\n", "fn = \"*\" matches every function"),
+            ("[[rule]]\nfn = \"*\"\nof_label = \"k\"\nrv = 0\n", "fn = \"*\" matches every function"),
+            ("[[rule]]\nfn = \"*\"\nhide_label = \"k\"\n", "hide_label is for C_FindObjects"),
+            // A matcher only where the function's arguments say it before the call.
+            ("[[rule]]\nfn = \"C_Login\"\nmechanism = \"CKM_ECDSA\"\nrv = 0\n", "mechanism is for C_GetMechanismInfo"),
+            ("[[rule]]\nfn = \"C_SignInit\"\nmechanism = \"CKM_NOPE\"\nrv = 0\n", "unknown mechanism CKM_NOPE"),
+            ("[[rule]]\nfn = \"C_GetAttributeValue\"\nclass = \"CKO_DATA\"\nrv = 0\n", "class is for C_CreateObject"),
+            ("[[rule]]\nfn = \"C_FindObjectsInit\"\nclass = \"CKO_NOPE\"\nrv = 0\n", "unknown class CKO_NOPE"),
+            ("[[rule]]\nfn = \"C_SignInit\"\nkey_type = \"CKK_EC\"\nrv = 0\n", "key_type is for C_CreateObject"),
+            ("[[rule]]\nfn = \"C_GenerateKey\"\nkey_type = \"CKK_NOPE\"\nrv = 0\n", "unknown key_type CKK_NOPE"),
             ("[[rule]]\nfn = \"C_FindObjectsInit\"\nhide_label = \"x\"\n", "hide_label is for C_FindObjects"),
             (
                 "[[rule]]\nfn = \"C_Verify\"\ncorrupt = true\n",

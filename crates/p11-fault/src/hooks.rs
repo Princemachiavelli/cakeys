@@ -305,9 +305,6 @@ unsafe fn substitute(
         let Some(label) = label_of(&rule.action) else { continue };
         // SAFETY: real-module calls on the caller's session and handles.
         unsafe {
-            if !is_of(shim, session, handle, rule.of_label.as_deref())? {
-                continue;
-            }
             // Nothing under the label is the plan's mistake, as for `from_label`: the caller's own
             // key run under a rule the trace says fired would pass a test for the wrong reason
             // (hooks.rs F1).
@@ -334,10 +331,7 @@ pub(crate) unsafe fn attribute_value(
     let get = real!(shim, C_GetAttributeValue);
     let mut rules = Vec::new();
     for (i, rule) in shim.plan.matching(call) {
-        if let Action::Attribute { attribute, change } = &rule.action
-            // SAFETY: real-module calls on the caller's session and handle.
-            && unsafe { is_of(shim, session, object, rule.of_label.as_deref())? }
-        {
+        if let Action::Attribute { attribute, change } = &rule.action {
             rules.push((i, *attribute, change));
         }
     }
@@ -467,18 +461,22 @@ unsafe fn class_of(shim: &Shim, session: CK_SESSION_HANDLE, object: CK_OBJECT_HA
     Some(CK_OBJECT_CLASS::from_ne_bytes(value.try_into().ok()?))
 }
 
-/// Whether a rule for objects labelled `label` applies to `object`: every object without one.
-unsafe fn is_of(
+/// Whether one of `objects` bears `label`, on the token `session` is open on (an `of_label`
+/// matcher). None does when the call names no session.
+///
+/// # Safety
+///
+/// As `named`.
+pub(crate) unsafe fn is_of(
     shim: &Shim,
-    session: CK_SESSION_HANDLE,
-    object: CK_OBJECT_HANDLE,
-    label: Option<&[u8]>,
+    session: Option<CK_SESSION_HANDLE>,
+    objects: &[CK_OBJECT_HANDLE],
+    label: &[u8],
 ) -> Result<bool, Fatal> {
-    match label {
-        None => Ok(true),
-        // SAFETY: as `named`.
-        Some(label) => Ok(unsafe { named(shim, session, label, None)? }.contains(&object)),
-    }
+    let Some(session) = session.filter(|_| !objects.is_empty()) else { return Ok(false) };
+    // SAFETY: as `named`.
+    let named = unsafe { named(shim, session, label, None)? };
+    Ok(objects.iter().any(|o| named.contains(o)))
 }
 
 /// The objects labelled `label` (of `class`, when given) on the token `session` is open on,
@@ -767,7 +765,12 @@ mod tests {
         m.C_WrapKey = Some(wrap);
         LABELS.set(vec![(b"shown", vec![10]), (b"other", vec![11])]);
         let wrap_of = |shim: &Shim, key, wrapped| {
-            let call = shim.plan.count(Fn::C_WrapKey);
+            let mut about = crate::trace::Detail::default();
+            about.session(CALLER);
+            about.object(key);
+            about.object(wrapped);
+            let (call, chosen) = shim.select(Fn::C_WrapKey, &about);
+            chosen?;
             let mut len = 0;
             // SAFETY: the fake module's function, which reads no pointer.
             let out = unsafe {

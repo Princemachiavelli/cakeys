@@ -11,29 +11,28 @@ use crate::Fatal;
 use crate::plan::Call;
 use cryptoki_sys::{
     CK_ATTRIBUTE, CK_ATTRIBUTE_TYPE, CK_C_INITIALIZE_ARGS, CK_ECDH1_DERIVE_PARAMS, CK_FLAGS, CK_MECHANISM,
-    CK_MECHANISM_INFO, CK_MECHANISM_TYPE, CK_RSA_AES_KEY_WRAP_PARAMS, CK_RSA_PKCS_OAEP_PARAMS, CK_RSA_PKCS_PSS_PARAMS,
-    CK_RV, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CK_USER_TYPE, CKA_CERTIFICATE_TYPE, CKA_CLASS, CKA_KEY_TYPE,
-    CKM_ECDH1_COFACTOR_DERIVE, CKM_ECDH1_DERIVE, CKM_RSA_AES_KEY_WRAP, CKM_RSA_PKCS_OAEP, CKM_RSA_PKCS_PSS,
-    CKM_SHA1_RSA_PKCS_PSS, CKM_SHA224_RSA_PKCS_PSS, CKM_SHA256_RSA_PKCS_PSS, CKM_SHA384_RSA_PKCS_PSS,
-    CKM_SHA512_RSA_PKCS_PSS,
+    CK_MECHANISM_INFO, CK_MECHANISM_TYPE, CK_OBJECT_HANDLE, CK_RSA_AES_KEY_WRAP_PARAMS, CK_RSA_PKCS_OAEP_PARAMS,
+    CK_RSA_PKCS_PSS_PARAMS, CK_RV, CK_SESSION_HANDLE, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CK_USER_TYPE,
+    CKA_CERTIFICATE_TYPE, CKA_CLASS, CKA_KEY_TYPE, CKM_ECDH1_COFACTOR_DERIVE, CKM_ECDH1_DERIVE, CKM_RSA_AES_KEY_WRAP,
+    CKM_RSA_PKCS_OAEP, CKM_RSA_PKCS_PSS, CKM_SHA1_RSA_PKCS_PSS, CKM_SHA224_RSA_PKCS_PSS, CKM_SHA256_RSA_PKCS_PSS,
+    CKM_SHA384_RSA_PKCS_PSS, CKM_SHA512_RSA_PKCS_PSS,
 };
 use std::io::Write;
 use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) struct Trace {
     file: Mutex<std::fs::File>,
-    seq: AtomicU64,
     /// The calling program's file name.
     exe: Option<String>,
     /// This copy's tag (`libp11_fault-<tag>.so`), if any.
     shim: Option<String>,
 }
 
-/// What one call was about, read from its arguments once it has returned (an input template is
-/// unchanged then, and an output one filled in).
+/// What one call was about, read from its arguments: before the call, for the plan's matchers
+/// (outputs not yet filled, so not read), and once it has returned, for the trace (an input
+/// template is unchanged then, and an output one filled in).
 #[derive(Debug, Default)]
 pub(crate) struct Detail {
     /// The real call ran and returned `CKR_OK`: only then are its outputs read. A rule that
@@ -41,7 +40,7 @@ pub(crate) struct Detail {
     pub(crate) ok: bool,
     /// Why the shim failed the call itself (`Fatal`), if it did.
     pub(crate) fatal: Option<String>,
-    mechanism: Option<CK_MECHANISM_TYPE>,
+    pub(crate) mechanism: Option<CK_MECHANISM_TYPE>,
     /// From the mechanism's parameters: the OAEP or PSS hash, the MGF, the OAEP source, the
     /// ECDH KDF.
     hash: Option<CK_MECHANISM_TYPE>,
@@ -56,9 +55,12 @@ pub(crate) struct Detail {
     token_flags: Option<CK_FLAGS>,
     mechanism_flags: Option<CK_FLAGS>,
     attributes: Vec<CK_ATTRIBUTE_TYPE>,
-    classes: Vec<CK_ULONG>,
-    key_types: Vec<CK_ULONG>,
+    pub(crate) classes: Vec<CK_ULONG>,
+    pub(crate) key_types: Vec<CK_ULONG>,
     certificate_types: Vec<CK_ULONG>,
+    /// The session and the objects the call names (`of_label` looks at them; not traced).
+    pub(crate) session: Option<CK_SESSION_HANDLE>,
+    pub(crate) objects: Vec<CK_OBJECT_HANDLE>,
 }
 
 impl Detail {
@@ -125,6 +127,16 @@ impl Detail {
     /// A `CK_MECHANISM_TYPE` argument.
     pub(crate) fn mechanism_type(&mut self, mechanism: CK_MECHANISM_TYPE) {
         self.mechanism = Some(mechanism);
+    }
+
+    /// A `CK_SESSION_HANDLE` argument.
+    pub(crate) fn session(&mut self, session: CK_SESSION_HANDLE) {
+        self.session = Some(session);
+    }
+
+    /// A `CK_OBJECT_HANDLE` argument, after those before it.
+    pub(crate) fn object(&mut self, object: CK_OBJECT_HANDLE) {
+        self.objects.push(object);
     }
 
     /// A `CK_USER_TYPE` argument.
@@ -247,7 +259,7 @@ impl Trace {
             .open(path)
             .map_err(|e| Fatal(format!("{var} {}: {e}", path.display())))?;
         let exe = std::env::current_exe().ok().and_then(|p| Some(p.file_name()?.to_string_lossy().into_owned()));
-        Ok(Trace { file: Mutex::new(file), seq: AtomicU64::new(0), exe, shim })
+        Ok(Trace { file: Mutex::new(file), exe, shim })
     }
 
     /// Log `call`, the value its caller saw, the plan's rule (from 1) that decided it, if any,
@@ -256,7 +268,7 @@ impl Trace {
     pub(crate) fn line(&self, call: &Call, rv: CK_RV, rule: Option<usize>, detail: &Detail) {
         let mut line = serde_json::json!({
             "pid": std::process::id(),
-            "seq": self.seq.fetch_add(1, Ordering::Relaxed),
+            "seq": call.seq,
             "exe": self.exe,
             "fn": call.function.name(),
             "n": call.n,

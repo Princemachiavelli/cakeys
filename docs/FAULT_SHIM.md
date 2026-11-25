@@ -132,8 +132,27 @@ three are generated from these marks.
 ### The plan
 
 TOML, read once per process. cakeys runs one process per verb, so one plan is one run's
-behaviour. Rules apply in file order. A rule matches a function, optionally only its n-th call
-(`call`), or one object (`of_label`). It then does one thing:
+behaviour. Rules apply in file order. A rule matches a function (`fn = "*"`: every one), and
+optionally narrows it:
+
+- `call`: only the function's n-th call in the process (from 1).
+- `of_label`: only calls on an object with this label: the key used under `use_label`, the
+  key wrapped under `wrap_label`, any object the call names otherwise (`C_WrapKey`: either
+  key). For the functions that name an object (`C_GetAttributeValue`, `C_DestroyObject`,
+  `C_SignInit`, ...).
+- `mechanism`: only calls with this mechanism (the `*Init` functions, `C_GenerateKey`,
+  `C_WrapKey`, `C_GetMechanismInfo`, ...).
+- `class`, `key_type`: only calls whose input template says this class or key type
+  (`C_FindObjectsInit`, `C_CreateObject`, `C_GenerateKey`, `C_UnwrapKey`, ...).
+- `nth`: only the n-th call that meets the rule's other matchers; `from`: that one and those
+  after. `call`, `nth` and `from` exclude each other.
+- `from_seq`: only the process's n-th call of any function (the trace's `seq`), and those
+  after; with `fn = "*"`, the module failing from one point of a run on.
+
+A matcher is read from the call's arguments before it reaches the module (forward.rs's
+`[kind(args)]` lists), and refused where the function has none: it would never match. `fn =
+"*"` takes no `call` and no matcher on the arguments, and gives `rv` or `abort` only. The rule
+then does one thing:
 
 ```toml
 # A return value, without forwarding (default), or after forwarding (the real effect happened).
@@ -196,6 +215,24 @@ corrupt = true
 fn = "C_GetMechanismList"
 hide_mechanisms = ["CKM_ECDH1_DERIVE"]
 
+# Matchers: the second ECDSA signing fails; a delete of `k` succeeds and does nothing; every
+# function's call fails from the process's 40th on (its trace `seq`).
+[[rule]]
+fn = "C_SignInit"
+mechanism = "CKM_ECDSA"
+nth = 2
+rv = "CKR_DEVICE_ERROR"
+
+[[rule]]
+fn = "C_DestroyObject"
+of_label = "k"
+rv = "CKR_OK"
+
+[[rule]]
+fn = "*"
+from_seq = 40
+rv = "CKR_DEVICE_REMOVED"
+
 # The process dies at the call, before it reaches the module (std::process::abort): a crash,
 # a kill or an OOM between two of a run's writes.
 [[rule]]
@@ -226,6 +263,9 @@ writers of a test run interleave whole lines):
 ```json
 {"exe":"cakeys","fn":"C_SignInit","mechanism":4164,"n":2,"pid":4711,"rule":null,"rv":"CKR_OK","seq":17}
 ```
+
+`n` is the call's number among its function's in the process, and `seq` among every
+function's (both from 1): what `call`, `nth`/`from` and `from_seq` count.
 
 The function and return value are names; what the call was about (`mechanism`, here
 `CKM_ECDSA_SHA256`, attribute types, classes, ...) is numbers, which the reader maps to names
@@ -286,7 +326,11 @@ general error instead (SoftHSM's `C_UnwrapKey`) stays unavailable: nothing in it
 `each_lie_kind_fires` takes each rule kind added since, one row each on a token of its own
 (`told`): the rule, the run, the exit and the message, and the functions the trace shows it
 fired on. Another key wrapped (`wrap_label`) under a secret key's wrap-rebind gives 10: the
-session copy committed on is another key's.
+session copy committed on is another key's. Each matcher has a row where it fires and, where
+the point is what it leaves alone, one where it must not: `of_label` fails k's attribute reads
+(16) and not k2's; `nth` and `from` fire on the call they count to (the trace's `n`);
+`fn = "*"` with `from_seq` fails every call from a run's first signing on (16) and none before;
+`mechanism`, `class` and `key_type` each fail the one call (15, 16, 16) and not another.
 
 A second test, `a_creation_that_cannot_be_identified_is_undone_or_reported`, takes §8.1's
 "refused operations leave nothing behind": a key created whose proof then fails is removed

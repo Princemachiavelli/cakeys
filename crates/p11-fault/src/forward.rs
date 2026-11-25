@@ -8,8 +8,10 @@
 //! one a rule names (`=> wrap_key` too, and the fourth, the key wrapped); `=> corrupt_output`
 //! forwards, then changes the last byte returned where a rule says so.
 //!
-//! `[kind(args), ...]` names what the trace reads from the arguments once the call returns
-//! (`trace::Detail`): the mechanism, a template, the user type, the session flags.
+//! `[kind(args), ...]` names what is read from the arguments (`trace::Detail`): before the
+//! call, what the plan's matchers see (the mechanism, an input template's class and key type,
+//! the session and objects `of_label` looks at); once it returns, what the trace says (the
+//! mechanism, a template, the user type, the session flags, what an output holds).
 
 use crate::{Fatal, guard, hooks, shim};
 use cryptoki_sys::{
@@ -74,6 +76,15 @@ macro_rules! forward {
             pub fn name(self) -> &'static str {
                 match self {
                     $(Fn::$name => stringify!($name)),*
+                }
+            }
+
+            /// What is read from its arguments (`[kind(args), ...]` in the table): what a rule's
+            /// matchers can see of its calls, read from the table rather than kept beside it.
+            #[must_use]
+            pub fn reads(self) -> &'static [&'static str] {
+                match self {
+                    $(Fn::$name => &[$($(stringify!($kind)),+)?]),*
                 }
             }
 
@@ -146,38 +157,38 @@ forward! {
     C_Login(arg1: CK_SESSION_HANDLE, arg2: CK_USER_TYPE, arg3: *mut CK_UTF8CHAR, arg4: CK_ULONG) [user(arg2)];
     C_Logout(arg1: CK_SESSION_HANDLE);
     C_CreateObject(arg1: CK_SESSION_HANDLE, arg2: *mut CK_ATTRIBUTE, arg3: CK_ULONG, arg4: *mut CK_OBJECT_HANDLE) [template(arg2, arg3)];
-    C_CopyObject(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG, arg5: *mut CK_OBJECT_HANDLE) [template(arg3, arg4)];
-    C_DestroyObject(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE);
-    C_GetObjectSize(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ULONG);
-    C_GetAttributeValue(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG) => attribute_value [filled_template(arg3, arg4)];
-    C_SetAttributeValue(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG) [template(arg3, arg4)];
+    C_CopyObject(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG, arg5: *mut CK_OBJECT_HANDLE) [session(arg1), object(arg2), template(arg3, arg4)];
+    C_DestroyObject(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE) [session(arg1), object(arg2)];
+    C_GetObjectSize(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ULONG) [session(arg1), object(arg2)];
+    C_GetAttributeValue(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG) => attribute_value [session(arg1), object(arg2), filled_template(arg3, arg4)];
+    C_SetAttributeValue(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG) [session(arg1), object(arg2), template(arg3, arg4)];
     C_FindObjectsInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_ATTRIBUTE, arg3: CK_ULONG) => find_objects_init [template(arg2, arg3)];
     C_FindObjects(arg1: CK_SESSION_HANDLE, arg2: *mut CK_OBJECT_HANDLE, arg3: CK_ULONG, arg4: *mut CK_ULONG) => find_objects;
     C_FindObjectsFinal(arg1: CK_SESSION_HANDLE) => find_objects_final;
-    C_EncryptInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2)];
+    C_EncryptInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [session(arg1), mechanism(arg2), object(arg3)];
     C_Encrypt(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG) => corrupt_output;
     C_EncryptUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_EncryptFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: *mut CK_ULONG);
-    C_DecryptInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2)];
+    C_DecryptInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [session(arg1), mechanism(arg2), object(arg3)];
     C_Decrypt(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG) => corrupt_output;
     C_DecryptUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_DecryptFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: *mut CK_ULONG);
     C_DigestInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM) [mechanism(arg2)];
     C_Digest(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_DigestUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);
-    C_DigestKey(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE);
+    C_DigestKey(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE) [session(arg1), object(arg2)];
     C_DigestFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: *mut CK_ULONG);
-    C_SignInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2)];
+    C_SignInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [session(arg1), mechanism(arg2), object(arg3)];
     C_Sign(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG) => corrupt_output;
     C_SignUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);
     C_SignFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: *mut CK_ULONG) => corrupt_output;
-    C_SignRecoverInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) [mechanism(arg2)];
+    C_SignRecoverInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) [session(arg1), mechanism(arg2), object(arg3)];
     C_SignRecover(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
-    C_VerifyInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2)];
+    C_VerifyInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [session(arg1), mechanism(arg2), object(arg3)];
     C_Verify(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: CK_ULONG);
     C_VerifyUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);
     C_VerifyFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);
-    C_VerifyRecoverInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) [mechanism(arg2)];
+    C_VerifyRecoverInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) [session(arg1), mechanism(arg2), object(arg3)];
     C_VerifyRecover(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_DigestEncryptUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_DecryptDigestUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
@@ -185,9 +196,9 @@ forward! {
     C_DecryptVerifyUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_GenerateKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG, arg5: *mut CK_OBJECT_HANDLE) [mechanism(arg2), template(arg3, arg4)];
     C_GenerateKeyPair(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG, arg5: *mut CK_ATTRIBUTE, arg6: CK_ULONG, arg7: *mut CK_OBJECT_HANDLE, arg8: *mut CK_OBJECT_HANDLE) [mechanism(arg2), template(arg3, arg4), template(arg5, arg6)];
-    C_WrapKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: CK_OBJECT_HANDLE, arg5: *mut CK_BYTE, arg6: *mut CK_ULONG) => wrap_key [mechanism(arg2)];
-    C_UnwrapKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: *mut CK_BYTE, arg5: CK_ULONG, arg6: *mut CK_ATTRIBUTE, arg7: CK_ULONG, arg8: *mut CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2), template(arg6, arg7)];
-    C_DeriveKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: *mut CK_ATTRIBUTE, arg5: CK_ULONG, arg6: *mut CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2), template(arg4, arg5)];
+    C_WrapKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: CK_OBJECT_HANDLE, arg5: *mut CK_BYTE, arg6: *mut CK_ULONG) => wrap_key [session(arg1), mechanism(arg2), object(arg3), object(arg4)];
+    C_UnwrapKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: *mut CK_BYTE, arg5: CK_ULONG, arg6: *mut CK_ATTRIBUTE, arg7: CK_ULONG, arg8: *mut CK_OBJECT_HANDLE) => substitute_key [session(arg1), mechanism(arg2), object(arg3), template(arg6, arg7)];
+    C_DeriveKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: *mut CK_ATTRIBUTE, arg5: CK_ULONG, arg6: *mut CK_OBJECT_HANDLE) => substitute_key [session(arg1), mechanism(arg2), object(arg3), template(arg4, arg5)];
     C_SeedRandom(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);
     C_GenerateRandom(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);
     C_GetFunctionStatus(arg1: CK_SESSION_HANDLE);
