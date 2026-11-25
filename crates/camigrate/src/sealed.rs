@@ -79,28 +79,31 @@ pub(crate) fn export(
             keys: keys.collect(),
         });
     };
-    // An enforced key wraps only under the transport key's trusted copy (`transport --trusted`),
+    // An enforced key wraps only under the transport key's trusted copy (`transport --trust-on`),
     // the composed method by CKM_RSA_AES_KEY_WRAP: the source trusts no key-encryption key.
-    let trusted =
-        if items.iter().any(|i| i.exposure == Exposure::Enforced) {
-            let (copy, others) = from.trusted(&transport.spki)?;
-            if others > 0 {
-                notes.warn(format_args!(
+    let trusted = if items.iter().any(|i| i.exposure == Exposure::Enforced) {
+        let (copy, others) = from.trusted(&transport.spki)?;
+        if others > 0 {
+            notes.warn(format_args!(
                 "{others} other object(s) on '{}' are CKA_TRUSTED: a CKA_WRAP_WITH_TRUSTED key there wraps under any \
                  of them, so `enforced` is only as narrow as that set",
                 from.name
             ));
-            }
-            Some(copy.ok_or_else(|| {
-                KmError::PreconditionFailed(format!(
-                "'{}' holds no trusted copy of transport key '{}': `camigrate transport <spec> --token <target> \
-                 --trusted {}`",
-                from.name, transport.object, from.name
-            ).into())
-            })?)
-        } else {
-            None
-        };
+        }
+        Some(copy.ok_or_else(|| {
+            KmError::PreconditionFailed(
+                format!(
+                    "'{}' holds no trusted copy of transport key '{}': `{}`",
+                    from.name,
+                    transport.object,
+                    crate::plan::trust_command(Some(&transport.object), &from.name)
+                )
+                .into(),
+            )
+        })?)
+    } else {
+        None
+    };
     let modulus = rsa_parts(&transport.spki)?.0.len();
     let session = from.raw();
     let refused = |what: &str, e: cryptoki::error::Error| {

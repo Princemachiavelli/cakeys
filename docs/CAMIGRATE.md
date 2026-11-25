@@ -297,8 +297,8 @@ tss-esapi), and phase 7, vendor methods, which wait for hardware. Both are in [O
 
 - **The dry-run property** (D9), over the reference matrix: SoftHSM, kryoptic, p11-kit and
   swtpm/tpm2-pkcs11 as sources and targets, every class and the key types each takes. A ready
-  move exits 0, records its `origin`, and `cakeys verify` accepts it on the target with its proof
-  of possession; a blocked one is 15 with nothing changed.
+  move exits 22 (the lock written), records its `origin`, and `cakeys check` accepts it on the
+  target with its proof of possession; a blocked one is 15 with nothing changed.
 - **Refusals**, each with its pinned exit code: non-extractable keys, a source that never
   exports, a target missing a curve or mechanism, host paths without the flag, an occupied
   locator, a transport key the lock does not pin, tampered or swapped blobs, another key's IDs,

@@ -108,7 +108,7 @@ fn pin_file_path_can_come_from_the_environment() {
 }
 
 /// The admin credential (`soCredentialFile`/`soCredentialEnv`) is read only by a step that needs the
-/// Security Officer: ykcs11's create and delete, and `camigrate transport --trusted` (docs/CAMIGRATE.md
+/// Security Officer: ykcs11's create and delete, and `camigrate transport --trust-on` (docs/CAMIGRATE.md
 /// D2). `SoftHSM` creates keys as the user, so a create never reads it: a credential file that
 /// does not exist is no error. Without a user PIN to return to, it is invalid at load.
 #[test]

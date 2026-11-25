@@ -285,7 +285,7 @@ module lock {
     seen' = Map(),
   }
 
-  /// One cakeys run on one target: `lock` (Record) or `verify` (Compare).
+  /// One cakeys run on one target: `lock` (Record) or `check` (Compare).
   action realise = {
     nondet target = TARGETS.oneOf()
     nondet change = CHANGES.oneOf()

@@ -29,8 +29,9 @@
 #           instead of building one.
 # cakeys    runs cakeys on the runner with scripts/cloud/aws/cakeys.toml, the crypto user's PIN in
 #           tmpfs and a lock kept on the runner, against CloudHSM and a SoftHSM token beside it:
-#           `cakeys create`, `check ec-p256 --token cloudhsm`, `delete ...`. CAKEYS names a
-#           cakeys binary to use instead of building one; CAKEYS_AWS_CONFIG another keys.toml,
+#           `--new-lock create` (no lock there yet: without --new-lock, 17), `check ec-p256 --token
+#           cloudhsm`, `delete ...`. CAKEYS names a cakeys binary to use instead of building one;
+#           CAKEYS_AWS_CONFIG another keys.toml,
 #           CAKEYS_AWS_LOCK another lock path on the runner (crates/cli/tests/cloud.rs: one per run).
 # camigrate the same for camigrate (CAMIGRATE): `camigrate migrate movable --from softhsm --to
 #           cloudhsm`, and back: `migrate outbound --from cloudhsm --to softhsm`.

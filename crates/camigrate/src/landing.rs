@@ -421,7 +421,7 @@ fn limit_file_plans(run: &Run, plans: &mut [plan::Plan], format: FileFormat, fro
         } else if format == FileFormat::Pkcs12 && run.paired_certificate_target(&p.object, from).is_none() {
             p.block(format!(
                 "pkcs12 carries the key with its certificate, and the lock pairs no certificate with '{}' on \
-                 '{from}': lock it there, or export --to-file pkcs8",
+                 '{from}': lock it there, or export --to-key-file pkcs8",
                 p.object
             ));
         }

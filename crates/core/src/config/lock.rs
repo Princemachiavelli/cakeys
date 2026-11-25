@@ -479,7 +479,7 @@ impl std::fmt::Display for Immutables {
 
 /// Lock entries `cfg` no longer names (finding D3): every `[realisations.<spec>.<token>]` whose
 /// spec or token is gone from keys.toml, and every `[objects.<name>]` absent from it — printed by
-/// `gc` as table names, removed with `--apply`. Live objects keep their `ids` however few specs
+/// `gc --dry-run` as table names, removed by `gc`. Live objects keep their `ids` however few specs
 /// use them; only entries whose whole subject is gone are collected, and every
 /// `[observations."<key>"]` no remaining realisation names. A realisation of an object keys.toml
 /// no longer defines goes with it (a renamed object, a spec pointed at another one), so what is

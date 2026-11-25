@@ -63,7 +63,7 @@ fn tokens(name: &str) -> Option<(Env, String)> {
             Attribute::Label(b"f-crt".to_vec()),
         ])
         .unwrap();
-    // SoftHSM's SO, for `transport --trusted` (the runner initialises it with SO PIN 5678).
+    // SoftHSM's SO, for `transport --trust-on` (the runner initialises it with SO PIN 5678).
     let so_pin = e.dir.join("so-pin");
     std::fs::write(&so_pin, "5678\n").unwrap();
     e.config_with(&body, &|r| {
@@ -209,7 +209,7 @@ fn a_move_the_module_fails_is_refused_and_undone() {
 }
 
 /// An SO step that succeeded is said to have succeeded (token/mod.rs F2): the SO's
-/// `C_Logout` after `transport --trusted` made the trusted copy fails, and the run says the copy
+/// `C_Logout` after `transport --trust-on` made the trusted copy fails, and the run says the copy
 /// was made, never only the logout's error; the next run finds the copy and has nothing to do.
 #[test]
 fn an_so_step_that_was_done_is_said_to_be_done() {

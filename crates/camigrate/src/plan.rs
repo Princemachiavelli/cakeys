@@ -317,8 +317,9 @@ fn sealed(m: &Material, from: &Side, dst: &Side, trusted_only: bool, allow: Allo
         if !allow.trusted_transport {
             ways.block(format!(
                 "CKA_WRAP_WITH_TRUSTED: {} holds no trusted copy of the transport key; its SO makes one with \
-                 `camigrate transport <spec> --token <target> --trusted {}`",
-                from.token, from.token
+                 `{}`",
+                from.token,
+                trust_command(None, &from.token)
             ));
             return;
         }
@@ -441,6 +442,13 @@ fn target_notes(dst: &Side, plan: &Plan) -> Vec<String> {
     }
 }
 
+/// What a source's SO runs to trust the target's transport key (docs/CAMIGRATE.md D2), as a
+/// refusal for want of that trusted copy names it: `object` the transport key's, when known.
+pub(crate) fn trust_command(object: Option<&str>, source: &str) -> String {
+    let object = object.map(|o| format!(" {o}")).unwrap_or_default();
+    format!("camigrate transport{object} --token <target> --trust-on {source}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,6 +457,17 @@ mod tests {
 
     fn obj(class: ObjectClass, kt: Option<KeyType>) -> ObjectCfg {
         ObjectCfg::new(class, kt)
+    }
+
+    /// The command line a refusal tells its reader to run (the first backticked span, its
+    /// `<placeholders>` filled in), parsed as camigrate parses its own: a refusal never names a
+    /// verb or flag the tool does not have (the 2026-11-23 renames left `--trusted` in two).
+    fn suggested(reason: &str) -> clap::ArgMatches {
+        let line = reason.split('`').nth(1).unwrap_or_else(|| panic!("no command in {reason:?}"));
+        let mut words: Vec<&str> = line.split_whitespace().map(|w| w.trim_matches(['<', '>'])).collect();
+        assert_eq!(words.first(), Some(&"camigrate"), "{line}");
+        words.splice(1..1, ["--config", "keys.toml"]);
+        crate::command().try_get_matches_from(&words).unwrap_or_else(|e| panic!("{line}: {e}"))
     }
 
     fn p256() -> ObjectCfg {
@@ -602,7 +621,17 @@ mod tests {
         let allowed = Allow { host_plaintext: true, ..Allow::default() };
         let p = plan_of(&p256(), &flags, &softhsm(), &To::Token(&kryoptic()), allowed);
         assert!(!p.ready && p.method.is_none(), "{p:?}");
-        assert!(p.reasons.iter().any(|r| r.contains("--trusted softhsm")), "{p:?}");
+        let why = p.reasons.iter().find(|r| r.contains("holds no trusted copy")).unwrap_or_else(|| panic!("{p:?}"));
+        let named = suggested(why);
+        let (verb, args) = named.subcommand().unwrap_or_else(|| panic!("{why}"));
+        assert_eq!(
+            (verb, args.get_one::<String>("trust_on").map(String::as_str)),
+            ("transport", Some("softhsm")),
+            "{why}"
+        );
+        // The export's own refusal (sealed.rs) names the transport key's object as well.
+        let named = suggested(&format!("`{}`", trust_command(Some("tk"), "softhsm")));
+        assert_eq!(named.subcommand().map(|(_, a)| a.get_one::<String>("object").cloned()), Some(Some("tk".into())));
         let trusted = Allow { trusted_transport: true, ..allowed };
         let p = plan_of(&p256(), &flags, &softhsm(), &To::Token(&kryoptic()), trusted);
         assert_eq!(p.ready, cfg!(feature = "kwp"), "{p:?}");

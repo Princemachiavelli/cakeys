@@ -43,7 +43,7 @@ pub struct TokenCfg {
     pub pin_env: Option<String>,
     /// The Security Officer credential, for modules that create and destroy objects only in an
     /// SO session — ykcs11: the PIV management key in hex, or the PIN on a device whose
-    /// management key is PIN-protected; elsewhere the SO PIN (camigrate's `transport --trusted`).
+    /// management key is PIN-protected; elsewhere the SO PIN (camigrate's `transport --trust-on`).
     /// `pinFile`/`pinEnv` remain the *user* credential. Read just before such a step, never by
     /// `resolve` or `check`; the user session is restored afterwards, so a user PIN is
     /// required. `soCredentialEnv` wins if both are set; `soCredentialFile` may be `$NAME`, like

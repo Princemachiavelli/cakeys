@@ -1,4 +1,4 @@
-//! The verbs on key files (docs/FILE.md, docs/CAMIGRATE.md D2 `file`): `export --to-file`, and
+//! The verbs on key files (docs/FILE.md, docs/CAMIGRATE.md D2 `file`): `export --to-key-file`, and
 //! `import` from a file or from each object's own. What a file holds is `file` (written) and
 //! `keyfile` (read); this is the run around them: its passphrase, its plan and the lock.
 
@@ -9,7 +9,7 @@
 use super::*;
 
 impl Run<'_> {
-    /// `export --to-file`: one private key, through the host (`Token::extract`), into a
+    /// `export --to-key-file`: one private key, through the host (`Token::extract`), into a
     /// passphrase-protected file (docs/CAMIGRATE.md D2 `file`): encrypted PKCS#8, or PKCS#12 with the
     /// certificate the lock pairs with it on the source. Written whole or not at all, mode 0600.
     pub(super) fn export_file(&self, ctx: &MoveCtx, out: &Path, pass: &Path, notes: &mut Notes) -> anyhow::Result<()> {

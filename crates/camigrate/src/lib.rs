@@ -861,7 +861,7 @@ impl Run<'_> {
         tally.finish(self, notes)
     }
 
-    /// Whether the source's SO made a trusted copy (`transport --trusted`) of the transport key
+    /// Whether the source's SO made a trusted copy (`transport --trust-on`) of the transport key
     /// `dest` seals to. A source that did not open is planned from the lock, which records no
     /// trusted copy; a lookup that fails on an open one is its own error, never "no copy".
     fn trusted_transport(
@@ -992,7 +992,7 @@ fn plan_lines(from: &str, moves: &tokens::Moves) -> Vec<String> {
 }
 
 impl Run<'_> {
-    /// `transport --trusted`: the source's SO makes a `CKA_TRUSTED` copy of the transport key
+    /// `transport --trust-on`: the source's SO makes a `CKA_TRUSTED` copy of the transport key
     /// realised as `spec` on `token`, from the public key the lock records (so the lock vouches
     /// for it, never a file). Nothing to do when the source already trusts it; any other trusted
     /// object there is warned about, since `enforced` is only as narrow as the trusted set.

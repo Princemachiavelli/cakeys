@@ -460,7 +460,7 @@ derivation. Both can be rooted in the HSM, by different means, and are tested se
 
 1. **Through PKCS#11.** The PKCS#11 TA's token lives in OP-TEE secure storage, whose keys
    derive from the HUK. Create and `lock` a key under HUK A. Reboot with HUK A and the same
-   storage: `cakeys verify` is 0. Reboot with HUK B and the same storage: the token is
+   storage: `cakeys check` is 0. Reboot with HUK B and the same storage: the token is
    unreadable, and cakeys must answer 11 or 16, never 0 and never a silent re-create.
    [todo: which error the TA surfaces]
 2. **The exact value.** A small witness TA returns HMAC(TA-unique key, challenge), the key

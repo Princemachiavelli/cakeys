@@ -1454,7 +1454,7 @@ fn exports_to_a_token_need_only_the_lock() {
     assert_eq!(code(&o), 15, "{}", stdout(&o));
     assert!(stdout(&o).contains("records no public key"), "{}", stdout(&o));
     // With kryoptic in reach, the export asks the token for the key the lock lacks and says so;
-    // `transport --trusted` takes the key from the lock alone, and has none to take.
+    // `transport --trust-on` takes the key from the lock alone, and has none to take.
     let early = e.dir.join("early.bundle.toml");
     let o = e.km(soft, &["export", "mv", "--from", "softhsm", "--to", "kryoptic", "--out", early.to_str().unwrap()]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -1636,7 +1636,7 @@ fn base64_flip(text: &str) -> String {
 }
 
 /// `enforced` (docs/CAMIGRATE.md D2, phase 3b): a `CKA_WRAP_WITH_TRUSTED` key on `SoftHSM` moves only after
-/// its SO trusted the target's transport key (`transport --trusted`, with `soCredentialFile`), and
+/// its SO trusted the target's transport key (`transport --trust-on`, with `soCredentialFile`), and
 /// then by `CKM_RSA_AES_KEY_WRAP` under that trusted copy alone: each bundle entry carries its
 /// own key-encryption key. kryoptic imports and verifies them. A wrap-with-trusted key on
 /// kryoptic never moves: it cannot trust an RSA key (its profile's `move.trusted-wrap` row says no).
@@ -1679,7 +1679,7 @@ fn enforced_moves_wrap_only_under_the_trusted_transport_key() {
     // Untrusted: blocked, naming the SO's step.
     let p = plan("ek", soft, kry);
     assert_eq!(p["plans"][0]["ready"].as_bool(), Some(false), "{p}");
-    assert!(p["plans"][0]["reasons"][0].as_str().unwrap().contains("--trusted softhsm"), "{p}");
+    assert!(p["plans"][0]["reasons"][0].as_str().unwrap().contains("--trust-on softhsm"), "{p}");
     // The SO trusts the transport key, from the public key the lock records; again, nothing to do.
     let trust = ["transport", "--spec", "tk-kryoptic", "--token", "kryoptic", "--trust-on", "softhsm"];
     let o = e.km(soft, &trust);
