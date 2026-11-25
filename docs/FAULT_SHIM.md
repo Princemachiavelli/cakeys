@@ -124,10 +124,11 @@ unsafe extern "C" fn C_FindObjects(s: CK_SESSION_HANDLE, out: *mut CK_OBJECT_HAN
 ```
 
 The `=> substitute_key` form marks the functions that take a key (`C_SignInit`, `C_DecryptInit`,
-`C_DeriveKey`, `C_UnwrapKey`, ...): a `use_label` rule substitutes the handle before forwarding.
-`C_WrapKey`'s `=> wrap_key` does that too, and substitutes the key wrapped under a `wrap_label`
-rule; `=> corrupt_output` marks those whose output a rule may change. The plan's lists of all
-three are generated from these marks.
+`C_DeriveKey`, ...): a `use_label` rule substitutes the handle before forwarding.
+`C_WrapKey`'s `=> wrap_key` does that too, substitutes the key wrapped under a `wrap_label`
+rule, and changes the blob as `corrupt_output` does; `C_UnwrapKey`'s `=> unwrap_key` undoes a
+`transcode`. `=> corrupt_output` marks those whose output a rule may change (`corrupt`,
+`replay_output`). The plan's lists are generated from these marks.
 
 ### The plan
 
@@ -200,16 +201,34 @@ fn = "C_WrapKey"
 of_label = "shown"
 wrap_label = "other"
 
-# Found objects hidden; a byte of what a call returns changed (C_Sign, C_SignFinal, C_Encrypt,
-# C_Decrypt); mechanisms no longer listed.
+# Found objects hidden, or others found in their place (the one labelled `by` of each one's
+# class; none under it fails the call); a byte of what a call returns changed (C_Sign,
+# C_SignFinal, C_Encrypt, C_Decrypt, C_WrapKey), or what it returned n calls before returned
+# again (where there was one and it fits the caller's buffer); mechanisms no longer listed.
 [[rule]]
 fn = "C_FindObjects"
 hide_label = "gone"
 
 [[rule]]
+fn = "C_FindObjects"
+of_label = "shown"
+replace_label = "other"
+
+[[rule]]
 fn = "C_Sign"
 call = 2
 corrupt = true
+
+[[rule]]
+fn = "C_Sign"
+replay_output = 1
+
+# A wrapped blob that round-trips through the module and is not what it made: every byte
+# C_WrapKey returns padded, and every C_UnwrapKey's blob unpadded (on a copy) before it reaches
+# the module. No matcher: the unwrap that undoes it cannot tell which wraps were padded.
+[[rule]]
+fn = "C_WrapKey"
+transcode = true
 
 [[rule]]
 fn = "C_GetMechanismList"
@@ -248,7 +267,7 @@ refuses what the client does next. To model a module that fails the operation, f
 that does the work, after it: `call = 2`, `when = "after"` for a client that asks the length
 first.
 
-**Labels to handles.** `of_label`, `from_label`, `add_label`, `use_label` and `wrap_label` are resolved
+**Labels to handles.** `of_label`, `from_label`, `add_label`, `use_label`, `wrap_label` and `replace_label` are resolved
 through a session of the shim's own (`C_OpenSession` on the caller's slot, read from
 `C_GetSessionInfo`), so resolving never interrupts a find the caller has open. The session is
 read-only, or read-write where the module refuses a read-only one because the caller holds an
@@ -331,6 +350,9 @@ the point is what it leaves alone, one where it must not: `of_label` fails k's a
 (16) and not k2's; `nth` and `from` fire on the call they count to (the trace's `n`);
 `fn = "*"` with `from_seq` fails every call from a run's first signing on (16) and none before;
 `mechanism`, `class` and `key_type` each fail the one call (15, 16, 16) and not another.
+Another key pair found (`replace_label`), a wrap commitment corrupted, and a transcoded wrap
+commitment each give 10; a transcoded wrap-rebind still verifies (the unwrap undoes it), and a
+replayed signature fails the second key's proof (13).
 
 A second test, `a_creation_that_cannot_be_identified_is_undone_or_reported`, takes §8.1's
 "refused operations leave nothing behind": a key created whose proof then fails is removed

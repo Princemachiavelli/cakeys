@@ -95,8 +95,22 @@ pub enum Action {
     WrapLabel(Vec<u8>),
     /// `C_FindObjects`: the objects with this label are not found.
     HideLabel(Vec<u8>),
+    /// `C_FindObjects`: each object found labelled `of` is another, the one labelled `by` of
+    /// its class.
+    ReplaceLabel {
+        /// The label of the objects replaced.
+        of: Vec<u8>,
+        /// The label of those found instead.
+        by: Vec<u8>,
+    },
     /// A function returning bytes: the last byte it returns is another.
     Corrupt,
+    /// A function returning bytes: what it returned this many calls before (1: the latest
+    /// earlier output), where there was one and it fits the caller's buffer.
+    ReplayOutput(usize),
+    /// `C_WrapKey`: the blob returned is transcoded, and every `C_UnwrapKey` undoes it, so the
+    /// blob round-trips through the module and is not what the module made.
+    Transcode,
     /// `C_GetMechanismList`: these mechanisms are not listed.
     HideMechanisms(Vec<CK_MECHANISM_TYPE>),
     /// The process dies at the call, before it reaches the module (`std::process::abort`): a
@@ -152,6 +166,7 @@ struct FileText {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[expect(clippy::struct_excessive_bools, reason = "the plan's TOML: each flag a rule may give")]
 struct RuleText {
     #[serde(rename = "fn")]
     function: String,
@@ -182,8 +197,12 @@ struct RuleText {
     use_label: Option<String>,
     wrap_label: Option<String>,
     hide_label: Option<String>,
+    replace_label: Option<String>,
     #[serde(default)]
     corrupt: bool,
+    replay_output: Option<usize>,
+    #[serde(default)]
+    transcode: bool,
     #[serde(default)]
     hide_mechanisms: Vec<Value>,
     #[serde(default)]
@@ -307,6 +326,18 @@ impl Plan {
         call.rules.iter().map(|&i| (i + 1, &self.rules[i]))
     }
 
+    /// The `transcode` rule (from 1), if the plan has one: every `C_UnwrapKey` undoes it.
+    #[must_use]
+    pub(crate) fn transcoder(&self) -> Option<usize> {
+        self.rules.iter().position(|r| r.action == Action::Transcode).map(|i| i + 1)
+    }
+
+    /// Whether a `replay_output` rule names `function`: its outputs are kept.
+    #[must_use]
+    pub(crate) fn replays(&self, function: Fn) -> bool {
+        self.rules.iter().any(|r| r.function == Some(function) && matches!(r.action, Action::ReplayOutput(_)))
+    }
+
     /// What `call` returns instead of reaching the real module, and the rule (from 1) that says
     /// so; `None` to forward it.
     #[must_use]
@@ -335,10 +366,10 @@ impl Plan {
     }
 }
 
-/// The functions whose forwarder runs one of `hooks` (forward.rs's table): `substitute_key` and
-/// `wrap_key` for those whose third argument is the key they use (what `use_label`
-/// substitutes), `corrupt_output` for those that return bytes through a buffer and its length
-/// (what `corrupt` changes).
+/// The functions whose forwarder runs one of `hooks` (forward.rs's table): `substitute_key`,
+/// `wrap_key` and `unwrap_key` for those whose third argument is the key they use (what
+/// `use_label` substitutes), `corrupt_output` and `wrap_key` for those that return bytes through
+/// a buffer and its length (what `corrupt` and `replay_output` change).
 fn hooked(hooks: &[&str]) -> Vec<Fn> {
     Fn::ALL.iter().copied().filter(|f| f.hook().is_some_and(|h| hooks.contains(&h))).collect()
 }
@@ -369,6 +400,36 @@ fn attribute_changes(r: &mut RuleText) -> Result<Vec<AttributeChange>, String> {
 
 /// The `mechanism`, `class` and `key_type` a rule matches.
 type Arguments = (Option<CK_MECHANISM_TYPE>, Option<CK_OBJECT_CLASS>, Option<CK_KEY_TYPE>);
+
+/// What a rule says of the bytes a function returns (its `corrupt`, `replay_output`,
+/// `transcode`), checked by `only` against the functions that return bytes; `narrowed`: the
+/// rule gives a matcher beside its function.
+fn output_actions(
+    (corrupt, replay, transcode): (bool, Option<usize>, bool),
+    narrowed: bool,
+    only: impl std::ops::Fn(&[Fn], &str) -> Result<(), String>,
+) -> Result<Vec<Action>, String> {
+    let mut actions = Vec::new();
+    if corrupt {
+        only(&hooked(&["corrupt_output", "wrap_key"]), "corrupt")?;
+        actions.push(Action::Corrupt);
+    }
+    if let Some(k) = replay {
+        only(&hooked(&["corrupt_output", "wrap_key"]), "replay_output")?;
+        if k == 0 {
+            return Err("replay_output = 0: the latest earlier output is 1".into());
+        }
+        actions.push(Action::ReplayOutput(k));
+    }
+    if transcode {
+        only(&[Fn::C_WrapKey], "transcode")?;
+        if narrowed {
+            return Err("transcode takes no matcher: every C_UnwrapKey undoes it".into());
+        }
+        actions.push(Action::Transcode);
+    }
+    Ok(actions)
+}
 
 /// Whether `function` is one of `functions`: if not, that `what` is for those only.
 fn only(function: Option<Fn>, functions: &[Fn], what: &str) -> Result<(), String> {
@@ -427,6 +488,8 @@ fn rule(mut r: RuleText) -> Result<Rule, String> {
             }
         })?)
     };
+    // `replace_label`'s `of_label` names the objects it replaces: a search names no object.
+    let replace = r.replace_label.take().map(|by| (r.of_label.take(), by));
     let (mechanism, class, key_type) = matchers(function, &mut r)?;
     let only = |functions: &[Fn], what: &str| only(function, functions, what);
     // A flag of the structure the rule's function returns: the slot's and the token's flag words
@@ -465,7 +528,7 @@ fn rule(mut r: RuleText) -> Result<Rule, String> {
         actions.push(Action::AddLabel(label.into_bytes()));
     }
     if let Some(label) = r.use_label {
-        only(&hooked(&["substitute_key", "wrap_key"]), "use_label")?;
+        only(&hooked(&["substitute_key", "wrap_key", "unwrap_key"]), "use_label")?;
         actions.push(Action::UseLabel(label.into_bytes()));
     }
     if let Some(label) = r.wrap_label {
@@ -476,10 +539,14 @@ fn rule(mut r: RuleText) -> Result<Rule, String> {
         only(&[Fn::C_FindObjects], "hide_label")?;
         actions.push(Action::HideLabel(label.into_bytes()));
     }
-    if r.corrupt {
-        only(&hooked(&["corrupt_output"]), "corrupt")?;
-        actions.push(Action::Corrupt);
+    if let Some((of, by)) = replace {
+        only(&[Fn::C_FindObjects], "replace_label")?;
+        let of = of.ok_or("replace_label goes with of_label, the label of the objects it replaces")?;
+        actions.push(Action::ReplaceLabel { of: of.into_bytes(), by: by.into_bytes() });
     }
+    let narrowed = [r.call, r.nth, r.from, r.from_seq, mechanism, class, key_type].iter().any(Option::is_some);
+    let output = (r.corrupt, r.replay_output, r.transcode);
+    actions.extend(output_actions(output, narrowed || r.of_label.is_some(), only)?);
     if !r.hide_mechanisms.is_empty() {
         only(&[Fn::C_GetMechanismList], "hide_mechanisms")?;
         let hidden = r.hide_mechanisms.into_iter().map(|m| m.resolve("mechanism", names::mechanism));
@@ -492,7 +559,8 @@ fn rule(mut r: RuleText) -> Result<Rule, String> {
         1 => actions.remove(0),
         0 => {
             return Err("nothing to do: give rv, set_flags, clear_flags, attribute, add_label, hide_label, \
-                        use_label, wrap_label, corrupt, hide_mechanisms or abort"
+                        replace_label, use_label, wrap_label, corrupt, replay_output, transcode, \
+                        hide_mechanisms or abort"
                 .into());
         }
         _ => return Err("one thing per rule".into()),
@@ -565,7 +633,11 @@ mod tests {
              [[rule]]\nfn = \"C_DestroyObject\"\nof_label = \"k\"\nrv = \"CKR_OK\"\n\n\
              [[rule]]\nfn = \"*\"\nfrom_seq = 40\nrv = \"CKR_DEVICE_REMOVED\"\n\n\
              [[rule]]\nfn = \"C_SignInit\"\nmechanism = \"CKM_ECDSA\"\nnth = 2\nrv = \"CKR_DEVICE_ERROR\"\n\n\
-             [[rule]]\nfn = \"C_GenerateKey\"\nclass = \"CKO_SECRET_KEY\"\nkey_type = \"CKK_AES\"\nfrom = 3\nabort = true\n",
+             [[rule]]\nfn = \"C_GenerateKey\"\nclass = \"CKO_SECRET_KEY\"\nkey_type = \"CKK_AES\"\nfrom = 3\nabort = true\n\n\
+             [[rule]]\nfn = \"C_FindObjects\"\nof_label = \"k\"\nreplace_label = \"k-other\"\n\n\
+             [[rule]]\nfn = \"C_WrapKey\"\ncorrupt = true\n\n\
+             [[rule]]\nfn = \"C_Sign\"\nreplay_output = 2\n\n\
+             [[rule]]\nfn = \"C_WrapKey\"\ntranscode = true\n",
         )
         .unwrap();
         let actions: Vec<&Action> = plan.rules().iter().map(|r| &r.action).collect();
@@ -580,6 +652,13 @@ mod tests {
         assert_eq!(*actions[7], Action::UseLabel(b"used".to_vec()));
         assert_eq!(plan.rules()[1].of_label.as_deref(), Some(&b"k"[..]));
         assert_eq!(plan.rules()[6].of_label.as_deref(), Some(&b"shown"[..]));
+        assert_eq!(*actions[12], Action::ReplaceLabel { of: b"k".to_vec(), by: b"k-other".to_vec() });
+        // Its label names what it replaces, not the calls it meets: a search names no object.
+        assert_eq!(plan.rules()[12].of_label, None);
+        assert_eq!(*actions[13], Action::Corrupt);
+        assert_eq!(*actions[14], Action::ReplayOutput(2));
+        assert_eq!(*actions[15], Action::Transcode);
+        assert_eq!((plan.transcoder(), plan.replays(Fn::C_Sign), plan.replays(Fn::C_WrapKey)), (Some(16), true, false));
         // An attribute or flag rule is no return value.
         let call = plan.count(Fn::C_GetTokenInfo);
         assert_eq!((plan.before(&call), plan.after(&call)), (None, None));
@@ -721,8 +800,20 @@ mod tests {
             ("[[rule]]\nfn = \"C_FindObjectsInit\"\nhide_label = \"x\"\n", "hide_label is for C_FindObjects"),
             (
                 "[[rule]]\nfn = \"C_Verify\"\ncorrupt = true\n",
-                "corrupt is for C_Encrypt, C_Decrypt, C_Sign, C_SignFinal",
+                "corrupt is for C_Encrypt, C_Decrypt, C_Sign, C_SignFinal, C_WrapKey",
             ),
+            // A replacement names what it replaces; a replay, an earlier output; a transcoded blob
+            // is undone by every unwrap, so no matcher picks the wraps it transcodes.
+            ("[[rule]]\nfn = \"C_FindObjects\"\nreplace_label = \"x\"\n", "replace_label goes with of_label"),
+            (
+                "[[rule]]\nfn = \"C_SignInit\"\nof_label = \"k\"\nreplace_label = \"x\"\n",
+                "replace_label is for C_FindObjects",
+            ),
+            ("[[rule]]\nfn = \"C_Sign\"\nreplay_output = 0\n", "replay_output = 0: the latest earlier output is 1"),
+            ("[[rule]]\nfn = \"C_FindObjects\"\nreplay_output = 1\n", "replay_output is for C_Encrypt"),
+            ("[[rule]]\nfn = \"C_Sign\"\ntranscode = true\n", "transcode is for C_WrapKey"),
+            ("[[rule]]\nfn = \"C_WrapKey\"\ncall = 2\ntranscode = true\n", "transcode takes no matcher"),
+            ("[[rule]]\nfn = \"C_WrapKey\"\ncorrupt = true\ntranscode = true\n", "one thing per rule"),
             ("[[rule]]\nfn = \"C_GetMechanismList\"\nhide_mechanisms = [\"CKM_NOPE\"]\n", "unknown mechanism CKM_NOPE"),
             (
                 "[[rule]]\nfn = \"C_GetMechanismInfo\"\nhide_mechanisms = [\"CKM_ECDSA\"]\n",

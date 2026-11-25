@@ -711,8 +711,8 @@ struct Lie {
     exit: Option<i32>,
     /// What cakeys says.
     says: &'static str,
-    /// The functions the trace shows the rule fired on (`*`: any): none for a lie aimed past the
-    /// run, which must not fire.
+    /// The functions the trace shows the rule fired on, each of them and no other (`*`: any):
+    /// none for a lie aimed past the run, which must not fire.
     fires: &'static [&'static str],
     /// Which call of its function each line the rule fired on was (`n`), where that is the
     /// point: a count of calls.
@@ -724,8 +724,7 @@ struct Lie {
 /// The rows of [`each_lie_kind_fires`]: `signs` is the process's first `C_SignInit` (`seq`) in
 /// an honest `check` of `k`.
 fn lies(signs: u64) -> Vec<Lie> {
-    let check = |spec: &'static str| vec!["check", "--spec", spec, "--token", "ref"];
-    let lock = |a: &'static str, b: &'static str| vec!["lock", "--spec", a, "--spec", b, "--token", "ref"];
+    let (check, lock) = (told_check, told_lock);
     let k_read = "fn = \"C_GetAttributeValue\"\nof_label = \"k\"\nrv = \"CKR_DEVICE_ERROR\"";
     let aes = "fn = \"C_GenerateKey\"\nkey_type = \"CKK_AES\"\nrv = \"CKR_DEVICE_ERROR\"";
     vec![
@@ -827,6 +826,70 @@ fn lies(signs: u64) -> Vec<Lie> {
     ]
 }
 
+/// `check` of one of [`told`]'s objects.
+fn told_check(spec: &'static str) -> Vec<&'static str> {
+    vec!["check", "--spec", spec, "--token", "ref"]
+}
+
+/// `lock` of two of [`told`]'s objects, in this order.
+fn told_lock(a: &'static str, b: &'static str) -> Vec<&'static str> {
+    vec!["lock", "--spec", a, "--spec", b, "--token", "ref"]
+}
+
+/// The rows of [`each_lie_kind_fires`] that change what a search finds or a function returns.
+fn output_lies() -> Vec<Lie> {
+    let (check, lock) = (told_check, told_lock);
+    vec![
+        // Another object found under the locator (`replace_label`): k-other's key pair stands
+        // for k's, so the identity is not the lock's.
+        Lie {
+            rule: "fn = \"C_FindObjects\"\nof_label = \"k\"\nreplace_label = \"k-other\"".into(),
+            run: check("k"),
+            exit: Some(10),
+            says: "hash mismatch in identity of",
+            fires: &["C_FindObjects"],
+            ..Lie::default()
+        },
+        // A wrap commitment changed (`corrupt` on `C_WrapKey`).
+        Lie {
+            rule: "fn = \"C_WrapKey\"\ncorrupt = true".into(),
+            run: check("w"),
+            exit: Some(10),
+            says: "hash mismatch in identity of",
+            fires: &["C_WrapKey"],
+            ..Lie::default()
+        },
+        // A wrapped blob that round-trips through the module and is not what it made
+        // (`transcode`): wrap-rebind, which only unwraps it, still verifies; a wrap commitment,
+        // which hashes it, does not.
+        Lie {
+            rule: "fn = \"C_WrapKey\"\ntranscode = true".into(),
+            run: check("s"),
+            exit: Some(0),
+            fires: &["C_WrapKey", "C_UnwrapKey"],
+            ..Lie::default()
+        },
+        Lie {
+            rule: "fn = \"C_WrapKey\"\ntranscode = true".into(),
+            run: check("w"),
+            exit: Some(10),
+            says: "hash mismatch in identity of",
+            fires: &["C_WrapKey"],
+            ..Lie::default()
+        },
+        // An earlier output returned again (`replay_output`): k2's proof is k's signature.
+        Lie {
+            rule: "fn = \"C_Sign\"\nreplay_output = 1".into(),
+            run: lock("k", "k2"),
+            exit: Some(13),
+            says: "did not sign for the public key",
+            fires: &["C_Sign"],
+            n: &[4],
+            ..Lie::default()
+        },
+    ]
+}
+
 /// Each lie kind `p11-fault` tells beyond the first table (`docs/FAULT_SHIM.md`; review 2026-11-24
 /// phase 2, L1), one row per kind: the rule, the run it meets, the exit where it is the lie's
 /// effect, what cakeys says, and the functions the trace shows the rule fired on. Every row
@@ -843,27 +906,28 @@ fn each_lie_kind_fires() {
     let lines = std::fs::read_to_string(&honest).unwrap();
     let lines = lines.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap());
     let signs = lines.filter(|l| l["fn"] == "C_SignInit").map(|l| l["seq"].as_u64().unwrap()).next().unwrap();
-    let rows = lies(signs);
+    let rows = lies(signs).into_iter().chain(output_lies());
     let lock_path = w.dir.join("keys.lock");
     let locked = std::fs::read(&lock_path).unwrap();
     let mut wrong = Vec::new();
-    for (i, Lie { rule, run, exit, says, fires, n, from_seq }) in rows.iter().enumerate() {
+    for (i, Lie { rule, run, exit, says, fires, n, from_seq }) in rows.enumerate() {
         let (plan, trace) = (w.dir.join("plan.toml"), w.dir.join(format!("lie-{i}.jsonl")));
         std::fs::write(&plan, format!("[[rule]]\n{rule}\n")).unwrap();
-        let o = w.km_env(run, &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)]);
+        let o = w.km_env(&run, &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)]);
         let lines = fired(&trace);
         let fired: Vec<String> = lines.iter().map(|l| l["fn"].as_str().unwrap_or("?").to_owned()).collect();
         let said = stderr(&o);
         let named = |f: &String| fires.contains(&"*") || fires.contains(&f.as_str());
-        let mut as_said = fired.is_empty() == fires.is_empty() && fired.iter().all(named);
+        let each = fires.iter().all(|f| *f == "*" || fired.iter().any(|g| g == f));
+        let mut as_said = fired.is_empty() == fires.is_empty() && fired.iter().all(named) && each;
         let counts: Vec<u64> = lines.iter().map(|l| l["n"].as_u64().unwrap_or(0)).collect();
-        as_said &= n.is_empty() || counts == *n;
+        as_said &= n.is_empty() || counts == n;
         if let Some(from) = from_seq {
             let all = std::fs::read_to_string(&trace).unwrap_or_default();
             as_said &= all
                 .lines()
                 .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
-                .all(|l| (l["seq"].as_u64() >= Some(*from)) == (l["rule"] == 1 && l["rv"] == "CKR_DEVICE_REMOVED"));
+                .all(|l| (l["seq"].as_u64() >= Some(from)) == (l["rule"] == 1 && l["rv"] == "CKR_DEVICE_REMOVED"));
         }
         let kept = std::fs::read(&lock_path).unwrap() == locked;
         if exit.is_some_and(|e| e != code(&o)) || !said.contains(says) || !as_said || !kept {

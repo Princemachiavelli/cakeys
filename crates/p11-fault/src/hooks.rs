@@ -63,9 +63,10 @@ fn flags(shim: &Shim, call: &Call, flags: &mut CK_ULONG) -> Option<usize> {
     fired
 }
 
-/// `C_FindObjects`: the objects of a `hide_label` rule are not found; and where the real search
-/// found something and there is room, those of an `add_label` rule are found too. (Not where it
-/// found nothing: a client reads until a call returns no object, and would never stop.)
+/// `C_FindObjects`: the objects of a `hide_label` rule are not found; those of a
+/// `replace_label` rule are others; and where the real search found something and there is
+/// room, those of an `add_label` rule are found too. (Not where it found nothing: a client reads
+/// until a call returns no object, and would never stop.)
 pub(crate) unsafe fn find_objects(
     shim: &Shim,
     call: &Call,
@@ -84,8 +85,8 @@ pub(crate) unsafe fn find_objects(
     // which the first `*count` are set. A module that reports more than `max` is not believed.
     let set = usize::try_from(unsafe { *count }).unwrap_or(0).min(room);
     let mut found = unsafe { std::slice::from_raw_parts(out, set).to_vec() };
-    // What the search returned in earlier batches, where a rule adds to it.
-    let adds = shim.plan.rules().iter().any(|r| matches!(r.action, Action::AddLabel(_)));
+    // What the search returned in earlier batches, where a rule adds to it or replaces in it.
+    let adds = shim.plan.rules().iter().any(|r| matches!(r.action, Action::AddLabel(_) | Action::ReplaceLabel { .. }));
     let earlier = if adds { shim.searches.returned(session) } else { BTreeSet::new() };
     let mut fired = None;
     for (i, rule) in shim.plan.matching(call) {
@@ -97,6 +98,27 @@ pub(crate) unsafe fn find_objects(
                 found.retain(|h| !hidden.contains(h));
                 if found.len() != before {
                     fired.get_or_insert(i);
+                }
+            }
+            Action::ReplaceLabel { of, by } => {
+                // SAFETY: real-module calls on the caller's session and the handles it found.
+                unsafe {
+                    for h in named(shim, session, of, None)? {
+                        let Some(at) = found.iter().position(|f| *f == h) else { continue };
+                        // Nothing under the label is the plan's mistake, as for `use_label`.
+                        let other = named(shim, session, by, class_of(shim, session, h))?.first().copied();
+                        let other = other.ok_or_else(|| {
+                            let by = String::from_utf8_lossy(by);
+                            Fatal(format!("replace_label: no object labelled {by} of the class of the one replaced"))
+                        })?;
+                        // Found once per search, as an added object is.
+                        if found.contains(&other) || earlier.contains(&other) {
+                            found.remove(at);
+                        } else {
+                            found[at] = other;
+                        }
+                        fired.get_or_insert(i);
+                    }
                 }
             }
             Action::AddLabel(label) if !found.is_empty() => {
@@ -211,10 +233,11 @@ pub(crate) unsafe fn mechanism_list(
     Ok((rv, fired))
 }
 
+/// What `transcode` puts on every byte of a wrapped key, and `C_UnwrapKey` takes off.
+const PAD: u8 = 0x5a;
+
 /// A function returning bytes into the caller's buffer `out` of `*len` bytes, forwarded by
-/// `real`: under a `corrupt` rule, the last of the bytes it returned is another. The length
-/// query (no buffer) is left alone, and so is a length the caller's buffer cannot hold: a module
-/// that reports more than the room it was given is not believed, as in `find_objects`.
+/// `real`, with what it returned changed where a rule says ([`change_output`]).
 ///
 /// # Safety
 ///
@@ -227,24 +250,114 @@ pub(crate) unsafe fn corrupt_output(
     len: *mut CK_ULONG,
     real: impl FnOnce() -> CK_RV,
 ) -> (CK_RV, Option<usize>) {
-    // The caller's room, before the real module overwrites `len` with the length it wrote.
-    // SAFETY: read only when not null.
-    let room = if len.is_null() { 0 } else { usize::try_from(unsafe { *len }).unwrap_or(0) };
-    let rv = real();
-    if rv != CKR_OK || out.is_null() || len.is_null() {
-        return (rv, None);
+    // SAFETY: the caller's arguments, under its contract.
+    unsafe {
+        let room = room(len);
+        let rv = real();
+        (rv, change_output(shim, call, out, len, room, rv))
     }
-    let Some((i, _)) = shim.plan.matching(call).find(|(_, rule)| rule.action == Action::Corrupt) else {
-        return (rv, None);
-    };
+}
+
+/// The caller's room behind `len`, read before the real module overwrites it with the length
+/// it wrote.
+///
+/// # Safety
+///
+/// `len` is null or readable.
+unsafe fn room(len: *const CK_ULONG) -> usize {
+    // SAFETY: read only when not null.
+    if len.is_null() { 0 } else { usize::try_from(unsafe { *len }).unwrap_or(0) }
+}
+
+/// What a call that returned `rv` wrote into the caller's buffer `out` (of `room` bytes, `*len`
+/// of them written), changed by the rules `call` meets, in plan order: `corrupt` makes the last
+/// byte another; `replay_output` puts back what the function returned that many calls before,
+/// where there was such a call and its output fits the room; `transcode` pads every byte. The
+/// rule that changed it first, if one did. The length query (no buffer) is left alone, and so
+/// is a length the caller's buffer cannot hold: a module that reports more than the room it was
+/// given is not believed, as in `find_objects`. What the module really returned is kept for a
+/// later replay where a rule names the function.
+///
+/// # Safety
+///
+/// As [`corrupt_output`], once the real call has returned `rv`.
+unsafe fn change_output(
+    shim: &Shim,
+    call: &Call,
+    out: *mut u8,
+    len: *mut CK_ULONG,
+    room: usize,
+    rv: CK_RV,
+) -> Option<usize> {
+    if rv != CKR_OK || out.is_null() || len.is_null() {
+        return None;
+    }
     // SAFETY: not null; the real module wrote the length there.
     let n = usize::try_from(unsafe { *len }).unwrap_or(0);
     if n == 0 || n > room {
-        return (rv, None);
+        return None;
     }
-    // SAFETY: `n - 1` is inside the caller's buffer of `room` bytes, which the module filled.
-    unsafe { *out.add(n - 1) ^= 0x01 };
-    (rv, Some(i))
+    // SAFETY: the first `n` bytes of the caller's buffer, which the module filled.
+    let real = unsafe { std::slice::from_raw_parts(out, n) }.to_vec();
+    let mut output = real.clone();
+    let mut fired = None;
+    for (i, rule) in shim.plan.matching(call) {
+        let changed = match rule.action {
+            Action::Corrupt => {
+                output[n - 1] ^= 0x01;
+                true
+            }
+            Action::ReplayOutput(k) => match shim.outputs.earlier(call.function, k) {
+                Some(earlier) if earlier.len() <= room => {
+                    output = earlier;
+                    true
+                }
+                _ => false,
+            },
+            Action::Transcode => {
+                for b in &mut output {
+                    *b ^= PAD;
+                }
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            fired.get_or_insert(i);
+        }
+    }
+    if shim.plan.replays(call.function) {
+        shim.outputs.keep(call.function, real);
+    }
+    if fired.is_some() {
+        // SAFETY: `output` holds at most `room` bytes, which the caller's buffer has.
+        unsafe {
+            std::ptr::copy_nonoverlapping(output.as_ptr(), out, output.len());
+            *len = output.len() as CK_ULONG;
+        }
+    }
+    fired
+}
+
+/// What the functions a `replay_output` rule names have returned, in order, per function.
+#[derive(Default)]
+pub(crate) struct Outputs(Mutex<BTreeMap<usize, Vec<Vec<u8>>>>);
+
+impl Outputs {
+    fn held(&self) -> std::sync::MutexGuard<'_, BTreeMap<usize, Vec<Vec<u8>>>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// What `function` returned `k` calls ago (1: the latest), if it has returned that often.
+    fn earlier(&self, function: crate::Fn, k: usize) -> Option<Vec<u8>> {
+        let held = self.held();
+        let kept = held.get(&(function as usize))?;
+        kept.len().checked_sub(k).map(|at| kept[at].clone())
+    }
+
+    fn keep(&self, function: crate::Fn, output: Vec<u8>) {
+        self.held().entry(function as usize).or_default().push(output);
+    }
 }
 
 /// The key a key-taking function uses: the caller's, or the object a `use_label` rule names
@@ -285,9 +398,44 @@ pub(crate) unsafe fn wrap_key(
     let ((key, used), (wrapped, swapped)) = unsafe {
         (substitute_key(shim, call, session, key)?, substitute(shim, call, session, wrapped, "wrap_label", other)?)
     };
-    // SAFETY: the caller's arguments, with the handles the rules name in place of the caller's.
-    let rv = unsafe { real!(shim, C_WrapKey)(session, mechanism, key, wrapped, out, len) };
-    Ok((rv, used.or(swapped)))
+    // SAFETY: the caller's arguments, with the handles the rules name in place of the caller's;
+    // then the blob it returned, as `corrupt_output` reads it.
+    unsafe {
+        let room = room(len);
+        let rv = real!(shim, C_WrapKey)(session, mechanism, key, wrapped, out, len);
+        Ok((rv, used.or(swapped).or(change_output(shim, call, out, len, room, rv))))
+    }
+}
+
+/// `C_UnwrapKey`: the key a `use_label` rule names in place of the unwrapping key; and where the
+/// plan transcodes what `C_WrapKey` returns, the blob undone first (a copy of the caller's,
+/// which is left as it was).
+#[expect(clippy::too_many_arguments, reason = "C_UnwrapKey's arguments, after the shim and the call")]
+pub(crate) unsafe fn unwrap_key(
+    shim: &Shim,
+    call: &Call,
+    session: CK_SESSION_HANDLE,
+    mechanism: *mut CK_MECHANISM,
+    key: CK_OBJECT_HANDLE,
+    blob: *mut CK_BYTE,
+    blob_len: CK_ULONG,
+    template: *mut CK_ATTRIBUTE,
+    count: CK_ULONG,
+    unwrapped: *mut CK_OBJECT_HANDLE,
+) -> Outcome {
+    // SAFETY: real-module calls on the caller's session and handle.
+    let (key, used) = unsafe { substitute_key(shim, call, session, key)? };
+    let undone = shim.plan.transcoder().filter(|_| !blob.is_null()).map(|i| {
+        // SAFETY: the caller's blob of `blob_len` bytes, as `C_UnwrapKey` requires.
+        let blob = unsafe { std::slice::from_raw_parts(blob, usize::try_from(blob_len).unwrap_or(0)) };
+        (blob.iter().map(|b| b ^ PAD).collect::<Vec<u8>>(), i)
+    });
+    let (mut copy, transcoded) = undone.map_or((None, None), |(copy, i)| (Some(copy), Some(i)));
+    let blob = copy.as_mut().map_or(blob, Vec::as_mut_ptr);
+    // SAFETY: the caller's arguments, with the key a rule names and the blob undone in place of
+    // the caller's; the copy lives past the call.
+    let rv = unsafe { real!(shim, C_UnwrapKey)(session, mechanism, key, blob, blob_len, template, count, unwrapped) };
+    Ok((rv, used.or(transcoded)))
 }
 
 /// The handle a function uses in place of the caller's `handle`: the caller's, or the object
@@ -579,6 +727,8 @@ mod tests {
         static LABELS: RefCell<Vec<(&'static [u8], Vec<CK_OBJECT_HANDLE>)>> = const { RefCell::new(Vec::new()) };
         /// The wrapping key and the key wrapped the last `C_WrapKey` got.
         static WRAPPED: Cell<(CK_OBJECT_HANDLE, CK_OBJECT_HANDLE)> = const { Cell::new((0, 0)) };
+        /// The blob the last `C_UnwrapKey` got.
+        static UNWRAPPED: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     }
 
     unsafe extern "C" fn get_session_info(_: CK_SESSION_HANDLE, info: *mut CK_SESSION_INFO) -> CK_RV {
@@ -635,10 +785,32 @@ mod tests {
         _: *mut CK_MECHANISM,
         key: CK_OBJECT_HANDLE,
         wrapped: CK_OBJECT_HANDLE,
-        _: *mut CK_BYTE,
-        _: *mut CK_ULONG,
+        out: *mut CK_BYTE,
+        len: *mut CK_ULONG,
     ) -> CK_RV {
         WRAPPED.set((key, wrapped));
+        // SAFETY: the caller's length, and its buffer of that many bytes where it gave one.
+        unsafe {
+            if !out.is_null() && *len >= 4 {
+                std::ptr::copy_nonoverlapping([1u8, 2, 3, 4].as_ptr(), out, 4);
+            }
+            *len = 4;
+        }
+        CKR_OK
+    }
+
+    unsafe extern "C" fn unwrap(
+        _: CK_SESSION_HANDLE,
+        _: *mut CK_MECHANISM,
+        _: CK_OBJECT_HANDLE,
+        blob: *mut CK_BYTE,
+        len: CK_ULONG,
+        _: *mut CK_ATTRIBUTE,
+        _: CK_ULONG,
+        _: *mut CK_OBJECT_HANDLE,
+    ) -> CK_RV {
+        // SAFETY: the caller's blob of `len` bytes.
+        UNWRAPPED.set(unsafe { std::slice::from_raw_parts(blob, usize::try_from(len).unwrap()) }.to_vec());
         CKR_OK
     }
 
@@ -785,6 +957,84 @@ mod tests {
         let fatal = wrap_of(&shim, 5, 10).unwrap_err();
         LABELS.set(Vec::new());
         assert!(fatal.0.contains("wrap_label: no object labelled none"), "{}", fatal.0);
+    }
+
+    /// `transcode` changes what `C_WrapKey` returns (never its length query) and every
+    /// `C_UnwrapKey` undoes it, on a copy of the caller's blob: the blob round-trips through the
+    /// module, and is not what the module made. With no such rule, both pass unchanged.
+    #[test]
+    fn transcode_round_trips() {
+        use std::ptr::null_mut as null;
+        let mut m = module();
+        m.C_WrapKey = Some(wrap);
+        m.C_UnwrapKey = Some(unwrap);
+        for (plan, fired) in [("[[rule]]\nfn = \"C_WrapKey\"\ntranscode = true\n", Some(1)), ("", None)] {
+            let shim = fake(&m, plan, None);
+            let (mut blob, mut len) = ([0u8; 8], 0);
+            // SAFETY: the fake module's functions, into buffers of ours.
+            unsafe {
+                let call = shim.plan.count(Fn::C_WrapKey);
+                let asked = wrap_key(&shim, &call, CALLER, null(), 5, 6, null(), &raw mut len).unwrap();
+                assert_eq!((asked, len), ((CKR_OK, None), 4), "{plan}: the length query");
+                len = 8;
+                let wrapped = wrap_key(&shim, &call, CALLER, null(), 5, 6, blob.as_mut_ptr(), &raw mut len).unwrap();
+                let pad = if fired.is_some() { PAD } else { 0 };
+                assert_eq!((wrapped, &blob[..4]), ((CKR_OK, fired), &[1 ^ pad, 2 ^ pad, 3 ^ pad, 4 ^ pad][..]));
+                let call = shim.plan.count(Fn::C_UnwrapKey);
+                let unwrapped = unwrap_key(&shim, &call, CALLER, null(), 5, blob.as_mut_ptr(), 4, null(), 0, null());
+                assert_eq!(unwrapped.unwrap(), (CKR_OK, fired), "{plan}");
+            }
+            assert_eq!(UNWRAPPED.take(), [1, 2, 3, 4], "{plan}: what the module unwrapped");
+            assert_eq!(blob[0], 1 ^ if fired.is_some() { PAD } else { 0 }, "{plan}: the caller's blob");
+        }
+    }
+
+    /// `replay_output` returns what the function returned that many calls before: not where no
+    /// call came before, nor where the earlier output does not fit the caller's buffer; and what
+    /// is kept is what the module really returned, never what was replayed.
+    #[test]
+    fn an_output_is_replayed_from_an_earlier_call() {
+        let shim = fake(&crate::empty_table(), "[[rule]]\nfn = \"C_Sign\"\nreplay_output = 1\n", None);
+        let sign = |wrote: &[u8], room: usize| {
+            let (mut out, mut len) = ([0u8; 4], room as CK_ULONG);
+            let (at, call) = (&raw mut len, shim.plan.count(Fn::C_Sign));
+            // SAFETY: a buffer of four bytes, of which the caller offers `room`.
+            let (_, fired) = unsafe {
+                corrupt_output(&shim, &call, out.as_mut_ptr(), at, || {
+                    std::ptr::copy_nonoverlapping(wrote.as_ptr(), out.as_mut_ptr(), wrote.len());
+                    *at = wrote.len() as CK_ULONG;
+                    CKR_OK
+                })
+            };
+            (fired, out[..usize::try_from(len).unwrap()].to_vec())
+        };
+        assert_eq!(sign(&[1, 2, 3], 4), (None, vec![1, 2, 3]));
+        assert_eq!(sign(&[4, 5, 6], 4), (Some(1), vec![1, 2, 3]));
+        assert_eq!(sign(&[7, 8], 2), (None, vec![7, 8]), "[4, 5, 6] does not fit");
+        assert_eq!(sign(&[9], 4), (Some(1), vec![7, 8]));
+    }
+
+    /// `replace_label` finds another object (labelled `by`, of the class of the one replaced) in
+    /// place of each one labelled `of`, once per search; nothing under `by` fails the call.
+    #[test]
+    fn a_found_object_is_replaced() {
+        LABELS.set(vec![(b"shown", vec![7]), (b"other", vec![8])]);
+        let shim = fake(
+            &module(),
+            "[[rule]]\nfn = \"C_FindObjects\"\nof_label = \"shown\"\nreplace_label = \"other\"\n",
+            None,
+        );
+        assert_eq!(search(&shim, &[&[5, 7]]), [[5, 8]]);
+        assert_eq!(search(&shim, &[&[8], &[7]]), [[8]], "found once");
+        let shim =
+            fake(&module(), "[[rule]]\nfn = \"C_FindObjects\"\nof_label = \"shown\"\nreplace_label = \"none\"\n", None);
+        BATCHES.set([vec![7]].into());
+        let (mut out, mut n) = ([0; 3], 0);
+        let call = shim.plan.count(Fn::C_FindObjects);
+        // SAFETY: a search of the fake module, into buffers of ours.
+        let fatal = unsafe { find_objects(&shim, &call, CALLER, out.as_mut_ptr(), 3, &raw mut n) }.unwrap_err();
+        LABELS.set(Vec::new());
+        assert!(fatal.0.contains("replace_label: no object labelled none"), "{}", fatal.0);
     }
 
     /// `corrupt` changes the last byte the module returned, inside the caller's buffer; a module

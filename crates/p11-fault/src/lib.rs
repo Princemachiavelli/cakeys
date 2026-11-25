@@ -57,8 +57,11 @@ struct Shim {
     pub(crate) plan: plan::Plan,
     trace: Option<trace::Trace>,
     table: CK_FUNCTION_LIST,
-    /// What each caller session's open search has returned so far (`add_label`).
+    /// What each caller session's open search has returned so far (`add_label`,
+    /// `replace_label`).
     pub(crate) searches: hooks::Searches,
+    /// What the functions a `replay_output` rule names have returned so far.
+    pub(crate) outputs: hooks::Outputs,
 }
 
 static SHIM: OnceLock<Result<Shim, Fatal>> = OnceLock::new();
@@ -182,7 +185,8 @@ impl Shim {
             &*list
         };
         let table = forward::table(real);
-        Ok(Shim { _library: library, real, plan, trace, table, searches: hooks::Searches::default() })
+        let (searches, outputs) = (hooks::Searches::default(), hooks::Outputs::default());
+        Ok(Shim { _library: library, real, plan, trace, table, searches, outputs })
     }
 
     /// One call of `function`: counted, its rules chosen by what `observe` reads from its
@@ -296,6 +300,7 @@ pub(crate) fn fake(real: &CK_FUNCTION_LIST, plan: &str, trace: Option<&Path>) ->
         trace: trace.map(|p| trace::Trace::open("P11_FAULT_TRACE", p, None).unwrap()),
         table: forward::table(real),
         searches: hooks::Searches::default(),
+        outputs: hooks::Outputs::default(),
     }
 }
 
