@@ -95,21 +95,41 @@ let
   # cargo-mutants: each mutant is one small change to the code (a function body replaced, an
   # operator flipped), and one the tests still pass with is a place they do not check. Not a
   # check: it takes as long as its scope is wide and always succeeds once the unmutated tests
-  # pass. The report is the output, one directory per package: missed.txt (what no test
-  # caught), caught.txt, timeout.txt, unviable.txt and outcomes.json.
+  # pass. The report is the output, one directory per scope: missed.txt (what no test caught),
+  # caught.txt, timeout.txt, unviable.txt and outcomes.json.
   #
-  # `scopes` is a list of { package, files, workspace ? false, re ? null }, `re` keeping only the
-  # mutants whose name matches (`--re`, e.g. one function). A package's mutants meet that
+  # `scopes` is a list of { package, files, workspace ? false, re ? null, name ? package }, `re`
+  # keeping only the mutants whose name matches (`--re`, e.g. one function), `name` the scope's
+  # directory in the report (two scopes of one package need two). A package's mutants meet that
   # package's own tests: seconds each, so the unit tier runs in minutes. With `workspace` they
   # meet every crate's tests (a minute each: the whole workspace is rebuilt per mutant). With
   # `tokens`, every crate's tests run under cargo-nextest with a token set per test (as the check
   # phase runs them), so the integration suites can catch mutants too: one mutant at a time, its
   # tests in parallel, stopping at the first that fails; minutes for a mutant no test catches.
+  # They run in place, so each scope after the first starts from the last one's build, not from
+  # nothing (a copy of the tree builds every dependency again).
+  #
+  # For the gate (nix/mutants-baseline.py; .github/workflows/mutants.yml):
+  # - `inDiff`, a diff (a path): only the mutants in the lines it touches (`--in-diff`).
+  # - `shard`, "k/n" with k from 0: the k-th of n parts of the mutants (`--shard`), one per job.
+  # - `iterate`, earlier reports of the same scopes (a path or a list): the mutants they caught
+  #   or found unviable are skipped (`--iterate`), so the token run tests only what the package's
+  #   own tests left.
+  # - `testFilter`, a nextest filter expression for the token runs.
+  # - `timeout`, seconds a mutant's tests may take: a token run's would otherwise be a multiple of
+  #   the unmutated suite's, itself minutes. null: cargo-mutants' own, from the unmutated run.
+  # Every scope's directory also holds all-mutants.json, the scope's every mutant whatever the
+  # diff, shard or earlier report left out (`--list`): the gate numbers identical keys with it.
   mutants =
     {
       scopes,
       tokens ? false,
       jobs ? 6,
+      inDiff ? null,
+      shard ? null,
+      iterate ? null,
+      testFilter ? null,
+      timeout ? if tokens then 600 else null,
     }:
     let
       run =
@@ -118,37 +138,43 @@ let
           files,
           workspace ? false,
           re ? null,
+          name ? package,
         }:
+        let
+          # What selects the scope's mutants: the run's and the full list's.
+          select = "--package ${package} ${
+            lib.concatMapStringsSep " " (f: "--file ${lib.escapeShellArg f}") files
+          } ${lib.optionalString (re != null) "--re ${lib.escapeShellArg re}"}";
+          # The tools' features: a run that tests every crate takes them all; one package alone
+          # takes its own (camigrate's and caprobe's tests hold their feature to the patched
+          # binding), not the other tools'.
+          own = lib.filter (f: lib.hasPrefix "${package}/" f) common.features;
+        in
         ''
           code=0
-          cargo mutants --package ${package} ${
-            lib.optionalString (workspace || tokens) "--test-workspace=true"
-          } \
-            --no-shuffle --colors never --jobs ${toString (if tokens then 1 else jobs)} \
-            ${lib.concatMapStringsSep " " (f: "--file ${lib.escapeShellArg f}") files} \
-            ${lib.optionalString (re != null) "--re ${lib.escapeShellArg re}"} \
+          report="$TMPDIR/report-${name}"
+          ${lib.optionalString (iterate != null) ''
+            mkdir -p "$report/mutants.out"
+            for earlier in ${lib.escapeShellArgs (map (r: "${r}") (lib.toList iterate))}; do
+              [ -d "$earlier/${name}" ] || { echo "mutants: no ${name} in $earlier" >&2; exit 1; }
+              for f in caught.txt unviable.txt previously_caught.txt; do
+                if [ -f "$earlier/${name}/$f" ]; then cat "$earlier/${name}/$f" >>"$report/mutants.out/caught.txt"; fi
+              done
+            done
+          ''}
+          cargo mutants ${select} ${lib.optionalString (workspace || tokens) "--test-workspace=true"} \
+            --no-shuffle --colors never ${if tokens then "--in-place" else "--jobs ${toString jobs}"} \
+            ${lib.optionalString (inDiff != null) "--in-diff ${inDiff}"} \
+            ${lib.optionalString (shard != null) "--shard ${lib.escapeShellArg shard}"} \
+            ${lib.optionalString (iterate != null) "--iterate"} \
+            ${lib.optionalString (timeout != null) "--timeout ${toString timeout}"} \
             ${
-              # The workspace's features name packages: only a run that tests them all takes them
-              # all. camigrate alone takes its own and its dependencies', not the other tools'.
-              lib.optionalString (workspace || tokens || package == "camigrate") (
+              lib.optionalString (workspace || tokens || own != [ ]) (
                 lib.optionalString common.noDefaultFeatures "--no-default-features "
-                + "--features ${
-                  lib.concatStringsSep "," (
-                    if workspace || tokens then
-                      common.features
-                    else
-                      lib.filter (
-                        f:
-                        !lib.elem (lib.head (lib.splitString "/" f)) [
-                          "cakeys"
-                          "caprobe"
-                        ]
-                      ) common.features
-                  )
-                }"
+                + "--features ${lib.concatStringsSep "," (if workspace || tokens then common.features else own)}"
               )
             } \
-            --cargo-arg=--locked --output "$TMPDIR/report-${package}" \
+            --cargo-arg=--locked --output "$report" \
             ${
               # cargo-mutants builds and tests only the mutated package whatever --test-workspace
               # says, and the tests run the tools' binaries: every cargo call selects the three
@@ -161,12 +187,27 @@ let
                   "camigrate"
                 ]
               )
+            } ${
+              lib.optionalString (testFilter != null) (
+                lib.escapeShellArgs [
+                  "--cargo-test-arg=-E"
+                  "--cargo-test-arg=${testFilter}"
+                ]
+              )
             } || code=$?
           # 0: every mutant caught; 2: some missed; 3: some timed out. Those are the report.
           # Anything else (the unmutated tests failing, a bad invocation) fails the build.
           case $code in 0 | 2 | 3) ;; *) exit $code ;; esac
-          mkdir -p $out/${package}
-          cp -r "$TMPDIR"/report-${package}/mutants.out/* $out/${package}/
+          mkdir -p $out/${name}
+          # No mutant in the diff, or none the earlier reports left: cargo-mutants writes nothing.
+          if [ -d "$report/mutants.out" ] && [ -f "$report/mutants.out/missed.txt" ]; then
+            cp -r "$report"/mutants.out/* $out/${name}/
+          else
+            touch $out/${name}/{caught,missed,timeout,unviable}.txt
+          fi
+          cargo mutants ${select} --list --json \
+            | ${python3}/bin/python3 -I -c 'import json, sys; json.dump([{k: v for k, v in m.items() if k != "diff"} for m in json.load(sys.stdin)], sys.stdout)' \
+            >$out/${name}/all-mutants.json
         '';
     in
     craneLib.mkCargoDerivation (
@@ -194,6 +235,135 @@ let
         buildPhaseCargoCommand = lib.concatMapStrings run scopes;
         installPhaseCommand = "";
       }
+    );
+
+  # The gate's two tiers (docs/archive/REVIEW-2026-11-24/phase2-3-design.md §5.1), by which tests
+  # can catch a mutant. `unit`: code whose package's own tests are its tests. `tokens`: code only
+  # the token suites reach. Left out, each for its reason there: the key-file parser (fuzzed),
+  # printing, measurement and loading, caprobe's reports, the CLI glue, ykcs11's library and the
+  # test infrastructure.
+  mutantsScopes = {
+    unit = [
+      {
+        package = "cakeys-core";
+        files = [ "crates/core/src/**/*.rs" ];
+      }
+      {
+        package = "cakeys-profile";
+        files = [ "crates/profile/src/**/*.rs" ];
+      }
+      {
+        package = "camigrate";
+        files = map (f: "crates/camigrate/src/${f}.rs") [
+          "plan"
+          "bundle"
+          "file"
+          "transport"
+        ];
+      }
+    ];
+    tokens = [
+      {
+        package = "cakeys-pkcs11";
+        files = map (f: "crates/pkcs11/src/${f}.rs") [
+          "token/possession"
+          "ops/mod"
+          "token/identity"
+          "token/policy"
+          "provider"
+          "token/generate"
+          "ops/capabilities"
+          "templates"
+          "token/login"
+          "ops/planner"
+          "gate"
+          "token/rv"
+          "token/host"
+          "registry"
+          "token/public"
+        ];
+      }
+      {
+        package = "cakeys-pkcs11";
+        name = "cakeys-pkcs11-lookup";
+        files = [
+          "crates/pkcs11/src/resolution.rs"
+          "crates/pkcs11/src/token/mod.rs"
+        ];
+        re = "clear_hardware_rows|select_in|named_in|find|locate";
+      }
+      {
+        package = "camigrate";
+        files = map (f: "crates/camigrate/src/${f}.rs") [
+          "tokens"
+          "sealed"
+          "landing"
+          "file_verbs"
+          "public"
+          "host"
+        ];
+      }
+      {
+        package = "caprobe";
+        files = map (f: "crates/caprobe/src/probe/${f}.rs") [
+          "moves"
+          "secrets"
+          "asymmetric"
+          "extras"
+          "bound"
+          "wraps"
+        ];
+      }
+      {
+        package = "caprobe";
+        name = "caprobe-probe";
+        files = [ "crates/caprobe/src/probe.rs" ];
+        re = "check_slot|mark_slot|Draft::|finish";
+      }
+      {
+        package = "cakeys-cli-common";
+        files = [ "crates/cli-common/src/**/*.rs" ];
+      }
+    ];
+  };
+
+  # One tier of the gate, whole or over a diff, sharded or not:
+  # - "unit": its scopes against their packages' own tests;
+  # - "tokens-first": the token tier's scopes against their packages' own tests, the first pass;
+  # - "tokens": what the first pass left (`iterate`, the first pass over the same diff by
+  #   default), against every crate's tests under the token suites. Not the reference suite again
+  #   on kryoptic and through p11-kit, which would double the time a mutant takes for little more,
+  #   nor the lints over the test sources (surface, harness); what only those would catch shows
+  #   as a survivor.
+  mutantsTier =
+    {
+      tier,
+      diff ? null,
+      shard ? null,
+      iterate ?
+        if tier == "tokens" then
+          mutantsTier {
+            inherit diff;
+            tier = "tokens-first";
+          }
+        else
+          null,
+    }:
+    mutants (
+      {
+        inherit shard iterate;
+        inDiff = diff;
+      }
+      // {
+        unit.scopes = mutantsScopes.unit;
+        tokens-first.scopes = mutantsScopes.tokens;
+        tokens = {
+          scopes = mutantsScopes.tokens;
+          tokens = true;
+          testFilter = "not (binary(kryoptic) | binary(p11kit) | binary(surface) | binary(harness))";
+        };
+      }
+      .${tier}
     );
 in
 craneLib.buildPackage (
@@ -305,33 +475,20 @@ craneLib.buildPackage (
       # ({ package, files, re ? null }) with the token suites running, for the code only they reach:
       #   nix build --impure --expr \
       #     "(builtins.getFlake \"git+file://$PWD\").packages.x86_64-linux.cakeys-crane.mutantsOf { package = \"camigrate\"; files = [ \"crates/camigrate/src/host.rs\" ]; }"
-      mutants = mutants {
-        scopes = [
-          {
-            package = "cakeys-core";
-            files = [ "crates/core/src/**/*.rs" ];
-          }
-          {
-            package = "cakeys-profile";
-            files = [ "crates/profile/src/**/*.rs" ];
-          }
-          {
-            package = "camigrate";
-            files = map (f: "crates/camigrate/src/${f}.rs") [
-              "plan"
-              "bundle"
-              "file"
-              "transport"
-            ];
-          }
-        ];
-      };
+      mutants = mutants { scopes = mutantsScopes.unit; };
       mutantsOf =
         scope:
         mutants {
           scopes = [ scope ];
           tokens = true;
         };
+      # The gate's runs (.github/workflows/mutants.yml, scripts/mutants-diff.sh): `mutantsTier
+      # { tier; diff ? null; shard ? null; iterate ? …; }` above; `mutantsDiff` is it over a diff,
+      # which a pull request's job hands in as a path:
+      #   nix build --impure --expr \
+      #     "(builtins.getFlake \"git+file://$PWD\").packages.x86_64-linux.cakeys-crane.mutantsDiff { diff = builtins.path { path = \"$PWD/pr.diff\"; name = \"pr.diff\"; }; tier = \"unit\"; }"
+      inherit mutantsTier;
+      mutantsDiff = { diff, ... }@args: mutantsTier (args // { inherit diff; });
       # Coverage as data (docs/PLAN.md A1, docs/CAPROBE.md "Coverage"): the suites again with
       # every module behind a tracing p11-fault (nix/test-tokens.sh), then spec-coverage/cakeys.toml
       # regenerated from that trace, with the tests behind each used row (coverage-report.txt). A
