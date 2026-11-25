@@ -61,6 +61,17 @@ pub(crate) struct Probed {
     pub(crate) yes: bool,
     /// How it succeeded: an import's path, an export's method.
     pub(crate) via: Option<String>,
+    /// Why the probe could not decide it (`Profile::unknown`: a legacy no citing a device
+    /// failure, an `[untested]` entry), naming the re-probe owed: a no that is not the module's.
+    pub(crate) unknown: Option<String>,
+}
+
+impl Probed {
+    /// Why a no of this row (`row`, as `unwrap.*`) refuses, for a plan's reason: unknown, and
+    /// the re-probe owed, where the probe could not decide (phase1-design §9.1).
+    pub(crate) fn said(&self, row: &str) -> String {
+        self.unknown.clone().unwrap_or_else(|| format!("its {row} row says no"))
+    }
 }
 
 /// A token's probed rows by way (`docs/archive/CAPROBE_MIGRATION.md`, M1): where one covers an object's

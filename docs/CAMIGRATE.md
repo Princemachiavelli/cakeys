@@ -147,7 +147,10 @@ or a blocked plan).
 **D4. Methods have frozen names, like schemes.** The method is the source's export capabilities
 intersected with the target's import capabilities: the target's live mechanisms, else the lock's
 observed mechanisms for it, else a transport file. The OAEP hash is the strongest both support
-(SHA-256 between kryoptic tokens, SHA-1 with SoftHSM).
+(SHA-256 between kryoptic tokens, SHA-1 with SoftHSM). A probed row (`import.*`, `create.*`,
+`export.*`, `unwrap.*`) decides for the type it covers; one the probe could not decide (a no
+citing a device failure, an `[untested]` entry of the device's or cakeys') is unknown: the plan
+refuses it (15) and names the re-probe owed, as an unsupported capability.
 
 | Method | Material | How |
 |---|---|---|

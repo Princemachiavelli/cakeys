@@ -310,7 +310,18 @@ pub(crate) fn target_refusal(
 fn probed_of(module: &Profile, stack: &Resolved, usable: &BTreeSet<String>) -> ProbedWays {
     let subtracted = stack.subtracted_key_types();
     let mut ways = ProbedWays::default();
-    for (c, row) in &module.capabilities {
+    // What the probe could not decide answers as an unknown no (phase1-design §9.1), never
+    // silence the claims would fill: an `[untested]` entry keyed by a capability.
+    let undecided: Vec<(Capability, Option<&cakeys_profile::Row>)> = module
+        .untested
+        .iter()
+        .filter(|(_, u)| u.why.undecided())
+        .filter_map(|(k, _)| Capability::parse(k).ok())
+        .map(|c| (c, None))
+        .collect();
+    let entries = module.capabilities.iter().map(|(c, r)| (c.clone(), Some(r))).chain(undecided);
+    for (c, row) in entries {
+        let c = &c;
         let (rows, class, key) = match c {
             Capability::Import { key_type, on } => (&mut ways.import, None, Some((key_type, on))),
             Capability::Create { class, key } => {
@@ -324,11 +335,14 @@ fn probed_of(module: &Profile, stack: &Resolved, usable: &BTreeSet<String>) -> P
             _ => continue,
         };
         let Some((covers, gone)) = covers_of(class, key, &subtracted) else { continue };
-        let hidden = row.via.as_ref().is_some_and(|v| v.starts_with("CKM_") && !usable.contains(v));
-        if row.answer.yes() && hidden {
+        let unknown = module.unknown(c);
+        let yes = row.is_some_and(|r| r.answer.yes()) && unknown.is_none();
+        let via = row.and_then(|r| r.via.clone());
+        let hidden = via.as_ref().is_some_and(|v| v.starts_with("CKM_") && !usable.contains(v));
+        if yes && hidden {
             continue;
         }
-        rows.push(Probed { covers, yes: row.answer.yes() && !gone, via: row.via.clone() });
+        rows.push(Probed { covers, yes: yes && !gone, via, unknown });
     }
     ways
 }
@@ -735,6 +749,34 @@ mod tests {
 
     fn profile(migration: &str) -> Profile {
         Profile::from_toml(&format!("profile = \"m/1\"\nmode = \"observed\"\n{migration}")).unwrap()
+    }
+
+    /// What the probe could not decide (a legacy no citing a device failure, an `[untested]`
+    /// entry the device or cakeys left undecided) is unknown, never the module's no and never
+    /// silence: the plan refuses it (15) naming the re-probe owed (phase1-design §9.1; review
+    /// 2026-11-24 E-3, P3's note). Before, the device's no read as the module's, and the entry
+    /// was skipped, so the claims planned the move ready.
+    #[test]
+    fn an_undecided_row_refuses_naming_the_reprobe() {
+        use cakeys_core::config::ObjectCfg;
+        let p = profile(
+            "[capabilities]\n\"unwrap.CKK_EC.secp256r1\" = { answer = \"no\", evidence = \"CKR_DEVICE_ERROR\" }\n\
+             \"unwrap.CKK_RSA.2048\" = { answer = \"no\", by = \"module\", evidence = \"CKR_MECHANISM_INVALID\" }\n\
+             [untested]\n\"export.sealed.CKK_EC.secp384r1\" = { why = \"device\", note = \"CKR_HOST_MEMORY\" }\n",
+        );
+        let ways = probed_of(&p, &Resolved::default(), &BTreeSet::new());
+        let ec = |curve: &str| ObjectCfg {
+            curve: Some(curve.to_owned()),
+            ..ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Ec))
+        };
+        let rsa = ObjectCfg { modulus_bits: Some(2048), ..ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Rsa)) };
+        let said = |r: Option<&Probed>| r.map(|r| (r.yes, r.said("unwrap.*")));
+        let device = said(ProbedWays::of(&ways.unwrap, &ec("secp256r1")));
+        assert!(device.as_ref().is_some_and(|(yes, why)| !yes && why.contains("re-probe it (T2")), "{device:?}");
+        let undecided = said(ProbedWays::of(&ways.export_sealed, &ec("secp384r1")));
+        assert!(undecided.as_ref().is_some_and(|(yes, why)| !yes && why.contains("re-probe it (T2")), "{undecided:?}");
+        // The module's own no is what it says.
+        assert_eq!(said(ProbedWays::of(&ways.unwrap, &rsa)), Some((false, "its unwrap.* row says no".to_owned())));
     }
 
     /// A resolution that fails is the token's own error (17, naming it and why), never read as

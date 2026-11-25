@@ -307,10 +307,9 @@ fn public(m: &Material, to: &To) -> Plan {
     match to {
         To::Token(dst) => match ProbedWays::of(&dst.probed.create, ty) {
             Some(r) if r.yes => Plan::ready(m, Method::Public, Exposure::Public),
-            Some(_) => Plan::impossible(
-                m,
-                vec![format!("{} creates no {} (its create.* row says no)", dst.token, describe(ty))],
-            ),
+            Some(r) => {
+                Plan::impossible(m, vec![format!("{} creates no {} ({})", dst.token, describe(ty), r.said("create.*"))])
+            }
             None if dst.public_import.iter().any(|a| a.covers(ty)) => Plan::ready(m, Method::Public, Exposure::Public),
             None => Plan::impossible(m, vec![format!("{} accepts no {} by import", dst.token, describe(ty))]),
         },
@@ -321,16 +320,18 @@ fn public(m: &Material, to: &To) -> Plan {
 /// Why a key of type `ty` never leaves `from`, if it does not: its probed `export.*` rows decide
 /// for the type they name, the module's claim for the rest.
 fn stays(from: &Side, ty: &ObjectCfg) -> Option<String> {
-    let leaves =
-        [&from.probed.export_host, &from.probed.export_sealed].map(|rows| ProbedWays::of(rows, ty).map(|r| r.yes));
-    match leaves {
-        [Some(false), Some(false)] => Some(format!(
-            "{} ({}) lets no {} leave the token (its export.host and export.sealed rows say no)",
+    let rows = [&from.probed.export_host, &from.probed.export_sealed].map(|rows| ProbedWays::of(rows, ty));
+    let leaves = rows.map(|r| r.map(|r| r.yes));
+    match (leaves, rows) {
+        ([Some(false), Some(false)], [Some(host), Some(sealed)]) => Some(format!(
+            "{} ({}) lets no {} leave the token ({}; {})",
             from.token,
             from.provider,
-            describe(ty)
+            describe(ty),
+            host.said("export.host.*"),
+            sealed.said("export.sealed.*")
         )),
-        l if l.contains(&Some(true)) => None,
+        (l, _) if l.contains(&Some(true)) => None,
         _ => (!from.exports).then(|| format!("{} ({}) never lets a key leave the token", from.token, from.provider)),
     }
 }
@@ -349,13 +350,14 @@ fn describe(ty: &ObjectCfg) -> String {
 
 /// The `sealed` (or `enforced`) methods between two PKCS#11 modules.
 fn sealed(m: &Material, from: &Side, dst: &Side, trusted_only: bool, allow: Allow, ways: &mut Ways) {
-    match ProbedWays::of(&dst.probed.unwrap, m.ty).map(|r| r.yes) {
-        Some(false) => {
+    match ProbedWays::of(&dst.probed.unwrap, m.ty) {
+        Some(r) if !r.yes => {
             ways.block(format!(
-                "{} ({}) does not unwrap a {} (its unwrap.* row says no)",
+                "{} ({}) does not unwrap a {} ({})",
                 dst.token,
                 dst.provider,
-                describe(m.ty)
+                describe(m.ty),
+                r.said("unwrap.*")
             ));
             return;
         }
@@ -365,12 +367,13 @@ fn sealed(m: &Material, from: &Side, dst: &Side, trusted_only: bool, allow: Allo
         }
         _ => {}
     }
-    if ProbedWays::of(&from.probed.export_sealed, m.ty).is_some_and(|r| !r.yes) {
+    if let Some(r) = ProbedWays::of(&from.probed.export_sealed, m.ty).filter(|r| !r.yes) {
         ways.block(format!(
-            "{} ({}) wraps no {} toward another token (its export.sealed.* row says no)",
+            "{} ({}) wraps no {} toward another token ({})",
             from.token,
             from.provider,
-            describe(m.ty)
+            describe(m.ty),
+            r.said("export.sealed.*")
         ));
         return;
     }
@@ -463,12 +466,13 @@ fn host_extractable(from: &Side, ty: &ObjectCfg) -> bool {
 fn host(m: &Material, from: &Side, dst: &Side, ways: &mut Ways) {
     let ty = m.ty;
     let probed = ProbedWays::of(&dst.probed.import, ty);
-    if probed.is_some_and(|r| !r.yes) {
+    if let Some(r) = probed.filter(|r| !r.yes) {
         ways.block(format!(
-            "{} ({}) does not import a {} (its import.* row says no)",
+            "{} ({}) does not import a {} ({})",
             dst.token,
             dst.provider,
-            describe(ty)
+            describe(ty),
+            r.said("import.*")
         ));
         return;
     }
@@ -939,6 +943,7 @@ mod tests {
                 covers: Accept { curves: vec!["secp256r1"], ..Accept::key(ObjectClass::PrivateKey, &[KeyType::Ec]) },
                 yes,
                 via: via.map(str::to_owned),
+                unknown: None,
             }]
         };
         let host = Allow { host_plaintext: true, ..Allow::default() };
@@ -981,12 +986,23 @@ mod tests {
             ..softhsm()
         };
         let p = plan_of(&p256(), &ext, &keeps, &To::Token(&kryoptic()), host);
-        assert!(!p.ready && p.reasons.iter().any(|r| r.contains("export.host and export.sealed rows say no")), "{p:?}");
+        assert!(
+            !p.ready
+                && p.reasons
+                    .iter()
+                    .any(|r| r.contains("its export.host.* row says no; its export.sealed.* row says no")),
+            "{p:?}"
+        );
         // A public object: the create row decides over the claimed classes.
         let cert = obj(ObjectClass::Certificate, None);
         let no_certs = Side {
             probed: ProbedWays {
-                create: vec![Probed { covers: Accept::class(ObjectClass::Certificate), yes: false, via: None }],
+                create: vec![Probed {
+                    covers: Accept::class(ObjectClass::Certificate),
+                    yes: false,
+                    via: None,
+                    unknown: None,
+                }],
                 ..ProbedWays::default()
             },
             ..softhsm()
