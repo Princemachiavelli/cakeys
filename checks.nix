@@ -63,6 +63,30 @@
       python3 -I ${src}/nix/doc-references.py ${src}
       touch $out
     '';
+  # A universal claim of the documents that say what the tools guarantee (every, never, always,
+  # … about a PIN, the lock, a slot, …) names the tests that hold it in docs/claims.toml, or is
+  # counted against its max-unregistered, which only goes down (nix/claims.py, its fixture tests
+  # first). Its own fileset, like doc-references: the docs, and the sources the tests are in.
+  claims =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./docs
+          ./Cargo.toml
+          ./crates
+          ./fuzz
+          ./nix/doc-references.py
+          ./nix/claims.py
+          ./nix/claims-test.py
+        ];
+      };
+    in
+    pkgs.runCommand "cakeys-claims" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      set -o pipefail
+      python3 -I ${src}/nix/claims-test.py
+      python3 -I ${src}/nix/claims.py ${src} | tee $out
+    '';
   # What was measured on hardware or a cloud and no build repeats (profiles/LEDGER.toml,
   # nix/ledger.py): a file changed, or the code on its path changed since its run, fails until
   # the ledger records it. Its fixture tests first. Its own fileset, like doc-references: what

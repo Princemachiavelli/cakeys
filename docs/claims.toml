@@ -1,0 +1,64 @@
+# What holds each universal claim of the documents that say what the tools guarantee (CAKEYS,
+# CAMIGRATE, CAPROBE and DESIGN.md): checks.claims, nix/claims.py. A line that speaks for every
+# case (every, never, always, the one way, …) about a security subject (a PIN, the lock, a slot,
+# plaintext, …) is registered here, or counted against max-unregistered.
+#
+# max-unregistered only goes down: the check fails above the count and below it, so a claim
+# registered or softened lowers it in the same diff, and nix/claims-test.py keeps it at or below
+# its seed. A new claim is registered with its tests, or softened in its document.
+#
+# Each [[claim]] names its document (`doc`) and a phrase found there once (`says`), and is
+# - kind = "enforced": `tests`, the fns that fail when the claim is false (each one must exist),
+#   and optionally the entry `paths` they cover; or
+# - kind = "descriptive": `why` it is no guarantee a test can hold.
+
+max-unregistered = 101
+
+# DESIGN.md §8.1, "Enforced (with tests)": the bullets whose tests exist.
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "Locators never create over occupied slots"
+kind = "enforced"
+tests = ["never_create_over_an_occupied_locator", "a_second_private_key_under_the_same_id_is_ambiguous"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "the binding is recorded and cannot weaken"
+kind = "enforced"
+tests = ["binding_downgrade_is_refused"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "Attestation commitments are verified evidence, never a standalone identity"
+kind = "enforced"
+tests = ["attestation_is_per_realisation_and_never_alone"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "Identity modes never weaken."
+kind = "enforced"
+tests = ["downgrade_is_an_error"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "Material is linked only through a shared scheme."
+kind = "enforced"
+tests = ["material_links_only_through_a_shared_scheme", "disjoint_schemes_never_link_material"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "Lock updates are serialized"
+kind = "enforced"
+tests = ["update_lock_waits_for_the_sidecar_lock"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "Refused operations leave nothing behind:"
+kind = "enforced"
+tests = [
+  "a_creation_that_cannot_be_identified_is_undone_or_reported",
+  "a_creation_that_fails_after_the_write_is_undone",
+  "a_move_the_module_fails_is_refused_and_undone",
+  "tpm2_identity_failure_after_create_leaves_nothing",
+]
