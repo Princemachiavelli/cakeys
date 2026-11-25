@@ -37,7 +37,8 @@ pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
             })?;
         }
     }
-    lock.validate(path)
+    lock.check(path)?;
+    Ok(lock)
 }
 
 /// Write the lock through a temporary file synced before it is renamed over the old one (and the
@@ -47,14 +48,18 @@ pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
 ///
 /// # Errors
 ///
-/// `Validation` if the lock breaks a load rule (nothing is written); `Io` if the lock cannot be
-/// encoded; `LockUnwritable` (21) if the temporary write, sync or rename fails.
+/// `LockUnwritable` (21) if the lock breaks a load rule (nothing is written), or if the temporary
+/// write, sync or rename fails; `Io` if the lock cannot be encoded.
 pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
-    lock.check(path).map_err(|e| KmError::Validation(format!("not writing a lock that would not load: {e}").into()))?;
+    // Saved after a token write as any other time: the token may hold what the lock does not
+    // record, whichever check stopped the write (review 2026-11-23 A-17).
+    lock.check(path)
+        .map_err(|e| KmError::LockUnwritable(format!("not writing a lock that would not load: {e}").into()))?;
     let text =
         toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display()).into()))?;
-    // Created like any new file (0666 under the umask).
-    write_whole(path, text.as_bytes(), 0o666).map_err(|e| match e {
+    // A new lock is created like any new file (0666 under the umask); one that exists keeps its
+    // mode, and its owner and group where this user may set them (review 2026-11-23 A-4).
+    write_file(path, text.as_bytes(), 0o666, true).map_err(|e| match e {
         KmError::Io(m) => KmError::LockUnwritable(m),
         other => other,
     })
@@ -68,6 +73,13 @@ pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
 ///
 /// `Io` if the temporary write, sync or rename fails.
 pub fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+    write_file(path, bytes, mode, false)
+}
+
+/// [`write_whole`]; with `keep`, a file already at `path` passes its permission bits to the new
+/// one exactly (not under the umask), and its owner and group as far as this user may set them:
+/// a 0600 lock stays 0600, and a lock a group shares stays the group's.
+fn write_file(path: &Path, bytes: &[u8], mode: u32, keep: bool) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
     // Through a symlink to the file it names, which the rename would otherwise replace.
@@ -80,6 +92,18 @@ pub fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
         .permissions(std::fs::Permissions::from_mode(mode))
         .tempfile_in(dir)
         .map_err(KmError::io(format!("creating a temporary file in {}", dir.display())))?;
+    if keep && let Ok(old) = std::fs::metadata(path) {
+        use std::os::unix::fs::MetadataExt as _;
+        // Best effort, owner before mode (a chown may clear bits the mode then sets): only root
+        // gives a file another user, and a user gives it only a group it is in. What cannot be
+        // kept is the writer's, as for a new file.
+        let file = tmp.as_file();
+        if std::os::unix::fs::fchown(file, Some(old.uid()), Some(old.gid())).is_err() {
+            let _ = std::os::unix::fs::fchown(file, None, Some(old.gid()));
+        }
+        file.set_permissions(std::fs::Permissions::from_mode(old.mode() & 0o777))
+            .map_err(KmError::io(format!("setting the mode of {}", tmp.path().display())))?;
+    }
     tmp.write_all(bytes)
         .and_then(|()| tmp.as_file().sync_all())
         .map_err(KmError::io(format!("writing {}", tmp.path().display())))?;
@@ -114,7 +138,9 @@ pub struct UpdateGuard(
 /// Take the exclusive advisory lock on `<lock>.lck`, waiting for any other updater; `waiting` is
 /// told the sidecar's path first when another holds it, so a run can say why it stopped. The
 /// sidecar file is created if absent; a leftover one is harmless (the lock is advisory and
-/// released when its holder exits).
+/// released when its holder exits). One that exists is opened read-only, since `flock` needs no
+/// write access: a sidecar another user left (0644 under their umask) never refuses a run that
+/// [`lock_unwritable`] let through (review 2026-11-23 A-12).
 ///
 /// # Errors
 ///
@@ -123,12 +149,13 @@ pub fn lock_for_update(lock_path: &Path, waiting: impl FnOnce(&Path)) -> Result<
     // The lock file's own sidecar, however the run names it ([`resolved`]).
     let mut sidecar = resolved(lock_path).into_os_string();
     sidecar.push(".lck");
-    let file = std::fs::File::options()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&sidecar)
-        .map_err(KmError::io(format!("opening {}", sidecar.to_string_lossy())))?;
+    let file = match std::fs::File::open(&sidecar) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::File::options().write(true).create(true).truncate(false).open(&sidecar)
+        }
+        opened => opened,
+    }
+    .map_err(KmError::io(format!("opening {}", sidecar.to_string_lossy())))?;
     let locking = || KmError::io(format!("locking {}", sidecar.to_string_lossy()));
     match file.try_lock() {
         Ok(()) => {}
@@ -241,4 +268,135 @@ pub(super) fn unwritable(lock_path: &Path, sandboxed: bool) -> Option<String> {
         return Some(format!("the lock's directory {} is not writable", dir.display()));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::lock::tests::attestable_lock;
+    use crate::config::*;
+
+    /// A lock that cannot be saved is `LockUnwritable` (21), whatever stage of the write failed:
+    /// a run that changed the token must say its record is missing, not exit 1 like any I/O.
+    #[test]
+    fn a_lock_that_cannot_be_saved_is_its_own_code() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let refused = |path: &Path| {
+            let e = save_lock(path, &attestable_lock()).unwrap_err();
+            assert_eq!(e.exit_code(), 21, "{e}");
+            assert!(e.to_string().contains("lock cannot be written"), "{e}");
+        };
+        // A parent that is a file: refused for root too, so the test never passes untried
+        // (review 2026-11-23 A-16).
+        let file = dir.path().join("file");
+        std::fs::write(&file, "").unwrap();
+        refused(&file.join("keys.lock"));
+        let ro = dir.path().join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // A read-only directory, where the permission holds (root writes anyway).
+        if std::fs::File::create(ro.join("probe")).is_err() {
+            refused(&ro.join("keys.lock"));
+        }
+    }
+
+    /// A symlinked lock (a NixOS layout: the lock in a checked-out repository) is written through
+    /// to its target, never replaced by a copy the repository never sees (config.rs F7).
+    #[test]
+    fn a_symlinked_lock_is_written_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let (real, link) = (dir.path().join("repo.lock"), dir.path().join("keys.lock"));
+        save_lock(&real, &Lock { version: LOCK_VERSION, ..Default::default() }).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        save_lock(&link, &attestable_lock()).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link was replaced");
+        let text = |p: &Path| std::fs::read_to_string(p).unwrap();
+        assert_eq!(text(&real), toml::to_string_pretty(&attestable_lock()).unwrap(), "the target was not written");
+        assert_eq!(unwritable(&link, false), None);
+    }
+
+    /// A missing lock is an empty one of the current version; what is saved is what loads back,
+    /// with no temporary file left beside it; a bare file name lives in the working directory.
+    #[test]
+    fn a_lock_saves_and_loads_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.lock");
+        let empty = load_lock(&path).unwrap();
+        assert_eq!((empty.version, empty.objects.len()), (LOCK_VERSION, 0));
+        let mut lock =
+            load_lock(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"))).unwrap();
+        lock.objects.retain(|name, _| lock.realisations.values().any(|r| r.values().any(|r| r.object == *name)));
+        save_lock(&path, &lock).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text, toml::to_string_pretty(&load_lock(&path).unwrap()).unwrap());
+        assert_eq!(load_lock(&path).unwrap().realisations.len(), lock.realisations.len());
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["keys.lock"]);
+        assert_eq!(lock_dir(Path::new("keys.lock")), Path::new("."));
+        assert_eq!(lock_dir(&path), dir.path());
+    }
+
+    /// A lock that exists keeps its mode across a save, exactly and whatever the umask: a 0600
+    /// lock stays private, a group's 0660 stays the group's. A key file is never widened by the
+    /// file it replaces. A sidecar this user cannot write (another user's, left 0644) still
+    /// guards the update: `flock` needs no write access (review 2026-11-23 A-4, A-12).
+    #[test]
+    fn a_saved_lock_keeps_its_mode_and_a_read_only_sidecar_guards() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.lock");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let set = |p: &Path, m: u32| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
+        save_lock(&path, &attestable_lock()).unwrap();
+        for kept in [0o600, 0o660, 0o640] {
+            set(&path, kept);
+            save_lock(&path, &attestable_lock()).unwrap();
+            assert_eq!(mode(&path), kept, "a save reset the lock's mode");
+        }
+        let key = dir.path().join("k.pem");
+        std::fs::write(&key, "old").unwrap();
+        set(&key, 0o644);
+        write_whole(&key, b"new", 0o600).unwrap();
+        assert_eq!(mode(&key), 0o600, "a key file took the mode of what it replaced");
+        let sidecar = dir.path().join("keys.lock.lck");
+        std::fs::write(&sidecar, "").unwrap();
+        set(&sidecar, 0o444);
+        let guard = lock_for_update(&path, |_| unreachable!("nothing else holds it")).unwrap();
+        drop(guard);
+    }
+
+    /// Why a lock cannot be written: inside a Nix build sandbox, a lock file or a directory this
+    /// user cannot write; nothing when both can be (a lock not there yet included).
+    #[test]
+    fn an_unwritable_lock_says_why() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.lock");
+        // What a message names: the path resolved (macOS's /tmp is /private/tmp).
+        let real = dir.path().canonicalize().unwrap();
+        assert_eq!(unwritable(&path, false), None);
+        let sandboxed = unwritable(&path, true).unwrap();
+        assert!(sandboxed.contains("inside a Nix build sandbox"), "{sandboxed}");
+        std::fs::write(&path, "version = 1\n").unwrap();
+        assert_eq!(unwritable(&path, false), None);
+        let mode = |p: &Path, m: u32| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
+        mode(&path, 0o444);
+        // access(2) grants root every write: the permission cases mean nothing as root.
+        if rustix::fs::access(&path, rustix::fs::Access::WRITE_OK).is_ok() {
+            return;
+        }
+        assert_eq!(unwritable(&path, false), Some(format!("{} is not writable", real.join("keys.lock").display())));
+        mode(&path, 0o644);
+        mode(dir.path(), 0o555);
+        let said = unwritable(&path, false);
+        mode(dir.path(), 0o755);
+        assert_eq!(said, Some(format!("the lock's directory {} is not writable", real.display())));
+        // A lock not there yet in a directory that cannot take it.
+        std::fs::remove_file(&path).unwrap();
+        mode(dir.path(), 0o555);
+        let said = unwritable(&path, false);
+        mode(dir.path(), 0o755);
+        assert!(said.is_some_and(|s| s.contains("directory")));
+    }
 }

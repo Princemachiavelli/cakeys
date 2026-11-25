@@ -29,7 +29,7 @@ ykcs11 = ["cakeys-cli-common/ykcs11"]
 kwp = []
 # Everything the patched cryptoki of the Nix build (nix/patches) makes possible, together: the
 # build that links it names this one feature, never the parts by hand (review D3).
-patched-cryptoki = ["kwp", "cakeys-pkcs11/rv-value"]
+patched-cryptoki = ["kwp"]
 
 [dependencies]
 cakeys-cli-common.workspace = true

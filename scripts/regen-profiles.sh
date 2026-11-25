@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regenerate the committed module profiles the reference suites check (docs/CAPROBE.md phase
-# 3): softhsm/2.7, kryoptic/1.5 and tpm2-pkcs11/1.10+swtpm, each probed with --write on a fresh
+# 3): softhsm/2.7, kryoptic/1.5 and tpm2-pkcs11/1.10+swtpm, each probed with --write-probes on a fresh
 # token set up the way the Nix check phase sets it up (nix/package-common.nix), and written over
 # its committed file — [migration] and [manual] kept. Afterwards `git diff profiles/` is the
 # drift; the build's conformance tests then pass.
@@ -71,7 +71,7 @@ for t in softhsm:softhsm/2.7:softhsm/2.7.toml kryoptic:kryoptic/1.5:kryoptic/1.5
   echo "== $name"
   # 15 is drift, the rows named: the file is written anyway, the diff is for review.
   rc=0
-  "$bin" --config "$dir/keys.toml" probe --profiles "$repo/profiles" --token "$token" --write --rsa-max-bits 4096 \
+  "$bin" --config "$dir/keys.toml" probe --profiles "$repo/profiles" --token "$token" --write-probes --rsa-max-bits 4096 \
     --diff "$name" --out "$repo/profiles/modules/$file" || rc=$?
   [ "$rc" = 0 ] || [ "$rc" = 15 ] || status=$rc
 done

@@ -1,7 +1,8 @@
 # cakeys, caprobe and camigrate built with crane: the dependencies once per Cargo.lock
 # (`buildDepsOnly`), reused by this build, its tests, clippy and their reruns, so a source change
-# rebuilds only the workspace's own crates. `nix flake check` uses it (checks.nix); packages.cakeys
-# is the regular build (nix/package.nix). What both share is in nix/package-common.nix.
+# rebuilds only the workspace's own crates. `nix flake check` uses it (checks.nix), and
+# packages.cakeys is it without the check phase (`unchecked`). The source, outputs, patches,
+# features and test environment are in nix/package-common.nix.
 {
   lib,
   callPackage,
@@ -67,7 +68,7 @@ let
   };
   cargoArtifacts = craneLib.buildDepsOnly base;
 
-  # The check phase's test command, narrowed by a nextest filter (the coverage pass, postCheck).
+  # The check phase's test command, narrowed by a nextest filter (the spec-coverage report).
   cargoTestCommandFor =
     filter:
     "cargo nextest run \${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE} ${base.cargoExtraArgs}"
@@ -193,28 +194,38 @@ craneLib.buildPackage (
     inherit cargoArtifacts;
     # cargo-nextest: one process per test, each through nix/test-tokens.sh (cargo's target
     # runner), which gives it a token set of its own: the suites run in parallel, and no test
-    # sees what another left on a token. The regular build (nix/package.nix) and the coverage
-    # report run them the same way, as does the mutation report with the token suites.
+    # sees what another left on a token. The coverage report runs them the same way, as does
+    # the mutation report with the token suites.
     nativeBuildInputs = base.nativeBuildInputs ++ [ cargo-nextest ];
     ${runner} = "bash ${./test-tokens.sh}";
     cargoTestCommand = "cargo nextest run \${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE}";
     # No progress bar: the build log is not a terminal, whatever nextest sees.
     cargoTestExtraArgs = "--no-fail-fast --show-progress none";
-    # Coverage as data (docs/PLAN.md A1, docs/CAPROBE.md "Coverage"): the suites once more, now
-    # with every module behind a tracing p11-fault (nix/test-tokens.sh), the built tests reused;
-    # then spec-coverage/cakeys.toml is regenerated from that trace and must be what is
-    # committed. A second pass, not a traced first one: the first keeps every test talking to
-    # its module directly (p11-fault exports the 2.40 interface only).
-    postCheck = ''
-      # Not run: the coverage test, and the fault suites (nix/test-tokens.sh leaves them
-      # untraced, with the other tests it names).
-      export CAKEYS_TRACE_DIR=$TMPDIR/coverage-trace
-      ${cargoTestCommandFor "not (binary(fault) | test(committed_coverage_is_generated_from_the_trace))"}
-      unset CAKEYS_TRACE_DIR
-      CAKEYS_COVERAGE_TRACE=$TMPDIR/coverage-trace \
-        ${cargoTestCommandFor "test(committed_coverage_is_generated_from_the_trace)"}
-    '';
+    # The check phase holds spec-coverage/cakeys.toml to the baseline and manual.toml from its
+    # own `used` rows; regenerating them from a traced run is the spec-coverage report below.
     passthru = {
+      # What packages.cakeys ships (pkgs.nix; the NixOS module's default and the apps too): this
+      # build without its check phase, on the same dependency artifacts, so what users run is what
+      # every check and CI job builds, and its first use runs no token suite (review 2026-11-23
+      # C-8: it was a second, regular buildRustPackage build that nothing built).
+      unchecked = craneLib.buildPackage (
+        common.args
+        // base
+        // {
+          inherit cargoArtifacts;
+          doCheck = false;
+          # The cryptoki version and patches, and the features that need them, for builds outside
+          # Nix: scripts/local-tests.sh reads them with `nix eval --json .#cakeys.patchedCryptoki`,
+          # so its lists are these, not a copy. Each patch interpolated: a store path of its own,
+          # which `nix eval` copies there, where a path value would print as a place in the
+          # flake's source that need not exist on disk.
+          passthru.patchedCryptoki = {
+            inherit (common.cryptoki) version;
+            patches = map (p: "${p}") common.cryptoki.patches;
+            inherit (common) features;
+          };
+        }
+      );
       # Clippy with -D warnings over every target: the workspace lints (Cargo.toml
       # [workspace.lints]: unsafe_code deny, clippy::pedantic with one blanket allow) travel with
       # every build, editor and this check.
@@ -308,6 +319,38 @@ craneLib.buildPackage (
           scopes = [ scope ];
           tokens = true;
         };
+      # Coverage as data (docs/PLAN.md A1, docs/CAPROBE.md "Coverage"): the suites again with
+      # every module behind a tracing p11-fault (nix/test-tokens.sh), then spec-coverage/cakeys.toml
+      # regenerated from that trace, with the tests behind each used row (coverage-report.txt). A
+      # report, never a check (review 2026-11-23 D-8: it was a second full traced pass in every
+      # check build, for a file only it kept current): `nix build .#spec-coverage`, then copy
+      # result/cakeys.toml over spec-coverage/cakeys.toml. Traced on a pass of its own: the check
+      # phase keeps every test talking to its module directly (p11-fault exports the 2.40
+      # interface only).
+      spec-coverage = craneLib.mkCargoDerivation (
+        base
+        // {
+          inherit cargoArtifacts;
+          pnameSuffix = "-spec-coverage";
+          doInstallCargoArtifacts = false;
+          nativeBuildInputs = base.nativeBuildInputs ++ common.args.nativeCheckInputs ++ [ cargo-nextest ];
+          preBuild = common.args.preCheck;
+          ${runner} = "bash ${./test-tokens.sh}";
+          # Not traced: the coverage test, and the fault suites (nix/test-tokens.sh leaves them
+          # untraced, with the other tests it names).
+          buildPhaseCargoCommand = ''
+            export CAKEYS_TRACE_DIR=$TMPDIR/coverage-trace
+            ${cargoTestCommandFor "not (binary(fault) | test(committed_coverage_is_generated_from_the_trace))"}
+            unset CAKEYS_TRACE_DIR
+            CAKEYS_COVERAGE_TRACE=$TMPDIR/coverage-trace CAKEYS_UPDATE_COVERAGE=1 \
+              ${cargoTestCommandFor "test(committed_coverage_is_generated_from_the_trace)"}
+          '';
+          installPhaseCommand = ''
+            mkdir -p $out
+            cp spec-coverage/cakeys.toml $TMPDIR/coverage-trace/coverage-report.txt $out/
+          '';
+        }
+      );
       # Line and region coverage of the whole test run, the token suites included: the tests
       # spawn instrumented binaries, so what a CLI test reaches inside cakeys, caprobe and
       # camigrate counts. Not a check (it rebuilds everything instrumented and passes whatever

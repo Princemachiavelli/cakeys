@@ -32,7 +32,8 @@ cd "$work"
 declare -A meaning=(
   [0]="ok" [10]="hash mismatch: prints got:" [11]="not found" [12]="ambiguous"
   [13]="conflict" [14]="precondition failed" [15]="unsupported" [16]="unavailable"
-  [17]="invalid config" [18]="first use: nothing pinned yet, prints got:"
+  [17]="invalid config, or no lock" [18]="first use: nothing pinned yet, prints got:"
+  [22]="done, and the lock written: review and commit it"
 )
 
 act() {
@@ -167,18 +168,22 @@ wait_key
 
 act "1. A key is a pinned input" \
   "Keys are made by one verb, create. Its first use fails like a fixed-output derivation with" \
-  "a fake hash: cakeys prints the identity it got and records nothing yet."
-expect 18 cakeys create signing --token soft --no-update-lock
+  "a fake hash: cakeys prints the identity it got and records nothing yet. There is no lock yet:"
+echo "every verb refuses one that is not there (17) unless asked to start it, so a mistyped --lock"
+echo "never makes a new, empty one."
+expect 17 cakeys create signing --token soft --no-update-lock
+expect 18 cakeys --new-lock create signing --token soft --no-update-lock
 first=$(got)
 echo "Again, by the lock verb: the same key is found under its locator, never a second one."
-expect 18 cakeys lock signing --token soft --no-update-lock
+expect 18 cakeys --new-lock lock signing --token soft --dry-run
 [ "$(got)" = "$first" ] || {
   echo "${red}a second run got another identity${reset}"
   exit 1
 }
 echo "Record it, like updating flake.lock. The private key also proves possession: it signs a"
 echo "fresh challenge the host verifies against the public key the identity hashes (pop-sign)."
-limit=13 expect 0 cakeys lock signing --token soft
+echo "Done, and the lock written: 22, so a script cannot miss that there is a lock to review and commit."
+limit=13 expect 22 cakeys --new-lock lock signing --token soft
 echo "keys.lock: the identity per object; per token, how it was realised (and the policy it"
 echo "observed, cut here). What it saw of the module and token is one [observations] entry,"
 echo "shared by every realisation recorded with the same:"
@@ -187,7 +192,7 @@ echo "Observations, never a verdict: the module file actually loaded (the variab
 echo "its hash. Another path is a note; the same path with other content (replaced in place) warns."
 show sed -n '/^\[observations\..*\.module\]/,/^cryptoki/p' keys.lock
 echo "From now on every use is checked against the lock: identity, policy and binding."
-expect 0 cakeys verify signing --token soft
+expect 0 cakeys check signing --token soft
 wait_key
 
 # ── Act 2 ───────────────────────────────────────────────────────────────────────────────────
@@ -226,12 +231,12 @@ act "3. A lost key is never silently replaced" \
   "Delete the key behind cakeys' back, as a wiped or swapped token would."
 p11 "$SOFTHSM_MODULE" --delete-object --type privkey --label signing
 p11 "$SOFTHSM_MODULE" --delete-object --type pubkey --label signing
-expect 11 cakeys verify signing --token soft
+expect 11 cakeys check signing --token soft
 echo "create would make a key, but the lock pins material a new key can never match:"
 expect 14 cakeys create signing --token soft
 echo "Plant a different key under the same label: its identity does not match the lock."
 p11 "$SOFTHSM_MODULE" --keypairgen --key-type EC:prime256v1 --label signing --id 01 --usage-sign
-expect 10 cakeys verify signing --token soft
+expect 10 cakeys check signing --token soft
 wait_key
 
 # ── Act 4 ───────────────────────────────────────────────────────────────────────────────────
@@ -263,8 +268,8 @@ EOF
 printf '%s$ openssl dgst -sha256 -binary shared.pub.der | base64%s\n' "$dim" "$reset"
 oracle=sha256-$(openssl dgst -sha256 -binary shared.pub.der | base64)
 echo "The host computes the identity from the key file alone: ${bold}$oracle${reset}"
-limit=13 expect 0 cakeys lock shared --token soft
-limit=13 expect 0 cakeys lock shared --token kryo
+limit=13 expect 22 cakeys lock shared --token soft
+limit=13 expect 22 cakeys lock shared --token kryo
 locked=$(sed -n '/^\[objects.shared.ids\]/,/^\[/s/^rfc7093m4 = "\(.*\)"/\1/p' keys.lock)
 echo "keys.lock holds one identity for the object and one realisation per token, each naming"
 echo "what it saw of its module:"
@@ -305,13 +310,13 @@ attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = false }
 tokens.soft = { locator = { CKA_LABEL = "fixed" }, origin = "create" }
 EOF
 echo 'Without a spec, create makes every pair keys.toml says it creates (origin = "create") and the'
-echo "lock does not pin yet, and verifies the ones it pins as verify does (shared is adopted, so it"
+echo "lock does not pin yet, and verifies the ones it pins as check does (shared is adopted, so it"
 echo "is left alone). signing is still the key planted in act 3: the run makes the new keys, records"
 echo "them, then stops there."
 jqf='.[] | {object, token, rfc7093m4: .ids.rfc7093m4}' expect 10 cakeys create --token soft
 echo 'movable is born on soft (origin = "create"), so kryo can only import it. A sealed move needs the'
 echo "target to name a transport key: an RSA key there that only unwraps and never leaves it."
-expect 15 camigrate export movable --token soft --target kryo --dry-run
+expect 15 camigrate export movable --from soft --to kryo --dry-run
 append <<'EOF'
 
 [objects.transport]
@@ -329,16 +334,16 @@ echo "kryo names it in its own table (migrate.transportWith):"
 show sed -n '/^\[tokens.kryo\]/,/^$/p' keys.toml
 echo "It proves possession by unwrapping (pop-unwrap), so it needs no CKA_DECRYPT, and the lock"
 echo "records its public key: any host exports to kryo from the lock alone."
-jqf='.[] | {object, token}' expect 0 cakeys create --token kryo
+jqf='.[] | {object, token}' expect 22 cakeys create --token kryo
 show sed -n '/^\[objects.transport\]/,/^\[/{s/^\(publicKey = .\{50\}\).*/\1.../p}' keys.lock
 echo "Now the plan is ready; a non-extractable key never leaves its token, whatever the target can do."
-expect 0 camigrate export movable --token soft --target kryo --dry-run
-expect 15 camigrate export fixed --token soft --target kryo --dry-run
+expect 0 camigrate export movable --from soft --to kryo --dry-run
+expect 15 camigrate export fixed --from soft --to kryo --dry-run
 echo "The move: wrapped on soft to kryo's transport key, unwrapped on kryo, checked against the lock."
-expect 0 camigrate migrate movable --from soft --to kryo
+expect 22 camigrate migrate movable --from soft --to kryo
 echo "The lock keeps one identity for movable and records where kryo's copy came from:"
 show awk '/^\[realisations.movable.kryo.provenance.origin\]/ { n = 4 } n-- > 0' keys.lock
-expect 0 cakeys verify movable --token kryo
+expect 0 cakeys check movable --token kryo
 
 act "Done" \
   "Next: the NixOS VM test runs act 1 inside a real Nix build sandbox, with a consumer" \

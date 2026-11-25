@@ -1,6 +1,6 @@
 # p11-fault: a PKCS#11 module that forwards, and misbehaves on request
 
-Design for [PLAN.md](PLAN.md) A3 and tier 4 of [COVERAGE_PLAN.md](COVERAGE_PLAN.md), written
+Design for [PLAN.md](PLAN.md) A3 and tier 4 of [archive/COVERAGE_PLAN.md](archive/COVERAGE_PLAN.md), written
 2026-11-14. Steps 1 and 2 of the order below are built (`crates/p11-fault`,
 `packages.p11-fault`): the forwarders, every rule kind, the trace, the parity run, the
 `pkcs11-tool` check and the first table of lies.
@@ -53,7 +53,8 @@ crates/p11-names/
 ```
 
 Dependencies: `cryptoki-sys` (the C types), `libloading`, `serde` and `toml`, all already in
-the tree, and `p11-names`, which depends on `cryptoki-sys` alone. About 1–1.5k lines.
+the tree, and `p11-names`, which depends on `cryptoki-sys` alone. About 2.2k lines, and 0.9k for
+`p11-names` (most of it the name tables).
 
 ### Loading
 
@@ -101,7 +102,7 @@ forward! {
         => hooks::find_objects;
     C_GetAttributeValue(s: CK_SESSION_HANDLE, h: CK_OBJECT_HANDLE, t: *mut CK_ATTRIBUTE, n: CK_ULONG)
         => hooks::attribute_value;
-    C_SignInit(s: CK_SESSION_HANDLE, m: *mut CK_MECHANISM, key: CK_OBJECT_HANDLE) key => key;
+    C_SignInit(s: CK_SESSION_HANDLE, m: *mut CK_MECHANISM, key: CK_OBJECT_HANDLE) => substitute_key;
     // ... the other 63, most with no hook
 }
 
@@ -122,9 +123,10 @@ unsafe extern "C" fn C_FindObjects(s: CK_SESSION_HANDLE, out: *mut CK_OBJECT_HAN
 }
 ```
 
-The `key => key` form marks the functions that take a key (`C_SignInit`, `C_DecryptInit`,
+The `=> substitute_key` form marks the functions that take a key (`C_SignInit`, `C_DecryptInit`,
 `C_DeriveKey`, `C_UnwrapKey`, `C_WrapKey`, ...): a `use_label` rule substitutes the handle
-before forwarding.
+before forwarding; `=> corrupt_output` marks those whose output a rule may change. The plan's
+lists of both are generated from these marks.
 
 ### The plan
 
@@ -203,8 +205,10 @@ first.
 
 **Labels to handles.** `of_label`, `from_label`, `add_label` and `use_label` are resolved
 through a session of the shim's own (`C_OpenSession` on the caller's slot, read from
-`C_GetSessionInfo`), so resolving never interrupts a find the caller has open. Object handles
-are valid across an application's sessions, which is what makes this work.
+`C_GetSessionInfo`), so resolving never interrupts a find the caller has open. The session is
+read-only, or read-write where the module refuses a read-only one because the caller holds an
+SO session (`CKR_SESSION_READ_WRITE_SO_EXISTS`). Object handles are valid across an
+application's sessions, which is what makes this work.
 
 ### The trace
 
@@ -212,10 +216,12 @@ With `P11_FAULT_TRACE`, one JSON line per call, appended (`O_APPEND`, so the per
 writers of a test run interleave whole lines):
 
 ```json
-{"pid":4711,"seq":17,"fn":"C_SignInit","n":2,"mechanism":"CKM_ECDSA_SHA256","rv":"CKR_OK","rule":null}
+{"exe":"cakeys","fn":"C_SignInit","mechanism":4164,"n":2,"pid":4711,"rule":null,"rv":"CKR_OK","seq":17}
 ```
 
-This is PLAN.md A1's trace if `pkcs11-spy` proves too lossy: which functions, mechanisms,
+The function and return value are names; what the call was about (`mechanism`, here
+`CKM_ECDSA_SHA256`, attribute types, classes, ...) is numbers, which the reader maps to names
+(`trace.rs`). This is PLAN.md A1's trace if `pkcs11-spy` proves too lossy: which functions, mechanisms,
 attribute types and return values cakeys really meets, per reference token.
 
 What a call returns through its arguments (the flags of an info structure, the classes and key
@@ -245,7 +251,7 @@ the message, on a token holding a signing, a deriving, a decrypting and an unwra
 beside another key of its kind. Every row asserts in the trace that its rule fired, and the
 lock is unchanged at the end. As run on SoftHSM [run]:
 
-| The lie | `verify` gives |
+| The lie | `check` gives |
 |---|---|
 | `CKF_WRITE_PROTECTED` (on a `create`) | 15 |
 | `CKF_USER_PIN_LOCKED`, `CKF_USER_PIN_FINAL_TRY` | 16, before any login |

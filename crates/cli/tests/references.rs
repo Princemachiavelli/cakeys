@@ -34,8 +34,8 @@ impl Env {
         let mut seen: BTreeMap<String, (serde_json::Value, &str)> = BTreeMap::new();
         for r in refs {
             let o = self.km(r, &["lock", "--spec", spec, "--token", r.name]);
-            assert_eq!(code(&o), 0, "{spec} on {}: {}", r.name, String::from_utf8_lossy(&o.stderr));
-            let resolved: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+            assert_eq!(code(&o), 22, "{spec} on {}: {}", r.name, String::from_utf8_lossy(&o.stderr));
+            let resolved = lock_result(&o);
             for (scheme, id) in resolved["ids"].as_object().unwrap() {
                 match seen.get(scheme) {
                     Some((want, by)) => assert_eq!(id, want, "{spec}: {scheme} on {} differs from {by}", r.name),
@@ -56,7 +56,7 @@ impl Env {
             .collect();
         assert!(!known.is_empty(), "{spec}: none of {oracle:?} computed, only {:?}", seen.keys().collect::<Vec<_>>());
         for r in refs {
-            assert_eq!(code(&self.km(r, &["verify", "--spec", spec, "--token", r.name])), 0, "{spec} on {}", r.name);
+            assert_eq!(code(&self.km(r, &["check", "--spec", spec, "--token", r.name])), 0, "{spec} on {}", r.name);
         }
     }
 
@@ -380,7 +380,7 @@ fn the_same_scenario_gets_the_same_verdict_on_every_reference() {
 
     // Record the swap key everywhere, then replace each private key with another P-256 key.
     for r in &created {
-        assert_eq!(code(&e.km(r, &["lock", "--spec", "swap", "--token", r.name])), 0, "{}", r.name);
+        assert_eq!(code(&e.km(r, &["lock", "--spec", "swap", "--token", r.name])), 22, "{}", r.name);
     }
     for r in e.refs(|r| r.plant == Plant::Create) {
         let s = open_session(&r.module, r.token_label, "1234");
@@ -390,7 +390,7 @@ fn the_same_scenario_gets_the_same_verdict_on_every_reference() {
     let swapped: BTreeMap<&str, (i32, bool)> = created
         .iter()
         .map(|r| {
-            let o = e.km(r, &["verify", "--spec", "swap", "--token", r.name]);
+            let o = e.km(r, &["check", "--spec", "swap", "--token", r.name]);
             let err = String::from_utf8_lossy(&o.stderr);
             let why = err.contains("proof of possession failed") || err.contains("disagrees with the key material");
             (r.name, (code(&o), why))
@@ -425,7 +425,7 @@ fn create_happens_where_origin_says_create() {
     );
     e.config(&body);
     let o = e.km(soft, &["create", "--spec", "born"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert!(stderr(&o).contains("origin = \"import\": camigrate brings its material here"), "{}", stderr(&o));
     assert_eq!(open_session(&soft.module, soft.token_label, "1234").labelled("xref-born").len(), 2, "the pair");
     assert_eq!(open_session(&kry.module, kry.token_label, "1234").labelled("xref-born"), []);

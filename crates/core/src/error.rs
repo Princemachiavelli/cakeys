@@ -155,7 +155,76 @@ impl KmError {
             KmError::Io(_) => 1,
         }
     }
+
+    /// One error of every variant, by its name: what the exit-code tests check the docs and
+    /// tables against. The match below has no wildcard, so a new variant does not compile
+    /// until it is listed here too (review 2026-11-23 A-16: the tests scraped this file).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn every_variant() -> Vec<(&'static str, KmError)> {
+        let s = String::new;
+        let all = vec![
+            ("HashMismatch", KmError::HashMismatch { what: s(), expected: s(), got: s() }),
+            ("FirstUse", KmError::FirstUse { what: s(), got: s() }),
+            ("NotFound", KmError::NotFound("".into())),
+            ("Ambiguous", KmError::Ambiguous("".into())),
+            ("Conflict", KmError::Conflict("".into())),
+            ("PreconditionFailed", KmError::PreconditionFailed("".into())),
+            ("Unsupported", KmError::Unsupported("".into())),
+            ("Unavailable", KmError::Unavailable("".into())),
+            ("Validation", KmError::Validation("".into())),
+            ("Exists", KmError::Exists("".into())),
+            ("ObjectsFailed", KmError::ObjectsFailed("".into())),
+            ("LockUnwritable", KmError::LockUnwritable("".into())),
+            ("Io", KmError::Io("".into())),
+        ];
+        for (_, e) in &all {
+            match e {
+                KmError::HashMismatch { .. }
+                | KmError::FirstUse { .. }
+                | KmError::NotFound(_)
+                | KmError::Ambiguous(_)
+                | KmError::Conflict(_)
+                | KmError::PreconditionFailed(_)
+                | KmError::Unsupported(_)
+                | KmError::Unavailable(_)
+                | KmError::Validation(_)
+                | KmError::Exists(_)
+                | KmError::ObjectsFailed(_)
+                | KmError::LockUnwritable(_)
+                | KmError::Io(_) => {}
+            }
+        }
+        all
+    }
 }
+
+/// A run that did what it was asked and wrote the lock: created it (`--new-lock`) or changed
+/// it. Not 0, so a consumer sees every lock change and reviews and commits it (review 2026-11-23
+/// C-16); never over a failure's own code.
+pub const LOCK_WRITTEN: u8 = 22;
+
+/// Every exit code of the three tools, in order, with what it means: the one table each
+/// `--help` renders (review 2026-11-23 C-10) and docs/CAKEYS.md's "Exit codes" lists
+/// (`the_exit_code_table_lists_every_code`).
+pub const EXIT_CODES: [(u8, &str); 16] = [
+    (0, "ok"),
+    (1, "I/O or other failure"),
+    (2, "command-line usage"),
+    (10, "hash mismatch: the token holds other material than the lock pins"),
+    (11, "not found under the locator"),
+    (12, "ambiguous: several objects match"),
+    (13, "conflict: the object is not what the spec says"),
+    (14, "precondition failed: the realisation moved"),
+    (15, "unsupported: the token cannot do what the spec needs"),
+    (16, "unavailable: the token, or a PIN or passphrase source, cannot be used now"),
+    (17, "invalid config, lock, spec or options"),
+    (18, "first use: the lock pins nothing to compare with yet"),
+    (19, "already exists: create found a key the lock does not pin under the locator"),
+    (20, "objects failed: check --token lists each failure with its own code"),
+    (21, "the lock cannot be written (read-only, or inside a Nix build)"),
+    (LOCK_WRITTEN, "done, and the lock was written: review and commit it"),
+];
 
 /// A result whose error is a [`KmError`].
 pub type Result<T, E = KmError> = std::result::Result<T, E>;

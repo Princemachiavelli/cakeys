@@ -25,8 +25,9 @@ tpm2 = ["cakeys-cli-common/tpm2"]
 # ykcs11 provider (YubiKey PIV) with the piv-attestation commitment.
 ykcs11 = ["cakeys-cli-common/ykcs11"]
 # Everything the patched cryptoki of the Nix build (nix/patches) makes possible, together: the
-# build that links it names this one feature, never the parts by hand (review D3).
-patched-cryptoki = ["cakeys-pkcs11/rv-value"]
+# build that links it names this one feature, never the parts by hand (review D3). Nothing in
+# this tool yet: a failure's CK_RV comes from p11-names in every build (review 2026-11-23 B-6).
+patched-cryptoki = []
 
 [dependencies]
 cakeys-cli-common.workspace = true

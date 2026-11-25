@@ -1,8 +1,6 @@
 //! `keys.lock`: what was realised where, its invariants, and `gc`.
 
-use super::{
-    AttrValue, Binding, Config, Locator, Mode, ObjectCfg, Observation, Observed, Provenance, TokenObservation,
-};
+use super::{AttrValue, Config, Locator, ObjectCfg, Observation, Observed, Provenance, TokenObservation};
 use crate::error::{KmError, Result};
 use crate::id::Scheme;
 use crate::types::ObjectClass;
@@ -68,14 +66,8 @@ pub const LOCK_VERSION: u32 = 1;
 impl Lock {
     /// Refuse other versions (the version is required), then every lock invariant: each object's
     /// IDs and label, each realisation against its object, one object per material, and pairs
-    /// that list each other.
-    pub(super) fn validate(self, path: &Path) -> Result<Lock> {
-        self.check(path)?;
-        Ok(self)
-    }
-
-    /// The load rules of [`Self::validate`], on a lock in memory: what [`save_lock`](super::save_lock) asks before
-    /// it writes, so no verb can save a lock that would not load again.
+    /// that list each other. What a lock is loaded with, and what [`save_lock`](super::save_lock)
+    /// asks before it writes, so no verb can save a lock that would not load again.
     pub(super) fn check(&self, path: &Path) -> Result<()> {
         if self.version != LOCK_VERSION {
             return Err(KmError::Validation(
@@ -524,4 +516,367 @@ pub fn gc(cfg: &Config, lock: &mut Lock, remove: bool) -> Vec<String> {
         lock.observations.retain(|k, _| !observations.contains(k));
     }
     stale
+}
+
+/// Identity modes, strongest first (docs/DESIGN.md §3.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Mode {
+    /// The ID hashes the object's public material: public keys, certificates, data objects.
+    Direct,
+    /// The ID hashes a commitment the token computes with the secret key (a MAC, a check value, a
+    /// wrap), for secret keys whose usage bits allow one.
+    Commitment,
+    /// An extractable secret key without such bits: wrapped under a session KEK, unwrapped as a
+    /// session copy that allows every scheme of its type, committed, then both destroyed.
+    WrapRebind,
+}
+
+/// How a private-key object is bound to the public key its identity hashes (docs/DESIGN.md §3.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Binding {
+    /// The token signed a fresh challenge that verified on the host against that public key.
+    PopSign,
+    /// `pop-sign` on a `CKA_ALWAYS_AUTHENTICATE` key: the same proof, with the per-use
+    /// `C_Login(CKU_CONTEXT_SPECIFIC)` the key demands before it signs. Derived from the
+    /// observed attribute and recorded in the lock; never written in keys.toml.
+    PopSignPin,
+    /// The token derived the ECDH shared secret with an ephemeral host key and both sides `MACed`
+    /// the challenge with it (derive-only EC keys).
+    PopEcdh,
+    /// The token decrypted a host challenge (RSA-OAEP) to the expected plaintext (decrypt-only
+    /// RSA keys).
+    PopDecrypt,
+    /// The token unwrapped a host secret (RSA-OAEP) into a non-extractable session key and both
+    /// sides `MACed` the challenge with it (unwrap-only RSA keys: transport keys, docs/CAMIGRATE.md D3).
+    PopUnwrap,
+    /// Only the token says the objects belong together (opt-in, or `publicOnly`).
+    TokenAsserted,
+}
+
+impl Binding {
+    /// Strength, strongest 0: a realisation must never move to a higher rank. Every `pop-*`
+    /// proves the same fact — possession of the named public key — by whichever capability the
+    /// key has. `pop-sign-pin` proves it too: its per-use PIN is recorded by the observed
+    /// `CKA_ALWAYS_AUTHENTICATE` bit in the policy, not by a weaker rank.
+    #[must_use]
+    pub fn rank(self) -> u8 {
+        match self {
+            Binding::PopSign | Binding::PopSignPin | Binding::PopEcdh | Binding::PopDecrypt | Binding::PopUnwrap => 0,
+            Binding::TokenAsserted => 1,
+        }
+    }
+
+    /// The name keys.toml and the lock write.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Binding::PopSign => "pop-sign",
+            Binding::PopSignPin => "pop-sign-pin",
+            Binding::PopEcdh => "pop-ecdh",
+            Binding::PopDecrypt => "pop-decrypt",
+            Binding::PopUnwrap => "pop-unwrap",
+            Binding::TokenAsserted => "token-asserted",
+        }
+    }
+
+    /// The proof a capability row names (`prove.<proof>.…`, docs/CAPROBE.md): the binding's,
+    /// `pop-sign` for a per-use PIN too; `None` for `token-asserted`, which proves nothing.
+    #[must_use]
+    pub fn proof_name(self) -> Option<&'static str> {
+        match self {
+            Binding::PopSignPin => Some(Binding::PopSign.name()),
+            Binding::TokenAsserted => None,
+            proven => Some(proven.name()),
+        }
+    }
+}
+
+impl std::fmt::Display for Binding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl Mode {
+    /// Strength, strongest 0: a realisation must never move to a higher rank.
+    #[must_use]
+    pub fn rank(self) -> u8 {
+        match self {
+            Mode::Direct => 0,
+            Mode::Commitment => 1,
+            Mode::WrapRebind => 2,
+        }
+    }
+
+    /// The name the lock writes.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Direct => "direct",
+            Mode::Commitment => "commitment",
+            Mode::WrapRebind => "wrap-rebind",
+        }
+    }
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+#[cfg(test)]
+pub(super) mod tests {
+    use super::*;
+    use crate::config::*;
+
+    /// The synthetic Nix-library fixture must stay a valid lock of the current schema.
+    #[test]
+    fn fixture_lock_parses() {
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"));
+        let lock = load_lock(path).unwrap();
+        assert_eq!(lock.realisations["signing-soft"]["softhsm"].binding, Some(Binding::PopSign));
+        // A recorded CKA_ID loads in lower case, as keys.toml's does: `0A` and `0a` are one
+        // locator, never a change to review (review D1). A non-hex one is no lock cakeys wrote.
+        let text = std::fs::read_to_string(path).unwrap();
+        let with_id = |id: &str| {
+            text.replace(
+                "locator = { CKA_LABEL = \"signing\" }",
+                &format!("locator = {{ CKA_LABEL = \"signing\", CKA_ID = \"{id}\" }}"),
+            )
+        };
+        let lock = parse_lock(&with_id("0A"), path).unwrap();
+        assert_eq!(lock.realisations["signing-soft"]["softhsm"].locator.id.as_deref(), Some("0a"));
+        let e = parse_lock(&with_id("zz"), path).unwrap_err();
+        assert!(e.to_string().contains("CKA_ID 'zz' is not hex"), "{e}");
+    }
+
+    /// Observation keys of a newer cakeys load and survive a rewrite (the TUF re-serialization
+    /// rule); anywhere else an unknown key is still a refused lock, `provenance` included.
+    #[test]
+    fn unknown_observation_keys_are_kept_on_rewrite() {
+        let fixture = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"));
+        let text = std::fs::read_to_string(fixture).unwrap();
+        let known = "provider = \"softhsm\"\ncakeysVersion = \"0.1.0\"\n";
+        assert!(text.contains(known));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.lock");
+        std::fs::write(&path, text.replacen(known, &format!("{known}builder = \"ci-7\"\nrun = {{ id = 3 }}\n"), 1))
+            .unwrap();
+        let lock = load_lock(&path).unwrap();
+        let extra = |l: &Lock| {
+            let key = l.realisations["signing-soft"]["softhsm"].observation.clone().unwrap();
+            l.observations[&key].extra.clone()
+        };
+        assert_eq!(extra(&lock).keys().collect::<Vec<_>>(), ["builder", "run"]);
+        save_lock(&path, &lock).unwrap();
+        assert_eq!(extra(&load_lock(&path).unwrap()), extra(&lock));
+        // The rename left nothing behind but the lock.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        // A compared table takes no unknown key, and neither does the object's history.
+        for (table, key) in [
+            ("[realisations.signing-soft.softhsm]\n", "builder = \"ci-7\"\n"),
+            ("[realisations.signing-soft.softhsm]\n", "provenance = { builder = \"ci-7\" }\n"),
+        ] {
+            std::fs::write(&path, text.replacen(table, &format!("{table}{key}"), 1)).unwrap();
+            assert!(matches!(load_lock(&path), Err(KmError::Validation(_))), "{key}");
+        }
+    }
+
+    /// A realisation names an observation the lock has (17 otherwise); an origin names a known
+    /// method; `gc` reports and drops exactly the observations no remaining realisation names.
+    #[test]
+    fn observations_are_referenced_and_collected() {
+        let path = Path::new("test.lock");
+        let sri = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+        let set = |lock: &mut Lock, f: &dyn Fn(&mut LockRealisation)| {
+            f(lock.realisations.get_mut("s").unwrap().get_mut("t").unwrap());
+        };
+        let mut lock = attestable_lock();
+        set(&mut lock, &|r| r.observation = Some(sri.into()));
+        let err = lock.check(path).unwrap_err();
+        assert!(err.to_string().contains("is not in the lock"), "{err}");
+        lock.observations.insert(sri.into(), Observation::default());
+        lock.observations.insert("sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=".into(), Observation::default());
+        lock.check(path).unwrap();
+        // Every observation's module hash is checked, not only the first one's (review
+        // config.rs F2): a good one first, a malformed one after.
+        let module = |hash: &str| ModuleInfo {
+            path: "/m.so".into(),
+            hash: Some(hash.into()),
+            description: String::new(),
+            manufacturer: String::new(),
+            version: String::new(),
+            cryptoki: String::new(),
+        };
+        let mut hashed = lock.clone();
+        let mut entries = hashed.observations.values_mut();
+        entries.next().unwrap().module = Some(module(sri));
+        entries.next().unwrap().module = Some(module("sha256-x"));
+        let err = hashed.check(path).unwrap_err();
+        assert!(err.to_string().contains("module hash \"sha256-x\""), "{err}");
+        assert!(matches!(lock.token_observation("t"), TokenObservation::One(_)));
+        assert!(matches!(lock.token_observation("other"), TokenObservation::None));
+
+        let mut bad = lock.clone();
+        let origin = Origin {
+            from: "a".into(),
+            method: "carrier-pigeon".into(),
+            exposure: crate::migrate::Exposure::Public,
+            declared: false,
+        };
+        set(&mut bad, &|r| r.provenance = Some(Provenance { origin: Some(origin.clone()) }));
+        assert!(bad.check(path).unwrap_err().to_string().contains("origin method"));
+
+        let cfg: Config = toml::from_str(
+            "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.s]\nobject = \"k\"\ntokens.t = { locator = { CKA_LABEL = \"k\" } }\n",
+        )
+        .unwrap();
+        let unnamed = "observations.\"sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=\"";
+        assert_eq!(gc(&cfg, &mut lock.clone(), false), [unnamed]);
+        // With the spec gone, the realisation goes, and so does the observation only it named.
+        let cfg = Config { specs: BTreeMap::new(), ..cfg };
+        let stale = gc(&cfg, &mut lock, true);
+        assert_eq!(stale.len(), 3, "{stale:?}");
+        assert!(lock.realisations.is_empty() && lock.observations.is_empty());
+    }
+
+    /// `gc` leaves a lock that loads: an object renamed in keys.toml before `lock` ran
+    /// takes the realisation that still names it along (it once stayed, naming an object `gc`
+    /// had dropped, and every later run refused the lock, `lock` and `gc` included). And no
+    /// lock that would not load is ever written: `save_lock` refuses it and keeps the old one.
+    #[test]
+    fn gc_and_save_leave_a_lock_that_loads() {
+        let path = Path::new("test.lock");
+        let mut lock = attestable_lock();
+        let renamed: Config = toml::from_str(
+            "[objects.renamed]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.s]\nobject = \"renamed\"\ntokens.t = { locator = { CKA_LABEL = \"k\" } }\n",
+        )
+        .unwrap();
+        let stale = gc(&renamed, &mut lock, true);
+        assert!(stale.contains(&"realisations.s.t".to_owned()) && stale.contains(&"objects.k".to_owned()), "{stale:?}");
+        lock.check(path).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("keys.lock");
+        let mut broken = attestable_lock();
+        broken.objects.clear();
+        // Saved after a token write, a lock that would not load is a lock not written (21), with
+        // the load rule it breaks (review 2026-11-23 A-17).
+        let e = save_lock(&file, &broken).unwrap_err();
+        assert!(e.exit_code() == 21 && e.to_string().contains("is not in the lock"), "{e}");
+        assert!(!file.exists(), "an invalid lock was written");
+        save_lock(&file, &attestable_lock()).unwrap();
+        load_lock(&file).unwrap();
+    }
+
+    /// Downgrade detection compares ranks: an inverted order would silently disable it. The
+    /// `pop-*` methods share rank 0: each proves possession of the same key.
+    #[test]
+    fn binding_ranks_are_pinned() {
+        assert!(Binding::PopSign.rank() < Binding::TokenAsserted.rank());
+        assert_eq!(Binding::PopSign.to_string(), "pop-sign");
+        assert_eq!(Binding::PopSignPin.to_string(), "pop-sign-pin");
+        assert_eq!(Binding::PopEcdh.to_string(), "pop-ecdh");
+        assert_eq!(Binding::PopDecrypt.to_string(), "pop-decrypt");
+        assert_eq!(Binding::PopUnwrap.to_string(), "pop-unwrap");
+        assert_eq!(Binding::PopSignPin.rank(), Binding::PopSign.rank());
+        assert_eq!(Binding::PopEcdh.rank(), Binding::PopSign.rank());
+        assert_eq!(Binding::PopDecrypt.rank(), Binding::PopSign.rank());
+        assert_eq!(Binding::PopUnwrap.rank(), Binding::PopSign.rank());
+        assert_eq!(Binding::TokenAsserted.to_string(), "token-asserted");
+    }
+
+    /// A minimal valid lock with one object and realisation, for the attestation-invariant
+    /// tests: the caller mutates it and expects `validate` to accept or refuse.
+    pub(crate) fn attestable_lock() -> Lock {
+        let mut ids = BTreeMap::new();
+        ids.insert("rfc7093m4".to_owned(), "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".to_owned());
+        let mut lock = Lock { version: LOCK_VERSION, ..Default::default() };
+        lock.objects.insert(
+            "k".into(),
+            LockObject {
+                object_type: Some(ObjectCfg {
+                    curve: Some("secp256r1".into()),
+                    ..ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Ec))
+                }),
+                ids,
+                ..Default::default()
+            },
+        );
+        lock.realisations.insert(
+            "s".into(),
+            [(
+                "t".into(),
+                LockRealisation {
+                    object: "k".into(),
+                    locator: Locator { label: Some("k".into()), id: None },
+                    spec_digest: "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".into(),
+                    mode: Mode::Direct,
+                    schemes: ["rfc7093m4".to_owned()].into_iter().collect(),
+                    public_only: false,
+                    binding: Some(Binding::PopSign),
+                    attestation: None,
+                    policy: BTreeMap::new(),
+                    immutables: Immutables::default(),
+                    observation: None,
+                    observed: None,
+                    provenance: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        lock
+    }
+
+    /// Attestation IDs are per device and never stand alone (§3.7): they live on the realisation
+    /// that computed them — never in the object's shared `ids`, where the same material attested
+    /// on a second TPM would collide — and that realisation must also hold a portable scheme.
+    #[test]
+    fn attestation_is_per_realisation_and_never_alone() {
+        let path = Path::new("test.lock");
+        let sri = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+        let record = |kind: &str| AttestationRecord { kind: kind.into(), root: sri.into(), id: sri.into() };
+        let real = |lock: &mut Lock| lock.realisations.get_mut("s").unwrap().get_mut("t").unwrap().clone();
+        let set = |lock: &mut Lock, r: LockRealisation| {
+            lock.realisations.get_mut("s").unwrap().insert("t".into(), r);
+        };
+
+        // In the object's ids: refused, wherever it came from.
+        let mut lock = attestable_lock();
+        lock.objects.get_mut("k").unwrap().ids.insert("tpm-certify".to_owned(), sri.to_owned());
+        let err = lock.check(path).unwrap_err();
+        assert!(err.to_string().contains("belongs to the realisation"), "{err}");
+
+        // On the realisation beside a portable scheme: loads.
+        let mut lock = attestable_lock();
+        let mut r = real(&mut lock);
+        r.attestation = Some(record("tpm-certify"));
+        set(&mut lock, r.clone());
+        lock.check(path).unwrap();
+
+        // Alone (a realisation whose portable schemes are gone): refused.
+        let mut alone = lock.clone();
+        let mut r2 = r.clone();
+        r2.schemes.clear();
+        set(&mut alone, r2);
+        let err = alone.check(path).unwrap_err();
+        assert!(err.to_string().contains("locked only by its attestation"), "{err}");
+
+        // Unknown kind, or a non-SRI id: refused.
+        let mut bad = lock.clone();
+        let mut r3 = r.clone();
+        r3.attestation = Some(record("vendor-x"));
+        set(&mut bad, r3);
+        assert!(bad.check(path).unwrap_err().to_string().contains("unknown attestation kind"));
+        let mut bad = lock;
+        r.attestation.as_mut().unwrap().id = "nope".into();
+        set(&mut bad, r);
+        assert!(bad.check(path).unwrap_err().to_string().contains("attestation id"));
+    }
 }

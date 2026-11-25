@@ -21,6 +21,27 @@ const RSA_SHA512: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.11354
 
 /// `basicConstraints` (2.5.29.19).
 const BASIC_CONSTRAINTS: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.19");
+/// `keyUsage` (2.5.29.15).
+const KEY_USAGE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.15");
+/// `extendedKeyUsage` (2.5.29.37).
+const EXTENDED_KEY_USAGE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.37");
+/// `tcg-kp-EKCertificate` (2.23.133.8.1): the purpose TCG's EK credential profile gives an
+/// Endorsement Key certificate ([`Cert::serves`]).
+pub const TCG_KP_EK_CERTIFICATE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.23.133.8.1");
+
+/// The extensions a certificate of a walk may mark critical: those the walk or its callers read
+/// (basicConstraints, keyUsage, extendedKeyUsage), and two that restrict nothing an attestation
+/// relies on but that issuers mark critical — subjectAltName (a TCG EK certificate with an empty
+/// subject) and certificatePolicies (Yubico's intermediates). Any other critical extension
+/// (nameConstraints, policyConstraints, a vendor's) may constrain the certificate in a way the
+/// walk does not enforce, so RFC 5280 §4.2 refuses it (review 2026-11-23 A-3).
+const UNDERSTOOD: [ObjectIdentifier; 5] = [
+    BASIC_CONSTRAINTS,
+    KEY_USAGE,
+    EXTENDED_KEY_USAGE,
+    ObjectIdentifier::new_unwrap("2.5.29.17"),
+    ObjectIdentifier::new_unwrap("2.5.29.32"),
+];
 
 /// A parsed certificate with its DER bytes.
 #[derive(Debug)]
@@ -139,29 +160,92 @@ impl Cert {
         self.parsed.tbs_certificate().subject() == cert.parsed.tbs_certificate().issuer()
     }
 
+    /// Whether the certificate may serve `purpose`: it names no purposes (no
+    /// `extendedKeyUsage`), or names that one (RFC 5280 §4.2.1.12). An EK certificate is held to
+    /// [`TCG_KP_EK_CERTIFICATE`] (review 2026-11-23 A-3).
+    ///
+    /// # Errors
+    ///
+    /// `Conflict` when its `extendedKeyUsage` does not decode.
+    pub fn serves(&self, purpose: &ObjectIdentifier) -> Result<bool> {
+        let eku: Option<x509_cert::ext::pkix::ExtendedKeyUsage> =
+            self.decoded(&EXTENDED_KEY_USAGE, "extendedKeyUsage")?;
+        Ok(eku.is_none_or(|eku| eku.0.contains(purpose)))
+    }
+
+    /// The extension with this OID, decoded as `T`; `None` when absent.
+    ///
+    /// # Errors
+    ///
+    /// `Conflict` naming the certificate and `what` when the extension does not decode.
+    fn decoded<T>(&self, oid: &ObjectIdentifier, what: &str) -> Result<Option<T>>
+    where
+        T: for<'a> Decode<'a, Error = x509_cert::der::Error>,
+    {
+        self.parsed
+            .tbs_certificate()
+            .extensions()
+            .and_then(|ext| ext.iter().find(|e| &e.extn_id == oid))
+            .map(|e| T::from_der(e.extn_value.as_bytes()))
+            .transpose()
+            .map_err(|e| {
+                KmError::Conflict(
+                    format!("attestation chain: '{}' {what}: {e}", self.parsed.tbs_certificate().subject()).into(),
+                )
+            })
+    }
+
     /// Whether this certificate may issue a chain with `below` CA certificates under it (the
     /// certificate the walk started from counts as one): `basicConstraints` CA, within its
-    /// `pathLen`.
+    /// `pathLen`, and a `keyUsage`, when it has one, with `keyCertSign` (RFC 5280 §4.2.1.3; review
+    /// 2026-11-23 A-3).
     fn may_issue(&self, below: u16) -> Result<()> {
         let subject = self.parsed.tbs_certificate().subject().to_string();
-        let bc = self
+        let bc: Option<x509_cert::ext::pkix::BasicConstraints> =
+            self.decoded(&BASIC_CONSTRAINTS, "basicConstraints")?;
+        match bc {
+            Some(bc) if bc.ca && bc.path_len_constraint.is_none_or(|n| u16::from(n) >= below) => {}
+            Some(bc) if bc.ca => {
+                return Err(KmError::Conflict(
+                    format!(
+                        "attestation chain: '{subject}' allows {} CA certificate(s) below it, the chain has {below}",
+                        bc.path_len_constraint.unwrap_or_default()
+                    )
+                    .into(),
+                ));
+            }
+            _ => return Err(KmError::Conflict(format!("attestation chain: '{subject}' is not a CA").into())),
+        }
+        let ku: Option<x509_cert::ext::pkix::KeyUsage> = self.decoded(&KEY_USAGE, "keyUsage")?;
+        if ku.is_some_and(|ku| !ku.key_cert_sign()) {
+            return Err(KmError::Conflict(
+                format!("attestation chain: '{subject}' may not sign certificates: its keyUsage lacks keyCertSign")
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// RFC 5280 §4.2: a certificate with a critical extension outside [`UNDERSTOOD`] is refused,
+    /// since it may constrain the certificate in a way the walk does not enforce.
+    fn no_unknown_critical(&self) -> Result<()> {
+        let unknown = self
             .parsed
             .tbs_certificate()
             .extensions()
-            .and_then(|ext| ext.iter().find(|e| e.extn_id == BASIC_CONSTRAINTS))
-            .map(|e| x509_cert::ext::pkix::BasicConstraints::from_der(e.extn_value.as_bytes()))
-            .transpose()
-            .map_err(|e| KmError::Conflict(format!("attestation chain: '{subject}' basicConstraints: {e}").into()))?;
-        match bc {
-            Some(bc) if bc.ca && bc.path_len_constraint.is_none_or(|n| u16::from(n) >= below) => Ok(()),
-            Some(bc) if bc.ca => Err(KmError::Conflict(
+            .into_iter()
+            .flatten()
+            .find(|e| e.critical && !UNDERSTOOD.contains(&e.extn_id));
+        match unknown {
+            None => Ok(()),
+            Some(e) => Err(KmError::Conflict(
                 format!(
-                    "attestation chain: '{subject}' allows {} CA certificate(s) below it, the chain has {below}",
-                    bc.path_len_constraint.unwrap_or_default()
+                    "attestation chain: '{}' has the critical extension {}, which cakeys does not process",
+                    self.parsed.tbs_certificate().subject(),
+                    e.extn_id
                 )
                 .into(),
             )),
-            _ => Err(KmError::Conflict(format!("attestation chain: '{subject}' is not a CA").into())),
         }
     }
 }
@@ -211,7 +295,9 @@ pub fn certs_of(bytes: &[u8]) -> Result<Vec<Cert>> {
 
 /// Walk `cert`'s issuer chain through the intermediates of `pool` until one of `anchors` is
 /// reached, verifying every signature and every issuer's `basicConstraints` (CA, within its
-/// `pathLen`) on the host; the anchor reached is the answer, and what a caller pins. The walk
+/// `pathLen`) and `keyUsage` (`keyCertSign`, when present) on the host, and refusing any
+/// certificate of the walk with a critical extension it does not process; the anchor reached is
+/// the answer, and what a caller pins. The walk
 /// takes at most `max_links` signatures, `cert`'s own included. `pathLen` counts the CA
 /// certificates below an issuer (RFC 5280 §4.2.1.9), `cert` among them as `start` says: the
 /// caller's knowledge of what it is walking from, never what `cert` claims of itself. With `at`,
@@ -233,6 +319,7 @@ pub fn chain_to_anchor<'a>(
     if let Some(at) = at {
         cert.valid_at(at)?;
     }
+    cert.no_unknown_critical()?;
     let below = match start {
         Start::EndEntity => 0,
         Start::Intermediate => 1,
@@ -275,6 +362,7 @@ fn issuer_chain<'a>(
         return Err(bad(format!("longer than {max_links} links")));
     }
     let link = |issuer: &Cert| -> Result<()> {
+        issuer.no_unknown_critical()?;
         issuer.may_issue(walk.below)?;
         verify_signed_by(current, issuer)?;
         at.map_or(Ok(()), |at| issuer.valid_at(at))
@@ -532,6 +620,36 @@ mod tests {
         let key = x509_cert::der::pem::encode_string("PRIVATE KEY", x509_cert::der::pem::LineEnding::LF, &[0x05, 0x00]);
         let e = pem_certs(&format!("{root}{}", key.unwrap())).err().unwrap();
         assert!(e.to_string().contains("a PRIVATE KEY block"), "{e}");
+    }
+
+    /// A chain-rules fixture (tests/fixtures/chain-rules/make.sh).
+    fn rule(name: &str) -> Cert {
+        cert(&format!("chain-rules/{name}.pem"))
+    }
+
+    /// What the walk enforces beyond basicConstraints (RFC 5280; review 2026-11-23 A-3): an
+    /// issuer whose keyUsage lacks keyCertSign signs no certificate, and a certificate with a
+    /// critical extension the walk does not process (nameConstraints here) is refused wherever
+    /// it sits. A certificate that names its purposes serves only those. Each fixture chain
+    /// differs from the valid `ok` one in its one rule (openssl verifies `ok` and refuses
+    /// `no-certsign`).
+    #[test]
+    fn issuers_sign_certificates_and_critical_extensions_are_understood() {
+        let walk = |leaf: &str, root: &str| {
+            chain_to_anchor(&rule(leaf), Start::EndEntity, &[rule(root)], &[], None, 2).map(|_| ())
+        };
+        walk("ok-leaf", "ok-root").unwrap();
+        walk("ek-leaf", "ok-root").unwrap();
+        let e = walk("no-certsign-leaf", "no-certsign-root").unwrap_err();
+        assert!(e.to_string().contains("may not sign certificates: its keyUsage lacks keyCertSign"), "{e}");
+        let e = walk("constrained-leaf", "constrained-root").unwrap_err();
+        assert!(e.to_string().contains("has the critical extension 2.5.29.30, which cakeys does not process"), "{e}");
+        let e = chain_to_anchor(&rule("constrained-root"), Start::Intermediate, &[rule("ok-root")], &[], None, 2)
+            .unwrap_err();
+        assert!(e.to_string().contains("critical extension 2.5.29.30"), "as the start of a walk: {e}");
+        assert!(rule("ok-leaf").serves(&TCG_KP_EK_CERTIFICATE).unwrap(), "names no purpose: any");
+        assert!(rule("ek-leaf").serves(&TCG_KP_EK_CERTIFICATE).unwrap());
+        assert!(!rule("server-leaf").serves(&TCG_KP_EK_CERTIFICATE).unwrap());
     }
 
     /// The chain's name links compare the decoded Names (attest.rs F4).

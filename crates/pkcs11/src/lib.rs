@@ -4,17 +4,21 @@
 //! per token in [`resolution`] with the binding layer of [`binding`] always in the stack.
 
 pub mod binding;
+pub mod chain_time;
 pub mod gate;
 pub mod ops;
 pub mod provider;
 pub mod providers;
+pub mod registry;
 pub mod resolution;
 pub mod templates;
 pub mod token;
 
+pub use chain_time::ChainTime;
 pub use provider::{
-    Attributes, BoundKey, ChainTime, Create, Declared, Destroy, Generation, Generic, Half, Provider, Registry, Report,
-    SessionKey, Template, Via, keygen_mechanism,
+    Attributes, BoundKey, Create, Declared, Destroy, Generation, Generic, Half, Provider, SessionKey, Template, Topic,
+    Via, keygen_mechanism,
 };
+pub use registry::Registry;
 pub use resolution::Resolved;
 pub use token::Token;

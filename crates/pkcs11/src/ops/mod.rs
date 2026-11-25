@@ -1,6 +1,7 @@
 //! Idempotent verbs with HTTP-like semantics (docs/CAKEYS.md).
 
-use crate::provider::{Provider, Registry};
+use crate::provider::{Provider, Topic};
+use crate::registry::Registry;
 use crate::token::{self as hal, Token};
 use cakeys_core::config::{
     Answered, AttestationRecord, Config, KeyOrigin, Lock, Mode, Observation, Observed, Origin, Session,
@@ -24,7 +25,7 @@ pub use planner::*;
 /// The attestation scheme `t`'s token computes when opted in (`attestation = true`), if the
 /// provider attests this class at all (§3.7 of docs/DESIGN.md).
 fn attestation_scheme(t: &Target, tok: &Token) -> Option<Scheme> {
-    t.on_token.attestation.then(|| tok.attestation_cap(t.object)).flatten().map(|c| c.scheme)
+    t.on_token.attestation.then(|| tok.attestation_cap(&t.object)).flatten().map(|c| c.scheme)
 }
 
 /// The commitments a secret key's spec allows (or, for a wrap-rebind copy, every one for the
@@ -50,12 +51,10 @@ fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
     let usable: Vec<Commit> = wanted.iter().copied().filter(|c| tok.has(hal::commit_mechanism(*c))).collect();
     if usable.is_empty() {
         let mechs: Vec<String> = wanted.iter().map(|c| hal::commit_mechanism(*c).to_string()).collect();
-        return Err(tok.unsupported(format!(
-            "token '{}' implements none of {} needed for mode '{mode}' of {}",
-            tok.name,
-            mechs.join(", "),
-            t
-        )));
+        return Err(tok.unsupported_for(
+            Topic::Mechanism,
+            format!("token '{}' implements none of {} needed for mode '{mode}' of {}", tok.name, mechs.join(", "), t),
+        ));
     }
     Ok(usable)
 }
@@ -118,7 +117,7 @@ fn resolve_with(
 ) -> Result<Option<Resolved>> {
     let mode = plan_mode(t)?;
     let public_only = t.on_token.public_only;
-    let Some(h) = tok.find_key(t.object, &t.on_token.locator, public_only)? else {
+    let Some(h) = tok.find_key(&t.object, &t.on_token.locator, public_only)? else {
         return Ok(None);
     };
     tok.check(h, t.object, t.spec)?;
@@ -126,7 +125,7 @@ fn resolve_with(
         tok.check_unique_private_id(h)?;
     }
     tok.check_public_half(h, t.spec, &t.on_token.locator, public_only)?;
-    let Computed { ids, binding, commitment_label, spki } = compute_ids(t, tok, lock, h, mode)?;
+    let Computed { ids, binding, commitment_label, spki, commits } = compute_ids(t, tok, lock, h, mode)?;
     // The key's public key, read once (review D8): every check below compares with the value its
     // identity hashed. A key identified another way reads it where it is needed.
     let spki = || spki.clone().map_or_else(|| tok.spki(h, &t.on_token.locator), Ok);
@@ -137,7 +136,8 @@ fn resolve_with(
     let attestation = match attestation_scheme(t, tok) {
         Some(scheme) => {
             let spki = if t.object.class.is_asymmetric() { Some(spki()?) } else { None };
-            Some(attest(t, tok, lock, h, spki.as_deref(), scheme, provision, notes)?)
+            let committed = committed(t, &commits, commitment_label.as_deref(), &ids);
+            Some(attest(t, tok, lock, h, spki.as_deref(), &committed, scheme, provision, notes)?)
         }
         None => None,
     };
@@ -145,10 +145,10 @@ fn resolve_with(
         object: t.object_name.into(),
         spec: t.spec_name.into(),
         token: t.token_name.into(),
-        uri: tok.uri(t.object, &t.on_token.locator)?,
+        uri: tok.uri(&t.object, &t.on_token.locator)?,
         mode,
         public_only,
-        spec_digest: id::spec_digest(t.object, t.spec),
+        spec_digest: id::spec_digest(&t.object, t.spec),
         ids,
         binding,
         assurance: cakeys_core::plan::assurance(t.object.class, binding, attestation.as_ref().map(|a| a.kind.as_str())),
@@ -170,6 +170,26 @@ struct Computed {
     commitment_label: Option<String>,
     /// The key's canonical SPKI, where its identity is one (an asymmetric key, `Direct`).
     spki: Option<Vec<u8>>,
+    /// The commitments computed (a secret key's), under `commitment_label`.
+    commits: Vec<Commit>,
+}
+
+/// The commitments `commits` computed under `label`, each with its input and the ID it gave
+/// (`ids`): what a secret key's attestation is bound to (review 2026-11-23 B-1).
+fn committed(
+    t: &Target,
+    commits: &[Commit],
+    label: Option<&str>,
+    ids: &std::collections::BTreeMap<String, String>,
+) -> Vec<crate::provider::Commitment> {
+    let Some(label) = label else { return Vec::new() };
+    commits
+        .iter()
+        .filter_map(|c| {
+            let id = ids.get(c.scheme().name())?.clone();
+            Some(crate::provider::Commitment { commit: *c, input: c.input(label, &t.object), id })
+        })
+        .collect()
 }
 
 /// The material IDs of `t`'s object `h` on `tok` in `mode` — a private key proving possession
@@ -183,7 +203,7 @@ fn compute_ids(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, mode: Mode
         _ => None,
     };
     let ids = tok.ids(h, t.object, &t.on_token.locator, mode, &commits, &label, binding, spki.as_deref())?;
-    Ok(Computed { ids, binding, commitment_label: (!commits.is_empty()).then_some(label), spki })
+    Ok(Computed { ids, binding, commitment_label: (!commits.is_empty()).then_some(label), spki, commits })
 }
 
 /// The attestation commitment (§3.7): per-device identity from signed provenance. The material
@@ -201,6 +221,7 @@ fn attest(
     lock: &Lock,
     h: ObjectHandle,
     spki: Option<&[u8]>,
+    commitments: &[crate::provider::Commitment],
     scheme: Scheme,
     provision: Provision,
     notes: &mut Notes,
@@ -210,7 +231,7 @@ fn attest(
             format!("provider '{}' advertises unknown attestation scheme {scheme}", tok.provider.name()).into(),
         )
     })?;
-    let a = match tok.attest(h, t.object, spki, provision == Provision::IfMissing) {
+    let a = match tok.attest(h, &t.object, spki, commitments, provision == Provision::IfMissing) {
         Ok(a) => a,
         Err(e @ (KmError::Unavailable(_) | KmError::Unsupported(_) | KmError::NotFound(_))) => {
             let locked = lock.realisation(t.spec_name, t.token_name).and_then(|r| r.attestation.as_ref());
@@ -231,6 +252,9 @@ fn attest(
     }
     if let Some(w) = &a.warning {
         notes.warn(format!("{t}: its attestation would fail `check` today: {w}"));
+    }
+    if let Some(c) = &a.caveat {
+        notes.warn(format!("{t}: {c}"));
     }
     Ok(AttestationRecord { kind: kind.to_owned(), root: a.root, id: a.id })
 }
@@ -253,11 +277,11 @@ fn answers(t: &Target, r: &Resolved, run: Run<'_>) -> std::collections::BTreeMap
         return out;
     }
     // The rows' own keys (`cakeys_profile::Capability`), as the gate reads them back.
-    if let Some(proof) = r.binding.and_then(|b| crate::gate::proof_capability(t.object, b)) {
+    if let Some(proof) = r.binding.and_then(|b| crate::gate::proof_capability(&t.object, b)) {
         out.insert(proof.to_string(), Answered::yes());
     }
     if let Run::Created(note) = run
-        && let Some(generated) = crate::gate::generate_capability(t.object)
+        && let Some(generated) = crate::gate::generate_capability(&t.object)
     {
         let via = note.and_then(|n| n.by_name.as_ref()).map(|_| "by-name".to_owned());
         out.insert(generated.to_string(), Answered { via, ..Answered::yes() });
@@ -354,7 +378,7 @@ fn absent(t: &Target) -> KmError {
         KeyOrigin::Create => "`cakeys create` makes it".to_owned(),
         KeyOrigin::Import => format!("camigrate brings it (camigrate migrate {} --to {})", t.object_name, t.token_name),
         KeyOrigin::File => {
-            format!("camigrate brings it from its file (camigrate import --token {} {})", t.token_name, t.object_name)
+            format!("camigrate brings it from its file (camigrate import {} --to {})", t.object_name, t.token_name)
         }
         KeyOrigin::Adopt => "it is adopted, and nothing cakeys runs puts it there".to_owned(),
     };
@@ -443,7 +467,7 @@ fn create_absent(
 fn undo_created(t: &Target, tok: &Token, err: KmError, why: &str, notes: &mut Notes) -> KmError {
     match tok.find_any(&t.on_token.locator) {
         Ok(found) if found.is_empty() => {}
-        Ok(_) => match tok.destroy(t.object, &t.on_token.locator) {
+        Ok(_) => match tok.destroy(&t.object, &t.on_token.locator) {
             Ok(n) => notes.say(format!("removed {n} object(s) just created for {t}: {why}")),
             Err(d) => notes.say(format!(
                 "the key just created for {t} is still on the token ({why}, and removing it failed: {d})"
@@ -490,7 +514,7 @@ pub fn create(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes:
     if let Some(why) = not_origin_create(t) {
         return Err(KmError::Validation(format!("{t}: {why}").into()));
     }
-    if tok.find_key(t.object, &t.on_token.locator, false)?.is_some() {
+    if tok.find_key(&t.object, &t.on_token.locator, false)?.is_some() {
         if pinned(t, lock).is_none() {
             return Err(KmError::Exists(
                 format!(
@@ -509,8 +533,34 @@ pub fn create(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes:
     Ok(Made::Created(r, changed))
 }
 
+/// What [`delete`] did with the object under the locator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deleted {
+    /// It held the expected identity and was destroyed.
+    Deleted,
+    /// It holds the expected identity: a run without `dry_run` destroys it.
+    WouldDelete,
+    /// Nothing is under the locator.
+    Absent,
+}
+
+impl Deleted {
+    /// Its name in `cakeys delete`'s output.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Deleted::Deleted => "deleted",
+            Deleted::WouldDelete => "would-delete",
+            Deleted::Absent => "absent",
+        }
+    }
+}
+
 /// DELETE + If-Match. Absent is success; only the object identified (and a private key's public
-/// half holding the same key) is removed: anything else under the locator is left alone.
+/// half holding the same key) is removed: anything else under the locator is left alone, and the
+/// realisation is removed from the lock (its object's `ids` stay: the material may live on other
+/// tokens). `dry_run` identifies and checks If-Match as a delete does, and changes nothing.
+/// Returns what it did, and whether it changed the lock.
 ///
 /// # Errors
 ///
@@ -523,9 +573,9 @@ pub fn delete(
     tok: &Token,
     lock: &mut Lock,
     if_match: Option<&str>,
-    write: LockWrite,
+    dry_run: bool,
     notes: &mut Notes,
-) -> Result<bool> {
+) -> Result<(Deleted, bool)> {
     if t.on_token.public_only {
         return Err(KmError::Unsupported(
             format!("{t} is adopted publicOnly; deleting would remove only the public half").into(),
@@ -533,7 +583,8 @@ pub fn delete(
     }
     let loc = &t.on_token.locator;
     // An expected identity is only required when there is something to delete.
-    if let Some(h) = tok.find_key(t.object, loc, false)? {
+    let mut outcome = Deleted::Absent;
+    if let Some(h) = tok.find_key(&t.object, loc, false)? {
         // Proven like `resolve`: If-Match must not pass on a public object beside another key.
         let Computed { ids: got, spki, .. } = compute_ids(t, tok, lock, h, plan_mode(t)?)?;
         // The schemes computed, in the spec's order of preference: the first is the primary one.
@@ -553,7 +604,12 @@ pub fn delete(
                 format!("{} holds {:?}, expected {expected}; not deleting", t, got.get(scheme.name())).into(),
             ));
         }
-        let (n, left) = tok.destroy_identified(h, t.object, loc, spki.as_deref())?;
+        if dry_run {
+            notes.say(format!("{t} holds {expected}: a delete would destroy it"));
+            return Ok((Deleted::WouldDelete, false));
+        }
+        let (n, left) = tok.destroy_identified(h, &t.object, loc, spki.as_deref())?;
+        outcome = Deleted::Deleted;
         notes.say(format!("destroyed {n} object(s) for {t}"));
         if left > 0 {
             notes
@@ -570,16 +626,14 @@ pub fn delete(
         ));
     }
     let mut changed = false;
-    if write == LockWrite::Record
-        && let Some(m) = lock.realisations.get_mut(t.spec_name)
-    {
+    if !dry_run && let Some(m) = lock.realisations.get_mut(t.spec_name) {
         changed = m.remove(t.token_name).is_some();
         if m.is_empty() {
             lock.realisations.remove(t.spec_name);
         }
         changed |= lock.drop_unreferenced_observations();
     }
-    Ok(changed)
+    Ok((outcome, changed))
 }
 
 /// A `check` reference in its parts: the object, and the scheme `<object>.id.<scheme>` asks for.

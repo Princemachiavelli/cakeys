@@ -20,7 +20,7 @@
 #           with the 24-hour duration: libkmsp11 would create a missing one with the 30-day
 #           default. CAPROBE names a caprobe binary to use instead of building one.
 # cakeys    runs cakeys with scripts/cloud/gcp/cakeys.toml (its keys pre-created by create, 24 hours,
-#           no version) and a lock in the state directory: `cakeys create`, `verify ec-p256
+#           no version) and a lock in the state directory: `cakeys create`, `check ec-p256
 #           --token gcp`, `delete ...`. CAKEYS names a cakeys binary to use instead of building one.
 # status    lists the versions under the ring's keys that are not destroyed or scheduled for
 #           destruction (those bill), and exits 1 while any exist.
@@ -174,7 +174,7 @@ EOF
     if ((write)); then
       out=$repo/profiles/modules/$name.toml
       mkdir -p "$(dirname "$out")"
-      args+=(--write --out "$out")
+      args+=(--write-probes --out "$out")
       [[ -f $out ]] && args+=(--diff "$name")
     else
       out=$state/${variant}-read-only.toml

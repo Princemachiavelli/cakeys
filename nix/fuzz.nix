@@ -42,13 +42,16 @@ let
     lib.attrNames (builtins.readDir ../fuzz/fuzz_targets)
   );
 
-  # Seed corpora from the test fixtures: certificates, their and the import keys' SPKIs, a
+  # Seed corpora from the test fixtures: certificates, the providers' root bundles, their and the
+  # import keys' SPKIs, a
   # lock, a config, a bundle, the key files, the fixture PIV chain, tpm2-pkcs11's malformed P-521 point and the
   # committed profiles. Called from the repository root.
   seed = ''
     F=crates/cli/tests/fixtures
     for t in ${lib.concatStringsSep " " targets}; do mkdir -p "fuzz/corpus/$t"; done
     cp --update=none "$F"/*.der fuzz/corpus/certificate/
+    # PEM bundles and DER certificates, as a user names them for the EK (chain::certs_of).
+    cp --update=none "$F"/*.der crates/tpm2-pkcs11/roots/*.pem crates/ykcs11/roots/*.pem fuzz/corpus/cert_bundle/
     cp --update=none "$F/keys.lock" fuzz/corpus/lock/
     # Hex of whole bytes in mixed case, for hex to mutate.
     [ -e fuzz/corpus/hex/hex ] || printf 0aFF09bc >fuzz/corpus/hex/hex

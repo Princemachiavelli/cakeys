@@ -241,19 +241,12 @@ impl Plan {
     }
 }
 
-/// The functions whose third argument is the key they use: what `use_label` substitutes.
-pub const KEY_FUNCTIONS: [Fn; 7] = [
-    Fn::C_EncryptInit,
-    Fn::C_DecryptInit,
-    Fn::C_SignInit,
-    Fn::C_VerifyInit,
-    Fn::C_WrapKey,
-    Fn::C_UnwrapKey,
-    Fn::C_DeriveKey,
-];
-
-/// The functions that return bytes through a buffer and its length: what `corrupt` changes.
-pub const OUTPUT_FUNCTIONS: [Fn; 4] = [Fn::C_Sign, Fn::C_SignFinal, Fn::C_Encrypt, Fn::C_Decrypt];
+/// The functions whose forwarder runs `hook` (forward.rs's table): `substitute_key` for those
+/// whose third argument is the key they use (what `use_label` substitutes), `corrupt_output` for
+/// those that return bytes through a buffer and its length (what `corrupt` changes).
+fn hooked(hook: &str) -> Vec<Fn> {
+    Fn::ALL.iter().copied().filter(|f| f.hook() == Some(hook)).collect()
+}
 
 fn rule(r: RuleText) -> Result<Rule, String> {
     let function = Fn::ALL.iter().copied().find(|f| f.name() == r.function).ok_or_else(|| {
@@ -324,7 +317,7 @@ fn rule(r: RuleText) -> Result<Rule, String> {
         actions.push(Action::AddLabel(label.into_bytes()));
     }
     if let Some(label) = r.use_label {
-        only(&KEY_FUNCTIONS, "use_label")?;
+        only(&hooked("substitute_key"), "use_label")?;
         actions.push(Action::UseLabel(label.into_bytes()));
     }
     if let Some(label) = r.hide_label {
@@ -332,7 +325,7 @@ fn rule(r: RuleText) -> Result<Rule, String> {
         actions.push(Action::HideLabel(label.into_bytes()));
     }
     if r.corrupt {
-        only(&OUTPUT_FUNCTIONS, "corrupt")?;
+        only(&hooked("corrupt_output"), "corrupt")?;
         actions.push(Action::Corrupt);
     }
     if !r.hide_mechanisms.is_empty() {
@@ -476,7 +469,7 @@ mod tests {
             ("[[rule]]\nfn = \"C_FindObjectsInit\"\nhide_label = \"x\"\n", "hide_label is for C_FindObjects"),
             (
                 "[[rule]]\nfn = \"C_Verify\"\ncorrupt = true\n",
-                "corrupt is for C_Sign, C_SignFinal, C_Encrypt, C_Decrypt",
+                "corrupt is for C_Encrypt, C_Decrypt, C_Sign, C_SignFinal",
             ),
             ("[[rule]]\nfn = \"C_GetMechanismList\"\nhide_mechanisms = [\"CKM_NOPE\"]\n", "unknown mechanism CKM_NOPE"),
             (

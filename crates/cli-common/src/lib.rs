@@ -3,11 +3,11 @@
 //! notes, and the documented exit codes. Each binary is a library over this, so a downstream
 //! binary can link extra provider crates: `cakeys::main(&cakeys::default_registry().with(P))`.
 
-use cakeys_core::KmError;
 use cakeys_core::config::{
     Config, Lock, Observation, TokenCfg, TokenObservation, UpdateGuard, load_config, load_lock, lock_for_update,
     lock_unwritable, save_lock,
 };
+use cakeys_core::{EXIT_CODES, KmError, LOCK_WRITTEN};
 use cakeys_pkcs11::ops::Notes;
 use cakeys_pkcs11::token::Access;
 use cakeys_pkcs11::{ChainTime, Registry, Token, providers};
@@ -66,21 +66,34 @@ fn embedded_count() -> usize {
     cakeys_profile::embedded::PROFILE_FILES.len()
 }
 
-/// Run a command line's `dispatch`, print what the run noticed (before the error line, if any:
-/// never lost to a failure), and map an error to the documented exit code.
+/// Run a command line's `dispatch`, its notes going to stderr as they are said (review
+/// 2026-11-23 C-7), and map the result to the documented exit code: an error's own, else
+/// [`LOCK_WRITTEN`] when the run wrote the lock, else 0.
 pub fn main(dispatch: impl FnOnce(&mut Notes) -> anyhow::Result<()>) -> ExitCode {
-    let mut notes = Notes::default();
-    let result = dispatch(&mut notes);
-    for line in notes.lines() {
-        eprintln!("{line}");
-    }
-    match result {
+    let mut notes = Notes::streaming();
+    match dispatch(&mut notes) {
+        Ok(()) if notes.wrote_lock() => ExitCode::from(LOCK_WRITTEN),
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e:#}");
             ExitCode::from(e.downcast_ref::<KmError>().map_or(1, KmError::exit_code))
         }
     }
+}
+
+/// `cmd` with the exit-code table ([`EXIT_CODES`]) after its help, the same in every tool
+/// (review 2026-11-23 C-10).
+#[must_use]
+pub fn with_exit_codes(cmd: clap::Command) -> clap::Command {
+    let rows: Vec<String> = EXIT_CODES.iter().map(|(code, means)| format!("  {code:>2}  {means}")).collect();
+    cmd.after_help(format!("Exit codes (docs/CAKEYS.md):\n{}", rows.join("\n")))
+}
+
+/// The arguments of this process, parsed by `cmd` (the tool's [`with_exit_codes`] command) into
+/// `C`. Exits as clap does on a usage error (2) or `--help`.
+#[must_use]
+pub fn parse<C: clap::FromArgMatches>(cmd: clap::Command) -> C {
+    C::from_arg_matches(&cmd.get_matches()).unwrap_or_else(|e| e.exit())
 }
 
 /// `--module TOKEN=PATH` overrides, by token, each naming a token keys.toml (`cfg`) has.
@@ -192,7 +205,7 @@ impl<'a> Opener<'a> {
     /// Open every token from now on with what `lock` recorded of it ([`Token::with_answers`]),
     /// so a verb decides by the answers the token's own runs demonstrated, as `validate` does
     /// (ISSUES.md B18). Only for a verb whose verdicts may take an observation (`create`, not
-    /// `check`, `verify` or `lock`: docs/LOCK.md); caprobe never does, as it measures the module.
+    /// `check` or `lock`: docs/LOCK.md); caprobe never does, as it measures the module.
     pub fn recall(&mut self, lock: &Lock) {
         self.recorded = self
             .cfg
@@ -235,17 +248,30 @@ impl<'a> Opener<'a> {
     }
 }
 
-/// The lock at `path`, for a verb that `writes` it or only reads it. A writing verb is refused
-/// up front when the lock cannot be written (`instead` says what to do), before any token is
-/// touched: never a key created and then not recorded. It holds the lock's advisory sidecar
-/// (M3) for as long as the returned guard lives, across load and save, so concurrent updaters
-/// queue instead of losing each other's writes.
+/// The lock at `path`, for a verb that `writes` it or only reads it. A lock that is not there
+/// is refused unless `new_lock` (`--new-lock`) says to start one: a mistyped `--lock` never
+/// reads as an empty lock, nor becomes a second one (review 2026-11-23 C-16). A writing verb is
+/// refused up front when the lock cannot be written (`instead` says what to do), before any
+/// token is touched: never a key created and then not recorded. It holds the lock's advisory
+/// sidecar (M3) for as long as the returned guard lives, across load and save, so concurrent
+/// updaters queue instead of losing each other's writes.
 ///
 /// # Errors
 ///
-/// `LockUnwritable` (21) for a lock a writing verb cannot write; whatever
-/// [`lock_for_update`] or [`load_lock`] refuses.
-pub fn read_lock(path: &Path, writes: bool, instead: &str) -> anyhow::Result<(Lock, Option<UpdateGuard>)> {
+/// `Validation` (17) for a lock that is not there without `new_lock`; `LockUnwritable` (21) for
+/// a lock a writing verb cannot write; whatever [`lock_for_update`] or [`load_lock`] refuses.
+pub fn read_lock(
+    path: &Path,
+    new_lock: bool,
+    writes: bool,
+    instead: &str,
+) -> anyhow::Result<(Lock, Option<UpdateGuard>)> {
+    if !new_lock && !path.exists() {
+        return Err(KmError::Validation(
+            format!("no lock at {}: check --lock, or pass --new-lock to start one there", path.display()).into(),
+        )
+        .into());
+    }
     if writes && let Some(why) = lock_unwritable(path) {
         return Err(KmError::LockUnwritable(
             format!("cannot write the lock {}: {why}; {instead}", path.display()).into(),
@@ -259,7 +285,8 @@ pub fn read_lock(path: &Path, writes: bool, instead: &str) -> anyhow::Result<(Lo
     Ok((load_lock(path)?, guard))
 }
 
-/// Save `lock` to `path` if the verb `changed` it, and say so.
+/// Save `lock` to `path` if the verb `changed` it, and say so ([`Notes::lock_written`]: the
+/// run then exits [`LOCK_WRITTEN`]).
 ///
 /// # Errors
 ///
@@ -267,7 +294,7 @@ pub fn read_lock(path: &Path, writes: bool, instead: &str) -> anyhow::Result<(Lo
 pub fn save_changed(path: &Path, lock: &Lock, changed: bool, notes: &mut Notes) -> anyhow::Result<()> {
     if changed {
         save_lock(path, lock)?;
-        notes.say(format!("updated {}", path.display()));
+        notes.lock_written(path);
     }
     Ok(())
 }
@@ -312,6 +339,46 @@ mod tests {
             assert_eq!(e.exit_code(), 17, "{args:?}: {e}");
             assert!(e.to_string().contains(why), "{args:?}: {e}");
         }
+    }
+
+    /// Every tool's help ends with the one exit-code table, a row per code, each with what it
+    /// means (review 2026-11-23 C-10).
+    #[test]
+    fn the_help_carries_every_exit_code() {
+        let help = with_exit_codes(clap::Command::new("t")).render_help().to_string();
+        for (code, means) in EXIT_CODES {
+            assert!(help.contains(&format!("{code:>2}  {means}")), "{code} is not in\n{help}");
+        }
+    }
+
+    /// A lock that is not there is refused (17) unless `--new-lock`, which reads it as empty;
+    /// a writing run then says it wrote it, and exits 22 (review 2026-11-23 C-16).
+    #[test]
+    fn a_missing_lock_is_refused_unless_a_new_one_is_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.lock");
+        let Err(e) = read_lock(&path, false, false, "") else { panic!("a missing lock was read") };
+        let e = e.downcast_ref::<KmError>().unwrap();
+        assert!(e.exit_code() == 17 && e.to_string().contains("--new-lock"), "{e}");
+        // Inside a Nix build sandbox a lock write is refused up front (`lock_unwritable`), so
+        // `--new-lock` makes none there: the writing half of this test runs outside it.
+        if cakeys_core::config::in_nix_build() {
+            let Err(e) = read_lock(&path, true, true, "") else { panic!("a sandboxed run made a lock") };
+            assert!(e.to_string().contains("Nix build sandbox"), "{e}");
+            return;
+        }
+        let (lock, guard) = read_lock(&path, true, true, "").unwrap();
+        assert!(lock.realisations.is_empty() && guard.is_some());
+        let mut notes = Notes::default();
+        save_changed(&path, &lock, false, &mut notes).unwrap();
+        assert!(!notes.wrote_lock() && !path.exists());
+        save_changed(&path, &lock, true, &mut notes).unwrap();
+        assert!(notes.wrote_lock() && path.exists());
+        let code = main(|notes| {
+            notes.lock_written(&path);
+            Ok(())
+        });
+        assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::from(LOCK_WRITTEN)));
     }
 
     /// `activate_profiles` names what `profileDirs` added by position, after the embedded

@@ -7,7 +7,8 @@
 #   scripts/xversion.sh check  <new-cakeys> <dir>   # check, compare-only lock, re-record, diff
 #
 # Both builds must speak today's keys.toml and command line (`origin`, `lock`, the object-first
-# address): builds from 2026-11-15 on. An older one is refused by its own errors, not shimmed.
+# address; `--new-lock`, `lock --dry-run` and exit 22): builds from 2026-11-23 on. An older one is
+# refused by its own errors, not shimmed.
 #
 # Needs softhsm2-util and pkcs11-tool on PATH (the dev shell has both).
 set -euo pipefail
@@ -25,6 +26,13 @@ specs=(ec ecpub rsa ed aes hmac wrapped cert data)
 export SOFTHSM2_CONF=$dir/softhsm2.conf
 
 km() { "$bin" --config "$dir/keys.toml" --lock "$dir/keys.lock" "$@"; }
+# A run that may write the lock: 22 is done with the lock written (docs/CAKEYS.md), as 0 is done
+# with it unchanged.
+recorded() {
+  local rc=0
+  km "$@" || rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = 22 ] || return "$rc"
+}
 
 record() {
   # Only a directory this script made (it holds base.lock) or an empty one is replaced: a
@@ -116,9 +124,10 @@ tokens.soft = { locator = { CKA_LABEL = "cert" }, origin = "adopt" }
 object = "data"
 tokens.soft = { locator = { CKA_LABEL = "data" }, origin = "adopt" }
 EOF
-  km create --token soft >/dev/null
+  recorded --new-lock create --token soft >/dev/null
   for s in "${specs[@]}"; do
-    km lock --spec "$s" --token soft >"$dir/resolve.$s.json"
+    recorded lock --spec "$s" --token soft >/dev/null
+    km resolve --spec "$s" --token soft >"$dir/resolve.$s.json"
   done
   cp "$dir/keys.lock" "$dir/base.lock"
   echo "recorded ${#specs[@]} specs with $bin into $dir/base.lock"
@@ -128,13 +137,14 @@ check() {
   cp "$dir/base.lock" "$dir/keys.lock"
   for s in "${specs[@]}"; do
     km check --spec "$s" --token soft >/dev/null
-    km lock --spec "$s" --token soft --no-update-lock >/dev/null
+    km lock --spec "$s" --token soft --dry-run >/dev/null
     km resolve --spec "$s" --token soft | diff -u "$dir/resolve.$s.json" - || {
       echo "resolve output of $s changed" >&2
       exit 1
     }
+    # 0: re-recorded and nothing changed (22 would be a lock this build writes otherwise).
     km lock --spec "$s" --token soft >/dev/null || {
-      echo "re-recording $s failed" >&2
+      echo "re-recording $s failed or changed the lock (exit $?)" >&2
       exit 1
     }
   done

@@ -1,7 +1,7 @@
 //! The `caprobe` command line (README.md, "Three tools"): it measures PKCS#11 modules. It
 //! probes a token into a capability profile and compares it with a committed one, answers what
 //! the profiles say a module supports, and prints what a token offers. It is the only tool that
-//! creates and destroys scratch objects (`probe --write`), and it never reads keys.lock. A
+//! creates and destroys scratch objects (`probe --write-probes`), and it never reads keys.lock. A
 //! library, so a downstream binary can link extra provider crates:
 //! `caprobe::main(&caprobe::default_registry().with(MyProvider))`.
 
@@ -96,10 +96,8 @@ pub mod fuzzing {
     }
 }
 
-/// Measure PKCS#11 modules: capability profiles, and what a token offers.
-///
-/// Exit codes: 0 ok, 15 unsupported (a profile's no; drift from --diff), 16 unavailable (a
-/// profile's unknown), 17 invalid spec, 1 other.
+/// Measure PKCS#11 modules: capability profiles, and what a token offers (docs/CAPROBE.md).
+/// `supports` answers yes 0, no 15 and unknown 16; `probe --diff` exits 15 on drift.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -110,6 +108,14 @@ struct Cli {
     /// Override a token's PKCS#11 module: `<token>=<path>` (repeatable).
     #[arg(long = "module", value_name = "TOKEN=PATH")]
     modules: Vec<String>,
+    /// A directory of extra or replacement profile files, read recursively, over the built-in
+    /// ones and keys.toml's `profileDirs`. `probe` still probes the token unprofiled: the
+    /// directory is for its --diff.
+    #[arg(long = "profiles", value_name = "DIR", global = true)]
+    profiles_dir: Option<PathBuf>,
+    /// Print `supports`' verdicts as JSON (`caps` always is; `probe` prints a profile).
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -118,16 +124,17 @@ struct Cli {
 enum Cmd {
     /// Print a token's provider, resolved capability profiles and usable mechanisms as JSON.
     Caps {
+        /// The token in keys.toml to read.
         #[arg(long)]
         token: String,
     },
-    /// Ask the capability profiles what a vendor SO version supports (docs/CAPROBE.md):
+    /// Ask the capability profiles what a module version supports (docs/CAPROBE.md):
     /// pure data, no token touched. NAME is a mechanism (`CKM_*`), key type (`CKK_*`),
     /// parameter set (`CKP_*`) or curve; `--bits` asks for an RSA size; `--class` lists a
     /// baseline class; `--oaep` lists the wrap hashes. Exit 0 yes, 15 no, 16 unknown.
     Supports(SupportsArgs),
     /// Generate the token's capability profile by probing it (docs/CAPROBE.md):
-    /// read-only probes always; with --write, the probes that generate, wrap, unwrap and
+    /// read-only probes always; with --write-probes, the probes that generate, wrap, unwrap and
     /// delete — only on a token keys.toml marks scratch (`[tokens.<t>] probe = { scratch =
     /// true }`, or `probe.scratchId` for the one slot of a token, such as a `YubiKey`, whose
     /// real keys sit beside it), refused (17) on any other. With
@@ -140,7 +147,7 @@ enum Cmd {
 #[derive(clap::Args)]
 struct SupportsArgs {
     /// What to ask about: `CKM_*`, `CKK_*`, `CKP_*` or a curve name.
-    #[arg(required_unless_present_any = ["class", "oaep"])]
+    #[arg(required_unless_present_any = ["class", "oaep"], conflicts_with_all = ["class", "oaep"])]
     name: Option<String>,
     /// The module profile, e.g. softhsm/2.7 (or its family, when only one is loaded).
     #[arg(long, conflicts_with = "token")]
@@ -148,32 +155,33 @@ struct SupportsArgs {
     /// The token in keys.toml whose `provider` names the profile family.
     #[arg(long)]
     token: Option<String>,
-    /// A delta layer on top, repeatable: p11-kit/0.26, cryptoki/0.12-unpatched, swtpm.
+    /// A delta layer on top, repeatable: p11-kit/0.26, swtpm, or one from --profiles. The
+    /// cryptoki binding layer is always applied, as this build decides it (`--layer
+    /// cryptoki/0.12` adds nothing).
     #[arg(long = "layer")]
     layers: Vec<String>,
     /// List the members of a baseline class (pq, hmac, key-wrap, oaep) with verdicts.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "oaep")]
     class: Option<String>,
     /// List the RSA-OAEP hashes usable for wrapping.
     #[arg(long)]
     oaep: bool,
-    /// An RSA modulus size to ask about (with a `CKK_RSA` query).
-    #[arg(long)]
+    /// An RSA modulus size to ask about, with NAME `CKK_RSA`.
+    #[arg(long, requires = "name")]
     bits: Option<u32>,
-    /// A directory of extra or replacement profile files, read recursively (D11).
-    #[arg(long = "profiles")]
-    profiles_dir: Option<PathBuf>,
 }
 
 /// What `probe` probes, and where the result goes.
 #[derive(clap::Args)]
 struct ProbeArgs {
+    /// The token in keys.toml to probe.
     #[arg(long)]
     token: String,
-    /// Also run the write probes, against a scratch token only: `[tokens.<t>] probe = {
-    /// scratch = true }`, or `probe.scratchId` naming one slot (a `YubiKey`'s).
+    /// Also run the probes that create and delete objects, against a scratch token only:
+    /// `[tokens.<t>] probe = { scratch = true }`, or `probe.scratchId` naming one slot (a
+    /// `YubiKey`'s).
     #[arg(long)]
-    write: bool,
+    write_probes: bool,
     /// Write the generated profile here; default: stdout.
     #[arg(long)]
     out: Option<PathBuf>,
@@ -184,22 +192,19 @@ struct ProbeArgs {
     /// Diff against this profile (name or family), from the embedded set or --profiles.
     #[arg(long)]
     diff: Option<String>,
-    /// A directory of extra or replacement profile files, read recursively (D11), for the
-    /// --diff lookup: the token is probed unprofiled, whatever the directory holds.
-    #[arg(long = "profiles")]
-    profiles_dir: Option<PathBuf>,
     /// The largest RSA key the write probes generate, in bits: every size up to 16384 by
     /// default, whatever the module reports. A smaller one probes faster (the test suites pass
     /// 4096: 16384 bits take a software token over a minute).
-    #[arg(long, default_value_t = probe::RSA_SIZES[probe::RSA_SIZES.len() - 1])]
+    #[arg(long, requires = "write_probes", default_value_t = probe::RSA_SIZES[probe::RSA_SIZES.len() - 1])]
     rsa_max_bits: u32,
 }
 
-/// The command line's definition: its verbs and flags, for the test that every one of them is
-/// used by an integration test (`tests/common/surface.rs`).
+/// The command line's definition: its verbs and flags, with the exit codes after its help, for
+/// parsing and for the test that every flag is used by an integration test
+/// (`tests/common/surface.rs`).
 #[must_use]
 pub fn command() -> clap::Command {
-    <Cli as clap::CommandFactory>::command()
+    cakeys_cli_common::with_exit_codes(<Cli as clap::CommandFactory>::command())
 }
 
 /// Run the command line with the given providers; maps errors to the documented exit codes.
@@ -219,7 +224,8 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
-    let cli = match Cli::try_parse_from(args).and_then(Cli::with_config) {
+    let parsed = command().try_get_matches_from(args).and_then(|m| <Cli as clap::FromArgMatches>::from_arg_matches(&m));
+    let cli = match parsed.and_then(Cli::with_config) {
         Ok(cli) => cli,
         Err(e) => {
             // Help and version on stdout, a usage error on stderr, as clap's own exit does.
@@ -237,7 +243,7 @@ impl Cli {
         if self.config.is_some() || matches!(&self.cmd, Cmd::Supports(a) if a.token.is_none()) {
             return Ok(self);
         }
-        Err(<Cli as clap::CommandFactory>::command().error(
+        Err(command().error(
             clap::error::ErrorKind::MissingRequiredArgument,
             "--config <CONFIG> (or CAKEYS_CONFIG) is required: only `supports --profile` runs without a keys.toml",
         ))
@@ -285,12 +291,7 @@ fn dispatch(registry: &Registry, cli: &Cli, notes: &mut Notes) -> anyhow::Result
         None => Config::default(),
     };
     // One profile set, as the verbs activate it, with `--profiles` loaded over it.
-    let replacing = match &cli.cmd {
-        Cmd::Supports(a) => a.profiles_dir.as_deref(),
-        Cmd::Probe(a) => a.profiles_dir.as_deref(),
-        Cmd::Caps { .. } => None,
-    };
-    activate(&cfg, replacing, notes)?;
+    activate(&cfg, cli.profiles_dir.as_deref(), notes)?;
     let modules = module_overrides(&cli.modules, &cfg)?;
     match &cli.cmd {
         Cmd::Caps { token } => {
@@ -305,7 +306,10 @@ fn dispatch(registry: &Registry, cli: &Cli, notes: &mut Notes) -> anyhow::Result
                 "mechanisms": tok.mechanism_names(),
             }))
         }
-        Cmd::Supports(a) => run_supports(&cfg, a, notes),
+        Cmd::Supports(a) => run_supports(&cfg, a, cli.json, notes),
+        Cmd::Probe(_) if cli.json => {
+            Err(KmError::Validation("--json: `probe` prints a profile, which is TOML".into()).into())
+        }
         Cmd::Probe(a) => run_probe(&cfg, &modules, registry, a, notes),
     }
 }
@@ -318,7 +322,16 @@ fn profile_set() -> anyhow::Result<&'static cakeys_profile::Set> {
 
 /// The `supports` verb: answers from the capability profiles alone (docs/CAPROBE.md), so it
 /// runs with an empty `cfg` when there is no keys.toml and no `--token` to look up.
-fn run_supports(cfg: &Config, a: &SupportsArgs, notes: &mut Notes) -> anyhow::Result<()> {
+fn run_supports(cfg: &Config, a: &SupportsArgs, json: bool, notes: &mut Notes) -> anyhow::Result<()> {
+    // A size is an RSA key's: asked of anything else, it would be dropped without a word.
+    if let (Some(bits), Some(name)) = (a.bits, a.name.as_deref())
+        && name != "CKK_RSA"
+    {
+        return Err(KmError::Validation(
+            format!("--bits {bits} asks for an RSA size: NAME is CKK_RSA, not {name}").into(),
+        )
+        .into());
+    }
     let set = profile_set()?;
     let ask = match (a.class.as_deref(), a.oaep, a.name.as_deref()) {
         (Some(class), _, _) => supports::Ask::Class(class),
@@ -338,8 +351,14 @@ fn run_supports(cfg: &Config, a: &SupportsArgs, notes: &mut Notes) -> anyhow::Re
         notes.note(n);
     }
     notes.note(format_args!("profiles: module {}, layers [{}] (docs/CAPROBE.md)", s.module, s.layers.join(", ")));
-    for (n, v) in &s.verdicts {
-        println!("{n}: {v}");
+    if json {
+        let rows: Vec<serde_json::Value> =
+            s.verdicts.iter().map(|(n, v)| serde_json::json!({"name": n, "verdict": v.to_string()})).collect();
+        print(&rows)?;
+    } else {
+        for (n, v) in &s.verdicts {
+            println!("{n}: {v}");
+        }
     }
     Ok(s.outcome()?)
 }
@@ -357,11 +376,11 @@ fn run_probe(
     let set = profile_set()?;
     let claimed =
         a.diff.as_deref().map(|name| set.find(name).map_err(|e| KmError::Validation(e.into()))).transpose()?;
-    let access = if a.write { Access::Write } else { Access::Read };
+    let access = if a.write_probes { Access::Write } else { Access::Read };
     // Unprofiled: what the probe measures must not be what the committed profile says.
     let tok = open_token(cfg, modules, registry, &a.token, access, ChainTime::Unchecked, notes)?.unprofiled()?;
     let req = probe::Request {
-        write: a.write,
+        write: a.write_probes,
         name: a.name.as_deref(),
         claimed,
         kept: a.out.is_some() || a.diff.is_some(),
@@ -369,12 +388,12 @@ fn run_probe(
     };
     let mut profile = probe::generate(&tok, tcfg, &req, notes)?;
     match &a.out {
-        Some(path) => write_profile(path, &mut profile, a.write, a.name.is_some(), notes)?,
+        Some(path) => write_profile(path, &mut profile, a.write_probes, a.name.is_some(), notes)?,
         None => print!("{}", emit::profile(&profile)),
     }
     let Some(claimed) = claimed else { return Ok(()) };
     let name = &claimed.profile;
-    let lines = probe::drift(&profile, claimed, a.write);
+    let lines = probe::drift(&profile, claimed, a.write_probes);
     if lines.is_empty() {
         notes.say(format!("{}: the profile conforms to {name}", tok.name));
         return Ok(());

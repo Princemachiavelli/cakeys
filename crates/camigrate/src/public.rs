@@ -12,7 +12,7 @@ use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::token::{Occupied, class_of, public_key_attrs, public_object_attrs, rv_of};
-use cakeys_pkcs11::{Template, Token, templates};
+use cakeys_pkcs11::{Template, Token, Topic, templates};
 use cryptoki::object::{Attribute, AttributeType, ObjectHandle};
 use x509_cert::der::Decode as _;
 
@@ -114,9 +114,9 @@ pub(crate) fn create_as(
     let template = template(dst, to, bytes)?;
     let public_half = preflight(dst, to, bytes)?;
     let create = || {
-        to.raw()
-            .create_object(&template)
-            .map_err(|e| to.unsupported(format!("{dst}: importing into '{}': C_CreateObject: {e}", to.name)))
+        to.raw().create_object(&template).map_err(|e| {
+            to.unsupported_for(Topic::Create, format!("{dst}: importing into '{}': C_CreateObject: {e}", to.name))
+        })
     };
     let created = match public_half {
         Some(_) => None,
@@ -151,7 +151,7 @@ pub(crate) fn already_there(dst: &Target, to: &Token, lock: &Lock, notes: &mut N
 /// After a failed import: remove exactly the objects it `made` (others may share the locator),
 /// say what happened, and hand back the failure `err`.
 pub(crate) fn roll_back(dst: &Target, to: &Token, made: &[ObjectHandle], err: KmError, notes: &mut Notes) -> KmError {
-    match to.destroy_handles(dst.object, &dst.on_token.locator, made) {
+    match to.destroy_handles(&dst.object, &dst.on_token.locator, made) {
         Ok(0) => {}
         Ok(n) => notes.say(format!("removed {n} object(s) just imported for {dst}: {err}")),
         Err(d) => notes.say(format!("what was just imported for {dst} is still on the token ({d})")),
@@ -182,18 +182,31 @@ pub(crate) fn preflight(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Option
 ///
 /// `Conflict` (13) for a colliding object.
 pub(crate) fn free_locator(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Result<Occupied> {
-    let occupied = to.occupied(dst.object, &dst.on_token.locator, spki)?;
+    let occupied = to.occupied(&dst.object, &dst.on_token.locator, spki)?;
     if occupied.colliding > 0 {
         return Err(KmError::Conflict(
             format!(
                 "{} object(s) a {} would collide with already sit under the locator of {dst}, and the lock records \
-                 no realisation there; refusing to import over them",
-                occupied.colliding, dst.object.class
+                 no realisation there; refusing to import over them. {}",
+                occupied.colliding,
+                dst.object.class,
+                unrecorded_hint(dst)
             )
             .into(),
         ));
     }
     Ok(occupied)
+}
+
+/// How to record a key a run moved to `dst` but could not record (the lock unwritable then,
+/// 21): what a collision under its locator says, and that failure itself (review 2026-11-23
+/// C-21). `cakeys lock` verifies and records it, without how it was moved.
+pub(crate) fn unrecorded_hint(dst: &Target) -> String {
+    format!(
+        "If a run moved the key there but could not record it, `cakeys lock --spec {} --token {}` records it \
+         (without how it was moved)",
+        dst.spec_name, dst.token_name
+    )
 }
 
 /// The creation template from the object's bytes: the class and type, the material, `CKA_TOKEN`,
@@ -221,7 +234,7 @@ fn prefixed(t: &Target, e: KmError) -> KmError {
 
 /// The one object of `t`'s class under its locator (verified just before).
 fn one(tok: &Token, t: &Target) -> Result<ObjectHandle> {
-    match tok.find(class_of(t.object), &t.on_token.locator)?.as_slice() {
+    match tok.find(class_of(&t.object), &t.on_token.locator)?.as_slice() {
         [h] => Ok(*h),
         [] => Err(KmError::NotFound(t.to_string().into())),
         _ => Err(KmError::Ambiguous(format!("{t}: several objects under the locator").into())),

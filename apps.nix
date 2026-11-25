@@ -19,7 +19,7 @@ let
   };
 in
 {
-  # nix run .#camigrate -- --config keys.toml export <object> --token <t> --target <t2> --dry-run
+  # nix run .#camigrate -- --config keys.toml export <object> --from <t> --to <t2> --dry-run
   camigrate = {
     type = "app";
     program = "${camigrate}/bin/camigrate";

@@ -31,6 +31,8 @@ fn a_bare_name_and_a_path_share_one_library() {
             .args(["a_bare_name_and_a_path_share_one_library", "--exact", "--nocapture"])
             .env(CHILD, "1")
             .env("LD_LIBRARY_PATH", dir)
+            // macOS's loader searches its own variable.
+            .env("DYLD_LIBRARY_PATH", dir)
             .output()
             .unwrap();
         let said = String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);

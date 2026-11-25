@@ -51,6 +51,12 @@ macro_rules! forward {
         // SAFETY: the caller's arguments; the hook forwards them under the caller's contract.
         unsafe { hooks::$hook($shim, $call, $($arg),*) }
     };
+    (@hook) => {
+        None
+    };
+    (@hook $hook:ident) => {
+        Some(stringify!($hook))
+    };
     ($($name:ident($($arg:ident: $ty:ty),* $(,)?) $(=> $hook:ident)? $([$($kind:ident($($oarg:ident),*)),+])?;)*) => {
         /// A forwarded function: what a plan names, and the index of its call counter.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +74,16 @@ macro_rules! forward {
             pub fn name(self) -> &'static str {
                 match self {
                     $(Fn::$name => stringify!($name)),*
+                }
+            }
+
+            /// The hook its forwarder runs (`=> hook` in the table), if any: what the plan
+            /// parser lets a rule ask of it, read from the table rather than kept beside it
+            /// (review 2026-11-23 B-18).
+            #[must_use]
+            pub fn hook(self) -> Option<&'static str> {
+                match self {
+                    $(Fn::$name => forward!(@hook $($hook)?)),*
                 }
             }
         }

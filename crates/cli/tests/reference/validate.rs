@@ -126,7 +126,7 @@ fn attributes_are_validated_per_class() {
          attributes = { CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE = true, CKA_DESTROYABLE = true }\n\
          tokens.ref = { locator = { CKA_LABEL = \"always-auth\" }, origin = \"create\", binding = \"token-asserted\" }\n",
     );
-    assert_eq!(e.code(&["create", "--spec", "s", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "s", "--token", "ref"]), 22);
     let policy = &e.lock()["realisations"]["s"]["ref"]["policy"];
     assert_eq!(policy["CKA_ALWAYS_AUTHENTICATE"].as_bool(), Some(true), "{policy}");
     let private = s
@@ -138,7 +138,7 @@ fn attributes_are_validated_per_class() {
         panic!("no CKA_ALWAYS_AUTHENTICATE on the private half")
     };
     assert!(*aa, "the template set CKA_ALWAYS_AUTHENTICATE");
-    assert_eq!(e.code(&["verify", "--spec", "s", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["check", "--spec", "s", "--token", "ref"]), 0);
 }
 
 #[test]
@@ -185,8 +185,8 @@ fn provider_options_are_checked_by_the_provider() {
 }
 
 /// One address for every verb (docs/CAKEYS.md): the object first, narrowed by `--spec` and
-/// `--token` when it is realised more than once; `--spec` alone names its object; `verify` is
-/// `check`; `.id.<scheme>` is `check`'s alone; a name keys.toml lacks is 17.
+/// `--token` when it is realised more than once; `--spec` alone names its object;
+/// `.id.<scheme>` is `check`'s alone; a name keys.toml lacks is 17.
 #[test]
 fn every_verb_names_the_object_first() {
     let Some(e) = env("address") else { return };
@@ -203,13 +203,12 @@ attributes = { CKA_SIGN = true }
 tokens.ref = { locator = { CKA_LABEL = "addr-k" }, origin = "create" }
 "#,
     );
-    assert_eq!(e.code(&["create", "signer"]), 0);
+    assert_eq!(e.code(&["create", "signer"]), 22);
     for args in [
         &["resolve", "signer"][..],
         &["lock", "signer", "--token", "ref"],
         &["lock", "--spec", "signer-ref"],
         &["check", "signer"],
-        &["verify", "signer"],
         &["check", "signer.id.rfc7093m4", "--spec", "signer-ref", "--token", "ref"],
     ] {
         let o = e.km(args);
@@ -219,7 +218,7 @@ tokens.ref = { locator = { CKA_LABEL = "addr-k" }, origin = "create" }
         &["lock", "signer.id.rfc7093m4"][..],
         &["resolve"],
         &["check", "nope"],
-        &["verify", "--spec", "nope"],
+        &["check", "--spec", "nope"],
         &["delete", "signer", "--spec", "nope"],
         &["lock", "signer", "--token", "nope"],
     ] {
@@ -239,7 +238,7 @@ tokens.ref = { locator = { CKA_LABEL = "addr-k" }, origin = "create" }
     ));
     let made = e.session().labelled("addr-k").len();
     assert!(made > 0);
-    for verb in ["resolve", "lock", "check", "verify", "delete"] {
+    for verb in ["resolve", "lock", "check", "delete"] {
         let o = e.km(&[verb, "signer"]);
         assert_eq!(code(&o), 12, "{verb}: {}", stderr(&o));
     }
@@ -248,7 +247,7 @@ tokens.ref = { locator = { CKA_LABEL = "addr-k" }, origin = "create" }
     assert_eq!(e.code(&["check", "signer", "--token", "ref"]), 0);
 
     // And the delete removes the key: `check` finds nothing after it (review validate.rs F3).
-    assert_eq!(e.code(&["delete", "signer", "--spec", "signer-ref"]), 0);
+    assert_eq!(e.code(&["delete", "signer", "--spec", "signer-ref"]), 22);
     assert_eq!(e.session().labelled("addr-k"), []);
     assert_eq!(e.code(&["check", "signer", "--spec", "signer-ref"]), 11);
 }

@@ -55,6 +55,44 @@ fn supports_answers_from_the_embedded_profiles() {
     unknown(&["CKM_SHA512_HMAC"], "(none)");
 }
 
+/// `--json` gives the verdicts the text gives, as `{name, verdict}` rows, with the same exit.
+/// NAME, `--class` and `--oaep` each ask one question: two at once are a usage error (2).
+/// `--bits` asks for an RSA size, so with any NAME but `CKK_RSA` it is refused (17), never
+/// dropped (review 2026-11-23 D-16).
+#[test]
+fn supports_asks_one_question_and_answers_it_as_json_too() {
+    let query = ["--profile", "softhsm/2.7", "--class", "hmac"];
+    let text = tool(BIN).arg("supports").args(query).output().unwrap();
+    let json = tool(BIN).args(["--json", "supports"]).args(query).output().unwrap();
+    assert_eq!(code(&json), code(&text), "{}", String::from_utf8_lossy(&json.stderr));
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
+    let lines: Vec<String> =
+        rows.iter().map(|r| format!("{}: {}", r["name"].as_str().unwrap(), r["verdict"].as_str().unwrap())).collect();
+    assert_ne!(lines, Vec::<String>::new());
+    assert_eq!(lines.join("\n"), String::from_utf8_lossy(&text.stdout).trim_end());
+    assert_eq!(exit(&["--profile", "softhsm/2.7", "--class", "hmac", "CKM_SHA256_HMAC"]), 2);
+    assert_eq!(exit(&["--profile", "softhsm/2.7", "--class", "hmac", "--oaep"]), 2);
+    assert_eq!(exit(&["--profile", "softhsm/2.7", "--bits", "2048"]), 2);
+    let (exit, said) = supports(&["--profile", "softhsm/2.7", "--bits", "2048", "CKK_EC"]);
+    assert!(exit == 17 && said.contains("CKK_RSA"), "{exit}: {said}");
+}
+
+/// The layers `supports --layer`'s help names resolve, and the binding layer named explicitly
+/// changes nothing: it is always applied, as the build decides (review 2026-11-23 D-7: the help
+/// named `cryptoki/0.12-unpatched`, which no profile is).
+#[test]
+fn the_layers_the_help_names_resolve() {
+    let help = tool(BIN).args(["supports", "--help"]).output().unwrap();
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(!help.contains("unpatched"), "{help}");
+    for (module, layer) in [("softhsm/2.7", "p11-kit/0.26"), ("tpm2-pkcs11", "swtpm")] {
+        assert!(help.contains(layer), "{layer} not in\n{help}");
+        assert_ne!(exit(&["--profile", module, "--layer", layer, "CKM_SHA256"]), 17, "{layer}");
+    }
+    let kwp = ["--profile", "softhsm/2.7", "CKM_AES_KEY_WRAP_KWP"];
+    assert_eq!(supports(&[&kwp[..], &["--layer", "cryptoki/0.12"]].concat()), supports(&kwp));
+}
+
 /// `--profiles <dir>` adds profiles to the embedded set: a layer of one's own subtracts.
 #[test]
 fn supports_reads_profiles_from_a_directory() {

@@ -18,4 +18,4 @@ pub mod secret;
 pub mod sig;
 pub mod types;
 
-pub use error::{KmError, Msg, Result};
+pub use error::{EXIT_CODES, KmError, LOCK_WRITTEN, Msg, Result};

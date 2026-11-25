@@ -49,8 +49,9 @@ pub(crate) mod fuzzing {
 
 use cakeys_core::config::{Options, parse_options};
 use cakeys_core::id::Scheme;
-use cakeys_core::{KmError, Msg, Result};
+use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::provider::{AttestCtx, Attested};
+use cakeys_pkcs11::token::read_attribute;
 use cryptoki::object::{Attribute, AttributeType};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -59,15 +60,6 @@ use std::path::PathBuf;
 /// `tokens.<t>.options.akHandle` does not name one. Deliberately outside the 0x81000001..0A range the
 /// common tools take (tpm2-pkcs11's primary sits at 0x81000001); change it if yours collides.
 pub(crate) const DEFAULT_AK_HANDLE: u32 = 0x8100_0016;
-
-/// One hex-text attribute, shared by the store and the unsealed wrapping key.
-///
-/// # Errors
-///
-/// `Validation` if the value is not even-length hex.
-pub(crate) fn store_hex(s: &str) -> Result<Vec<u8>> {
-    store::hex(s)
-}
 
 /// The tpm2-pkcs11 provider's `[tokens.<t>.options]`, for the native attestation path.
 #[derive(Debug, Default, Deserialize)]
@@ -188,12 +180,8 @@ impl Tpm2Options {
 /// (db.c `db_for_path`): `$TPM2_PKCS11_STORE` unconditionally, then the first of
 /// `/etc/tpm2_pkcs11`, `$XDG_DATA_HOME/tpm2-pkcs11` (or `~/.local/share/tpm2-pkcs11`),
 /// `~/.tpm2_pkcs11` and the working directory that holds a store file. Anything else could read
-/// another store than the module the PKCS#11 object came from.
-fn store_dir(cfg: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<PathBuf> {
-    store_dir_of(cfg.token_name, opts)
-}
-
-/// [`store_dir`] for `token_name` (the plaintext import's too).
+/// another store than the module the PKCS#11 object came from. For `token_name` (the
+/// attestation's and the plaintext import's).
 ///
 /// # Errors
 ///
@@ -228,7 +216,8 @@ pub(crate) fn store_dir_of(token_name: &str, opts: &Tpm2Options) -> Result<PathB
 /// `$XDG_DATA_HOME/tpm2-pkcs11` or `~/.local/share/tpm2-pkcs11`, `~/.tpm2_pkcs11`, then the
 /// working directory. A store read from another directory than the module's fails the
 /// attestation's cross-checks, never passes them: `TPM2_Load` and the Name and SPKI checks bind
-/// the row to the live object.
+/// the row to the live object, and for a secret key the HMAC commitment the loaded object
+/// computes again (`esys::Expected`).
 fn store_candidates(var: impl Fn(&str) -> Option<String>, cwd: Option<PathBuf>) -> Vec<PathBuf> {
     if let Some(dir) = var("TPM2_PKCS11_STORE") {
         return vec![PathBuf::from(dir)];
@@ -306,15 +295,36 @@ fn parse_tcti(source: &str, value: &str) -> Result<tss_esapi::Tcti> {
 /// `Unsupported` for `akLabel` on a module without the token-key mechanisms, for an
 /// `ekCertificate` with a module that certifies itself (the activation needs the TPM), and, on
 /// the store path, for a module version it was not tested with and a key object with no `CKA_ID`
-/// to find its store row by; `Unavailable` when the store cannot be opened, the TPM or the
+/// to find its store row by; `Unsupported` too for a secret key that cannot be bound to the
+/// object certified ([`expected`]), and for any secret key through the module's own certify;
+/// `Unavailable` when the store cannot be opened, the TPM or the
 /// module's mechanism fails, or the object's module attributes cannot be read; `Conflict` when
 /// the module's story and the TPM's signature disagree; plus whatever the certify rejects (PIN,
-/// auth, names, material cross-check, the EK's credential).
+/// auth, names, material cross-check or commitment, the EK's credential).
 pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
     let opts = Tpm2Options::of(ctx.token_name, &ctx.cfg.options)?;
-    let (certified, ek) = match vendor::route(ctx, &opts)? {
+    let route = vendor::route(ctx, &opts)?;
+    // A token object as the signer (`akLabel`): its public area and its restricted, fixedTPM
+    // attributes are what the module reports, never read from the TPM, so a module with no TPM
+    // behind it could sign any statement (review 2026-11-23 B-2). Said on every run.
+    let caveat = (matches!(route, vendor::Route::Module) && opts.ak_label.is_some()).then(|| {
+        "its tpm-certify signer (akLabel) is a key only the module vouches for: the attestation is as \
+         trustworthy as the module, not the TPM; akHandle reads the Attestation Key from the TPM"
+            .to_owned()
+    });
+    let (certified, ek) = match route {
         vendor::Route::Module => {
             opts.refuse_ek_for_module(ctx.token_name)?;
+            // A secret key is bound by the TPM computing its commitment with the object it
+            // certified, which only the store path loads (review 2026-11-23 B-1).
+            if ctx.object.class == cakeys_core::types::ObjectClass::SecretKey {
+                return Err(KmError::Unsupported(
+                    "a secret key's tpm-certify is bound to the key by the TPM computing its HMAC commitment \
+                     with the object certified, which the module's own certify (CKM_TPM2_CERTIFY) never lets \
+                     cakeys load: attest it through a module without the vendor mechanism, or not at all"
+                        .into(),
+                ));
+            }
             (vendor::certify(ctx, &opts)?, None)
         }
         vendor::Route::Store => certify_through_store(ctx, &opts)?,
@@ -343,6 +353,7 @@ pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
         id: cakeys_core::id::tpm_certify_id(&certified.name, &certified.qualified_name),
         root: cakeys_core::id::sri(&root),
         warning,
+        caveat,
     })
 }
 
@@ -361,9 +372,9 @@ fn certify_through_store(ctx: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<(esy
         Some(Attribute::Label(l)) => Some(l),
         _ => None,
     };
-    let spki = ctx.required_spki()?;
+    let want = expected(ctx)?;
     let class = store::store_class(ctx.object.class)?;
-    let store = store::Store::open(&store_dir(ctx, opts)?, &ctx.cfg.token_label)?;
+    let store = store::Store::open(&store_dir_of(ctx.token_name, opts)?, &ctx.cfg.token_label)?;
     let tobj = store.find(&cka_id, label.as_deref(), class)?;
     let conf = tcti(ctx, opts)?;
     let mut esys_ctx = esys::context(&conf)?;
@@ -375,30 +386,38 @@ fn certify_through_store(ctx: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<(esy
         ctx.pin.map(str::as_bytes),
         opts.ak_handle(ctx.token_name)?,
         ctx.provision,
-        spki,
+        want,
         ek.as_ref().map(|t| t.spki.as_slice()),
     )?;
     Ok((certified, ek))
 }
 
-/// One attribute read of the key object: the attribute, `None` when the module has none to show
-/// (absent or sensitive, which cryptoki leaves out of the result), and any other failure
-/// `Unavailable` with the module's return value. A failed `CKA_LABEL` read is never taken for
-/// "no label", which would widen the store row search (attest/mod.rs F1).
+/// What the certified object must be ([`esys::Expected`]): an asymmetric key's SPKI, or a secret
+/// key's HMAC commitment, which the TPM computes again with the object it certified (review
+/// 2026-11-23 B-1: a secret key's attestation was bound to no material).
 ///
 /// # Errors
 ///
-/// `Unavailable` when `C_GetAttributeValue` fails.
-fn read_attribute(
-    what: &str,
-    read: std::result::Result<Vec<Attribute>, cryptoki::error::Error>,
-) -> Result<Option<Attribute>> {
-    match read {
-        Ok(v) => Ok(v.into_iter().next()),
-        Err(e) => Err(KmError::Unavailable(
-            Msg::from(format!("C_GetAttributeValue ({what}): {e}")).with_rv(cakeys_pkcs11::token::rv_of(&e)),
-        )),
+/// `Unsupported` for an asymmetric key without its SPKI, and for a secret key without an HMAC
+/// commitment (an AES or Triple DES key, one without `CKA_SIGN`) or with one the TPM cannot
+/// compute (SHA-224).
+fn expected<'a>(ctx: &'a AttestCtx<'_>) -> Result<esys::Expected<'a>> {
+    if let Some(spki) = ctx.required_spki()? {
+        return Ok(esys::Expected::Spki(spki));
     }
+    let hmac = ctx.commitments.iter().find_map(|c| match c.commit {
+        cakeys_core::id::Commit::Hmac(hash) => Some((hash, c)),
+        _ => None,
+    });
+    let Some((hash, c)) = hmac else {
+        return Err(KmError::Unsupported(
+            "tpm-certify binds a secret key to the TPM object it certifies through the key's HMAC commitment (the \
+             commitment scheme: an HMAC or generic secret key with CKA_SIGN), which the TPM computes again with that \
+             object; this key computes none, so its attestation could name an object that is not it"
+                .into(),
+        ));
+    };
+    Ok(esys::Expected::Commitment(esys::Bind { hash: esys::hmac_algorithm(hash)?, input: &c.input, id: &c.id }))
 }
 
 /// The tpm2-pkcs11 versions the store reader was tested with (review A8): the sqlite schema and
@@ -505,22 +524,6 @@ mod tests {
             paths(&["/etc/tpm2_pkcs11", "/h/.local/share/tpm2-pkcs11", "/h/.tpm2_pkcs11", "/w"])
         );
         assert_eq!(store_candidates(env(&[]), None), paths(&["/etc/tpm2_pkcs11"]));
-    }
-
-    /// A failed attribute read of the key object is unavailable (16) with the module's return
-    /// value, never "no label", which would widen the store row search (attest/mod.rs F1); an
-    /// attribute the module has none of is `None`.
-    #[test]
-    fn a_failed_attribute_read_is_unavailable() {
-        use cryptoki::context::Function;
-        use cryptoki::error::{Error as CkError, RvError};
-        let failed = CkError::Pkcs11(RvError::VendorDefined(0x8000_0001), Function::GetAttributeValue);
-        let e = read_attribute("CKA_LABEL", Err(failed)).unwrap_err();
-        assert!(matches!(&e, KmError::Unavailable(m) if m.contains("CKA_LABEL")), "{e}");
-        assert_eq!(e.rv(), Some(0x8000_0001));
-        assert_eq!(read_attribute("CKA_LABEL", Ok(vec![])).unwrap(), None);
-        let label = Attribute::Label(b"k".to_vec());
-        assert_eq!(read_attribute("CKA_LABEL", Ok(vec![label.clone()])).unwrap(), Some(label));
     }
 
     /// The store reader reads only the versions it was tested with (15 otherwise, naming it).

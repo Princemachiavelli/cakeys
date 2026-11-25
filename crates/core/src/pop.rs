@@ -9,6 +9,7 @@
 
 use crate::error::{KmError, Result};
 use crate::id::{Curve, KeyAlg};
+use crate::migrate::OaepHash;
 use crate::sig;
 pub use crate::sig::HashAlg;
 use elliptic_curve::sec1::ToSec1Point;
@@ -52,16 +53,7 @@ pub enum RsaSignature {
 /// Verify `sig` over `msg` with the key in `spki`, as the token produced it (`crate::sig`):
 /// - ECDSA: raw `r ‖ s` (PKCS#11) over the curve's hash of `msg` (`HashAlg::for_curve`);
 /// - Ed25519: pure `EdDSA` over `msg`;
-/// - RSA: PKCS#1 v1.5 with SHA-256 over `msg`.
-///
-/// # Errors
-///
-/// As [`verify_with`].
-pub fn verify(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
-    verify_with(spki, msg, sig, RsaSignature::Pkcs1v15(HashAlg::Sha256))
-}
-
-/// [`verify`], with an RSA key's signature made as `rsa` says.
+/// - RSA: as `rsa` says.
 ///
 /// # Errors
 ///
@@ -70,7 +62,7 @@ pub fn verify(spki: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
 /// `binding = "token-asserted"`), a key that is none of the three above, or one its
 /// algorithm's own parser refuses, with the parser's reason: a malformed public key is no
 /// failed proof.
-pub fn verify_with(spki: &[u8], msg: &[u8], sig: &[u8], rsa: RsaSignature) -> Result<()> {
+pub fn verify(spki: &[u8], msg: &[u8], sig: &[u8], rsa: RsaSignature) -> Result<()> {
     let of_key = |what: &dyn std::fmt::Display| {
         KmError::Unsupported(format!("proof of possession for the public key {}: {what}", crate::id::sri(spki)).into())
     };
@@ -172,29 +164,18 @@ pub fn ecdh_challenge(spki: &[u8], msg: &[u8]) -> Result<EcdhChallenge> {
     }
 }
 
-/// Start a `pop-decrypt` proof of possession: `msg` encrypted to the public key in `spki` with
-/// RSA-OAEP (SHA-1, MGF1-SHA1, empty label — the PKCS#11 baseline `SoftHSM` implements). Only the
-/// matching private key decrypts it back to `msg`, which the token does with `CKM_RSA_PKCS_OAEP`.
-///
-/// # Errors
-///
-/// `Unsupported` if `spki` is not an RSA key; `Unavailable` if the OS random number generator
-/// or the encryption fails (for instance, `msg` is too long for the modulus).
-pub fn oaep_challenge(spki: &[u8], msg: &[u8]) -> Result<Vec<u8>> {
-    rsa_encrypt(spki, RsaPadding::Oaep(OaepHash::Sha1), msg)
-}
-
 /// The host side of a `pop-unwrap` proof: a fresh secret wrapped to the public key, and the MAC
 /// of the challenge under it that the token must reproduce.
 pub struct UnwrapChallenge {
-    /// The secret, RSA-OAEP (SHA-1) to the public key, for the token's `C_UnwrapKey`.
+    /// The secret, RSA-OAEP to the public key, for the token's `C_UnwrapKey`.
     pub wrapped: Vec<u8>,
     /// HMAC-SHA256 over `msg` keyed with the secret.
     pub mac: Vec<u8>,
 }
 
 /// Start a `pop-unwrap` proof of possession: a fresh 32-byte secret, wrapped to the public key in
-/// `spki` with RSA-OAEP (SHA-1, the baseline `pop-decrypt` uses), and the MAC of `msg` under it.
+/// `spki` with `padding` (the OAEP hash a token's key is bound to; Cloud KMS: SHA-256 or SHA-512
+/// only \[run\]), and the MAC of `msg` under it.
 /// The token unwraps it with `CKM_RSA_PKCS_OAEP` into a non-extractable session key and MACs the
 /// same `msg`; the MACs match only if the token's private key is the one `spki` names. Nothing
 /// leaves the token in plaintext: the key needs `CKA_UNWRAP`, never `CKA_DECRYPT`.
@@ -203,31 +184,24 @@ pub struct UnwrapChallenge {
 ///
 /// `Unsupported` if `spki` is not an RSA key; `Unavailable` if the OS random number generator
 /// or the encryption fails.
-pub fn unwrap_challenge(spki: &[u8], msg: &[u8]) -> Result<UnwrapChallenge> {
-    unwrap_challenge_with(spki, msg, RsaPadding::Oaep(OaepHash::Sha1))
-}
-
-/// [`unwrap_challenge`], the secret wrapped with `padding`: the OAEP hash a token's key is bound
-/// to (Cloud KMS: SHA-256 or SHA-512 only \[run\]).
-///
-/// # Errors
-///
-/// As [`unwrap_challenge`].
-pub fn unwrap_challenge_with(spki: &[u8], msg: &[u8], padding: RsaPadding) -> Result<UnwrapChallenge> {
-    // Wiped when dropped, as the ECDH proof's shared secret is: the key the token unwraps.
-    let mut secret = zeroize::Zeroizing::new([0u8; 32]);
-    getrandom::fill(&mut *secret)
-        .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
+pub fn unwrap_challenge(spki: &[u8], msg: &[u8], padding: RsaPadding) -> Result<UnwrapChallenge> {
+    let secret = secret()?;
     Ok(UnwrapChallenge { wrapped: rsa_encrypt(spki, padding, &*secret)?, mac: mac_sha256(&*secret, msg) })
 }
 
-/// The RSA-OAEP hash, with MGF1 of the same hash: a transport wrap's and an OAEP proof's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum OaepHash {
-    /// SHA-1, with MGF1-SHA-1.
-    Sha1,
-    /// SHA-256, with MGF1-SHA-256.
-    Sha256,
+/// A fresh 32-byte secret from the OS, wiped when dropped as the ECDH proof's shared secret is:
+/// what an RSA decryption or unwrap proof encrypts to the public key, which binds the answer to
+/// it. It fits OAEP-SHA-256 on a 1024-bit key, where the 78-byte challenge does not
+/// (review 2026-11-23 B-7).
+///
+/// # Errors
+///
+/// `Unavailable` if the OS random number generator fails.
+pub fn secret() -> Result<zeroize::Zeroizing<[u8; 32]>> {
+    let mut secret = zeroize::Zeroizing::new([0u8; 32]);
+    getrandom::fill(&mut *secret)
+        .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
+    Ok(secret)
 }
 
 /// The RSA encryption paddings a decryption or unwrap proof, and the probe, encrypt with.
@@ -246,11 +220,32 @@ pub enum RsaPadding {
 ///
 /// # Errors
 ///
-/// `Unsupported` if `spki` is not an RSA key; `Unavailable` if the OS random number generator
-/// or the encryption fails (for instance, `msg` is too long for the modulus).
+/// `Unsupported` if `spki` is not an RSA key, or `msg` is longer than `padding` carries on its
+/// modulus (OAEP-SHA-512 carries nothing on a 1024-bit key); `Unavailable` if the OS random
+/// number generator or the encryption fails.
 pub fn rsa_encrypt(spki: &[u8], padding: RsaPadding, msg: &[u8]) -> Result<Vec<u8>> {
     let key = rsa::PublicKey::from_public_key_der(spki)
         .map_err(|e| KmError::Unsupported(format!("RSA encryption to this SPKI: {e}").into()))?;
+    // RFC 8017 §7.1.1 and §7.2.1: the most a padding carries in a k-byte modulus. A key too
+    // small for the message is the key's size, not a failure of the host (review 2026-11-23 A-11).
+    let k = rsa::traits::PublicKeyParts::size(&key);
+    let (name, overhead) = match padding {
+        RsaPadding::Pkcs1v15 => ("PKCS #1 v1.5", 11),
+        RsaPadding::Oaep(OaepHash::Sha1) => ("OAEP-SHA-1", 2 * 20 + 2),
+        RsaPadding::Oaep(OaepHash::Sha256) => ("OAEP-SHA-256", 2 * 32 + 2),
+        RsaPadding::OaepSha512 => ("OAEP-SHA-512", 2 * 64 + 2),
+    };
+    let room = k.saturating_sub(overhead);
+    if msg.len() > room {
+        return Err(KmError::Unsupported(
+            format!(
+                "RSA encryption: {name} carries at most {room} bytes in a {}-bit modulus, not {}",
+                rsa::traits::PublicKeyParts::n(&key).bit_width_vartime(),
+                msg.len()
+            )
+            .into(),
+        ));
+    }
     let rng = &mut getrandom::SysRng;
     match padding {
         RsaPadding::Pkcs1v15 => key.encrypt(rng, rsa::Pkcs1v15Encrypt, msg),
@@ -311,6 +306,9 @@ pub fn ct_eq(expected: &[u8], got: &[u8]) -> bool {
 mod tests {
     use super::*;
 
+    /// The RSA signature the PKCS#11 baseline makes: PKCS#1 v1.5 over SHA-256.
+    const V15: RsaSignature = RsaSignature::Pkcs1v15(HashAlg::Sha256);
+
     #[test]
     fn message_layout_is_pinned() {
         let m = message(b"spki", &[7u8; 32]);
@@ -335,8 +333,8 @@ mod tests {
         let digest = HashAlg::Sha256.digest(&msg);
         let good: Signature = k1.sign_prehash(&digest).unwrap();
         let other: Signature = k2.sign_prehash(&digest).unwrap();
-        verify(spki.as_bytes(), &msg, &good.to_bytes()).unwrap();
-        assert!(matches!(verify(spki.as_bytes(), &msg, &other.to_bytes()), Err(KmError::Conflict(_))));
+        verify(spki.as_bytes(), &msg, &good.to_bytes(), V15).unwrap();
+        assert!(matches!(verify(spki.as_bytes(), &msg, &other.to_bytes(), V15), Err(KmError::Conflict(_))));
     }
 
     /// A public key its algorithm's parser refuses is unsupported (15), with the parser's
@@ -353,15 +351,15 @@ mod tests {
             [(&off_curve, "its algorithm's own parser refuses it: "), (&rsa768, "768 bits")];
         for (spki, said) in cases {
             for rsa in [RsaSignature::Pkcs1v15(HashAlg::Sha256), RsaSignature::Pss(HashAlg::Sha384)] {
-                let e = verify_with(spki, b"m", &[0u8; 64], rsa).unwrap_err();
+                let e = verify(spki, b"m", &[0u8; 64], rsa).unwrap_err();
                 assert!(matches!(&e, KmError::Unsupported(m) if m.contains(said)), "{said}: {e}");
             }
         }
         // The parser's own words follow, not a generic "does not read it".
-        let e = verify(&off_curve, b"m", &[0u8; 64]).unwrap_err().to_string();
+        let e = verify(&off_curve, b"m", &[0u8; 64], V15).unwrap_err().to_string();
         let reason = e.split("refuses it: ").nth(1).unwrap_or_default();
         assert!(!reason.is_empty(), "{e}");
-        let e = verify(&rsa768, b"m", &[0u8; 64]).unwrap_err().to_string();
+        let e = verify(&rsa768, b"m", &[0u8; 64], V15).unwrap_err().to_string();
         let reason = e.split("2^33 - 1; ").nth(1).and_then(|r| r.split(')').next()).unwrap_or_default();
         assert!(!reason.is_empty() && e.contains("token-asserted"), "{e}");
     }
@@ -392,11 +390,41 @@ mod tests {
         let private = rsa::PrivateKey::new(&mut getrandom::SysRng, 2048).unwrap();
         let spki = private.to_public_key().to_public_key_der().unwrap();
         let msg = message(spki.as_bytes(), &[0u8; 32]);
-        let ch = unwrap_challenge(spki.as_bytes(), &msg).unwrap();
+        let ch = unwrap_challenge(spki.as_bytes(), &msg, RsaPadding::Oaep(OaepHash::Sha1)).unwrap();
         let secret = private.decrypt(rsa::Oaep::<sha1::Sha1>::new(), &ch.wrapped).unwrap();
         assert_eq!(secret.len(), 32);
         assert_eq!(mac_sha256(&secret, &msg), ch.mac);
-        assert_ne!(unwrap_challenge(spki.as_bytes(), &msg).unwrap().mac, ch.mac, "a fresh secret each time");
+        assert_ne!(
+            unwrap_challenge(spki.as_bytes(), &msg, RsaPadding::Oaep(OaepHash::Sha1)).unwrap().mac,
+            ch.mac,
+            "a fresh secret each time"
+        );
+    }
+
+    /// A message longer than the padding carries in the modulus is the key's size (15), named,
+    /// never the host failing (16); the 32-byte proof secret fits every padding a 1024-bit key
+    /// takes but OAEP-SHA-512, which carries nothing there (review 2026-11-23 A-11, B-7).
+    #[test]
+    fn a_message_too_long_for_the_modulus_is_unsupported() {
+        use pkcs8::EncodePublicKey;
+        let private = rsa::PrivateKey::new(&mut getrandom::SysRng, 1024).unwrap();
+        let spki = private.to_public_key().to_public_key_der().unwrap();
+        let spki = spki.as_bytes();
+        let challenge = message(spki, &[0u8; 32]);
+        let fresh = secret().unwrap();
+        for padding in [RsaPadding::Pkcs1v15, RsaPadding::Oaep(OaepHash::Sha1), RsaPadding::Oaep(OaepHash::Sha256)] {
+            assert_eq!(rsa_encrypt(spki, padding, fresh.as_slice()).unwrap().len(), 128, "{padding:?}");
+        }
+        let e = rsa_encrypt(spki, RsaPadding::Oaep(OaepHash::Sha256), &challenge).unwrap_err();
+        assert!(
+            matches!(&e, KmError::Unsupported(m) if m.contains("OAEP-SHA-256 carries at most 62 bytes in a 1024-bit modulus, not 78")),
+            "{e}"
+        );
+        let e = rsa_encrypt(spki, RsaPadding::OaepSha512, fresh.as_slice()).unwrap_err();
+        assert!(matches!(&e, KmError::Unsupported(m) if m.contains("at most 0 bytes")), "{e}");
+        // At the limit, it encrypts.
+        rsa_encrypt(spki, RsaPadding::Oaep(OaepHash::Sha256), &[1u8; 62]).unwrap();
+        assert_ne!(*fresh, *secret().unwrap(), "a fresh secret each time");
     }
 
     #[test]
@@ -418,13 +446,16 @@ mod tests {
         let spki = private.to_public_key().to_public_key_der().unwrap();
         let signer = rsa::pkcs1v15::SigningKey::<Sha256>::new(private.clone());
         let signature = signer.sign(b"message").to_vec();
-        verify(spki.as_bytes(), b"message", &signature).unwrap();
-        assert!(matches!(verify(spki.as_bytes(), b"another", &signature), Err(KmError::Conflict(_))));
+        verify(spki.as_bytes(), b"message", &signature, V15).unwrap();
+        assert!(matches!(verify(spki.as_bytes(), b"another", &signature, V15), Err(KmError::Conflict(_))));
 
-        let challenge = oaep_challenge(spki.as_bytes(), b"message").unwrap();
+        let challenge = rsa_encrypt(spki.as_bytes(), RsaPadding::Oaep(OaepHash::Sha1), b"message").unwrap();
         assert_eq!(private.decrypt(rsa::Oaep::<sha1::Sha1>::new(), &challenge).unwrap(), b"message");
-        assert_ne!(oaep_challenge(spki.as_bytes(), b"message").unwrap(), challenge);
-        assert!(matches!(oaep_challenge(b"no key", b"message"), Err(KmError::Unsupported(_))));
+        assert_ne!(rsa_encrypt(spki.as_bytes(), RsaPadding::Oaep(OaepHash::Sha1), b"message").unwrap(), challenge);
+        assert!(matches!(
+            rsa_encrypt(b"no key", RsaPadding::Oaep(OaepHash::Sha1), b"message"),
+            Err(KmError::Unsupported(_))
+        ));
 
         assert_eq!(rsa_modulus_len(spki.as_bytes()).unwrap(), 256);
         assert!(matches!(rsa_modulus_len(b"no key"), Err(KmError::Unsupported(_))));
@@ -443,15 +474,18 @@ mod tests {
             .try_sign_with_rng(&mut getrandom::SysRng, b"message")
             .unwrap()
             .to_vec();
-        verify_with(spki, b"message", &pss, RsaSignature::Pss(HashAlg::Sha256)).unwrap();
+        verify(spki, b"message", &pss, RsaSignature::Pss(HashAlg::Sha256)).unwrap();
         for other in [RsaSignature::Pss(HashAlg::Sha512), RsaSignature::Pkcs1v15(HashAlg::Sha256)] {
-            assert!(matches!(verify_with(spki, b"message", &pss, other), Err(KmError::Conflict(_))), "{other:?}");
+            assert!(matches!(verify(spki, b"message", &pss, other), Err(KmError::Conflict(_))), "{other:?}");
         }
         let v15 = rsa::pkcs1v15::SigningKey::<sha2::Sha512>::new(private.clone()).sign(b"message").to_vec();
-        verify_with(spki, b"message", &v15, RsaSignature::Pkcs1v15(HashAlg::Sha512)).unwrap();
-        assert!(matches!(verify(spki, b"message", &v15), Err(KmError::Conflict(_))), "verify is v1.5 over SHA-256");
+        verify(spki, b"message", &v15, RsaSignature::Pkcs1v15(HashAlg::Sha512)).unwrap();
+        assert!(
+            matches!(verify(spki, b"message", &v15, V15), Err(KmError::Conflict(_))),
+            "v1.5 over SHA-512 is not over SHA-256"
+        );
         // The unwrap challenge in the OAEP hash a key is bound to.
-        let ch = unwrap_challenge_with(spki, b"m", RsaPadding::OaepSha512).unwrap();
+        let ch = unwrap_challenge(spki, b"m", RsaPadding::OaepSha512).unwrap();
         assert_eq!(private.decrypt(rsa::Oaep::<sha2::Sha512>::new(), &ch.wrapped).unwrap().len(), 32);
     }
 }

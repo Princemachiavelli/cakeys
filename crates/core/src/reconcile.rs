@@ -60,36 +60,68 @@ pub struct Resolved {
     pub public_key: Option<Vec<u8>>,
 }
 
-/// What a run has to say besides its verdict, in order. The caller prints them on success and
-/// on error alike (before the error), so a warning is never lost to a failure after it.
+/// What a run has to say besides its verdict, in order. A command line's notes
+/// ([`Notes::streaming`]) go to stderr as they are said, so a run killed part-way has said
+/// everything up to there, in the order it happened (review 2026-11-23 C-7); a library caller's
+/// and a test's are kept ([`Notes::lines`]).
 #[derive(Debug, Default)]
-pub struct Notes(Vec<String>);
+pub struct Notes {
+    lines: Vec<String>,
+    streaming: bool,
+    lock_written: bool,
+}
 
 impl Notes {
+    /// Notes that are printed to stderr as each is said, and kept as well.
+    #[must_use]
+    pub fn streaming() -> Notes {
+        Notes { streaming: true, ..Notes::default() }
+    }
+
+    fn push(&mut self, line: String) {
+        if self.streaming {
+            eprintln!("{line}");
+        }
+        self.lines.push(line);
+    }
+
     /// A line as is (`created …`, `updated …`).
     pub fn say(&mut self, line: impl Into<String>) {
-        self.0.push(line.into());
+        self.push(line.into());
     }
 
     /// A `note:` line: something worth knowing that changes no verdict.
     pub fn note(&mut self, msg: impl std::fmt::Display) {
-        self.0.push(format!("note: {msg}"));
+        self.push(format!("note: {msg}"));
     }
 
     /// A `warning:` line: drift or a change the run tolerates, but should be looked at.
     pub fn warn(&mut self, msg: impl std::fmt::Display) {
-        self.0.push(format!("warning: {msg}"));
+        self.push(format!("warning: {msg}"));
     }
 
     /// Every line so far, in order.
     #[must_use]
     pub fn lines(&self) -> &[String] {
-        &self.0
+        &self.lines
+    }
+
+    /// The run wrote the lock (created or changed it), at `path`: said, and a run that otherwise
+    /// succeeds exits [`LOCK_WRITTEN`](crate::LOCK_WRITTEN), not 0.
+    pub fn lock_written(&mut self, path: &std::path::Path) {
+        self.lock_written = true;
+        self.say(format!("updated {}", path.display()));
+    }
+
+    /// Whether [`Self::lock_written`] was said.
+    #[must_use]
+    pub fn wrote_lock(&self) -> bool {
+        self.lock_written
     }
 }
 
 /// Whether a run records what the lock lacks (`lock`, `delete` by default) or only compares
-/// (`--no-update-lock`, and always for `verify` and `check`).
+/// (`lock --dry-run`, `create --no-update-lock`, and always for `check`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockWrite {
     /// Only compare with the lock.
@@ -182,15 +214,18 @@ pub fn compare(
 ) -> Result<()> {
     let update = write == LockWrite::Record;
     // The lock pins the type its IDs were computed for: a different type is different material,
-    // so say so instead of reporting a hash mismatch (also when updating).
+    // so say so instead of reporting a hash mismatch (also when updating). A `modulusBits`
+    // declared since is a gap `record_object` fills, not another type (review 2026-11-23 A-5).
     if let Some(locked) = lock.objects.get(t.object_name).and_then(|o| o.object_type.as_ref())
-        && locked != t.object
+        && !locked.same_type(t.object.cfg())
     {
         return Err(KmError::PreconditionFailed(
             format!(
                 "the type of object '{}' in keys.toml changed since it was locked: locked {}, now {}; \
              different material needs a new object name",
-                t.object_name, locked, t.object
+                t.object_name,
+                locked,
+                t.object.cfg()
             )
             .into(),
         ));
@@ -209,6 +244,7 @@ pub fn compare(
         }
         warn_observed(t, prev, lock, facts, notes);
     }
+    same_object_no_weaker(t, r, lock, update)?;
     let unlisted = lock.unlisted_pairs(t.object_name);
     if !update && !unlisted.is_empty() {
         notes.note(format_args!(
@@ -258,6 +294,38 @@ fn spec_diff(t: &Target, r: &Resolved, prev: &LockRealisation) -> Vec<String> {
 /// What the realisation proved when it was locked, it must still prove — also when `lock`
 /// writes the lock: its mode, binding, attestation and schemes, and the immutables fixed when the
 /// object was made.
+/// The token object another spec already realised (the same object, token and locator, both
+/// through the private object or both `publicOnly`: the same PKCS#11 object) holds this spec
+/// to what that one established, as its own earlier realisation would: a second spec is no way
+/// to record it without its attestation, its proof or its mode, when writing too (review
+/// 2026-11-23 A-2). Another locator is another object of the same material, which may differ
+/// (keys.toml's `shared-a` signs, `shared-b` does not).
+fn same_object_no_weaker(t: &Target, r: &Resolved, lock: &Lock, update: bool) -> Result<()> {
+    let others = lock
+        .realisations
+        .iter()
+        .filter(|(spec, _)| spec.as_str() != t.spec_name)
+        .filter_map(|(spec, on)| Some((spec, on.get(t.token_name)?)))
+        .filter(|(_, prev)| {
+            prev.object == t.object_name && prev.locator == t.on_token.locator && prev.public_only == r.public_only
+        });
+    for (spec, prev) in others {
+        // What this one adds (an attestation the other lacks) is that realisation's to record.
+        no_downgrade(t, r, prev, update, &mut Notes::default()).map_err(|e| match e {
+            KmError::PreconditionFailed(m) => KmError::PreconditionFailed(
+                format!(
+                    "{m} (as spec '{spec}' realised the same object on '{}' under {}; a weaker realisation \
+                     needs a new object name)",
+                    t.token_name, prev.locator
+                )
+                .into(),
+            ),
+            other => other,
+        })?;
+    }
+    Ok(())
+}
+
 fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, notes: &mut Notes) -> Result<()> {
     if r.mode.rank() > prev.mode.rank() {
         return Err(KmError::PreconditionFailed(
@@ -450,9 +518,16 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
 /// (never a deprecated one), and a transport key's public key. Whether it changed.
 fn record_object(t: &Target, r: &Resolved, entry: &mut crate::config::LockObject, notes: &mut Notes) -> bool {
     let mut changed = false;
-    if entry.object_type.is_none() {
-        entry.object_type = Some(t.object.clone());
-        changed = true;
+    match &mut entry.object_type {
+        None => {
+            entry.object_type = Some(t.object.cfg().clone());
+            changed = true;
+        }
+        Some(ty) if ty.modulus_bits.is_none() && t.object.modulus_bits.is_some() => {
+            ty.modulus_bits = t.object.modulus_bits;
+            changed = true;
+        }
+        Some(_) => {}
     }
     // A recorded label stays: the IDs the lock holds were computed under it, and a run computes
     // with it (`commitment_label`), so only a gap is filled.
@@ -691,7 +766,7 @@ mod tests {
             uri: "pkcs11:token=t;object=k;type=private".into(),
             mode: Mode::Direct,
             public_only: false,
-            spec_digest: id::spec_digest(t.object, t.spec),
+            spec_digest: id::spec_digest(&t.object, t.spec),
             ids: [("rfc7093m4".to_owned(), SRI_A.to_owned())].into(),
             binding: Some(Binding::PopSign),
             assurance: crate::plan::Assurance::Proof,
@@ -838,6 +913,47 @@ mod tests {
         );
     }
 
+    /// A second spec of the same token object (the same locator) cannot record it weaker than the
+    /// first did, when writing too: without the attestation, or by `token-asserted`. As strong,
+    /// it records. A spec with another locator realises another object of the same material,
+    /// which may differ (review 2026-11-23 A-2).
+    #[test]
+    fn a_second_spec_of_the_same_object_cannot_record_it_weaker() {
+        let cfg: Config = toml::from_str(
+            "[tokens.t]\ntokenLabel = \"t\"\n\n\
+             [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.s]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
+             tokens.t = { locator = { CKA_LABEL = \"k\" }, origin = \"adopt\" }\n\n\
+             [specs.s2]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
+             tokens.t = { locator = { CKA_LABEL = \"k\" }, origin = \"adopt\" }\n\n\
+             [specs.copy]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
+             tokens.t = { locator = { CKA_LABEL = \"k-copy\" }, origin = \"adopt\" }\n",
+        )
+        .unwrap();
+        let target = |spec: &'static str| Target::new(&cfg, spec, "t").unwrap();
+        let (s, s2, copy) = (target("s"), target("s2"), target("copy"));
+        let plain = |t: &Target| Resolved { spec: t.spec_name.to_owned(), ..resolved(t) };
+        let attested = |t: &Target| Resolved {
+            attestation: Some(AttestationRecord { kind: "yubico-piv".into(), root: SRI_A.into(), id: SRI_A.into() }),
+            ..plain(t)
+        };
+        let mut lock = empty_lock();
+        let mut record = |t: &Target, r: &Resolved| {
+            reconcile(t, r, &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default())
+        };
+        record(&s, &attested(&s)).unwrap();
+        let unattested = record(&s2, &plain(&s2)).unwrap_err();
+        assert!(
+            matches!(&unattested, KmError::PreconditionFailed(m)
+                if m.contains("attestation") && m.contains("as spec 's' realised the same object")),
+            "{unattested}"
+        );
+        let asserted = record(&s2, &Resolved { binding: Some(Binding::TokenAsserted), ..attested(&s2) }).unwrap_err();
+        assert!(matches!(&asserted, KmError::PreconditionFailed(m) if m.contains("binding downgrade")), "{asserted}");
+        record(&s2, &attested(&s2)).unwrap();
+        record(&copy, &Resolved { binding: Some(Binding::TokenAsserted), ..plain(&copy) }).unwrap();
+    }
+
     /// Provenance never changes a verdict: a different module build is a warning in the notes.
     #[test]
     fn provenance_changes_only_warn() {
@@ -875,7 +991,7 @@ mod tests {
         lock.objects.insert(
             "k".into(),
             crate::config::LockObject {
-                object_type: Some(t.object.clone()),
+                object_type: Some(t.object.cfg().clone()),
                 ids: [("rfc7093m4".to_owned(), SRI_A.to_owned())].into(),
                 ..Default::default()
             },
@@ -1027,6 +1143,41 @@ mod tests {
         retyped.objects.get_mut("k").unwrap().object_type.as_mut().unwrap().curve = Some("secp384r1".into());
         for write in [LockWrite::Compare, LockWrite::Record] {
             let e = compare(&t, &resolved(&t), &retyped, &facts("1"), write, &mut Notes::default()).unwrap_err();
+            assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("changed since it was locked")), "{e}");
+        }
+    }
+
+    /// A `modulusBits` declared after the lock recorded the type describes the same key: the
+    /// changed spec is reviewed and `lock` records the size; another declared size is still
+    /// another type (review 2026-11-23 A-5).
+    #[test]
+    fn a_declared_modulus_size_is_not_a_new_type() {
+        let rsa = |bits: &str| -> Config {
+            toml::from_str(&format!(
+                "[tokens.t]\ntokenLabel = \"t\"\n\n\
+                 [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\n{bits}\n\
+                 [specs.s]\nobject = \"k\"\nattributes = {{ CKA_SIGN = true }}\n\
+                 tokens.t = {{ locator = {{ CKA_LABEL = \"k\" }}, origin = \"adopt\" }}\n",
+            ))
+            .unwrap()
+        };
+        let (bare, sized, other) = (rsa(""), rsa("modulusBits = 2048\n"), rsa("modulusBits = 3072\n"));
+        let mut lock = empty_lock();
+        let t = Target::new(&bare, "s", "t").unwrap();
+        reconcile(&t, &resolved(&t), &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap();
+
+        let t = Target::new(&sized, "s", "t").unwrap();
+        let e = compare(&t, &resolved(&t), &lock, &facts("1"), LockWrite::Compare, &mut Notes::default()).unwrap_err();
+        assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("changed in keys.toml")), "{e}");
+        assert!(
+            reconcile(&t, &resolved(&t), &mut lock, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap()
+        );
+        assert_eq!(lock.objects["k"].object_type.as_ref().unwrap().modulus_bits, Some(2048));
+        compare(&t, &resolved(&t), &lock, &facts("1"), LockWrite::Compare, &mut Notes::default()).unwrap();
+
+        let t = Target::new(&other, "s", "t").unwrap();
+        for write in [LockWrite::Compare, LockWrite::Record] {
+            let e = compare(&t, &resolved(&t), &lock, &facts("1"), write, &mut Notes::default()).unwrap_err();
             assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("changed since it was locked")), "{e}");
         }
     }

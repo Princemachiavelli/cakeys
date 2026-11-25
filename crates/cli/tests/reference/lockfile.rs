@@ -7,10 +7,10 @@ use super::*;
 fn module_and_token_provenance_warn_but_do_not_fail() {
     let Some(e) = env("provenance") else { return };
     e.config(EC.replace("ec-lifecycle", "provenance").as_str());
-    let r = ["lock", "--spec", "signing-soft", "--token", "ref", "--update-lock"];
-    let verify = ["verify", "--spec", "signing-soft", "--token", "ref"];
+    let r = ["lock", "--spec", "signing-soft", "--token", "ref"];
+    let verify = ["check", "--spec", "signing-soft", "--token", "ref"];
     assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"]), 18);
-    assert_eq!(e.code(&r), 0);
+    assert_eq!(e.code(&r), 22);
 
     let real = &e.lock()["realisations"]["signing-soft"]["ref"];
     let seen = e.observation("signing-soft", "ref");
@@ -54,8 +54,8 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     std::fs::write(&path, original.replace(&format!("model = \"{}\"", REF.model), "model = \"Other\"")).unwrap();
     assert!(stderr(&e.km(&verify)).contains("realised on token Other"));
 
-    // Re-binding with --update-lock records the current module and token.
-    assert_eq!(e.code(&r), 0);
+    // Re-binding with a writing `lock` records the current module and token.
+    assert_eq!(e.code(&r), 22);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
 
     // The lock records the file the loader mapped, symlinks resolved, whatever named it: a
@@ -72,12 +72,13 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     let bare = format!("ref={}", module.file_name().unwrap().to_str().unwrap());
     let search = [("LD_LIBRARY_PATH", module.parent().unwrap())];
     assert_eq!(module_path(&e.km_env(&[&["--module", bare.as_str()][..], &r[..]].concat(), &search)), loaded);
-    // A per-machine `module = "$NAME"`: unset, it is invalid (17) unless --module replaces it
-    // first, as lib.mkKeys does in a build sandbox that sets no such variable.
+    // A per-machine `module = "$NAME"`: unset, it is unavailable (16, this host's environment
+    // not providing it: review A-14) unless --module replaces it first, as lib.mkKeys does in a
+    // build sandbox that sets no such variable.
     let toml = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
     e.write_config(&toml.replace(&format!("module = \"{}\"", e.module), "module = \"$CAKEYS_TEST_UNSET_MODULE\""));
     let o = e.km(&verify);
-    assert_eq!(code(&o), 17);
+    assert_eq!(code(&o), 16);
     assert!(stderr(&o).contains("CAKEYS_TEST_UNSET_MODULE"), "{}", stderr(&o));
     assert_eq!(e.code(&[&["--module", via_link.as_str()][..], &verify[..]].concat()), 0);
     assert!(!stderr(&e.km(&verify)).contains("warning"));
@@ -90,8 +91,8 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
 fn observed_and_provenance_never_change_a_verdict() {
     let Some(e) = env("classes") else { return };
     e.config(EC.replace("ec-lifecycle", "classes").as_str());
-    let verify = ["verify", "--spec", "signing-soft", "--token", "ref"];
-    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref", "--update-lock"]), 0);
+    let verify = ["check", "--spec", "signing-soft", "--token", "ref"];
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 22);
     let mut full = e.lock();
     full["realisations"]["signing-soft"]["ref"].as_table_mut().unwrap().insert(
         "provenance".into(),
@@ -144,12 +145,12 @@ fn lock_invariants_are_checked() {
            [specs.twin]\nobject = \"twin\"\nattributes = { CKA_SIGN = true }\n\
            tokens.ref = { locator = { CKA_LABEL = \"invariants\" }, origin = \"adopt\" }\n";
     e.config(&body);
-    let verify = ["verify", "--spec", "signing-soft", "--token", "ref"];
-    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref", "--update-lock"]), 0);
+    let verify = ["check", "--spec", "signing-soft", "--token", "ref"];
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 22);
     let good = e.lock();
     assert_eq!(good["realisations"]["signing-soft"]["ref"]["schemes"].as_array().unwrap().len(), 1);
     // The same key under a second object name is refused when recording.
-    assert_eq!(e.code(&["lock", "--spec", "twin", "--token", "ref", "--update-lock"]), 14);
+    assert_eq!(e.code(&["lock", "--spec", "twin", "--token", "ref"]), 14);
     assert!(e.lock().get("objects").unwrap().get("twin").is_none());
 
     let write = |lock: &toml::Value| std::fs::write(e.dir.join("keys.lock"), toml::to_string(lock).unwrap()).unwrap();
@@ -200,14 +201,14 @@ fn lock_invariants_are_checked() {
     assert_eq!(e.code(&verify), 0);
 }
 
-/// M3: `--update-lock` holds an advisory lock on `<lock>.lck` across its read-modify-write. While
+/// M3: a writing run holds an advisory lock on `<lock>.lck` across its read-modify-write. While
 /// the sidecar lock is held by someone else, a second updater waits and a reader proceeds.
 #[test]
 fn update_lock_waits_for_the_sidecar_lock() {
     let Some(e) = env("m3-flock") else { return };
     e.config(EC.replace("ec-lifecycle", "m3-flock").as_str());
-    let r = ["lock", "--spec", "signing-soft", "--token", "ref", "--update-lock"];
-    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 0);
+    let r = ["lock", "--spec", "signing-soft", "--token", "ref"];
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 22);
 
     // Hold the sidecar the same way cakeys does: an exclusive std file lock.
     let held =
@@ -216,7 +217,7 @@ fn update_lock_waits_for_the_sidecar_lock() {
     let spawn = |args: &[&str]| e.run().command(args).spawn().unwrap();
     // A reader never takes it: verify finishes while it is held. However slow the build (a debug
     // build behind the fault shim takes over a second): one that waited would never finish.
-    let mut reader = spawn(&["verify", "--spec", "signing-soft", "--token", "ref"]);
+    let mut reader = spawn(&["check", "--spec", "signing-soft", "--token", "ref"]);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let status = loop {
         if let Some(status) = reader.try_wait().unwrap() {
@@ -243,12 +244,11 @@ fn update_lock_waits_for_the_sidecar_lock() {
     let (waited, _) = waits_for_the_sidecar(&e, &[&["--lock", link.to_str().unwrap()][..], &r[..]].concat());
     waited.unwrap_or_else(|said| panic!("through a symlink, the updater took another sidecar: {said}"));
     assert!(!e.dir.join("linked.lock.lck").exists(), "a sidecar beside the symlink");
-    assert_eq!(e.code(&["verify", "--spec", "signing-soft", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["check", "--spec", "signing-soft", "--token", "ref"]), 0);
 
-    // `gc --apply` writes the lock, so it holds the sidecar too (docs/CAKEYS.md; review
-    // delete.rs F4).
-    let (waited, code) = waits_for_the_sidecar(&e, &["gc", "--apply"]);
-    waited.unwrap_or_else(|said| panic!("gc --apply did not wait for the sidecar lock: {said}"));
+    // `gc` writes the lock, so it holds the sidecar too (docs/CAKEYS.md; review delete.rs F4).
+    let (waited, code) = waits_for_the_sidecar(&e, &["gc"]);
+    waited.unwrap_or_else(|said| panic!("gc did not wait for the sidecar lock: {said}"));
     assert_eq!(code, Some(0));
 }
 
@@ -289,33 +289,49 @@ fn waits_for_the_sidecar(e: &Suite, args: &[&str]) -> (Result<(), String>, Optio
     (verdict, status.code())
 }
 
-/// `lock` and `delete` write the lock by default; `--no-update-lock` compares only (first use
-/// is then 18 and nothing is written). Where the lock cannot be written — a Nix build sandbox, a
-/// read-only lock, a read-only directory — a writing run is refused (21) before the token is
-/// touched, naming `--no-update-lock`; `check` never writes and is unaffected.
+/// `lock` and `delete` write the lock by default, and a run that writes it exits 22: done, and
+/// the lock is there to review and commit; `--dry-run` compares only (first use is then 18 and
+/// nothing is written). A lock that is not there is refused (17) by every verb unless
+/// `--new-lock` starts one: a mistyped `--lock` never makes a new, empty lock. Where the lock
+/// cannot be written — a Nix build sandbox, a read-only lock, a read-only directory — a writing
+/// run is refused (21) before the token is touched, naming `--dry-run`; `check` never writes and
+/// is unaffected (review 2026-11-23 C-4, C-16).
 #[test]
 fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
     use std::os::unix::fs::PermissionsExt;
     let Some(e) = env("lock-default") else { return };
     e.config(&EC.replace("ec-lifecycle", "lock-default"));
     let r = ["lock", "--spec", "signing-soft", "--token", "ref"];
-    let compare = [&r[..], &["--no-update-lock"]].concat();
+    let compare = [&r[..], &["--dry-run"]].concat();
     let lock = e.dir.join("keys.lock");
     let refused = |o: &Output, why: &str| {
         let err = stderr(o);
         assert_eq!(code(o), 21, "{err}");
-        assert!(err.contains(why) && err.contains("--no-update-lock"), "{err}");
+        assert!(err.contains(why) && err.contains("--dry-run"), "{err}");
     };
 
-    // Compare only: first use is 18 and the lock is not created.
-    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"]), 18);
-    assert_eq!(e.code(&compare), 18);
+    // No lock: every verb refuses (17), naming --new-lock, and creates nothing.
+    std::fs::remove_file(&lock).unwrap();
+    for args in [&r[..], &compare, &["check", "--spec", "signing-soft", "--token", "ref"], &["gc"]] {
+        let o = e.km(args);
+        assert!(code(&o) == 17 && stderr(&o).contains("--new-lock"), "{args:?}: {}", stderr(&o));
+    }
     assert!(!lock.exists());
-    // Both spellings at once are a usage error.
-    assert_eq!(e.code(&[&r[..], &["--update-lock", "--no-update-lock"]].concat()), 2);
-    // The default records first use and succeeds.
-    assert_eq!(e.code(&r), 0);
+    // With --new-lock, a compare-only run reads it as empty: first use is 18, nothing is created.
+    assert_eq!(e.code(&["--new-lock", "create", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"]), 18);
+    assert_eq!(e.code(&[&["--new-lock"][..], &compare].concat()), 18);
+    assert!(!lock.exists());
+    // `--update-lock` is gone: writing is the default.
+    assert_eq!(e.code(&[&r[..], &["--update-lock"]].concat()), 2);
+    // A writing run records first use, says it wrote the lock and exits 22.
+    let o = e.km(&[&["--new-lock"][..], &r[..]].concat());
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
+    assert!(stderr(&o).contains(&format!("updated {}", lock.display())), "{}", stderr(&o));
     assert!(e.lock()["realisations"]["signing-soft"]["ref"].is_table());
+    // Run again, it changes nothing: 0, the lock untouched.
+    let before = std::fs::read(&lock).unwrap();
+    assert_eq!(e.code(&r), 0);
+    assert_eq!(std::fs::read(&lock).unwrap(), before);
 
     // In a Nix build sandbox a writing run is refused up front, delete included; comparing and
     // `check` work there.
@@ -342,8 +358,9 @@ fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
     if std::fs::File::create(ro.join("probe")).is_err() {
         let elsewhere = ro.join("keys.lock");
         let elsewhere = elsewhere.to_str().unwrap();
-        refused(&e.km(&[&["--lock", elsewhere][..], &r[..]].concat()), "directory");
-        assert_eq!(e.code(&[&["--lock", elsewhere][..], &compare[..]].concat()), 18);
+        assert_eq!(e.code(&[&["--lock", elsewhere][..], &r[..]].concat()), 17);
+        refused(&e.km(&[&["--new-lock", "--lock", elsewhere][..], &r[..]].concat()), "directory");
+        assert_eq!(e.code(&[&["--new-lock", "--lock", elsewhere][..], &compare[..]].concat()), 18);
     } else {
         eprintln!("skipping the read-only directory: this user writes into a mode-555 one");
     }
@@ -359,16 +376,25 @@ fn the_variables_name_the_files_and_an_unreadable_lock_is_an_io_failure() {
     let Some(e) = env("lock-vars") else { return };
     e.config(&EC.replace("ec-lifecycle", "lock-vars"));
     let r = ["lock", "--spec", "signing-soft", "--token", "ref"];
-    let verify = ["verify", "--spec", "signing-soft", "--token", "ref"];
+    let verify = ["check", "--spec", "signing-soft", "--token", "ref"];
     assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"]), 18);
     let config = e.dir.join("keys.toml");
     let elsewhere = e.dir.join("elsewhere.lock");
+    let beside = std::fs::read(e.dir.join("keys.lock")).unwrap();
 
     // The variables alone (`tool`, not `Run`, which names the config with the flag).
     let o = tool(BIN).env("CAKEYS_CONFIG", &config).env("CAKEYS_LOCK", &elsewhere).args(r).output().unwrap();
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 17, "no lock there yet: {}", stderr(&o));
+    let o = tool(BIN)
+        .env("CAKEYS_CONFIG", &config)
+        .env("CAKEYS_LOCK", &elsewhere)
+        .arg("--new-lock")
+        .args(r)
+        .output()
+        .unwrap();
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert!(elsewhere.is_file(), "no lock where CAKEYS_LOCK names it");
-    assert!(!e.dir.join("keys.lock").exists(), "a lock beside the config, CAKEYS_LOCK ignored");
+    assert_eq!(std::fs::read(e.dir.join("keys.lock")).unwrap(), beside, "the lock beside the config written");
 
     // The flags win over variables that name nothing.
     let o = tool(BIN)
@@ -417,10 +443,10 @@ fn commitment_label_comes_from_the_lock() {
     };
     let path = e.dir.join("keys.lock");
     let lock = |text: String| e.write_lock_keeping_realisations(&text.replace("{M_TYPE}", M_TYPE));
-    let verify = ["verify", "--spec", "m", "--token", "ref"];
+    let verify = ["check", "--spec", "m", "--token", "ref"];
 
     // A new object gets the default label, and the lock records it.
-    assert_eq!(e.code(&["lock", "--spec", "m", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "m", "--token", "ref"]), 22);
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.starts_with("version = 1"), "{text}");
     assert!(text.contains("commitmentLabel = \"key-management/v1\""), "{text}");
@@ -456,9 +482,9 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     let toml = e.dir.join("keys.toml");
     let path = e.dir.join("keys.lock");
     let config = std::fs::read_to_string(&toml).unwrap();
-    let r = ["lock", "--spec", "signing-soft", "--token", "ref", "--update-lock"];
-    let verify = ["verify", "--spec", "signing-soft", "--token", "ref"];
-    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 0);
+    let r = ["lock", "--spec", "signing-soft", "--token", "ref"];
+    let verify = ["check", "--spec", "signing-soft", "--token", "ref"];
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 22);
     let locked = std::fs::read_to_string(&path).unwrap();
     let lock: toml::Value = toml::from_str(&locked).unwrap();
     assert_eq!(lock["objects"]["signing"]["type"]["curve"].as_str(), Some("secp256r1"));
@@ -479,10 +505,10 @@ fn the_lock_pins_type_spec_provenance_and_schemes() {
     let o = e.km(&verify);
     assert_eq!(code(&o), 14);
     assert!(stderr(&o).contains("spec 'signing-soft' changed in keys.toml"), "{}", stderr(&o));
-    assert_eq!(e.code(&r), 0);
+    assert_eq!(e.code(&r), 22);
     assert_eq!(e.code(&verify), 0);
     std::fs::write(&toml, &config).unwrap();
-    assert_eq!(e.code(&r), 0);
+    assert_eq!(e.code(&r), 22);
     let locked = std::fs::read_to_string(&path).unwrap();
 
     // 3. Provenance: another provider warns, another cakeys version is a note.

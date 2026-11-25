@@ -4,11 +4,12 @@
 //!
 //! - `used`: a call of cakeys, caprobe or camigrate reached it in the traced test run
 //!   (nix/test-tokens.sh with `CAKEYS_TRACE_DIR`: every module behind p11-fault).
-//! - `refused`, `out-of-scope`, `gap`: spec-coverage/manual.toml, hand-kept rules by table
-//!   and name pattern, each with its reason (the exit code of a refusal, the OPEN.md item of a
-//!   gap). The first rule that matches a row decides it.
-//! - `profile`: none of the above, but a capability profile (profiles/modules, layers,
-//!   hardware) records it.
+//! - `out-of-scope`, `gap`: spec-coverage/manual.toml, hand-kept rules by table and name
+//!   pattern, each with its reason (the OPEN.md item of a gap). The first rule that matches a row
+//!   decides it.
+//!
+//! (A `refused` and a `profile` status were dropped: neither classified a row, review 2026-11-23
+//! D-8.)
 //!
 //! A row with none of these fails the test, which lists it: a new spec revision or a new code
 //! path shows up as a diff. With `CAKEYS_COVERAGE_TRACE` naming a trace directory, the `used`
@@ -28,7 +29,7 @@ use std::path::{Path, PathBuf};
 const TOOLS: [&str; 3] = ["cakeys", "caprobe", "camigrate"];
 
 /// The statuses a manual rule may give.
-const MANUAL: [&str; 3] = ["refused", "out-of-scope", "gap"];
+const MANUAL: [&str; 2] = ["out-of-scope", "gap"];
 
 /// The flag families, by the trace field that carries a flag word of each: `CKF_` values repeat
 /// across families, so a set bit is named within its own (pkcs11t.h's sections).
@@ -262,65 +263,9 @@ fn observe(b: &Baseline, dir: &Path) -> Observed {
     seen
 }
 
-/// The keys whose values are prose (why, and from where): a `CK?_` name there is mentioned, not
-/// recorded. The `[notes]` and `[manual]` tables' values are prose too; their keys are not.
-const PROSE: [&str; 4] = ["evidence", "finding", "note", "requires-provider"];
-
-/// Every `CK?_` name the capability profiles under `profiles` record: in a row's key, a list
-/// (`advertise`, `add`, `subtract`, `key-types`) or a value (`class`, `via`), never in a
-/// comment or a prose field ([`PROSE`]).
-fn profile_names(profiles: &Path) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    for sub in ["modules", "layers", "hardware"] {
-        let mut dirs = vec![profiles.join(sub)];
-        while let Some(d) = dirs.pop() {
-            for entry in std::fs::read_dir(&d).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    dirs.push(path);
-                    continue;
-                }
-                let doc: toml::Value =
-                    toml::from_str(&read(&path)).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-                recorded_names(&doc, false, &mut names);
-            }
-        }
-    }
-    names
-}
-
-/// The `CK?_` names in `v`'s keys, and in its strings unless they are `prose`.
-fn recorded_names(v: &toml::Value, prose: bool, names: &mut BTreeSet<String>) {
-    match v {
-        toml::Value::String(s) if !prose => names.extend(ck_names(s)),
-        toml::Value::Array(a) => a.iter().for_each(|v| recorded_names(v, prose, names)),
-        toml::Value::Table(t) => {
-            for (k, v) in t {
-                names.extend(ck_names(k));
-                let prose = prose || PROSE.contains(&k.as_str()) || k == "notes" || k == "manual";
-                recorded_names(v, prose, names);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// The `CK?_` words of `text`.
-fn ck_names(text: &str) -> impl Iterator<Item = String> + '_ {
-    let word = |c: char| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_';
-    text.split(move |c: char| !word(c))
-        .filter(|t| t.len() > 4 && t.starts_with("CK") && t.as_bytes()[3] == b'_')
-        .map(str::to_owned)
-}
-
 /// The generated file and the rows nothing classifies (each with why not), from the baseline,
-/// the rows a run reached, the manual rules and the profiles' names.
-fn generate(
-    b: &Baseline,
-    used: &BTreeSet<Row>,
-    manual: &Manual,
-    profiles: &BTreeSet<String>,
-) -> Result<String, Vec<String>> {
+/// the rows a run reached and the manual rules.
+fn generate(b: &Baseline, used: &BTreeSet<Row>, manual: &Manual) -> Result<String, Vec<String>> {
     let mut problems = Vec::new();
     let rows = rows(b);
     for r in &manual.rule {
@@ -349,10 +294,8 @@ fn generate(
             "used"
         } else if let Some(r) = manual.rule.iter().find(|r| r.table == *table && glob(&r.pattern, name)) {
             r.status.as_str()
-        } else if profiles.contains(name) {
-            "profile"
         } else {
-            problems.push(format!("{table} {name}: no status (not traced, no manual rule, in no profile)"));
+            problems.push(format!("{table} {name}: no status (not traced, no manual rule)"));
             continue;
         };
         status.entry(table).or_default().insert(name, s);
@@ -364,7 +307,7 @@ fn generate(
     let _ = writeln!(
         s,
         "# Generated by caprobe's coverage test (crates/caprobe/src/coverage.rs) from the traced\n\
-         # test run, the spec baseline, the capability profiles and spec-coverage/manual.toml.\n\
+         # test run, the spec baseline and spec-coverage/manual.toml.\n\
          # Never edit by hand: change manual.toml, or regenerate from a trace (docs/CAPROBE.md,\n\
          # \"Coverage\")."
     );
@@ -419,7 +362,6 @@ fn committed_coverage_is_generated_from_the_trace() {
     let path = root.join("spec-coverage/cakeys.toml");
     let committed = std::fs::read_to_string(&path).unwrap_or_default();
     let manual: Manual = toml::from_str(&read(&root.join("spec-coverage/manual.toml"))).expect("manual.toml");
-    let profiles = profile_names(&root.join("profiles"));
     let trace = std::env::var_os("CAKEYS_COVERAGE_TRACE").map(PathBuf::from);
     let used: BTreeSet<Row> = match &trace {
         Some(dir) => {
@@ -440,7 +382,7 @@ fn committed_coverage_is_generated_from_the_trace() {
         }
         None => committed_used(&committed),
     };
-    let generated = match generate(&b, &used, &manual, &profiles) {
+    let generated = match generate(&b, &used, &manual) {
         Ok(g) => g,
         Err(problems) => panic!("{} problems:\n{}", problems.len(), problems.join("\n")),
     };
@@ -479,35 +421,6 @@ fn patterns_match_whole_names() {
     assert!(glob("CKM_A*B*C", "CKM_AxBxC") && glob("CKM_*ECDSA*", "CKM_ECDSA"));
 }
 
-/// A name a profile only mentions — in a comment, evidence, a finding or a note — is not one it
-/// records: only keys, lists and values give a row the status `profile` (review coverage F1).
-#[test]
-fn profiles_record_names_outside_their_prose() {
-    let doc: toml::Value = toml::from_str(
-        r#"
-        # CKM_IN_A_COMMENT
-        profile = "x/1.0"
-        advertise = ["CKM_LISTED"]
-        [subtract]
-        mechanisms = ["CKM_SUBTRACTED"]
-        note = "drops CKM_IN_A_NOTE"
-        [capabilities]
-        "generate.CKK_IN_A_KEY.secp256r1" = { answer = "no", evidence = "C_GenerateKeyPair: CKR_IN_EVIDENCE" }
-        [[migration.public-accepts]]
-        class = "CKO_IN_A_VALUE"
-        [notes]
-        "CKM_NOTED" = "advertised but refused: CKR_IN_A_NOTE_VALUE"
-        [manual."x"]
-        finding = "CKA_IN_A_FINDING"
-        "#,
-    )
-    .unwrap();
-    let mut names = BTreeSet::new();
-    recorded_names(&doc, false, &mut names);
-    let want = ["CKM_LISTED", "CKM_SUBTRACTED", "CKK_IN_A_KEY", "CKO_IN_A_VALUE", "CKM_NOTED"];
-    assert_eq!(names, want.into_iter().map(str::to_owned).collect());
-}
-
 fn rule(table: &str, pattern: &str) -> Rule {
     Rule { table: table.into(), pattern: pattern.into(), status: "gap".into(), reason: "why".into() }
 }
@@ -519,14 +432,11 @@ fn a_wildcard_rule_over_used_rows_only_fails() {
     let b = Baseline::from_toml(&read(&repo().join("profiles/baselines/pkcs11-3.2.toml"))).unwrap();
     let all: BTreeSet<Row> = rows(&b).into_iter().collect();
     let manual = Manual { rule: vec![rule("functions", "C_Log*")] };
-    assert_eq!(
-        generate(&b, &all, &manual, &BTreeSet::new()).unwrap_err(),
-        ["manual rule functions C_Log* names used rows only"]
-    );
+    assert_eq!(generate(&b, &all, &manual).unwrap_err(), ["manual rule functions C_Log* names used rows only"]);
     // One of its rows not used: the rule decides it.
     let mut used = all.clone();
     used.remove(&("functions".to_owned(), "C_Login".to_owned()));
-    assert!(generate(&b, &used, &manual, &BTreeSet::new()).is_ok());
+    assert!(generate(&b, &used, &manual).is_ok());
 }
 
 /// A traced function or return value the baseline does not name is listed as unnamed, as a

@@ -1,4 +1,4 @@
-//! Objects born in files (docs/FILE.md): `camigrate import --token <t>` without `--in` creates
+//! Objects born in files (docs/FILE.md): `camigrate import --to <t>` without `--in` creates
 //! each object a pair on the token says `origin = "file"` for from its object's `migrate.file`,
 //! as OpenSSL wrote it (tests/fixtures/keyfiles/make.sh). The file is the object's first use;
 //! every other token, and every later run, must match it. Realisations are checked with `cakeys`
@@ -97,21 +97,21 @@ fn files_populate_tokens_with_their_material() {
     // A key from a file is plaintext in this process: refused (15) without the flag, nothing made,
     // no lock written (review `from_files.rs` F3: the exit and message alone were checked).
     let lock_bytes = || std::fs::read(e.dir.join("keys.lock")).ok();
-    let o = e.km(soft, &["import", "web", "--token", "softhsm"]);
+    let o = e.km(soft, &["import", "web", "--to", "softhsm"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("--allow-host-plaintext"), "{}", stderr(&o));
     // So is a certificate read from beside a key: finding it decodes the key.
-    let o = e.km(soft, &["import", "web-cert", "--token", "softhsm"]);
+    let o = e.km(soft, &["import", "web-cert", "--to", "softhsm"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("holds a private key"), "{}", stderr(&o));
     assert!(
         open_session(&soft.module, soft.token_label, "1234").labelled("ff-web").is_empty(),
         "a refused key left objects"
     );
-    assert_eq!(lock_bytes(), None, "a refused import wrote a lock");
+    assert_eq!(lock_bytes().as_deref(), Some(EMPTY_LOCK.as_bytes()), "a refused import wrote the lock");
 
-    let o = e.km(soft, &["import", "--token", "softhsm", "--allow-host-plaintext"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let o = e.km(soft, &["import", "--to", "softhsm", "--allow-host-plaintext"]);
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
     let spki = cakeys_core::id::spki_canonical(&std::fs::read(fixture("p256.pub.der")).unwrap()).unwrap();
     assert_eq!(lock["objects"]["web"]["ids"]["rfc7093m4"].as_str(), Some(cakeys_core::id::sri(&spki).as_str()));
@@ -137,15 +137,15 @@ fn files_populate_tokens_with_their_material() {
 
     // A re-run imports nothing, and leaves the lock's bytes.
     let before = lock_bytes();
-    let o = e.km(soft, &["import", "--token", "softhsm", "--allow-host-plaintext"]);
+    let o = e.km(soft, &["import", "--to", "softhsm", "--allow-host-plaintext"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(stderr(&o).contains("already realised"), "{}", stderr(&o));
     assert_eq!(lock_bytes(), before, "a re-run changed the lock");
 
     // The same material on a second token, checked against the lock the first one wrote.
     if let Some(kry) = kry {
-        let o = e.km(kry, &["import", "--token", "kryoptic", "--allow-host-plaintext"]);
-        assert_eq!(code(&o), 0, "{}", stderr(&o));
+        let o = e.km(kry, &["import", "--to", "kryoptic", "--allow-host-plaintext"]);
+        assert_eq!(code(&o), 22, "{}", stderr(&o));
         for spec in ["web", "web-cert", "kek", "note"] {
             assert_eq!(code(&e.cakeys(kry, &["check", "--spec", spec, "--token", "kryoptic"])), 0, "{spec}");
         }
@@ -157,7 +157,7 @@ fn files_populate_tokens_with_their_material() {
         + &Env::spec("web-2", "web", "attributes = { CKA_SIGN = true }\n", &[soft], "ff-web2", FROM_FILE);
     e.config(&other);
     let before = std::fs::read(e.dir.join("keys.lock")).unwrap();
-    let o = e.km(soft, &["import", "web", "--token", "softhsm", "--spec", "web-2", "--allow-host-plaintext"]);
+    let o = e.km(soft, &["import", "web", "--to", "softhsm", "--spec", "web-2", "--allow-host-plaintext"]);
     assert_eq!(code(&o), 10, "{}", stderr(&o));
     assert!(
         open_session(&soft.module, soft.token_label, "1234").labelled("ff-web2").is_empty(),
@@ -198,7 +198,7 @@ fn every_file_format_imports_as_the_same_key() {
     };
     let import = |i: usize, extra: &[&str]| {
         let spec = format!("k{i}");
-        let args = ["import", "k", "--token", "softhsm", "--spec", &spec, "--allow-host-plaintext"];
+        let args = ["import", "k", "--to", "softhsm", "--spec", &spec, "--allow-host-plaintext"];
         e.km(soft, &[&args[..], extra].concat())
     };
 
@@ -227,12 +227,22 @@ fn every_file_format_imports_as_the_same_key() {
             assert!(stderr(&o).contains("no passphrase is given"), "{}", stderr(&o));
         }
         let o = import(i, &["--passphrase-file", pass.to_str().unwrap()]);
-        assert_eq!(code(&o), 0, "{file}: {}", stderr(&o));
+        assert_eq!(code(&o), 22, "{file}: {}", stderr(&o));
         let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
         let origin = &lock["realisations"][format!("k{i}").as_str()]["softhsm"]["provenance"]["origin"];
         assert_eq!(origin["method"].as_str(), Some(*method), "{file}");
         assert_eq!(code(&e.cakeys(soft, &["check", "--spec", &format!("k{i}"), "--token", "softhsm"])), 0, "{file}");
     }
+    // A passphrase from the environment is held to a file's: an empty one is refused (17) as
+    // empty, never tried as one the file "does not open under" (review 2026-11-23 C-14).
+    let last = formats.len();
+    config(last, "p256.enc.pem", ", passphraseEnv = \"CAKEYS_TEST_EMPTY_PASS\"");
+    let vars: Vec<_> = soft.env.iter().copied().chain([("CAKEYS_TEST_EMPTY_PASS", "")]).collect();
+    let empty = Ref { env: ref_env(&vars), ..soft.clone() };
+    let spec = format!("k{last}");
+    let o = e.km(&empty, &["import", "k", "--to", "softhsm", "--spec", &spec, "--allow-host-plaintext"]);
+    assert_eq!(code(&o), 17, "{}", stderr(&o));
+    assert!(stderr(&o).contains("env var CAKEYS_TEST_EMPTY_PASS: the passphrase is empty"), "{}", stderr(&o));
     let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
     let spki = cakeys_core::id::spki_canonical(&std::fs::read(fixture("p256.pub.der")).unwrap()).unwrap();
     assert_eq!(lock["objects"]["k"]["ids"]["rfc7093m4"].as_str(), Some(cakeys_core::id::sri(&spki).as_str()));
@@ -267,7 +277,7 @@ fn every_spelling_of_a_secret_key_imports_as_the_same_key() {
     };
     let import = |i: usize| {
         let spec = format!("k{i}");
-        e.km(soft, &["import", "k", "--token", "softhsm", "--spec", &spec, "--allow-host-plaintext"])
+        e.km(soft, &["import", "k", "--to", "softhsm", "--spec", &spec, "--allow-host-plaintext"])
     };
 
     let spellings = [
@@ -280,7 +290,7 @@ fn every_spelling_of_a_secret_key_imports_as_the_same_key() {
     for (i, (file, extra)) in spellings.iter().enumerate() {
         config(i, file, extra);
         let o = import(i);
-        assert_eq!(code(&o), 0, "{file}{extra}: {}", stderr(&o));
+        assert_eq!(code(&o), 22, "{file}{extra}: {}", stderr(&o));
         let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
         let origin = &lock["realisations"][format!("k{i}").as_str()]["softhsm"]["provenance"]["origin"];
         assert_eq!((origin["method"].as_str(), origin["exposure"].as_str()), (Some("raw"), Some("file")), "{file}");
@@ -321,7 +331,7 @@ fn an_import_the_provider_cannot_attest_is_refused_before_the_write() {
          [objects.pk]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\
          migrate = {{ file = \"{key}\" }}\n\n\
          [specs.pk]\nobject = \"pk\"\nattributes = {{ CKA_SIGN = true }}\n\
-         tokens.piv = {{ locator = {{ CKA_ID = \"18\", CKA_LABEL = \"ff-attest\" }}, origin = \"file\", attestation = true }}\n",
+         tokens.piv = {{ locator = {{ CKA_ID = \"18\" }}, origin = \"file\", attestation = true }}\n",
         module = soft.module,
         label = soft.token_label,
         pin = e.dir.join("pin").display(),
@@ -330,7 +340,7 @@ fn an_import_the_provider_cannot_attest_is_refused_before_the_write() {
     );
     e.config(&body);
     for dry_run in [true, false] {
-        let mut args = vec!["import", "pk", "--token", "piv", "--allow-host-plaintext"];
+        let mut args = vec!["import", "pk", "--to", "piv", "--allow-host-plaintext"];
         if dry_run {
             args.push("--dry-run");
         }
@@ -338,8 +348,10 @@ fn an_import_the_provider_cannot_attest_is_refused_before_the_write() {
         assert_eq!(code(&o), 15, "dry run {dry_run}: {}", stderr(&o));
         assert!(stderr(&o).contains("attests only keys the device generated"), "dry run {dry_run}: {}", stderr(&o));
     }
+    // ykcs11 locates by CKA_ID alone (a CKA_LABEL is refused first, 17): the key is looked for by it.
+    let id = cryptoki::object::Attribute::Id(vec![0x18]);
     assert!(
-        open_session(&soft.module, soft.token_label, "1234").labelled("ff-attest").is_empty(),
+        open_session(&soft.module, soft.token_label, "1234").find_objects(&[id]).unwrap().is_empty(),
         "the refused key reached the token"
     );
 }

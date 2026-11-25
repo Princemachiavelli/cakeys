@@ -19,9 +19,9 @@ module=(--module "tpm=$TPM2_PKCS11_MODULE")
 
 # Every pair against its token's profiles, the YubiKey's included: RSA 2048 generated in a PIV
 # slot, with an attestation.
-expect 0 cakeys validate
+expect 0 cakeys --new-lock validate
 # db, born in the TPM and recorded.
-expect 0 cakeys "${module[@]}" create db --token tpm
+expect 22 cakeys --new-lock "${module[@]}" create db --token tpm
 
 # Its certificate: a CSR the TPM signs, issued by KEK (here a software stand-in).
 openssl_pkcs11 "$TPM2_PKCS11_MODULE"

@@ -35,3 +35,33 @@ kryoptic_init() {
   pkcs11-tool --module "$1" --token-label "$2" --login --login-type so --so-pin 5678 \
     --init-pin --pin 1234 >/dev/null
 }
+
+# test_env DIR SOFTHSM KRYOPTIC P11KIT_CLIENT P11KIT_ENV_SH TPM_ENV_SH PROVIDER_DIR [TPM TPM_VENDOR]:
+# the two software tokens set up in DIR, their templates for nix/test-tokens.sh, and every
+# variable the suites read, each module named by its path. The check phase and
+# scripts/local-tests.sh both call it, so a new suite variable is added once (review
+# 2026-11-23 C-19); the TPM modules only where the caller has them.
+test_env() {
+  local dir=$1
+  softhsm_conf "$dir"
+  softhsm_init kmtest
+  export CAKEYS_TEST_MODULE=$2 CAKEYS_TEST_REQUIRE=1
+  kryoptic_conf "$dir"
+  export CAKEYS_KRYOPTIC_MODULE=$3 CAKEYS_KRYOPTIC_REQUIRE=1
+  kryoptic_init "$CAKEYS_KRYOPTIC_MODULE" kmtest
+  # The templates of a per-test token set (nix/test-tokens.sh, every test's runner): the two
+  # software tokens as just initialised, before any test touches them.
+  export CAKEYS_TOKEN_TEMPLATE=$dir/token-template
+  mkdir -p "$CAKEYS_TOKEN_TEMPLATE"
+  cp -r "$dir/softhsm-tokens" "$dir/kryoptic.sql" "$CAKEYS_TOKEN_TEMPLATE/"
+  # p11-kit forwarding and the software TPM: test-tokens.sh starts a server and a swtpm per test
+  # for the suites that use them, and there is no shared one to fall back on (review D9).
+  export CAKEYS_P11KIT_CLIENT=$4 CAKEYS_P11KIT_REQUIRE=1
+  export CAKEYS_P11KIT_ENV_SH=$5 CAKEYS_TPM_ENV_SH=$6
+  # OpenSSL through pkcs11-provider reads what `check --format pkcs11-provider-pem` writes.
+  export CAKEYS_PKCS11_PROVIDER_DIR=$7
+  if [ -n "${8:-}" ]; then
+    export CAKEYS_TPM_MODULE=$8 CAKEYS_TPM_REQUIRE=1
+    export CAKEYS_TPM_VENDOR_MODULE=$9 CAKEYS_TPM_VENDOR_REQUIRE=1
+  fi
+}

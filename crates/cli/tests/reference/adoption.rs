@@ -28,8 +28,8 @@ fn a_certificates_declared_attributes_are_checked() {
         )
     };
     e.config(&(spec("agrees", "pub-cert") + &spec("differs", "priv-cert")));
-    assert_eq!(e.code(&["lock", "--spec", "agrees", "--token", "ref", "--update-lock"]), 0);
-    let o = e.km(&["lock", "--spec", "differs", "--token", "ref", "--update-lock"]);
+    assert_eq!(e.code(&["lock", "--spec", "agrees", "--token", "ref"]), 22);
+    let o = e.km(&["lock", "--spec", "differs", "--token", "ref"]);
     assert_eq!(code(&o), 13, "{}", stderr(&o));
     assert!(stderr(&o).contains("CKA_PRIVATE is true"), "{}", stderr(&o));
     assert_eq!(e.code(&["check", "--spec", "agrees", "--token", "ref"]), 0);
@@ -72,12 +72,12 @@ fn a_certificate_stands_in_for_an_imported_keys_public_half() {
         spec("other", "other-cert", "token-asserted"),
         spec("other-proven", "other-cert", "pop-sign"),
     ));
-    assert_eq!(e.code(&["lock", "--spec", "own", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "own", "--token", "ref"]), 22);
     let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(own).unwrap();
     let spki = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject_public_key_info()).unwrap();
     assert_eq!(e.locked_id("k", "rfc7093m4"), sri(&spki), "the certificate's key is the identity");
     for other in ["other", "other-proven"] {
-        let o = e.km(&["lock", "--spec", other, "--token", "ref", "--no-update-lock"]);
+        let o = e.km(&["lock", "--spec", other, "--token", "ref", "--dry-run"]);
         assert_eq!(code(&o), 13, "{other}: {}", stderr(&o));
         assert!(stderr(&o).contains("is RSA") && stderr(&o).contains("private key is secp256r1"), "{}", stderr(&o));
     }
@@ -132,9 +132,9 @@ object = "adopted-cert"
 tokens.ref-anon = { locator = { CKA_ID = "42" }, origin = "adopt" }
 "#,
     );
-    let pub_only = ["lock", "--spec", "adopted-pub", "--token", "ref-anon", "--update-lock"];
-    assert_eq!(e.code(&pub_only), 0);
-    assert_eq!(e.code(&["lock", "--spec", "adopted-cert", "--token", "ref-anon", "--update-lock"]), 0);
+    let pub_only = ["lock", "--spec", "adopted-pub", "--token", "ref-anon"];
+    assert_eq!(e.code(&pub_only), 22);
+    assert_eq!(e.code(&["lock", "--spec", "adopted-cert", "--token", "ref-anon"]), 22);
     assert_eq!(e.locked_id("adopted", "rfc7093m4"), ADOPT_PUBKEYHASH);
     assert_eq!(e.locked_id("adopted-cert", "certhash"), ADOPT_CERTHASH);
     assert_eq!(e.locked_id("adopted-cert", "rfc7093m4"), ADOPT_PUBKEYHASH, "cert links to its key");
@@ -144,16 +144,16 @@ tokens.ref-anon = { locator = { CKA_ID = "42" }, origin = "adopt" }
     assert_eq!(lock["objects"]["adopted"]["pairs"].as_array().unwrap(), &vec![toml::Value::from("adopted-cert")]);
     assert_eq!(lock["realisations"]["adopted-pub"]["ref-anon"]["publicOnly"].as_bool(), Some(true));
     assert!(lock["realisations"]["adopted-cert"]["ref-anon"].get("publicOnly").is_none());
-    let verify = e.km(&["verify", "--spec", "adopted-pub", "--token", "ref-anon"]);
+    let verify = e.km(&["check", "--spec", "adopted-pub", "--token", "ref-anon"]);
     assert!(stdout(&verify).contains("object=adopt-key;type=private"), "consumers get the private key URI");
     // There is no private half: without publicOnly the same locator is simply absent.
-    assert_eq!(e.code(&["verify", "--spec", "adopted-priv", "--token", "ref"]), 11);
+    assert_eq!(e.code(&["check", "--spec", "adopted-priv", "--token", "ref"]), 11);
     // Adopted public-only keys are never deleted (only the public half would go).
-    assert_eq!(e.code(&["delete", "--spec", "adopted-pub", "--token", "ref-anon", "--no-update-lock"]), 15);
+    assert_eq!(e.code(&["delete", "--spec", "adopted-pub", "--token", "ref-anon"]), 15);
     // CKA_ID alone also matches the public key object, but certificates are looked up by class.
-    let by_id = ["lock", "--spec", "adopted-cert-by-id", "--token", "ref-anon", "--no-update-lock"];
+    let by_id = ["lock", "--spec", "adopted-cert-by-id", "--token", "ref-anon", "--dry-run"];
     assert_eq!(e.code(&by_id), 14, "same certificate, but not recorded under this spec yet");
-    assert_eq!(e.code(&recording(&by_id)), 0);
+    assert_eq!(e.code(&recording(&by_id)), 22);
 
     // Locks split per object and join again: a pair partner in another fragment is allowed.
     let full = e.lock();
@@ -167,30 +167,30 @@ tokens.ref-anon = { locator = { CKA_ID = "42" }, origin = "adopt" }
     let key = fragment(&["adopted"], &["adopted-pub"]);
     let cert = fragment(&["adopted-cert"], &["adopted-cert", "adopted-cert-by-id"]);
     write(&key);
-    assert_eq!(e.code(&["verify", "--spec", "adopted-pub", "--token", "ref-anon"]), 0);
+    assert_eq!(e.code(&["check", "--spec", "adopted-pub", "--token", "ref-anon"]), 0);
     write(&cert);
-    assert_eq!(e.code(&["verify", "--spec", "adopted-cert", "--token", "ref-anon"]), 0);
+    assert_eq!(e.code(&["check", "--spec", "adopted-cert", "--token", "ref-anon"]), 0);
     let mut joined = key.clone();
     for part in ["objects", "realisations"] {
         joined[part].as_table_mut().unwrap().extend(cert[part].as_table().unwrap().clone());
     }
     assert_eq!(joined, full);
-    // Partners that share the key but are not listed: a note, and --update-lock records them.
+    // Partners that share the key but are not listed: a note, and a writing run records them.
     let mut unlisted = full.clone();
     for o in ["adopted", "adopted-cert"] {
         unlisted["objects"][o].as_table_mut().unwrap().remove("pairs");
     }
     write(&unlisted);
-    let o = e.km(&["verify", "--spec", "adopted-pub", "--token", "ref-anon"]);
+    let o = e.km(&["check", "--spec", "adopted-pub", "--token", "ref-anon"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(stderr(&o).contains("not listed as its pairs"), "a partner not listing back is warned: {}", stderr(&o));
-    assert_eq!(e.code(&["lock", "--spec", "adopted-pub", "--token", "ref-anon", "--update-lock"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "adopted-pub", "--token", "ref-anon"]), 22);
     assert_eq!(e.lock(), full);
     // A listed partner that is present must list back.
     let mut one_sided = full.clone();
     one_sided["objects"]["adopted"].as_table_mut().unwrap().remove("pairs");
     write(&one_sided);
-    assert_eq!(e.code(&["verify", "--spec", "adopted-pub", "--token", "ref-anon"]), 17);
+    assert_eq!(e.code(&["check", "--spec", "adopted-pub", "--token", "ref-anon"]), 17);
 }
 
 #[test]
@@ -214,9 +214,9 @@ tokens.ref-anon = { locator = { CKA_LABEL = "rsa-paths" }, origin = "adopt", pub
 "#,
     );
     assert_eq!(e.code(&["create", "--spec", "r-gen", "--token", "ref", "--no-update-lock"]), 18);
-    assert_eq!(e.code(&["lock", "--spec", "r-gen", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "r-gen", "--token", "ref"]), 22);
     // Same material through the public key object, without login: same locked identity.
-    assert_eq!(e.code(&["lock", "--spec", "r-pub", "--token", "ref-anon", "--update-lock"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "r-pub", "--token", "ref-anon"]), 22);
     assert_eq!(e.code(&["check", "r", "--spec", "r-pub"]), 0);
 }
 
@@ -272,17 +272,18 @@ tokens.ref-anon = { locator = { CKA_LABEL = "rsa-legacy" }, origin = "adopt", pu
 "#,
     );
     // No signature verifier of that size: refused on policy (15), by its size, not as a conflict.
-    let o = e.km(&["lock", "--spec", "r-proved", "--token", "ref", "--update-lock"]);
+    let o = e.km(&["lock", "--spec", "r-proved", "--token", "ref"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("an RSA key of 768 bits"), "{}", stderr(&o));
-    for spec in [
-        &["lock", "--spec", "r-old", "--token", "ref", "--update-lock"][..],
-        &["lock", "--spec", "r-pub", "--token", "ref-anon", "--update-lock"],
-        &["verify", "--spec", "r-old", "--token", "ref"],
-        &["check", "r", "--spec", "r-pub"],
+    // Each `lock` records (22); each `check` only reads (0).
+    for (spec, want) in [
+        (&["lock", "--spec", "r-old", "--token", "ref"][..], 22),
+        (&["lock", "--spec", "r-pub", "--token", "ref-anon"], 22),
+        (&["check", "--spec", "r-old", "--token", "ref"], 0),
+        (&["check", "r", "--spec", "r-pub"], 0),
     ] {
         let o = e.km(spec);
-        assert_eq!(code(&o), 0, "{spec:?}: {}", stderr(&o));
+        assert_eq!(code(&o), want, "{spec:?}: {}", stderr(&o));
     }
 }
 
@@ -338,9 +339,9 @@ fn adopt_ec_and_edwards_certificates() {
     }
     e.config(&body);
     for (k, _, _, _, certhash, rfc7093m4) in fixtures {
-        assert_eq!(e.code(&["lock", "--spec", k, "--token", "ref-anon", "--update-lock"]), 0, "{k}");
+        assert_eq!(e.code(&["lock", "--spec", k, "--token", "ref-anon"]), 22, "{k}");
         let cert = format!("{k}-cert");
-        assert_eq!(e.code(&["lock", "--spec", &cert, "--token", "ref-anon", "--update-lock"]), 0, "{k}");
+        assert_eq!(e.code(&["lock", "--spec", &cert, "--token", "ref-anon"]), 22, "{k}");
         assert_eq!(e.locked_id(k, "rfc7093m4"), rfc7093m4, "{k}");
         assert_eq!(e.locked_id(&cert, "certhash"), certhash, "{k}");
         assert_eq!(e.locked_id(&cert, "rfc7093m4"), rfc7093m4, "{k}: cert links to its key");

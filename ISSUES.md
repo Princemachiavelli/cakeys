@@ -70,7 +70,7 @@ and the others need a second step that fails or a second spelling of a module pa
 | B14 | `caprobe probe --out` overwrites only a file that is absent or readable (`caprobe/src/lib.rs`) |
 | B15 | `caprobe supports --token` takes `moduleProfile` before `provider` (`caprobe/src/supports.rs`) |
 | B2 | `create` never finds a key: one already under its locator is `Exists`, exit 19, before any capability is asked of the token (`pkcs11/src/ops/mod.rs`, `core/src/error.rs`); three reference tests and `docs/CAKEYS.md` follow. `lock_as` lost its `create` flag (Q11, in part) |
-| B5 | The library cache is keyed by the canonical path of a module named by path (`pkcs11/src/token/mod.rs`) |
+| B5 | The library cache is keyed by the canonical path of a module named by path (`pkcs11/src/token/library.rs`) |
 | B10 | The PKCS#12 MAC key takes 600,000 iterations, as the encryption does (`camigrate/src/file.rs`) |
 | B11 | kmsp11 no longer refuses `pop-decrypt` or `pop-sign` on PSS and SHA-512 keys; `pop-unwrap` and `pop-ecdh` stay refused. **Not run against Cloud KMS** (see "To test") |
 | B16 | EC and Edwards scalars and the ECDH shared secret are wiped (`core/src/plaintext.rs`, `core/src/pop.rs`). The `--userpin=` argument is left: it is on `tpm2_ptool`'s command line either way. **Corrected:** this row also claimed the unwrap secret, which stayed a plain array, and missed the RSA CRT coefficient's owned copy; both are wiped since (see "Fixed since") |
@@ -110,7 +110,8 @@ Withdrawn: `profile/src/effective.rs` saying no and unknown exit 15 and 16 is co
 | p11-fault counts | `find_objects` and `mechanism_list` believe the real module's count only up to the caller's room (`crates/p11-fault/src/hooks.rs`) |
 | Transport keys | The one untested branch of `check_transport_keys`, a token naming a spec not realised on it, has a case in `crates/core/tests/refusals.rs` |
 
-From the file-by-file review (`review/`, 2026-11-18). Each fix has a test that fails without it
+From the file-by-file review (2026-11-18; its files are in git history, removed once the 2026-11-23
+review found none still open, `git show cfd631f`). Each fix has a test that fails without it
 (checked by putting the old code back), except where the row says otherwise.
 
 | Item | Fix |
@@ -178,7 +179,7 @@ From the file-by-file review (`review/`, 2026-11-18). Each fix has a test that f
 | Chain time named at every open | `Token::open` takes the `ChainTime`, which has no default: dates were checked only where a caller remembered to set a public field (review D5). Behaviour unchanged; enforced by the compiler |
 | caprobe's stack is validate's | `caprobe supports --token` resolves through `gate::stack`, and caprobe activates the one profile set every tool does (`--profiles` loaded over it), instead of a set and a stack composition of its own: with no module recorded it took a hardware profile whole and said yes where `validate` says unknown (review D4). Test: `supports_asks_by_token_and_refuses_what_it_cannot_ask` |
 | A newer cakeys's profile loads | a `prove.*` proof, OAEP hash or unwrap-template attribute this cakeys does not know loads as read and answers nothing, as an unknown key type does (Q28 was partial: the profile failed to load as a whole); the known proofs are `Proof::NAMES`, so `pop-sign-pin` is no longer refused (review D4). Tests: `every_capability_reads_back_from_its_key`, `a_newer_cakeys_names_load_and_answer_nothing`, and `the_committed_profiles_name_only_known_rows` keeps a misspelt name out of the committed profiles |
-| One feature for the patched cryptoki | each tool's `patched-cryptoki` implies `kwp`, `rv-value` and `sign-after-init`, and the Nix builds name only it; `caprobe probe` refuses to write or diff a profile without the patched binding, `rv-value` and `kwp`, since a busy session without `rv-value` would be written as a definitive no (review D3). Tests: `a_kept_profile_needs_every_patch_and_feature`, `the_patched_binding_comes_with_its_features` (in `cakeys-pkcs11` and caprobe), `every_tool_turns_on_what_the_patched_binding_makes_possible` |
+| One feature for the patched cryptoki | each tool's `patched-cryptoki` implies what the patched binding makes possible (`kwp`), and the Nix builds name only it; `caprobe probe` refuses to write or diff a profile without the patched binding and `kwp` (review D3; `rv-value` was dropped by review 2026-11-23 B-6, every build carrying a failure's value). Tests: `a_kept_profile_needs_every_patch_and_feature`, `the_patched_binding_comes_with_its_features` (in `cakeys-pkcs11` and caprobe), `every_tool_turns_on_what_the_patched_binding_makes_possible` |
 | Product-code findings of the file review | The Nix-store guard covers every secret file keys.toml names (`pinFile`, `soCredentialFile`, `passphraseFile`, a secret's `migrate.file`) and compares resolved paths; `publicOnly` refuses a configured proof instead of overriding it; a sealed unwrap is "tampered with" (13) only when the module's return value says the data is bad, a device error staying 16; camigrate no longer swallows resolution or trust-lookup errors and opens its source once; an EC or Edwards public key's SPKI must be the object's type and curve; the extractable ECDH fallback and the trusted copy keep the module's `CK_RV`; tied profiles are said with a token open; profile directories follow symlinks without looping and a directory's baseline is used or refused; `--module` refuses empty halves, duplicates and unknown tokens (17). Tests: in each review file's Fixed note (review/REVIEW_*.md) |
 | Lock saved per object | `cakeys create` (`ops::create_selected`'s `persist`) and every camigrate import loop (`import`, `migrate`, `import --in` for a key file or files) save the lock as each object lands, so a run killed, or failing to save, part-way never leaves an object on a token the lock does not record. `create` prints what it created whatever ended the run (cli lib.rs F1). p11-fault gained `abort = true` (the process dies at a call) to test it. Tests: cakeys `a_create_killed_part_way_has_recorded_what_it_made`, camigrate `an_import_killed_part_way_has_recorded_what_it_made`, p11-fault `abort_ends_the_process_at_its_call`. Left: a key killed between its creation and its own record is still unrecorded (one object, not the run); a failed save after `create` has no test (nothing makes the save fail after `read_lock`'s check) |
 
@@ -276,9 +277,10 @@ Still open. Each says why it was not done with the rest.
   from the table; every named value converts back and keeps the name the variant gave
   (`token::tests::names_agree`), so no profile changes. The upstream PR (`RvError` to
   `CK_RV`, and `RvError::name`) is drafted, not filed: `upstream/rust-cryptoki/PR-RV-VALUE.md`.
-  **Since 2026-11-17** the build applies that draft itself (`nix/package-common.nix`), and
-  `rv_value`/`rv_name` use it behind `cakeys-pkcs11/rv-value`; the table is p11-fault's alone,
-  and `names_agree` holds cryptoki's names to the ones derived without the patch.
+  **Since 2026-11-24** (review 2026-11-23 B-6) `rv_value` finds the value by the derived name in
+  `p11-names`' table, in every build, and `rv_name` names a value cryptoki has no variant for
+  from it too: the `rv-value` feature is gone, and `every_variant_has_its_value` holds the table
+  complete. The build still applies the draft (`nix/package-common.nix`); nothing uses it.
 - **Q24. The profile set is process-global and order-dependent** (`Set::activate` after
   `Set::active` fails; `Registry::named` hides a set that does not parse). **Done
   2026-11-17:** the `OnceLock` stays; `Set::active` errors when nothing activated it, never
@@ -302,11 +304,11 @@ Still open. Each says why it was not done with the rest.
   together. `every_committed_profile_is_what_the_emitter_writes` now pins every committed
   module profile byte for byte, the hardware ones no test re-probes included.
 - **Q20. Key type dispatch by trial parsing** (`spki_canonical`, `spki_of_pkcs8`,
-  `ecdh_challenge`, `verify_with`). Dispatching on the OID changes which parser sees a
+  `ecdh_challenge`, `verify`). Dispatching on the OID changes which parser sees a
   malformed key, and with it some error texts and the `public_key` fuzz target's fixed point.
   **Done 2026-11-17:** `id::KeyAlg` (`of_spki`, `of_pkcs8`) reads the algorithm and curve OIDs
   (an Edwards key's algorithm OID is its curve's), and `spki_canonical`, `spki_of_pkcs8`,
-  `ecdh_challenge`, `verify_with` and `sig::ecdsa`, the fifth of the kind, match on it. A
+  `ecdh_challenge`, `verify` and `sig::ecdsa`, the fifth of the kind, match on it. A
   malformed key is refused by its own type's parser, by name (`SPKI of a P-256 key: …`); an
   algorithm cakeys does not read is named by its OID; junk is "not a
   SubjectPublicKeyInfo". The `public_key` fuzz target's fixed point holds unchanged: only the
@@ -377,7 +379,7 @@ and Q14 (one opener for cakeys and camigrate).
 ## Unsafe code and other tools
 
 Every unsafe site is in `p11-fault` (four files, about 80 sites) plus `loaded_path` in
-`crates/pkcs11/src/token/mod.rs` [run]. All four p11-fault files with unsafe code were read;
+`crates/pkcs11/src/token/library.rs` [run]. All four p11-fault files with unsafe code were read;
 nothing a client can trigger was found. Each pointer read is guarded by a null check and a
 length check against the structure's size, and panics stop at `guard`. The one soundness gap,
 `find_objects` and `mechanism_list` trusting the count the real module writes back, is closed

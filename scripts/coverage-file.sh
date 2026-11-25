@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Regenerate spec-coverage/cakeys.toml (docs/CAPROBE.md, "Coverage"; docs/PLAN.md A1): run
 # every suite with each module behind a tracing p11-fault (scripts/local-tests.sh with
-# CAKEYS_TRACE_DIR), then rewrite the file from that trace, the baseline, the profiles and
-# spec-coverage/manual.toml. The tests behind each used row are written beside the trace,
+# CAKEYS_TRACE_DIR), then rewrite the file from that trace, the baseline and
+# spec-coverage/manual.toml (`nix build .#spec-coverage` does the same in a Nix build). The tests behind each used row are written beside the trace,
 # in coverage-report.txt.
 #
 #   scripts/coverage-file.sh [trace directory]     default: target/coverage-trace

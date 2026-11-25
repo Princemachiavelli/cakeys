@@ -1,6 +1,6 @@
 //! docs/CAMIGRATE.md phase 5 on a real `YubiKey`, opt-in: a P-256 key made extractable on `SoftHSM` moves
 //! through the host into retired PIV slot 95 (`CKA_ID` 18) as Security Officer (`piv-import`),
-//! and `cakeys verify` proves possession there.
+//! and `cakeys check` proves possession there.
 //!
 //! Needs `CAKEYS_TEST_YUBIKEY_MODULE` (libykcs11.so), `CAKEYS_TEST_YUBIKEY_PIN` and
 //! `CAKEYS_TEST_YUBIKEY_MGM` (file paths: the CLI reads them, never this test), and
@@ -46,7 +46,7 @@ fn a_key_moves_into_a_piv_slot_through_the_host() {
     ));
     let (cakeys, camigrate) = (sibling("cakeys"), Path::new(BIN));
     let o = run(&cakeys, &["create", "--spec", "pv-soft", "--token", "softhsm"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     let mv = ["migrate", "pv", "--from", "softhsm", "--to", "yubikey", "--allow-host-plaintext"];
     let o = run(camigrate, &[&mv[..], &["--dry-run", "--json"]].concat());
     let plan: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
@@ -64,17 +64,17 @@ fn a_key_moves_into_a_piv_slot_through_the_host() {
          scripts/coverage-full.sh with CAKEYS_YUBIKEY_WIPE=1): {}",
         stderr(&o)
     );
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     let origin = &w.lock()["realisations"]["pv-yk"]["yubikey"]["provenance"]["origin"];
     assert_eq!((origin["method"].as_str(), origin["exposure"].as_str()), (Some("piv-import"), Some("host")));
-    let o = run(&cakeys, &["verify", "--spec", "pv-yk", "--token", "yubikey"]);
+    let o = run(&cakeys, &["check", "--spec", "pv-yk", "--token", "yubikey"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     // Again, into the now occupied slot under another lock: refused before anything is written.
     // The source key is still on SoftHSM: the new lock records it (`create` refuses a key that is
     // there and not pinned, 19).
     std::fs::remove_file(w.dir.join("keys.lock")).unwrap();
-    let o = run(&cakeys, &["lock", "--spec", "pv-soft", "--token", "softhsm"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let o = run(&cakeys, &["--new-lock", "lock", "--spec", "pv-soft", "--token", "softhsm"]);
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     let before = std::fs::read(w.dir.join("keys.lock")).unwrap();
     let o = run(camigrate, &mv);
     assert_eq!(code(&o), 13, "{}", stderr(&o));

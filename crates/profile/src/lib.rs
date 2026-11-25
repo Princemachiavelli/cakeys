@@ -23,7 +23,7 @@ pub mod profile;
 pub use baseline::Baseline;
 pub use capability::{Answer, Capability, Move, On, Row, Way};
 pub use effective::{Effective, Verdict};
-pub use names::{KeyKind, Operation, Proof};
+pub use names::{KeyKind, Proof};
 pub use profile::{
     AcceptRow, GenerateRow, Manual, MatchInfo, MechanismInfo, Migration, Mode, PlaintextKind, Profile, Reported,
     Untested, Why,
@@ -39,7 +39,9 @@ static ACTIVE: OnceLock<Set> = OnceLock::new();
 /// (an added "softhsm/2.7" replaces the embedded one), and [`Set::find`] selects by exact name
 /// or by family when only one version of it is loaded.
 pub struct Set {
-    baselines: Vec<(String, Baseline)>,
+    /// The one baseline used: the embedded one, or a directory's of its name (review 2026-11-23
+    /// A-13: one is ever allowed, so one is stored).
+    baseline: Option<Baseline>,
     profiles: Vec<Profile>,
 }
 
@@ -51,10 +53,12 @@ impl Set {
     /// [`Profile::from_toml`] errors for each file that fails, prefixed with its path: an
     /// embedded profile that no longer parses is a commit-time bug, not a runtime condition.
     pub fn embedded() -> Result<Set, String> {
-        let mut set = Set { baselines: Vec::new(), profiles: Vec::new() };
+        let mut set = Set { baseline: None, profiles: Vec::new() };
         for (path, text) in embedded::BASELINE_FILES {
             let b = Baseline::from_toml(text).map_err(|e| format!("{path}: {e}"))?;
-            set.baselines.push(((*path).to_owned(), b));
+            if set.baseline.replace(b).is_some() {
+                return Err(format!("{path}: only one baseline is used"));
+            }
         }
         for (path, text) in embedded::PROFILE_FILES {
             let p = Profile::from_toml(text).map_err(|e| format!("{path}: {e}"))?;
@@ -104,15 +108,16 @@ impl Set {
                 // name (a regenerated pkcs11-3.2), and one of another name is refused rather
                 // than loaded and never read.
                 let b = Baseline::from_toml(&text).map_err(|e| at(&e))?;
-                let Some(slot) = self.baselines.iter_mut().find(|(_, loaded)| loaded.baseline == b.baseline) else {
-                    let loaded: Vec<&str> = self.baselines.iter().map(|(_, l)| l.baseline.as_str()).collect();
-                    return Err(at(&format!(
-                        "baseline '{}': only one baseline is used ({}); a directory may replace it, not add another",
-                        b.baseline,
-                        loaded.join(", ")
-                    )));
-                };
-                *slot = (path.display().to_string(), b);
+                match &mut self.baseline {
+                    Some(loaded) if loaded.baseline == b.baseline => *loaded = b,
+                    loaded => {
+                        return Err(at(&format!(
+                            "baseline '{}': only one baseline is used ({}); a directory may replace it, not add another",
+                            b.baseline,
+                            loaded.as_ref().map_or("", |l| l.baseline.as_str())
+                        )));
+                    }
+                }
             } else if value.get("profile").is_some() {
                 let p = Profile::from_toml(&text).map_err(|e| at(&e))?;
                 if !replace {
@@ -204,7 +209,7 @@ impl Set {
     ///
     /// When no baseline was loaded.
     pub fn baseline(&self) -> Result<&Baseline, String> {
-        self.baselines.first().map(|(_, b)| b).ok_or_else(|| "no baseline loaded".to_owned())
+        self.baseline.as_ref().ok_or_else(|| "no baseline loaded".to_owned())
     }
 
     /// Every loaded profile, in load order: what resolution iterates to match modules and
@@ -318,7 +323,7 @@ mod tests {
     #[test]
     fn embedded_profiles_load_and_answer() {
         let set = Set::embedded().unwrap();
-        assert_eq!(set.baselines.len(), 1);
+        assert!(set.baseline.is_some());
         let names: Vec<_> = set.profiles.iter().map(|p| p.profile.as_str()).collect();
         assert_eq!(
             names,
@@ -506,7 +511,7 @@ mod tests {
         assert_ne!(newer, committed);
         std::fs::write(&file, &newer).unwrap();
         let set = Set::embedded().unwrap().with_dir(dir.path()).unwrap();
-        assert_eq!(set.baselines.len(), 1);
+        assert!(set.baseline.is_some());
         assert!(set.baseline().unwrap().mechanisms.contains_key("CKM_FROM_A_DIRECTORY"));
         std::fs::write(&file, committed.replacen("baseline = \"pkcs11-3.2\"", "baseline = \"pkcs11-9.9\"", 1)).unwrap();
         let e = Set::embedded().unwrap().with_dir(dir.path()).err().unwrap();
@@ -527,8 +532,7 @@ mod tests {
         std::fs::write(nested.join("m.toml"), "profile = \"m/1\"\nmode = \"observed\"\n").unwrap();
         std::fs::write(nested.join("notes.txt"), "not toml at all").unwrap();
         let set = Set::embedded().unwrap().with_dir(&dir).unwrap();
-        assert_eq!(set.baselines.len(), 1, "the baseline of its name is replaced");
-        assert!(set.baselines[0].0.ends_with("baseline.toml"));
+        assert!(set.baseline.is_some(), "the baseline of its name is replaced");
         assert!(set.find("softhsm/2.7").unwrap().partial);
         assert_eq!(set.all().iter().filter(|p| p.profile == "softhsm/2.7").count(), 1);
         assert!(set.find("m").is_ok());

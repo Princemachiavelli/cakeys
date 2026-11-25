@@ -42,7 +42,7 @@ fn create_without_login_asks_for_a_pin() {
         )
     };
     e.config(&spec("ref"));
-    assert_eq!(e.code(&["create", "--spec", "nl", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "nl", "--token", "ref"]), 22);
     e.config(&spec("ref-anon"));
     let o = e.km(&["create", "--spec", "nl", "--token", "ref-anon", "--no-update-lock"]);
     let err = stderr(&o);
@@ -59,19 +59,19 @@ fn create_never_fights_a_locked_identity() {
     let Some(e) = env("d1") else { return };
     let second = "[specs.second-slot]\nobject = \"signing\"\nattributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
     e.config(EC.replace("ec-lifecycle", "d1-first").as_str());
-    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 22);
     let id = e.locked_id("signing", "rfc7093m4");
 
     // A second spec over the same object, an empty locator, now the one that creates it (the
     // first adopts what is there): `create` is refused up front (14), naming the pinned scheme —
-    // also with --update-lock — and nothing is created.
+    // also when the lock is written — and nothing is created.
     let first = EC.replace("ec-lifecycle", "d1-first").replace("origin = \"create\"", "origin = \"adopt\"");
     e.config(&format!(
         "{first}{second}tokens.ref = {{ locator = {{ CKA_LABEL = \"d1-second\" }}, origin = \"create\" }}\n"
     ));
     for args in [
         &["create", "--spec", "second-slot", "--token", "ref", "--no-update-lock"][..],
-        &["create", "--spec", "second-slot", "--token", "ref", "--update-lock"][..],
+        &["create", "--spec", "second-slot", "--token", "ref"][..],
     ] {
         let o = e.km(args);
         assert_eq!(code(&o), 14, "{args:?}");
@@ -92,7 +92,7 @@ fn create_never_fights_a_locked_identity() {
     assert_eq!(code(&o), 14, "{}", stderr(&o));
     assert!(stderr(&o).contains("the lock records no realisation of spec 'second-slot'"), "{}", stderr(&o));
     assert_eq!(s.labelled("d1-first").len(), 2, "the pair that was there, and no other");
-    assert_eq!(e.code(&["lock", "--spec", "second-slot", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "second-slot", "--token", "ref"]), 22);
     let lock = e.lock();
     assert!(lock["realisations"]["second-slot"]["ref"].is_table());
     assert_eq!(lock["realisations"]["second-slot"]["ref"]["object"].as_str(), Some("signing"));
@@ -134,7 +134,7 @@ fn create_makes_keys_and_nothing_else_does() {
 
     // Every unpinned pair on the token, created and recorded; what is adopted, not made, skipped.
     let o = e.km(&["create", "--token", "ref"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     let said = stderr(&o);
     assert!(said.contains("'cert' (spec 'cert') on token 'ref': origin = \"adopt\""), "{said}");
     assert!(said.contains("(spec 'ec-public') on token 'ref': origin = \"adopt\""), "{said}");
@@ -144,7 +144,7 @@ fn create_makes_keys_and_nothing_else_does() {
     for spec in ["ec", "aes"] {
         assert!(lock["realisations"][spec]["ref"].is_table(), "{spec}: {lock}");
     }
-    assert_eq!(e.code(&["verify", "--spec", "ec", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["check", "--spec", "ec", "--token", "ref"]), 0);
 
     // Again: both are pinned now, so each is verified as `check` verifies it, and nothing is
     // created twice; named, the same.
@@ -227,7 +227,8 @@ fn create_checks_the_profiles_before_it_makes_anything() {
     let lock = e.dir.join("keys.lock");
     // A session opened after each run sees what it made (common/mod.rs).
     let made = |label: &str| !e.session().labelled(label).is_empty();
-    let nothing_made = || !made("gate-p256") && !made("gate-k1") && !lock.exists();
+    let nothing_made =
+        || !made("gate-p256") && !made("gate-k1") && std::fs::read_to_string(&lock).unwrap() == EMPTY_LOCK;
 
     let o = e.km(&["create", "--dry-run"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
@@ -247,7 +248,7 @@ fn create_checks_the_profiles_before_it_makes_anything() {
     assert!(nothing_made(), "a refused run makes nothing");
 
     let o = e.km(&["create", "--skip-unsupported"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     let warned = stderr(&o).lines().any(|l| l.starts_with("warning:") && l.contains("'k1' (spec 'k1')"));
     assert!(warned, "the skipped pair warned: {}", stderr(&o));
     assert!(made("gate-p256") && !made("gate-k1"));
@@ -273,7 +274,7 @@ fn a_tokens_own_answers_decide_before_its_profile() {
             + &key("derive", "CKA_DERIVE")
                 .replace("origin = \"create\"", "origin = \"create\", binding = \"pop-ecdh\"")),
     );
-    assert_eq!(e.code(&["create", "sign"]), 0);
+    assert_eq!(e.code(&["create", "sign"]), 22);
     let observation = |lock: &toml::Value| {
         let k = lock["realisations"]["sign"]["ref"]["observation"].as_str().unwrap().to_owned();
         lock["observations"][&k].clone()

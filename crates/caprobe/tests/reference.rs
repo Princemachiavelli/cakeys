@@ -1,4 +1,4 @@
-//! caprobe against the software tokens the Nix check phase sets up (nix/package.nix): `SoftHSM`
+//! caprobe against the software tokens the Nix check phase sets up (nix/package-common.nix): `SoftHSM`
 //! and kryoptic, whose committed module profiles must be what a fresh probe observes, and
 //! `SoftHSM` behind p11-kit forwarding, whose layer profile must be what the forwarder hides.
 //! Each test skips when its suite's variables are unset (the `*_REQUIRE` variables make that a
@@ -27,7 +27,7 @@ fn committed_profile_is_what_the_probe_observes(r: &Reference, test: &str) {
     let drift = w.km(&["probe", "--token", "ref", "--diff", other]);
     assert_eq!(code(&drift), 15, "{}", stderr(&drift));
     assert!(stderr(&drift).contains(&format!("rows differ from profile {other}")), "{}", stderr(&drift));
-    let anon = w.km(&["probe", "--token", "ref-anon", "--write", "--rsa-max-bits", "4096"]);
+    let anon = w.km(&["probe", "--token", "ref-anon", "--write-probes", "--rsa-max-bits", "4096"]);
     assert_eq!(code(&anon), 17, "{}", stderr(&anon));
     assert!(stderr(&anon).contains("not marked scratch"), "{}", stderr(&anon));
 }
@@ -134,10 +134,12 @@ fn a_module_override_replaces_the_tokens_module() {
 /// The write probes' scratch guard (docs/CAPROBE.md), on the reference token named
 /// `provider = "ykcs11"`: a provider that creates only as Security Officer probes one slot,
 /// named by `scratchId`, with the admin credential; without either it is refused (17), as is a
-/// `scratchId` on a provider that creates as the user, and a token with no PIN. A slot holding
-/// anything but ykcs11's own placeholder is never overwritten (17); an empty one, or one with the
-/// placeholder, is probed.
+/// `scratchId` on a provider that creates as the user, and a token with no PIN. A slot is probed
+/// only empty or holding the probe's own certificate, which every slot run leaves there: never
+/// one with a real certificate, a key with none, or ykcs11's placeholder, which every key
+/// ykcs11 generates has, a real one too (review 2026-11-23 D-1: that placeholder used to pass).
 fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
+    use cryptoki::object::Attribute as A;
     let Some(module) = suite_var(r.module_var, r.require_var, test) else { return };
     let w = Workdir::new(test);
     std::fs::write(w.dir.join("so-pin"), "5678\n").unwrap();
@@ -163,12 +165,14 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
             token("no-pin", "probe = { scratch = true }"),
             token("empty", &yk("05")),
             token("taken", &yk("06")),
+            token("key-only", &yk("16")),
+            token("marked", &yk("17")),
             token("placeholder", &yk("18")),
         ]
         .concat(),
     );
     let refused = |name: &str, why: &str| {
-        let o = w.km(&["probe", "--token", name, "--write", "--rsa-max-bits", "4096"]);
+        let o = w.km(&["probe", "--token", name, "--write-probes", "--rsa-max-bits", "4096"]);
         assert_eq!(code(&o), 17, "{name}: {}", stderr(&o));
         assert!(stderr(&o).contains(why), "{name}: expected {why:?} in {}", stderr(&o));
     };
@@ -177,14 +181,18 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
     refused("user-slot", "scratchId names a slot for providers that create only as Security Officer");
     refused("no-pin", "has no PIN configured");
 
-    // A real certificate in slot 06, ykcs11's own placeholder in slot 95 (CKA_ID 18).
+    // A real certificate in slot 06, the probe's own in slot 94 (CKA_ID 17), ykcs11's placeholder
+    // in slot 95 (CKA_ID 18), and in slot 93 (CKA_ID 16) a key with no certificate.
     let fixture = |name: &str| {
         let pem = std::fs::read_to_string(format!("{}/../ykcs11/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR")));
         x509_cert::der::pem::decode_vec(pem.unwrap().as_bytes()).unwrap().1
     };
     let slot = fixture("slot.pem");
+    let probes = include_bytes!("../fixtures/import/certificate.der").to_vec();
     let s = open_session(&module, "kmtest", "1234");
-    for (der, id) in [(slot.clone(), 0x06), (fixture("placeholder95.pem"), 0x18)] {
+    let key = [A::Token(true), A::ValueLen(32.into()), A::Id(vec![0x16])];
+    s.generate_key(&cryptoki::mechanism::Mechanism::AesKeyGen, &key).unwrap();
+    for (der, id) in [(slot.clone(), 0x06), (probes.clone(), 0x17), (fixture("placeholder95.pem"), 0x18)] {
         let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&der).unwrap();
         let subject = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject()).unwrap();
         s.create_object(&[
@@ -198,7 +206,9 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
         .unwrap();
     }
     drop(s);
-    refused("taken", "scratchId 06 holds objects that are not ykcs11's own placeholder");
+    for (name, id) in [("taken", "06"), ("key-only", "16"), ("placeholder", "18")] {
+        refused(name, &format!("scratchId {id} holds objects caprobe did not leave there"));
+    }
     // Never overwritten: the slot holds its one certificate, as it was (review reference.rs F1:
     // the exit alone passed a probe that cleared the slot and then refused).
     let s = open_session(&module, "kmtest", "1234");
@@ -216,8 +226,8 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
     // Two write probes on one token: each in a slot of its own, and these modules destroy what
     // the probe makes, so the second meets nothing the first left (review reference.rs F3;
     // `assert_profile_conforms` holds tpm2-pkcs11 to one).
-    for name in ["empty", "placeholder"] {
-        let o = w.km(&["probe", "--token", name, "--write", "--rsa-max-bits", "4096"]);
+    for name in ["empty", "marked"] {
+        let o = w.km(&["probe", "--token", name, "--write-probes", "--rsa-max-bits", "4096"]);
         assert_eq!(code(&o), 0, "{name}: {}", stderr(&o));
         assert!(
             stderr(&o).contains("in a scratch slot: no secret-key, wrap, export or delete probes"),
@@ -225,6 +235,19 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
             stderr(&o)
         );
     }
+    // Each run leaves its slot marked as the probe's, which the next run's guard accepts (as it
+    // did "marked"): a run interrupted before it refuses that slot until it is emptied.
+    let s = open_session(&module, "kmtest", "1234");
+    let certs = s
+        .find_objects(&[A::Class(cryptoki::object::ObjectClass::CERTIFICATE), A::Id(vec![0x05])])
+        .unwrap()
+        .into_iter()
+        .map(|h| match &s.get_attributes(h, &[cryptoki::object::AttributeType::Value]).unwrap()[..] {
+            [A::Value(v)] => v.clone(),
+            other => panic!("slot 05: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert!(certs.contains(&probes), "slot 05 was left unmarked: {} certificates", certs.len());
 }
 
 #[test]

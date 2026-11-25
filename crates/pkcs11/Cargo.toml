@@ -16,6 +16,7 @@ cakeys-core.workspace = true
 cakeys-profile.workspace = true
 cryptoki.workspace = true
 cryptoki-sys.workspace = true
+p11-names.workspace = true
 zeroize.workspace = true
 der.workspace = true
 aes-kw.workspace = true
@@ -26,9 +27,3 @@ x509-cert.workspace = true
 
 [dev-dependencies]
 toml.workspace = true
-
-[features]
-# A module failure's CK_RV value and CKR_* name from cryptoki itself (CK_RV::from(RvError),
-# RvError::name: upstream/rust-cryptoki/0003, which the Nix build applies). Without it a named
-# failure carries no value, only its name.
-rv-value = []

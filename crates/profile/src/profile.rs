@@ -4,7 +4,7 @@
 //! regenerates them and fills the `advertise` lists.
 
 use crate::capability::{Answer, Capability, DECRYPT_OAEP, Move, On, Row, Rows, UNWRAP_TEMPLATE, WRAP_OAEP};
-use crate::names::{KeyKind, Operation};
+use crate::names::KeyKind;
 use std::collections::BTreeMap;
 
 /// Whether the profile is a module's observed set or a layer's subtraction.
@@ -69,7 +69,7 @@ pub struct Manual {
     pub evidence: String,
 }
 
-/// Why an advertised mechanism has no measured row (`[untested]`, `docs/CAPROBE_PROFILE_COVERAGE.md`).
+/// Why an advertised mechanism has no measured row (`[untested]`, `docs/archive/CAPROBE_PROFILE_COVERAGE.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Why {
@@ -177,8 +177,9 @@ pub struct GenerateRow {
 #[serde(deny_unknown_fields)]
 pub struct Restrict {
     /// What the restriction applies to; only "generate" exists today, and an operation of a
-    /// newer cakeys restricts nothing here.
-    pub operation: Operation,
+    /// newer cakeys restricts nothing here. A plain name: one value needs no enum (review
+    /// 2026-11-23 A-13).
+    pub operation: String,
     /// The key type it restricts (`key-type`).
     #[serde(rename = "key-type")]
     pub key_type: KeyKind,

@@ -1,13 +1,16 @@
 //! The `tpm-certify` attestation through tpm2-pkcs11's vendor mechanisms (`src/tpm2-pkcs11-vendor.h`
 //! of a module that has `CKM_TPM2_CERTIFY`): the module runs `TPM2_Certify` for the object, so
 //! cakeys opens neither its sqlite store nor the token's wrapping key, and needs no TPM handle
-//! for the object. The module is no more trusted than on the store path: the statement is the
-//! TPM's, checked here against the object's public area and the signer's public key.
+//! for the object. The statement is checked here against the object's public area and the
+//! signer's public key; how far the TPM, not the module, vouches for it depends on the signer.
 //!
 //! Two signers. A persistent Attestation Key the caller owns (`akHandle`, the default) is named
-//! by its TPM handle (`CKM_TPM2_CERTIFY`); cakeys still reaches the TPM to provision and read it,
-//! so the root a lock pinned stays the same. A token object (`akLabel`, `CKM_TPM2_AK_PAIR_GEN`
-//! and `CKM_TPM2_CERTIFY_OBJECT`) needs no TCTI at all, and is another key: another root.
+//! by its TPM handle (`CKM_TPM2_CERTIFY`); cakeys reaches the TPM to provision and read it, so the
+//! signer is the TPM's key and the root a lock pinned stays the same. A token object (`akLabel`,
+//! `CKM_TPM2_AK_PAIR_GEN` and `CKM_TPM2_CERTIFY_OBJECT`) needs no TCTI at all, and is another
+//! key: another root, and one whose public area and attributes only the module reports
+//! (`check_ak` catches a mislabelled key, not a lying module). Every run on it warns so (review
+//! 2026-11-23 B-2: this header said the module was no more trusted than on the store path).
 
 use super::{Tpm2Options, esys};
 use cakeys_core::{KmError, Result};

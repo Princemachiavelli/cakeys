@@ -484,7 +484,7 @@ pub const SOFTHSM: Reference = Reference {
 
 /// kryoptic 1.5.4 (its `OpenSSL` backend) generates none of secp256k1 or the brainpool curves, and
 /// has no DES mechanism at all (`pkcs11-tool -M` \[run\], 2026-11-15). The harness
-/// (nix/package.nix) ends `KRYOPTIC_CONF` with the token's `[[slots]]` table, so an appended key
+/// (nix/package-common.nix) ends `KRYOPTIC_CONF` with the token's `[[slots]]` table, so an appended key
 /// belongs to it.
 pub const KRYOPTIC: Reference = Reference {
     module_var: "CAKEYS_KRYOPTIC_MODULE",
@@ -557,12 +557,13 @@ pub fn assert_profile_conforms(
     let committed = std::fs::read(committed_profile(path)).unwrap();
     std::fs::write(scratch, &committed).unwrap();
     let out = scratch.to_str().unwrap();
-    let probe = km(&["probe", "--token", token, "--write", "--rsa-max-bits", "4096", "--diff", name, "--out", out]);
+    let probe =
+        km(&["probe", "--token", token, "--write-probes", "--rsa-max-bits", "4096", "--diff", name, "--out", out]);
     assert_eq!(code(&probe), 0, "a fresh probe drifts from {name}: {}", String::from_utf8_lossy(&probe.stderr));
     assert!(
         std::fs::read(scratch).unwrap() == committed,
-        "{path} is not what the probe generates: regenerate it with `caprobe probe --token <t> --write \
-         --diff {name} --out profiles/{path}`, never by hand"
+        "{path} is not what the probe generates: regenerate it with `caprobe probe --token <t> --write-probes \
+         --rsa-max-bits 4096 --diff {name} --out profiles/{path}` (scripts/regen-profiles.sh), never by hand"
     );
     // A read-only probe conforms on what it observes; it may never overwrite the file.
     assert_eq!(code(&km(&["probe", "--token", token, "--diff", name])), 0);
@@ -570,10 +571,17 @@ pub fn assert_profile_conforms(
     assert_eq!(std::fs::read(scratch).unwrap(), committed, "a read-only probe overwrote the file");
 }
 
-/// The writing form of a compare-only `lock`/`delete` argument list: `--no-update-lock`
-/// dropped, `--update-lock` (the default, said explicitly) added.
+/// The writing form of a compare-only `lock`/`delete` argument list: `--dry-run` dropped.
 pub fn recording<'a>(args: &[&'a str]) -> Vec<&'a str> {
-    args.iter().copied().filter(|a| *a != "--no-update-lock").chain(["--update-lock"]).collect()
+    args.iter().copied().filter(|a| *a != "--dry-run").collect()
+}
+
+/// What a one-object `lock` run printed: its one row of the JSON array `lock` prints (one per
+/// object, review 2026-11-23 C-7).
+pub fn lock_result(o: &Output) -> serde_json::Value {
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout).unwrap();
+    let [row] = <[serde_json::Value; 1]>::try_from(rows).unwrap_or_else(|rows| panic!("not one lock result: {rows:?}"));
+    row
 }
 
 pub fn got_hash(o: &Output) -> String {
@@ -590,11 +598,15 @@ pub fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
-/// A test's scratch directory — keys.toml, keys.lock and a PIN file holding `1234` — and the
+/// A test's scratch directory — keys.toml, keys.lock (empty: as `--new-lock` starts one) and a
+/// PIN file holding `1234` — and the
 /// runs of the tool against it. A token suite's test holds one in its [`Suite`].
 pub struct Workdir {
     pub dir: PathBuf,
 }
+
+/// A lock that pins nothing: what `--new-lock` starts from, and every test directory's first.
+pub const EMPTY_LOCK: &str = "version = 1\n";
 
 /// The directory of one test under the integration tests' tmpdir, which every package and test
 /// binary shares: named for both, so suites that run at once (and the shared reference suite,
@@ -611,6 +623,7 @@ impl Workdir {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("pin"), "1234\n").unwrap();
+        std::fs::write(dir.join("keys.lock"), EMPTY_LOCK).unwrap();
         Workdir { dir }
     }
 

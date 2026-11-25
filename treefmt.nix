@@ -10,11 +10,6 @@ let
       "MD025" # several top-level headings: the archived prior-art excerpt is a set of documents in one file
       "MD036" # bold paragraph labels: the research notes use them as run-in headings
     ];
-    # docs/archive/working/RESPONSE.md is a reply verbatim: one quoted question after another, each answered inline.
-    per-file-ignores."docs/archive/working/RESPONSE.md" = [
-      "MD028"
-      "MD041"
-    ];
   };
 
   typosConfig = toml "typos.toml" {
@@ -68,6 +63,9 @@ in
       deadnix.priority = 1;
       statix.priority = 2;
       nixfmt.priority = 3;
+      # caprobe's output, byte for byte (`every_committed_profile_is_what_the_emitter_writes`):
+      # a row past the column width stays on one line.
+      taplo.excludes = [ "profiles/modules/*/*.toml" ];
       rumdl-check.options = [
         "--config"
         "${rumdlConfig}"

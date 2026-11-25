@@ -24,7 +24,7 @@ use cakeys_core::Result;
 use cakeys_core::config::Options;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass;
-use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, ImportCtx, PlaintextKind, Provider, Report};
+use cakeys_pkcs11::provider::{AttestationCap, PlaintextKind, PlaintextVia, Provider, Topic};
 use cakeys_pkcs11::token::ModuleInfo;
 use std::borrow::Cow;
 
@@ -40,16 +40,12 @@ impl Provider for Tpm2Pkcs11 {
         m.manufacturer == "tpm2-software.github.io"
     }
 
-    fn repair<'a>(&self, report: Report<'a>) -> Report<'a> {
-        match report {
-            Report::EcPoint(Cow::Borrowed(raw)) => Report::EcPoint(fix_ec_point(raw)),
-            Report::EcPoint(Cow::Owned(raw)) => Report::EcPoint(Cow::Owned(fix_ec_point(&raw).into_owned())),
-            other => other,
-        }
+    fn ec_point<'a>(&self, raw: &'a [u8]) -> Cow<'a, [u8]> {
+        fix_ec_point(raw)
     }
 
-    fn hint(&self) -> Option<&'static str> {
-        Some(
+    fn hint(&self, about: Topic) -> Option<&'static str> {
+        (about == Topic::Generate).then_some(
             "secret keys cannot be generated through tpm2-pkcs11; create them with `tpm2_ptool addkey` or `tpm2_ptool import` and adopt them (`lock`, never `cakeys create`)",
         )
     }
@@ -62,6 +58,7 @@ impl Provider for Tpm2Pkcs11 {
             classes: &[ObjectClass::PrivateKey, ObjectClass::SecretKey],
             // An imported key is loaded like any other (its CKA_LOCAL false in the record).
             imported: true,
+            attest: attest::attest,
         })
     }
 
@@ -69,16 +66,8 @@ impl Provider for Tpm2Pkcs11 {
         attest::Tpm2Options::of(token, options).map(drop)
     }
 
-    fn attest(&self, ctx: &AttestCtx<'_>) -> Result<Attested> {
-        attest::attest(ctx)
-    }
-
-    fn import_plaintext(&self, ctx: &ImportCtx<'_>) -> Result<()> {
-        ptool::import(ctx)
-    }
-
-    fn plaintext_import(&self) -> PlaintextKind {
-        PlaintextKind::Tpm2Ptool
+    fn plaintext_import(&self) -> PlaintextVia {
+        PlaintextVia::Tool(PlaintextKind::Tpm2Ptool, ptool::import)
     }
 }
 

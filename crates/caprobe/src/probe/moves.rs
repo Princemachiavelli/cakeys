@@ -1,4 +1,4 @@
-//! The import, create, export and unwrap probes (`docs/CAPROBE_MIGRATION.md`): fixed test keys
+//! The import, create, export and unwrap probes (`docs/archive/CAPROBE_MIGRATION.md`): fixed test keys
 //! (`fixtures/import`: test keys, no secret, so a profile regenerates byte for byte) brought
 //! into the token each way the module offers and taken out each way. Every row is a round trip
 //! checked on the host: an imported private key proves possession of the test key's public key,
@@ -9,11 +9,11 @@
 //! is imported, as SO, and the slot ends holding a freshly generated key and its placeholder,
 //! as the generation probes leave it.
 
-use super::{Created, Draft, Made, Target, ckr, evidence, refused, rsa_aes_key_wrap, spec};
-use cakeys_core::config::{Binding, Locator, ObjectCfg};
+use super::{Created, Draft, Made, Target, ckr, evidence, refused, rsa_aes_key_wrap, so_login, spec};
+use cakeys_core::config::{Binding, Locator, Object, ObjectCfg};
 use cakeys_core::migrate::Method;
+use cakeys_core::migrate::OaepHash;
 use cakeys_core::plaintext::{private_from_pkcs8, spki_of_pkcs8};
-use cakeys_core::pop::OaepHash;
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result, id};
 use cakeys_pkcs11::provider::PlaintextKind;
@@ -55,10 +55,15 @@ const RSA_KEYS: [(u32, &[u8]); 7] = [
 ];
 
 /// AES values of each length, in bytes.
-const AES_KEYS: [&[u8]; 3] = [fixture!("aes-16.key"), fixture!("aes-24.key"), fixture!("aes-32.key")];
+pub(super) const AES_KEYS: [&[u8]; 3] = [fixture!("aes-16.key"), fixture!("aes-24.key"), fixture!("aes-32.key")];
 
 /// A self-signed certificate under the P-256 key.
 const CERTIFICATE: &[u8] = fixture!("certificate.der");
+
+/// What marks a scratch slot as one the probe used: its own certificate (`CN=cakeys-probe`),
+/// written over the slot's last key ([`mark_slot`]) and the one occupant the next run's guard
+/// accepts (`super::check_slot`).
+pub(super) const SLOT_MARKER: &[u8] = CERTIFICATE;
 
 /// A data object's value.
 const DATA: &[u8] = b"cakeys probe: a data object";
@@ -82,7 +87,7 @@ type Transport = Option<(ObjectHandle, ObjectHandle)>;
 ///
 /// An SO login failing, which stops the probe as it stops the generation probes.
 pub(super) fn probe_moves(made: &mut Made, profile: &mut Draft, transport: Transport) -> Result<()> {
-    let kind = made.tok.provider.plaintext_import();
+    let kind = made.tok.provider.plaintext_import().kind();
     if kind == PlaintextKind::Tpm2Ptool {
         // tpm2_ptool writes the module's store, which this open token reads only once opened
         // again: no row rather than a refusal of the path the provider really takes.
@@ -123,18 +128,52 @@ pub(super) fn probe_moves(made: &mut Made, profile: &mut Draft, transport: Trans
     match made.scratch.target {
         Target::Labels => create_public(made, profile, Class::Data, DATA)?,
         // PIV's data objects are the device's own (CHUID, CCC): never written. The slot gets a
-        // generated key again, which also puts its placeholder certificate back.
+        // generated key again, and then the probe's own certificate over ykcs11's placeholder.
         Target::Slot(_) => {
             let p256 = ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(Class::PrivateKey, Some(Kt::Ec)) };
-            if let Created::Refused(e) | Created::Lost(e) = made.create(&p256, &spec(&[], &[]))? {
+            if let Created::Refused(e) | Created::Lost(e) | Created::Undecided(e) =
+                made.create(&p256, &spec(&[], &[]))?
+            {
                 made.undetermined.push(format!(
                     "the scratch slot holds the last key the import probes put there: generating over it: {}",
                     evidence(made.tok, &e)
                 ));
             }
+            mark_slot(made)?;
         }
     }
     Ok(())
+}
+
+/// Leave the scratch slot marked as the probe's: its own certificate ([`SLOT_MARKER`]) over the
+/// placeholder ykcs11 wrote with the last generation. ykcs11 writes that placeholder for every
+/// key it generates, so it tells a probe's slot from no real key's; the next run's guard
+/// (`super::check_slot`) accepts only this certificate (review 2026-11-23 D-1). A slot left
+/// unmarked is refused by the next run until it is emptied, and this run says so.
+fn mark_slot(made: &mut Made) -> Result<()> {
+    let object = public_object(Class::Certificate);
+    let (loc, _) = made.locator();
+    let mut t = vec![Attribute::Token(true)];
+    t.extend(host_encoding(&loc, &object, SLOT_MARKER)?);
+    let (probe_spec, session) = (spec(&[], &[]), made.session);
+    let on = Declared { object: Object::new(&object)?, spec: &probe_spec, locator: &loc };
+    let marked = made.tok.provider.adjusted(&Template::Object(on), t).and_then(|t| {
+        made.tok.managing("marking the scratch slot", || {
+            session.create_object(&t).map_err(|e| KmError::Unsupported(format!("C_CreateObject: {}", ckr(&e)).into()))
+        })
+    });
+    match marked {
+        Ok(_) => Ok(()),
+        Err(e) if so_login(&e) => Err(e),
+        Err(e) => {
+            made.undetermined.push(format!(
+                "the scratch slot is left without the probe's certificate, so the next run refuses it until it is \
+                 emptied: {}",
+                evidence(made.tok, &e)
+            ));
+            Ok(())
+        }
+    }
 }
 
 /// The curves cakeys names (`id::Curve::ALL`) with no test key in [`CURVE_KEYS`]: no import
@@ -184,11 +223,6 @@ impl Made<'_> {
     }
 }
 
-/// Whether `e` is an SO login failing: it stops the probe, never a row.
-fn so_login(e: &KmError) -> bool {
-    matches!(e, KmError::Unavailable(m) if m.contains(token::SO_LOGIN))
-}
-
 /// Import `key` as its provider imports (`import.*`), with its public half first on a scratch
 /// token (`create.CKO_PUBLIC_KEY.*`: PIV derives its own), then export it each way.
 fn import_private(
@@ -200,10 +234,11 @@ fn import_private(
 ) -> Result<()> {
     let cap = Capability::Import { key_type: key.key_type.clone(), on: key.on.clone() };
     let read = || -> Result<_> {
+        let object = Object::new(&key.object)?;
         let spki = id::spki_canonical(&spki_of_pkcs8(key.der)?)?;
-        Ok((spki, private_from_pkcs8(key.der, key.kt, key.object.curve.as_deref())?))
+        Ok((object, spki, private_from_pkcs8(key.der, key.kt, object.curve())?))
     };
-    let (spki, parts) = match read() {
+    let (object, spki, parts) = match read() {
         Ok(read) => read,
         Err(e) => {
             made.undetermined.push(format!("no {cap} row: the host does not read the test key: {e}"));
@@ -222,7 +257,7 @@ fn import_private(
     };
     // Every template as the provider adjusts it for the verbs (`Provider::template`).
     let probe_spec = spec(&[], &[]);
-    let declared = Declared { object: &key.object, spec: &probe_spec, locator: &loc };
+    let declared = Declared { object, spec: &probe_spec, locator: &loc };
     let provider = made.tok.provider.clone();
     let adjusted = |t: Template<'_>, attrs| provider.adjusted(&t, attrs);
     if labels {
@@ -241,13 +276,13 @@ fn import_private(
     // that gets the key without it, its exports then unprobed.
     let made_key = if labels {
         let extractable = [&base[..], &[Attribute::Extractable(true)]].concat();
-        match import(extractable).and_then(|t| made.tok.create_private(&key.object, t, &parts)) {
+        match import(extractable).and_then(|t| made.tok.create_private(object, t, &parts)) {
             Ok(h) => Ok((h, true)),
             Err(e) if so_login(&e) => return Err(e),
-            Err(_) => import(base).and_then(|t| made.tok.create_private(&key.object, t, &parts)).map(|h| (h, false)),
+            Err(_) => import(base).and_then(|t| made.tok.create_private(object, t, &parts)).map(|h| (h, false)),
         }
     } else {
-        import(base).and_then(|t| made.tok.create_private(&key.object, t, &parts)).map(|h| (h, false))
+        import(base).and_then(|t| made.tok.create_private(object, t, &parts)).map(|h| (h, false))
     };
     let (h, extractable) = match made_key {
         Ok(made_key) => made_key,
@@ -258,7 +293,7 @@ fn import_private(
         }
     };
     made.track(h, label.as_ref());
-    match made.tok.prove_binding(h, &key.object, &spki, Binding::PopSign) {
+    match made.tok.prove_binding(h, object, &spki, Binding::PopSign) {
         Ok(()) => profile.set(cap, Answer::Yes, None, Some(kind.name().into())),
         Err(e) => {
             made.undetermined
@@ -285,7 +320,7 @@ fn import_private(
         let locator = Locator { label: Some(label.to_owned()), id: None };
         adjusted(Template::Import(Declared { locator: &locator, ..declared }, Via::Unwrap), t)
     };
-    let same = |m: &Made, h2| m.tok.prove_binding(h2, &key.object, &spki, Binding::PopSign);
+    let same = |m: &Made, h2| m.tok.prove_binding(h2, object, &spki, Binding::PopSign);
     let test_key = TestKey { key_type: &key.key_type, on: &key.on, h, secret: false, template: &template, same: &same };
     exports(made, profile, &test_key, &host_same, transport);
     Ok(())
@@ -334,9 +369,16 @@ fn public_half(
 /// # Errors
 ///
 /// What the host cannot encode: a locator or value cakeys has no attributes for.
+/// A certificate or data object of the probe's, typed as keys.toml would type it (an X.509
+/// certificate), so it parses as one.
+fn public_object(class: Class) -> ObjectCfg {
+    let certificate_type = (class == Class::Certificate).then(|| "CKC_X_509".to_owned());
+    ObjectCfg { certificate_type, ..ObjectCfg::new(class, None) }
+}
+
 fn host_encoding(locator: &Locator, object: &ObjectCfg, value: &[u8]) -> Result<Vec<Attribute>> {
     let mut t = locator_attrs(locator)?;
-    t.extend(public_object_attrs(object, value)?);
+    t.extend(public_object_attrs(Object::new(object)?, value)?);
     Ok(t)
 }
 
@@ -646,7 +688,7 @@ fn host_kcv(value: &[u8]) -> Option<Vec<u8>> {
 /// `Unavailable` when the check itself fails: it takes `CKM_AES_ECB`, which the module may
 /// lack while it imports AES keys, so the message names the check, not the import. `Conflict`
 /// for another key's check value.
-fn same_aes(made: &Made, h: ObjectHandle, value: &[u8]) -> Result<()> {
+pub(super) fn same_aes(made: &Made, h: ObjectHandle, value: &[u8]) -> Result<()> {
     let token = made.session.encrypt(&Mechanism::AesEcb, h, &[0; 16]).map_err(|e| {
         KmError::Unavailable(
             format!("the host's check of the key needs C_Encrypt with CKM_AES_ECB, which fails: {}", ckr(&e)).into(),
@@ -670,7 +712,7 @@ fn import_secret(made: &mut Made, profile: &mut Draft, kt: Kt, value: &[u8], tra
     let label = made.scratch.label();
     // Every template as the provider adjusts it for the verbs (`Provider::template`).
     let object = super::secrets::secret_object(kt, n);
-    let key_type = match token::key_type_of(&object) {
+    let (object, key_type) = match Object::new(&object).and_then(|o| Ok((o, token::key_type_of(o)?))) {
         Ok(t) => t,
         Err(e) => {
             made.undetermined.push(format!("no {cap} row: {}", evidence(made.tok, &e)));
@@ -701,7 +743,7 @@ fn import_secret(made: &mut Made, profile: &mut Draft, kt: Kt, value: &[u8], tra
     let provider = made.tok.provider.clone();
     let adjusted = |label: &str, via, t| {
         let locator = Locator { label: Some(label.to_owned()), id: None };
-        provider.adjusted(&Template::Import(Declared { object: &object, spec: &probe_spec, locator: &locator }, via), t)
+        provider.adjusted(&Template::Import(Declared { object, spec: &probe_spec, locator: &locator }, via), t)
     };
     let h = match adjusted(&label, Via::CreateObject, base).and_then(|t| made.tok.create_secret(t, value)) {
         Ok(h) => h,
@@ -767,7 +809,7 @@ fn secret_value(n: u32) -> Vec<u8> {
 /// Create a certificate or a data object from its value (`create.CKO_*`), read back. In a
 /// scratch slot, as SO into the slot.
 fn create_public(made: &mut Made, profile: &mut Draft, class: Class, bytes: &[u8]) -> Result<()> {
-    let object = ObjectCfg::new(class, None);
+    let object = public_object(class);
     let cap = Capability::Create { class: class.to_string(), key: None };
     let (loc, label) = made.locator();
     let mut t = vec![Attribute::Token(true)];
@@ -783,7 +825,7 @@ fn create_public(made: &mut Made, profile: &mut Draft, class: Class, bytes: &[u8
     }
     let probe_spec = spec(&[], &[]);
     let session = made.session;
-    let on = Declared { object: &object, spec: &probe_spec, locator: &loc };
+    let on = Declared { object: Object::new(&object)?, spec: &probe_spec, locator: &loc };
     let created = made.tok.provider.adjusted(&Template::Object(on), t).and_then(|t| {
         made.tok.managing("the create probe", || {
             session.create_object(&t).map_err(|e| KmError::Unsupported(format!("C_CreateObject: {}", ckr(&e)).into()))
@@ -825,7 +867,7 @@ mod tests {
                     assert_eq!(p.modulus.len() * 8, *bits as usize);
                 }
                 On::Item(curve) => assert_eq!(
-                    id::spki_curve(&spki).unwrap().map(cakeys_core::id::Curve::name),
+                    id::KeyAlg::of_spki(&spki).unwrap().curve().map(cakeys_core::id::Curve::name),
                     Some(curve.as_str()),
                     "{curve}"
                 ),
@@ -864,7 +906,7 @@ mod tests {
     /// undetermined rather than end the run with (review moves F1).
     #[test]
     fn the_host_encoding_fails_as_a_value() {
-        let cert = ObjectCfg::new(Class::Certificate, None);
+        let cert = public_object(Class::Certificate);
         let ok = Locator { label: Some("cakeys-probe-01".into()), id: None };
         assert!(host_encoding(&ok, &cert, CERTIFICATE).is_ok());
         let odd = Locator { label: None, id: Some("not hex".into()) };

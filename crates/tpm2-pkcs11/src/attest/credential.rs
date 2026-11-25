@@ -38,15 +38,11 @@ pub(crate) struct Credential {
 /// `Conflict` when the bytes are too short to name an algorithm; `Unsupported` for a nameAlg
 /// other than SHA-256.
 pub(crate) fn name_of(tpmt_public: &[u8]) -> Result<Vec<u8>> {
-    let alg = tpmt_public
-        .get(2..4)
-        .map(|b| u16::from_be_bytes([b[0], b[1]]))
-        .ok_or_else(|| KmError::Conflict("a public area too short to name its nameAlg".into()))?;
+    let name = super::esys::tpmt_name(tpmt_public)?;
+    let alg = u16::from_be_bytes([name[0], name[1]]);
     if alg != SHA256_ALG {
         return Err(KmError::Unsupported(format!("nameAlg 0x{alg:04x} (the credential takes SHA-256)").into()));
     }
-    let mut name = alg.to_be_bytes().to_vec();
-    name.extend_from_slice(&Sha256::digest(tpmt_public));
     Ok(name)
 }
 

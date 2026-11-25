@@ -153,8 +153,14 @@ pub fn plan_templates(
 ///
 /// # Errors
 ///
-/// What `lock`'s capability check refuses, the provider's templates included.
+/// What `lock`'s capability check refuses, the provider's templates included; `Validation` (17)
+/// for a key the module cannot place under its locator (`Provider::placement`).
 pub fn check_import(t: &Target, tok: &Token) -> Result<()> {
+    // Where the module can place it (ykcs11: a PIV slot by CKA_ID, never f9's attestation key),
+    // before the write: a PIV slot's imported key cannot be erased (review 2026-11-23 B-3).
+    if t.object.class.is_key() {
+        tok.provider.placement(&t.on_token.locator)?;
+    }
     check_imported_attestation(t, tok.provider.as_ref()).map_err(|m| tok.unsupported(m))?;
     check_capabilities(t, tok, plan_mode(t)?, Verb::Lock)
 }
@@ -254,7 +260,7 @@ pub(crate) fn check_attestation(
 pub(super) fn check_capabilities(t: &Target, tok: &Token, mode: Mode, verb: Verb) -> Result<()> {
     let creating = verb == Verb::Create;
     let to_token = |e| match e {
-        KmError::Unsupported(m) => tok.unsupported(m),
+        KmError::Unsupported(m) => tok.unsupported_for(Topic::Generate, m),
         e => e,
     };
     let own = if creating { Some(own_generation(t, tok.provider.as_ref()).map_err(to_token)?) } else { None };
@@ -262,7 +268,12 @@ pub(super) fn check_capabilities(t: &Target, tok: &Token, mode: Mode, verb: Verb
     check_attestation(t, tok.provider.as_ref()).map_err(|m| tok.unsupported(m))?;
     let generation = needs.generation.map(|m| vec![m]);
     if let Some(g) = needs.groups.iter().chain(&generation).find(|g| !g.iter().any(|m| tok.has(*m))) {
-        return Err(tok.unsupported(lacking(&tok.name, g, mode, t)));
+        let about = if generation.as_ref().is_some_and(|own| std::ptr::eq(own, g)) {
+            Topic::Generate
+        } else {
+            Topic::Mechanism
+        };
+        return Err(tok.unsupported_for(about, lacking(&tok.name, g, mode, t)));
     }
     // The proof the realisation will make, as the spec says it (camigrate's plan asks the same).
     if let Some(b) = cakeys_core::plan::expected_binding(t) {

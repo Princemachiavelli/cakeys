@@ -93,17 +93,18 @@ What the run settled [run]:
 - **Keys bound to algorithms.** Every key is fixed to one algorithm at creation. The generate
   template may hold only `CKA_LABEL` and `CKA_KMS_ALGORITHM`, and no public template is
   allowed. That quirk lives in the provider crate `crates/kmsp11`, behind
-  `Provider::bound_keys`.
+  `Provider::generation` (the verbs' algorithm choice) and `Provider::bound_keys` (the probe's).
 - **The 24-hour destroy window.** The destroy-scheduled duration is fixed at key creation, and
   `libkmsp11` cannot set it. So OpenTofu pre-creates one key per algorithm with 24 hours and no
   version, and the probe adds versions to them (`experimental_create_multiple_versions`, which
-  refuses an algorithm that differs from the key's). `probe --write` checks every key first.
+  refuses an algorithm that differs from the key's). `probe --write-probes` checks every key first.
 - **One run.** It wrote `kmsp11/1.9+hsm` and `kmsp11/1.9+hsm-fips`, identical. Both builds
   report the same `C_GetInfo`: Google, 1.9, Cloud KMS Token, firmware 0.0. That cost 38 versions
   scheduled for destruction, gone after a day.
 
 **Module.** Prebuilt linux-amd64 tarball from GitHub releases, signature checked with
-`openssl dgst -sha384 -verify` [doc]; glibc 2.29 or later [doc]. Nix: `fetchurl` plus
+`openssl dgst -sha384 -verify` [doc]. The user guide asks for glibc 2.29 or later [doc]; the 1.9
+binaries link glibc 2.17 symbols only (the packages above). Nix: `fetchurl` plus
 `autoPatchelfHook`, pinned by hash, added to `pkgs.nix` as an unfree-marked derivation
 (Apache-2.0 allows redistribution, but the hash pin keeps the repo free of blobs). Config is a
 YAML file named by `KMS_PKCS11_CONFIG`, owner-writable only [doc]:
@@ -158,7 +159,7 @@ should be counted before the run (§Safety).
 - `C_Login` accepts `CKU_USER` only and ignores the PIN; the SO role does not exist.
 - `CKA_ID` is the full CryptoKeyVersion resource name; `CKA_LABEL` is the CryptoKey ID.
 
-**Profile name and match fields.** `libkmsp11/1.9+hsm`. Protection level is D12-style state:
+**Profile name and match fields.** `kmsp11/1.9+hsm`. Protection level is D12-style state:
 `HSM`, `HSM_SINGLE_TENANT` (new in 1.9) and `SOFTWARE` (only with `allow_software_keys`) are
 three profiles by name, since PKCS#11 will not report it [inf]. Single-tenant is billed
 separately and is out of scope for the first pass.
@@ -169,9 +170,10 @@ a 15-key probe is $0.50–2. (An earlier draft said "cents"; that was wrong.) Th
 destroy delay: the default is 30 days, and the docs say only that *destroyed* versions are not
 billed, not whether versions *scheduled* for destruction are [todo]. If they are, a daily run of
 ~50 keys settles at ~1,500 live versions, $1,500–3,750 a month. Two things must be settled
-before any daily automation: whether `libkmsp11` lets a created key carry a short
-`destroy_scheduled_duration` (it creates the CryptoKey itself; not stated) and the key budget
-per run. Until then, run by hand and read the bill.
+before any daily automation. The first, whether a key the probe uses carries a short
+`destroy_scheduled_duration`, is settled above ("The 24-hour destroy window": `libkmsp11` cannot
+set it, so the probe adds versions to keys pre-created with 24 hours). The second, the key
+budget per run, is open. Until then, run by hand and read the bill.
 
 ### 2. AWS CloudHSM
 
@@ -324,7 +326,7 @@ the source.
 
 ## Profile integration
 
-- Names follow the repo's `module/version+hardware` rule (D10): `libkmsp11/1.9+hsm`,
+- Names follow the repo's `module/version+hardware` rule (D10): `kmsp11/1.9+hsm`,
   `aws-cloudhsm/<ver>+hsm2m-fips`, `azure-cloud-hsm/2.0.2.5`. A cloud service is a "hardware"
   the repo cannot see beneath, so profiles are pairs and `profiles/hardware/` stays empty for it.
 - FIPS mode and protection level are D12 axes: `[match.fields]` where PKCS#11 3.2 reports them
@@ -371,8 +373,8 @@ Two layers, because their lifetimes differ.
   backup. One entry point per provider with the same three verbs:
   `scripts/cloud/<provider> up | probe | down`, and `scripts/cloud/status`.
 
-`probe` runs `caprobe probe --token <t> --write --diff <profile> --out <file>` on the runner
-(or here, for GCP) and copies the generated TOML back.
+`probe` runs `caprobe probe --token <t> --write-probes --rsa-max-bits 4096 --diff <profile> --out <file>`
+on the runner (or here, for GCP) and copies the generated TOML back.
 
 ### Safety against a leaked bill
 
@@ -390,7 +392,7 @@ Two layers, because their lifetimes differ.
 | Phase | Work | Exit | Spend |
 |---|---|---|---|
 | 0 | Decisions: runner pattern, budgets, accounts/projects (below) | answers recorded | $0 |
-| 1 | **GCP.** `libkmsp11` derivation. `caprobe probe` read-only against a scratch ring, then `--write`. Throttle and back-off. `libkmsp11/1.9+hsm.toml`, the gated test, the regen script | probe is byte-stable twice in a row; destroy semantics and billing while scheduled recorded | $0.5–2 per run, unless scheduled versions bill for 30 days (spike 3) |
+| 1 | **GCP.** `libkmsp11` derivation. `caprobe probe` read-only against a scratch ring, then `--write-probes`. Throttle and back-off. `kmsp11/1.9+hsm.toml`, the gated test, the regen script | probe is byte-stable twice in a row; destroy semantics and billing while scheduled recorded | $0.5–2 per run, unless scheduled versions bill for 30 days (spike 3) |
 | 2 | **AWS.** Runner and base layer. `cloudhsm-pkcs11` derivation. Bootstrap once. Spike: zero-HSM restore, then (optional, 1 h) tunnel to `127.0.0.1`. `up`/`probe`/`down`. FIPS profile | parked cycle works twice; `status` is empty after `down`; profile committed | ~$10 |
 | 3 | **Azure.** Gate: user sets a ceiling. Reuse the runner module. Spikes: create time, restore-replaces-activation, driver need. Profile | as Phase 2 | ~$15 per attempt |
 | 4 | **Close-out.** Move the conclusions into CAPROBE.md; record the cloud tokens in CONFIG.md; add what each cloud needs to DEVELOPMENT.md's hardware rules (the cloud credentials, the ceiling) | docs consistent | $0 |
@@ -405,7 +407,7 @@ Each turns a **[todo]** into **[run]**. Their order is by cost.
 
 1. libkmsp11 auth route: ADC vs key file (GCP, free).
 2. Write quota behaviour under the probe's real load (GCP, cents).
-3. Destroy-scheduled minimum, whether libkmsp11 can set it on a key it creates, key-ring
+3. Destroy-scheduled minimum (`libkmsp11` cannot set it on a key it creates [run]), key-ring
    deletion, per-version billing while scheduled and its pro-rating granularity (GCP). This one
    gates daily runs: see the GCP "Cost per run".
 4. AWS zero-HSM `create-hsm` restore: does the cluster stay initialized and activated; does

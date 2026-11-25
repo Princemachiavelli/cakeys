@@ -41,14 +41,15 @@ flowchart LR
 
 Every use recomputes the identity from the token and compares it with the lock. Only `create`
 makes the object when the locator is empty; `lock` finds it or exits 11. Both record first
-use in the lock by default; with `--no-update-lock` (and in `check`) first use fails like a
+use in the lock by default; with `lock --dry-run` or `create --no-update-lock` (and in `check`) first use fails like a
 fixed-output derivation, printing the hash to record.
 
 ```mermaid
 flowchart TD
     START(["cakeys create | lock &lt;spec&gt; --token &lt;t&gt;"]) --> GUARD
     GUARD["a writing run (the default) takes the exclusive lock<br/>on &lt;lock&gt;.lck for the whole run"]
-    GUARD -- "Nix build sandbox, or the lock<br/>is not writable" --> X21(["exit 21 before any token is touched:<br/>pass --no-update-lock"])
+    GUARD -- "no lock file, and no --new-lock" --> X17L(["exit 17: a lock that is not there"])
+    GUARD -- "Nix build sandbox, or the lock<br/>is not writable" --> X21(["exit 21 before any token is touched:<br/>pass --dry-run"])
     GUARD --> VAL["validate: mode, binding, attribute shapes,<br/>certificateType, per-class names"]
     VAL -- "invalid spec" --> X17(["exit 17"])
     VAL --> FIND["find by locator<br/>(CKA_LABEL / CKA_ID)"]
@@ -62,16 +63,16 @@ flowchart TD
     RESOLVE -- "proof does not verify" --> X13a(["exit 13 conflict"])
     RESOLVE -- "token refuses / lacks the mechanism" --> X15(["exit 15 unsupported"])
     RESOLVE --> RECONCILE{"reconcile with the lock"}
-    RECONCILE -- "first use, --no-update-lock" --> X18(["exit 18 first use, prints got: sha256-…"])
+    RECONCILE -- "first use, --dry-run" --> X18(["exit 18 first use, prints got: sha256-…"])
     RECONCILE -- "id differs" --> X10b(["exit 10 hash mismatch,<br/>also when the lock is written"])
     RECONCILE -- "object / locator / spec digest / binding /<br/>mode / policy / immutables changed" --> X14(["exit 14: review,<br/>then lock again"])
-    RECONCILE -- "matches, or first use (default)" --> OK(["exit 0 — resolved JSON printed;<br/>what the lock lacked is recorded<br/>unless --no-update-lock"])
+    RECONCILE -- "matches, or first use (default)" --> OK(["resolved JSON printed; exit 22 when<br/>what the lock lacked was recorded,<br/>0 when the lock was already complete"])
 ```
 
-`check` (also `verify`) is the same walk without the write, in a read-only session, and prints
+`check` is the same walk without the write, in a read-only session, and prints
 the URI; every verb names the object first (`<object> [--spec] [--token]`);
 `delete` proves possession once more so If-Match cannot pass on a bystander object; `gc` prints
-lock entries the config no longer names and removes them with `--apply`.
+lock entries the config no longer names and removes them (`--dry-run` only prints them).
 
 ## 3. Proof of possession: which `binding` applies
 

@@ -260,6 +260,42 @@
   curve secp521r1: yes (aws-cloudhsm/5.18+hsm2m-fips)
   oaep SHA-1: yes (aws-cloudhsm/5.18+hsm2m-fips)
   oaep SHA-256: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit cmac CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit cmac CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit cmac CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit kcv-ecb CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit kcv-ecb CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit kcv-ecb CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit kcv-ecb-dec CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit kcv-ecb-dec CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit kcv-ecb-dec CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-fips)
+  commit kw CKK_AES: no — aws-cloudhsm/5.18+hsm2m-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
+  commit kw CKK_AES 16 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
+  commit kw CKK_AES 24 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
+  commit kw CKK_AES 32 bytes: no — aws-cloudhsm/5.18+hsm2m-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
 # aws-cloudhsm/5.18+hsm2m-non-fips
   wrap.oaep Some("[\"SHA-1\", \"SHA-256\"]")
   decrypt.oaep Some("[\"SHA-1\", \"SHA-256\", \"SHA-512\"]")
@@ -458,6 +494,46 @@
   curve secp521r1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   oaep SHA-1: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
   oaep SHA-256: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit cmac CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit cmac CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit cmac CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha1 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha224 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha256 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha384 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit hmac-sha512 CKK_GENERIC_SECRET 64 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit kcv-ecb CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit kcv-ecb CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit kcv-ecb CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit kcv-ecb CKK_DES3: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit kcv-ecb-dec CKK_AES: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 16 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit kcv-ecb-dec CKK_AES 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit kcv-ecb-dec CKK_AES 32 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit kcv-ecb-dec CKK_DES3: unknown — module profile aws-cloudhsm/5.18+hsm2m-non-fips probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 24 bytes: yes (aws-cloudhsm/5.18+hsm2m-non-fips)
+  commit kw CKK_AES: no — aws-cloudhsm/5.18+hsm2m-non-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
+  commit kw CKK_AES 16 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
+  commit kw CKK_AES 24 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
+  commit kw CKK_AES 32 bytes: no — aws-cloudhsm/5.18+hsm2m-non-fips: the commitment: unsupported: kw commitment (CKM_AES_KEY_WRAP): CKR_ATTRIBUTE_VALUE_INVALID: Function::CreateObject
 # kmsp11/1.9+hsm-fips
   wrap.oaep None
   decrypt.oaep Some("[\"SHA-256\", \"SHA-512\"]")
@@ -1064,6 +1140,62 @@
   curve secp521r1: yes (kryoptic/1.5)
   oaep SHA-1: yes (kryoptic/1.5)
   oaep SHA-256: yes (kryoptic/1.5)
+  commit cmac CKK_AES: unknown — module profile kryoptic/1.5 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 16 bytes: yes (kryoptic/1.5)
+  commit cmac CKK_AES 24 bytes: yes (kryoptic/1.5)
+  commit cmac CKK_AES 32 bytes: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_GENERIC_SECRET: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_SHA_1_HMAC: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_SHA_1_HMAC 16 bytes: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_SHA_1_HMAC 32 bytes: yes (kryoptic/1.5)
+  commit hmac-sha1 CKK_SHA_1_HMAC 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_GENERIC_SECRET: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_SHA224_HMAC: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_SHA224_HMAC 16 bytes: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_SHA224_HMAC 32 bytes: yes (kryoptic/1.5)
+  commit hmac-sha224 CKK_SHA224_HMAC 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_GENERIC_SECRET: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_SHA256_HMAC: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_SHA256_HMAC 16 bytes: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_SHA256_HMAC 32 bytes: yes (kryoptic/1.5)
+  commit hmac-sha256 CKK_SHA256_HMAC 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_GENERIC_SECRET: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_SHA384_HMAC: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_SHA384_HMAC 16 bytes: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_SHA384_HMAC 32 bytes: yes (kryoptic/1.5)
+  commit hmac-sha384 CKK_SHA384_HMAC 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_GENERIC_SECRET: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_GENERIC_SECRET 16 bytes: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_GENERIC_SECRET 32 bytes: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_GENERIC_SECRET 64 bytes: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_SHA512_HMAC: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_SHA512_HMAC 16 bytes: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_SHA512_HMAC 32 bytes: yes (kryoptic/1.5)
+  commit hmac-sha512 CKK_SHA512_HMAC 64 bytes: yes (kryoptic/1.5)
+  commit kcv-ecb CKK_AES: unknown — module profile kryoptic/1.5 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 16 bytes: yes (kryoptic/1.5)
+  commit kcv-ecb CKK_AES 24 bytes: yes (kryoptic/1.5)
+  commit kcv-ecb CKK_AES 32 bytes: yes (kryoptic/1.5)
+  commit kcv-ecb-dec CKK_AES: unknown — module profile kryoptic/1.5 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 16 bytes: yes (kryoptic/1.5)
+  commit kcv-ecb-dec CKK_AES 24 bytes: yes (kryoptic/1.5)
+  commit kcv-ecb-dec CKK_AES 32 bytes: yes (kryoptic/1.5)
+  commit kw CKK_AES: unknown — module profile kryoptic/1.5 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 16 bytes: yes (kryoptic/1.5)
+  commit kw CKK_AES 24 bytes: yes (kryoptic/1.5)
+  commit kw CKK_AES 32 bytes: yes (kryoptic/1.5)
 # softhsm/2.7
   wrap.oaep Some("[\"SHA-1\"]")
   decrypt.oaep Some("[\"SHA-1\"]")
@@ -1261,6 +1393,46 @@
   curve secp384r1: yes (softhsm/2.7)
   curve secp521r1: yes (softhsm/2.7)
   oaep SHA-1: yes (softhsm/2.7): SHA-256: wrapping fails: CKR_ARGUMENTS_BAD
+  commit cmac CKK_AES: unknown — module profile softhsm/2.7 probed cmac at 16, 24, 32 bytes only
+  commit cmac CKK_AES 16 bytes: yes (softhsm/2.7)
+  commit cmac CKK_AES 24 bytes: yes (softhsm/2.7)
+  commit cmac CKK_AES 32 bytes: yes (softhsm/2.7)
+  commit hmac-sha1 CKK_GENERIC_SECRET: yes (softhsm/2.7)
+  commit hmac-sha1 CKK_GENERIC_SECRET 16 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA_1_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
+  commit hmac-sha1 CKK_GENERIC_SECRET 32 bytes: yes (softhsm/2.7)
+  commit hmac-sha1 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7)
+  commit hmac-sha224 CKK_GENERIC_SECRET: yes (softhsm/2.7)
+  commit hmac-sha224 CKK_GENERIC_SECRET 16 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA224_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
+  commit hmac-sha224 CKK_GENERIC_SECRET 32 bytes: yes (softhsm/2.7)
+  commit hmac-sha224 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7)
+  commit hmac-sha256 CKK_GENERIC_SECRET: yes (softhsm/2.7)
+  commit hmac-sha256 CKK_GENERIC_SECRET 16 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA256_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
+  commit hmac-sha256 CKK_GENERIC_SECRET 32 bytes: yes (softhsm/2.7)
+  commit hmac-sha256 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7)
+  commit hmac-sha384 CKK_GENERIC_SECRET: yes (softhsm/2.7)
+  commit hmac-sha384 CKK_GENERIC_SECRET 16 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA384_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
+  commit hmac-sha384 CKK_GENERIC_SECRET 32 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA384_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
+  commit hmac-sha384 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7)
+  commit hmac-sha512 CKK_GENERIC_SECRET: yes (softhsm/2.7)
+  commit hmac-sha512 CKK_GENERIC_SECRET 16 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA512_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
+  commit hmac-sha512 CKK_GENERIC_SECRET 32 bytes: no — softhsm/2.7: the commitment: unsupported: commitment commitment (CKM_SHA512_HMAC): CKR_KEY_SIZE_RANGE: Function::SignInit
+  commit hmac-sha512 CKK_GENERIC_SECRET 64 bytes: yes (softhsm/2.7)
+  commit kcv-ecb CKK_AES: unknown — module profile softhsm/2.7 probed kcv-ecb at 16, 24, 32 bytes only
+  commit kcv-ecb CKK_AES 16 bytes: yes (softhsm/2.7)
+  commit kcv-ecb CKK_AES 24 bytes: yes (softhsm/2.7)
+  commit kcv-ecb CKK_AES 32 bytes: yes (softhsm/2.7)
+  commit kcv-ecb CKK_DES3: unknown — module profile softhsm/2.7 probed kcv-ecb at 24 bytes only
+  commit kcv-ecb CKK_DES3 24 bytes: yes (softhsm/2.7)
+  commit kcv-ecb-dec CKK_AES: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 16, 24, 32 bytes only
+  commit kcv-ecb-dec CKK_AES 16 bytes: yes (softhsm/2.7)
+  commit kcv-ecb-dec CKK_AES 24 bytes: yes (softhsm/2.7)
+  commit kcv-ecb-dec CKK_AES 32 bytes: yes (softhsm/2.7)
+  commit kcv-ecb-dec CKK_DES3: unknown — module profile softhsm/2.7 probed kcv-ecb-dec at 24 bytes only
+  commit kcv-ecb-dec CKK_DES3 24 bytes: yes (softhsm/2.7)
+  commit kw CKK_AES: unknown — module profile softhsm/2.7 probed kw at 16, 24, 32 bytes only
+  commit kw CKK_AES 16 bytes: yes (softhsm/2.7)
+  commit kw CKK_AES 24 bytes: yes (softhsm/2.7)
+  commit kw CKK_AES 32 bytes: yes (softhsm/2.7)
 # tpm2-pkcs11/1.10+amd-ftpm
   wrap.oaep None
   decrypt.oaep Some("[\"SHA-1\", \"SHA-256\"]")

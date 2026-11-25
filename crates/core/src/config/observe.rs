@@ -1,6 +1,5 @@
 //! The observation model: what a run saw of a token and its objects, and who said it.
 
-use super::{ModuleInfo, TokenInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -82,8 +81,7 @@ pub struct Observation {
     pub token: Option<TokenInfo>,
     /// What this deployment's token answered about cakeys' operations, keyed as a capability
     /// profile's rows are (`prove.pop-sign.CKK_EC.secp256r1`, docs/CAPROBE.md): the proofs and
-    /// generations `lock` and `create` just demonstrated, and what `caprobe probe --record`
-    /// measured. Answers of this token, not of its kind, so they decide before a shipped
+    /// generations `lock` and `create` just demonstrated. Answers of this token, not of its kind, so they decide before a shipped
     /// profile does; never a verdict of `check`. Not part of the entry's key, and merged, not
     /// replaced, as runs record more.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -197,4 +195,49 @@ impl TokenObservation<'_> {
             groups.join("; ")
         )
     }
+}
+
+/// Module that realised an object (`C_GetInfo` plus the loaded file). Provenance only: on verify a
+/// different build identity is a warning, and so is a different `hash` at the same `path` (the
+/// file replaced in place: the case a path outside the Nix store cannot show); a different
+/// `path` alone (a Nix rebuild) is a note. Identity itself is enforced by the CA-IDs.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleInfo {
+    /// The file the dynamic loader mapped, symlinks resolved — whatever named it in keys.toml or
+    /// with `--module` (a bare name, a profile symlink, `$NAME`).
+    pub path: String,
+    /// SRI SHA-256 of that file; absent when it could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    /// `CK_INFO.libraryDescription`.
+    pub description: String,
+    /// `CK_INFO.manufacturerID`.
+    pub manufacturer: String,
+    /// `CK_INFO.libraryVersion`.
+    pub version: String,
+    /// `CK_INFO.cryptokiVersion`: the PKCS#11 version the module implements.
+    pub cryptoki: String,
+}
+
+impl ModuleInfo {
+    /// Equal apart from the file (`path`, `hash`).
+    #[must_use]
+    pub fn same_build_identity(&self, other: &Self) -> bool {
+        (&self.description, &self.manufacturer, &self.version, &self.cryptoki)
+            == (&other.description, &other.manufacturer, &other.version, &other.cryptoki)
+    }
+}
+
+/// The token a realisation was made on (`C_GetTokenInfo`): provenance, like [`ModuleInfo`]; another
+/// token is a warning.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenInfo {
+    /// `CK_TOKEN_INFO.model`.
+    pub model: String,
+    /// `CK_TOKEN_INFO.serialNumber`.
+    pub serial: String,
+    /// `CK_TOKEN_INFO.firmwareVersion`.
+    pub firmware: String,
 }

@@ -14,18 +14,23 @@ module's source, **[todo]** still to verify.
 
 ```console
 $ camigrate transport [<object>] [--spec <s>] --token <target> [--out <file>]  # the transport key's public half, for offline exports
-$ camigrate transport [<object>] [--spec <s>] --token <target> --trusted <source>  # the source's SO trusts it (enforced)
-$ camigrate export [<object> ...] --token <source> (--target <t> | --transport <file>) \
-    [--transport-key <spec>] --out <bundle> [--dry-run [--json]] [--allow-host-plaintext]
-$ camigrate export <object> --token <source> --to-file pkcs8|pkcs12 --out <file> \
+$ camigrate transport [<object>] [--spec <s>] --token <target> --trust-on <source>  # the source's SO trusts it (enforced)
+$ camigrate export [<object> ...] --from <source> (--to <t> | --to-transport-file <file>) \
+    [--transport-spec <spec>] [--out <bundle>] [--dry-run] [--allow-host-plaintext]
+$ camigrate export <object> --from <source> --to-key-file pkcs8|pkcs12 --out <file> \
     --passphrase-file <file> --allow-host-plaintext
-$ camigrate import --token <target> --in <bundle|file> [--spec <s> ...] [--dry-run] \
-    [--passphrase-file <file> --allow-host-plaintext]
-$ camigrate import --token <target> [<object> ...] [--spec <s> ...] [--dry-run] \
+$ camigrate import [<object> ...] --to <target> --in <bundle|file> [--spec <s> ...] [--dry-run] \
+    [--passphrase-file <file> --allow-host-plaintext]          # a bundle or a key file, told apart by content
+$ camigrate import [<object> ...] --to <target> [--spec <s> ...] [--dry-run] \
     [--allow-host-plaintext] [--passphrase-file <file>]       # objects born in files (FILE.md)
-$ camigrate migrate [<object>] --from <a> --to <b> [--spec <s> ...] [--transport-key <spec>] \
-    [--dry-run [--json]] [--allow-host-plaintext]
+$ camigrate migrate [<object> ...] --from <a> --to <b> [--spec <s> ...] [--transport-spec <spec>] \
+    [--dry-run] [--allow-host-plaintext]
 ```
+
+Every verb takes cakeys' global options: `-c`, `-l`, `--module`, `--new-lock` (a lock that is not
+there is refused, 17, without it) and `--json`, which prints the `--dry-run` plans of `export` and
+`migrate` as JSON. `import`, `migrate` and the deletions print one JSON result per object, as an
+array, whatever `--json` says; a run that wrote the lock exits 22 (CAKEYS.md, "Exit codes").
 
 - `migrate` is export then import in one process, the bundle in memory, when both tokens are
   reachable from this host. It moves one object, or without one plans every object the source
@@ -83,14 +88,17 @@ file, on one that says `origin = "file"` ([FILE.md](FILE.md)).
 `enforced` is its own level because a key with only `CKA_EXTRACTABLE = true` can be wrapped by
 any logged-in session under a key that session made: `sealed` describes what camigrate does,
 not what someone holding the PIN could do. `CKA_WRAP_WITH_TRUSTED` is the restriction the token
-itself enforces. It needs the source's SO once per transport key (`transport --trusted`, with
+itself enforces. It needs the source's SO once per transport key (`transport --trust-on`, with
 the admin credential `soCredentialFile`/`soCredentialEnv`, read only by SO steps).
 
 **D3. The transport key is an ordinary locked object.** The target holds an RSA key pair
 (`CKA_UNWRAP = true`, non-extractable) declared in keys.toml like any other key and named by the
-target token's `migrate.transportWith`. Nothing is picked by what a key can do; `--transport-key`
+target token's `migrate.transportWith`. Nothing is picked by what a key can do; `--transport-spec`
 overrides it per run. Its `rfc7093m4` is in the reviewed lock, and the source wraps only to a
-public key that hashes to it: the lock is the authenticated channel.
+public key that hashes to it: the lock is the authenticated channel. A transport file is held to
+the same: its object must be the transport key `transportWith` (or `--transport-spec`) names for
+the file's token, realised there, not merely some key the lock pins, which whoever swapped the
+file may hold (`a_transport_file_of_another_pinned_key_is_refused`).
 
 - **The lock records its public key** (`objects.<name>.publicKey`, base64 SPKI) when it is
   realised as a `migrate.transportWith` key, held to its `rfc7093m4` on load. Any host can then plan and
@@ -277,7 +285,7 @@ All phases ran on 2026-11-12 (0, 1) and 2026-11-14 (2–5); the test names are i
 | 1 | The planner and `--dry-run`; the capability hook vendor crates used (D10; since folded into the profiles, `Side::pkcs11`); the transport file | — |
 | 2 | `public` moves (`public.rs`), recorded through `ops::lock_import` | tpm2-pkcs11 creates data objects only private, so its profiles no longer accept public `CKO_DATA` |
 | 3 | `sealed` (`sealed.rs`): bundles, `export --out`, `import`, `migrate`; one creation pair per object (`origin = "create"`), targets `origin = "import"`; `migrate.transportWith` and `pop-unwrap` | SoftHSM's unwrapped `CKA_VALUE_LEN` (`move.secret-unwrap` no); p11-kit needs its `provider` named (the layer's `requires-provider`) |
-| 3b | `enforced`: `transport --trusted`, `CKM_RSA_AES_KEY_WRAP` (third cryptoki patch, `nix/patches/cryptoki-rsa-aes-key-wrap.patch`), the bundle's per-entry `kek` | both modules refuse a wrap-with-trusted key under an untrusted key; `CKA_TRUSTED` is set only at creation and only by the SO; kryoptic cannot trust an RSA public key [run: one-off PyKCS11 and Rust test programs, not kept, recorded in the profiles' `[manual."trusted-wrap"]`] |
+| 3b | `enforced`: `transport --trust-on`, `CKM_RSA_AES_KEY_WRAP` (third cryptoki patch, `nix/patches/cryptoki-rsa-aes-key-wrap.patch`), the bundle's per-entry `kek` | both modules refuse a wrap-with-trusted key under an untrusted key; `CKA_TRUSTED` is set only at creation and only by the SO; kryoptic cannot trust an RSA public key [run: one-off PyKCS11 and Rust test programs, not kept, recorded in the profiles' `[manual."trusted-wrap"]`] |
 | 4 | `host` (`host.rs`): `Token::extract`, `cakeys_core::plaintext`, `tpm2-ptool` through an in-memory file (`/proc/<pid>/fd/N`, since `tpm2_import` inherits no descriptor) | the key enters `tpm2_ptool`'s Python process, and its user PIN is on that process's command line (no other option [src]): both stated as plan notes. The planner blocks moves the target could not prove (Ed25519 into p11-kit) |
 | 4b | `file` (`file.rs`): `pkcs8-pbes2` and `pkcs12` export and import; `pkcs5`, `pkcs12` 0.2 and `cms` 0.3 (release candidates, same RustCrypto line as `der` 0.8) | a wrong passphrase is 17 and leaves nothing |
 | 5 | `piv-import`, as SO, the identity checked on the host first | YubiKey 5C NFC FIPS 5.7.4, ykcs11 2.7.3 (`tests/yubikey.rs`, opt-in): a P-256 key from SoftHSM moved into retired slot 95 and proved possession; a second import into the occupied slot was refused (13) before anything was written. The slot was emptied by hand beforehand (no delete in ykcs11) |

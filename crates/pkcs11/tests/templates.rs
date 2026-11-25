@@ -8,7 +8,7 @@
 //! provider. camigrate has no entry point a test can give a registry, so its own asks are held
 //! only by its runs with the default providers.
 
-use cakeys_core::config::{AttrValue, Binding, Locator, Lock, ObjectCfg, SpecCfg, TokenCfg};
+use cakeys_core::config::{AttrValue, Binding, Locator, Lock, Object, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops;
@@ -147,7 +147,7 @@ fn a_refused_proof_template_creates_nothing() {
     let registry = Registry::new().with(NoProof(Arc::clone(&asked)));
     let tok =
         Token::open("softhsm", &cfg.tokens["softhsm"], None, &registry, Access::Write, ChainTime::Unchecked).unwrap();
-    tok.destroy(t.object, &t.on_token.locator).unwrap();
+    tok.destroy(&t.object, &t.on_token.locator).unwrap();
     let mut lock = Lock { version: cakeys_core::config::LOCK_VERSION, ..Lock::default() };
     let mut notes = ops::Notes::default();
     asked.lock().unwrap().clear();
@@ -179,7 +179,7 @@ fn templates_pass_through_the_provider() {
     let ec = ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(Class::PrivateKey, Some(Kt::Ec)) };
     let loc = at("tmpl-ec");
     tok.destroy(&ec, &loc).unwrap();
-    tok.create(&ec, &spec(&[("CKA_SIGN", true), ("CKA_DERIVE", true)]), &loc, None).unwrap();
+    tok.create(Object::new(&ec).unwrap(), &spec(&[("CKA_SIGN", true), ("CKA_DERIVE", true)]), &loc, None).unwrap();
     let mut generated = taken();
     generated.sort();
     assert_eq!(generated, ["generate Key", "generate Public"]);
@@ -189,7 +189,7 @@ fn templates_pass_through_the_provider() {
 
     // A proof's session secret.
     let spki = tok.spki(h, &loc).unwrap();
-    tok.prove_binding(h, &ec, &spki, Binding::PopEcdh).unwrap();
+    tok.prove_binding(h, Object::new(&ec).unwrap(), &spki, Binding::PopEcdh).unwrap();
     assert!(
         taken().contains(&format!("session {:?}", SessionKey::ProofSecret { binding: Binding::PopEcdh, sealed: true })),
         "the sealed secret's template"
@@ -200,7 +200,8 @@ fn templates_pass_through_the_provider() {
     let aes = ObjectCfg { value_len: Some(32), ..ObjectCfg::new(Class::SecretKey, Some(Kt::Aes)) };
     let loc = at("tmpl-aes");
     tok.destroy(&aes, &loc).unwrap();
-    tok.create(&aes, &spec(&[("CKA_EXTRACTABLE", true), ("CKA_SENSITIVE", false)]), &loc, None).unwrap();
+    tok.create(Object::new(&aes).unwrap(), &spec(&[("CKA_EXTRACTABLE", true), ("CKA_SENSITIVE", false)]), &loc, None)
+        .unwrap();
     let [h] = tok.find(ObjectClass::SECRET_KEY, &loc).unwrap()[..] else { panic!("one secret key") };
     taken();
     assert_eq!(tok.extract(h, &Mechanism::AesKeyWrapPad).unwrap().len(), 32);
@@ -216,10 +217,22 @@ fn templates_pass_through_the_provider() {
     assert_eq!(taken(), ["trusted copy"]);
     let id = tok.raw().get_attributes(h, &[AttributeType::Id, AttributeType::Trusted]).unwrap();
     assert_eq!(id, [Attribute::Id(TRUSTED_ID.to_vec()), Attribute::Trusted(true)]);
+    // Taken off again as SO, with any an earlier run left (review 2026-11-23 B-25): the token's
+    // trusted set, which `Token::trusted` counts for camigrate, stays as the test found it.
+    let label = [Attribute::Label(b"tmpl-trusted".to_vec())];
+    let left = || tok.raw().find_objects(&label).unwrap();
+    tok.as_so("removing the trusted copies", || {
+        for h in left() {
+            tok.raw().destroy_object(h).map_err(|e| KmError::Unavailable(e.to_string().into()))?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert!(left().is_empty(), "a trusted copy left on the token");
 
     // Refused: the provider's error, and nothing under the locator.
     let loc = at(REFUSED);
-    let e = tok.create(&ec, &spec(&[("CKA_SIGN", true)]), &loc, None).unwrap_err();
+    let e = tok.create(Object::new(&ec).unwrap(), &spec(&[("CKA_SIGN", true)]), &loc, None).unwrap_err();
     assert!(matches!(&e, KmError::Unsupported(m) if m.contains("stamp refuses")), "{e}");
     assert_eq!(tok.find_any(&loc).unwrap().len(), 0, "made under the refused locator");
 }

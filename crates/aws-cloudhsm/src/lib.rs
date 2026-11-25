@@ -15,7 +15,7 @@
 //! ("Ed25519 key generation not available"), records none.
 
 use cakeys_core::config::ModuleInfo;
-use cakeys_pkcs11::{Provider, Report};
+use cakeys_pkcs11::Provider;
 use cryptoki::mechanism::vendor_defined::VendorDefinedMechanism;
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::KeyType;
@@ -47,21 +47,20 @@ impl Provider for AwsCloudHsm {
     }
 
     fn matches(&self, module: &ModuleInfo) -> bool {
-        module.manufacturer.trim_end_matches([' ', '\0']) == "CloudHSM"
+        module.manufacturer == "CloudHSM"
     }
 
     /// An Ed25519 key's `CKA_EC_POINT` is its whole SPKI: the point is what follows the prefix.
-    /// Its `CKA_KEY_TYPE` reads `CKK_EC`: the Ed25519 OID in `CKA_EC_PARAMS` says Edwards.
-    fn repair<'a>(&self, report: Report<'a>) -> Report<'a> {
-        match report {
-            Report::EcPoint(raw) => Report::EcPoint(match raw {
-                Cow::Borrowed(raw) => Cow::Borrowed(ed25519_point(raw)),
-                Cow::Owned(raw) => Cow::Owned(ed25519_point(&raw).to_vec()),
-            }),
-            Report::KeyType { reported: KeyType::EC, ec_params: Some(p) } if p == ED25519_OID => {
-                Report::KeyType { reported: KeyType::EC_EDWARDS, ec_params: Some(p) }
-            }
-            other => other,
+    fn ec_point<'a>(&self, raw: &'a [u8]) -> Cow<'a, [u8]> {
+        Cow::Borrowed(ed25519_point(raw))
+    }
+
+    /// An Ed25519 key's `CKA_KEY_TYPE` reads `CKK_EC`: the Ed25519 OID in `CKA_EC_PARAMS` says
+    /// Edwards.
+    fn key_type(&self, reported: KeyType, ec_params: Option<&[u8]>) -> KeyType {
+        match (reported, ec_params) {
+            (KeyType::EC, Some(p)) if p == ED25519_OID => KeyType::EC_EDWARDS,
+            _ => reported,
         }
     }
 
@@ -102,8 +101,10 @@ mod tests {
 
     #[test]
     fn claims_cloudhsm_only() {
+        // Padding is gone by the time a provider is asked (`token::module_info`, review
+        // 2026-11-23 B-26): the name compares exactly.
         assert!(AwsCloudHsm.matches(&module("CloudHSM")));
-        assert!(AwsCloudHsm.matches(&module("CloudHSM                        ")));
+        assert!(!AwsCloudHsm.matches(&module("CloudHSM2")));
         assert!(!AwsCloudHsm.matches(&module("SoftHSM")));
     }
 

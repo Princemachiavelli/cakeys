@@ -6,24 +6,7 @@ use cakeys_core::KmError;
 use std::path::{Path, PathBuf};
 
 fn code_of(variant: &str) -> Option<u8> {
-    let s = String::new;
-    let e = match variant {
-        "HashMismatch" => KmError::HashMismatch { what: s(), expected: s(), got: s() },
-        "FirstUse" => KmError::FirstUse { what: s(), got: s() },
-        "NotFound" => KmError::NotFound("".into()),
-        "Ambiguous" => KmError::Ambiguous("".into()),
-        "Conflict" => KmError::Conflict("".into()),
-        "PreconditionFailed" => KmError::PreconditionFailed("".into()),
-        "Unsupported" => KmError::Unsupported("".into()),
-        "Unavailable" => KmError::Unavailable("".into()),
-        "Validation" => KmError::Validation("".into()),
-        "Exists" => KmError::Exists("".into()),
-        "ObjectsFailed" => KmError::ObjectsFailed("".into()),
-        "LockUnwritable" => KmError::LockUnwritable("".into()),
-        "Io" => KmError::Io("".into()),
-        _ => return None,
-    };
-    Some(e.exit_code())
+    KmError::every_variant().into_iter().find(|(name, _)| *name == variant).map(|(_, e)| e.exit_code())
 }
 
 fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -73,51 +56,21 @@ fn documented_exit_codes_are_the_ones_returned() {
     assert!(checked > 30, "only {checked} documented codes found: the scan no longer reads the docs");
 }
 
-/// Every variant `KmError::exit_code` maps, with its code, read from its match arms: a new
-/// variant is in every check below without being listed by hand.
-fn variants() -> Vec<(String, u8)> {
-    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/error.rs")).unwrap();
-    let body = &src[src.find("pub fn exit_code").unwrap()..];
-    let body = &body[..body
-        .find(
-            "
-    }
-",
-        )
-        .unwrap()];
-    let arms: Vec<(String, u8)> = body
-        .lines()
-        .filter_map(|l| {
-            let (pat, code) = l.trim().strip_prefix("KmError::")?.split_once(" => ")?;
-            let name = pat.split(|c: char| !c.is_alphanumeric()).next()?;
-            Some((name.to_owned(), code.trim_end_matches(',').parse().ok()?))
-        })
-        .collect();
-    assert!(arms.len() >= 12, "{arms:?}: the arms of exit_code no longer read");
-    arms
-}
-
-/// Every variant is in [`code_of`], so the documented codes are checked for it too.
-#[test]
-fn every_variant_is_checked() {
-    for (v, c) in variants() {
-        assert_eq!(code_of(&v), Some(c), "{v}: add it to code_of");
-    }
-}
-
-/// docs/CAKEYS.md's exit-code table has a row for every code a verb's error exits with (10 and
-/// up; 1 and 2 are not `KmError`'s alone), and no other.
+/// `EXIT_CODES`, the table every `--help` renders, holds every code an error exits with, the
+/// lock-written code, 0 and 2, and no other; docs/CAKEYS.md's exit-code table lists the same.
 #[test]
 fn the_exit_code_table_lists_every_code() {
+    use std::collections::BTreeSet;
     let doc = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/CAKEYS.md");
     let doc = std::fs::read_to_string(&doc).unwrap_or_else(|e| panic!("{}: {e}", doc.display()));
-    let table: std::collections::BTreeSet<u8> = doc
-        .lines()
-        .filter_map(|l| l.strip_prefix("| ")?.split_once(" |").and_then(|(n, _)| n.parse().ok()))
-        .filter(|n| *n >= 10)
-        .collect();
-    let verbs: Vec<u8> = variants().into_iter().map(|(_, c)| c).filter(|c| *c >= 10).collect();
-    let codes: std::collections::BTreeSet<u8> = verbs.iter().copied().collect();
-    assert_eq!(codes.len(), verbs.len(), "two variants share a code");
-    assert_eq!(table, codes, "docs/CAKEYS.md's exit codes (left) are not the ones returned (right)");
+    let table: BTreeSet<u8> =
+        doc.lines().filter_map(|l| l.strip_prefix("| ")?.split_once(" |").and_then(|(n, _)| n.parse().ok())).collect();
+    let errors: Vec<u8> = KmError::every_variant().iter().map(|(_, e)| e.exit_code()).filter(|c| *c >= 10).collect();
+    let mut codes: BTreeSet<u8> = errors.iter().copied().collect();
+    assert_eq!(codes.len(), errors.len(), "two variants share a code");
+    assert!(!codes.contains(&cakeys_core::LOCK_WRITTEN), "an error exits with the lock-written code");
+    codes.extend([0, 1, 2, cakeys_core::LOCK_WRITTEN]);
+    let listed: BTreeSet<u8> = cakeys_core::EXIT_CODES.iter().map(|(c, _)| *c).collect();
+    assert_eq!(listed, codes, "EXIT_CODES (left) is not the codes the tools exit with (right)");
+    assert_eq!(table, codes, "docs/CAKEYS.md's exit codes (left) are not the ones the tools exit with (right)");
 }

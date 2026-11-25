@@ -15,7 +15,7 @@
 //!   `C_GetInfo` reports library version 0.0, so provenance tells builds apart only by the module
 //!   file and the token firmware (1.5). secp256k1 and the brainpool curves cannot be generated.
 
-use crate::provider::Provider;
+use crate::provider::{Provider, Topic};
 use cakeys_core::config::ModuleInfo;
 
 /// p11-kit's client module (`p11-kit-client.so`), forwarding a token served by `p11-kit server`
@@ -41,9 +41,24 @@ impl Provider for P11Kit {
         m.manufacturer == "PKCS#11 Kit"
     }
 
-    fn hint(&self) -> Option<&'static str> {
-        Some(
+    fn hint(&self, about: Topic) -> Option<&'static str> {
+        // The RPC's missing mechanisms: a wrap, or an Edwards key's generation or signature.
+        matches!(about, Topic::Mechanism | Topic::Generate).then_some(
             "the token is forwarded by p11-kit, whose RPC does not carry AES key wrap or EdDSA/Edwards mechanisms; the module behind it is hidden, so set `provider` to its provider for module-specific fix-ups",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// p11-kit's advice names the mechanisms its RPC drops: a refused creation from a value gets
+    /// none (review 2026-11-23 B-9).
+    #[test]
+    fn p11_kits_hint_is_about_mechanisms() {
+        assert!(P11Kit.hint(Topic::Mechanism).is_some());
+        assert!(P11Kit.hint(Topic::Generate).is_some());
+        assert_eq!(P11Kit.hint(Topic::Create), None);
     }
 }

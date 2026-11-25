@@ -22,8 +22,8 @@ note = "the pinned cryptoki has no name or parameter type for these, in any buil
 
 [notes]
 binding = "this build's cryptoki maps the SHA-2 HMAC key types correctly (the fix of upstream/rust-cryptoki, applied by the Nix build): the layer subtracts only what no build names"
-CKM_AES_CFB128 = "the pinned cryptoki has no constant or parameter type for it; a module that lists it is recorded advertised and untested (docs/CAPROBE_PROFILE_COVERAGE.md, Part 0)"
-CKM_XEDDSA = "the pinned cryptoki has no constant or parameter type for it; a module that lists it is recorded advertised and untested (docs/CAPROBE_PROFILE_COVERAGE.md, Part 0)"
+CKM_AES_CFB128 = "the pinned cryptoki has no constant or parameter type for it; a module that lists it is recorded advertised and untested (docs/archive/CAPROBE_PROFILE_COVERAGE.md, Part 0)"
+CKM_XEDDSA = "the pinned cryptoki has no constant or parameter type for it; a module that lists it is recorded advertised and untested (docs/archive/CAPROBE_PROFILE_COVERAGE.md, Part 0)"
 "#;
 
 /// Whether this build's cryptoki maps the SHA-2 HMAC key types correctly. cryptoki 0.12.1
@@ -38,10 +38,6 @@ pub fn patched() -> bool {
         && c_ulong::from(KeyType::SHA384_HMAC) == 0x2c
         && c_ulong::from(KeyType::SHA512_HMAC) == 0x2d
 }
-
-/// Whether a module failure carries its `CK_RV` (`rv-value`): without it the code that branches
-/// on a return value (the probe's busy-session handling) cannot tell one from another (review D3).
-pub const RV_VALUE: bool = cfg!(feature = "rv-value");
 
 /// The cryptoki binding layer: the committed subtractions for an unpatched binding
 /// (profiles/layers/cryptoki.toml), or an empty one when [`patched`] says the fix is in.
@@ -77,18 +73,5 @@ mod tests {
         } else {
             assert_eq!(layer.subtract.key_types.len(), 3);
         }
-    }
-
-    /// A patched binding (the Nix build's) is built with every feature that uses it, which each
-    /// tool's `patched-cryptoki` turns on together (review D3): without `rv-value` the probe
-    /// cannot tell a busy session from a refusal, and the feature without the patch would not
-    /// compile.
-    #[test]
-    fn the_patched_binding_comes_with_its_features() {
-        assert!(
-            !patched() || RV_VALUE,
-            "the patched cryptoki is linked without cakeys-pkcs11's `rv-value` (each tool's \
-             `patched-cryptoki` feature; nix/package-common.nix features)"
-        );
     }
 }

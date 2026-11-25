@@ -2,8 +2,8 @@
 # call reaches, by table and name pattern (`*` for any run of characters). The first rule that
 # matches decides; a rule that matches nothing, or names a used row exactly, fails the test.
 #
-#   status: refused (cakeys meets it and refuses: the exit code in the reason), out-of-scope
-#   (a written reason), gap (should be handled and is not: the OPEN.md item).
+#   status: out-of-scope (a written reason), gap (should be handled and is not: the OPEN.md
+#   item).
 
 # ---- functions -------------------------------------------------------------------------------
 
@@ -846,6 +846,24 @@ reason = "matched by name (crates/pkcs11/src/token/possession.rs), met by no tes
 
 [[rule]]
 table = "return-values"
+match = "CKR_OPERATION_ACTIVE"
+status = "gap"
+reason = "matched by name (caprobe's probe: an operation the module left active decides nothing), met by no test"
+
+[[rule]]
+table = "return-values"
+match = "CKR_MECHANISM_PARAM_INVALID"
+status = "gap"
+reason = "matched by name (crates/pkcs11/src/token/possession.rs, crates/camigrate/src/sealed.rs; caprobe's secret probes), met by no test"
+
+[[rule]]
+table = "return-values"
+match = "CKR_ENCRYPTED_DATA_INVALID"
+status = "gap"
+reason = "matched by name (crates/pkcs11/src/token/possession.rs, crates/camigrate/src/sealed.rs), met by no test"
+
+[[rule]]
+table = "return-values"
 match = "CKR_*"
 status = "out-of-scope"
 reason = "met by no test and matched by no name: the call fails, and cakeys reports the function and the value's name (16, unavailable, unless the verb maps it)"
@@ -1032,13 +1050,13 @@ reason = "notification callbacks: cakeys opens sessions without one"
 table = "flags"
 match = "CKF_WRITE_PROTECTED"
 status = "gap"
-reason = "acted on (crates/pkcs11/src/token/mod.rs), set on no token of the tests"
+reason = "acted on (crates/pkcs11/src/token/), set on no token of the tests"
 
 [[rule]]
 table = "flags"
 match = "CKF_SO_PIN_*"
 status = "gap"
-reason = "acted on (crates/pkcs11/src/token/mod.rs, the SO PIN's counters), set on no token of the tests"
+reason = "acted on (crates/pkcs11/src/token/, the SO PIN's counters), set on no token of the tests"
 
 [[rule]]
 table = "flags"

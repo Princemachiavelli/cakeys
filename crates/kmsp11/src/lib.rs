@@ -11,10 +11,10 @@
 //! `experimental_create_multiple_versions`). A key libkmsp11 creates itself gets Cloud KMS's
 //! 30-day default, and its label (the `CryptoKey` ID) can never be used again.
 
-use cakeys_core::config::{AttrValue, Binding, Locator, ModuleInfo, ObjectCfg, SpecCfg};
+use cakeys_core::config::{AttrValue, Binding, Locator, ModuleInfo, Object, SpecCfg};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result};
-use cakeys_pkcs11::{BoundKey, Generation, Provider};
+use cakeys_pkcs11::{BoundKey, Generation, Provider, Topic};
 use cakeys_profile::{KeyKind, On};
 use cryptoki::mechanism::MechanismType;
 use cryptoki::object::{Attribute, AttributeType};
@@ -22,7 +22,9 @@ use cryptoki::object::{Attribute, AttributeType};
 /// `CKA_KMS_ALGORITHM` (kmsp11.h: `CKA_VENDOR_DEFINED | 0x1E100 | 0x01`), a `CK_ULONG`.
 pub const CKA_KMS_ALGORITHM: u64 = 0x8001_E101;
 
-/// What every bound key's label starts with.
+/// What every bound key's label starts with. Not the probe's `cakeys-probe-`: these are the
+/// `CryptoKey` IDs `scripts/cloud/gcp/main.tf` has already created, and Cloud KMS never deletes
+/// a key, so renaming them would leave the old set behind (review 2026-11-23 D-17).
 pub const LABEL_PREFIX: &str = "caprobe-";
 
 /// The mechanisms the table names, by their PKCS#11 names.
@@ -239,8 +241,8 @@ fn check_reported(row: &Row, declared: &std::collections::BTreeMap<String, AttrV
 /// never both: Cloud KMS keys serve one), then the spec's `CKA_ALLOWED_MECHANISMS`, which must
 /// equal one algorithm's set; without it, the table's first row of that purpose (PKCS#1 v1.5 with
 /// SHA-256 for RSA signing, OAEP with SHA-256 for decryption).
-fn algorithm_for(object: &ObjectCfg, spec: &SpecCfg, binding: Option<Binding>) -> Result<&'static Row> {
-    let kt = object.checked_key_type()?;
+fn algorithm_for(object: Object<'_>, spec: &SpecCfg, binding: Option<Binding>) -> Result<&'static Row> {
+    let kt = object.key_type().ok_or_else(|| KmError::Unsupported(format!("{} on Cloud KMS", object.class).into()))?;
     let unsupported = |why: String| Err(KmError::Unsupported(why.into()));
     let on = match kt {
         Kt::Ec => object.curve.clone().unwrap_or_default(),
@@ -345,11 +347,12 @@ impl Provider for Kmsp11 {
     }
 
     fn matches(&self, module: &ModuleInfo) -> bool {
-        module.manufacturer.trim_end_matches([' ', '\0']) == "Google"
+        module.manufacturer == "Google"
     }
 
-    fn hint(&self) -> Option<&'static str> {
-        Some(
+    fn hint(&self, about: Topic) -> Option<&'static str> {
+        // What creating a key commits to: only a refused generation or creation carries it.
+        matches!(about, Topic::Generate | Topic::Create).then_some(
             "Cloud KMS: a key libkmsp11 creates keeps its versions 30 days scheduled for destruction once \
              deleted, and its label (the CryptoKey ID) can never be used again, unless the key was \
              created beforehand with a shorter duration and libkmsp11 runs with \
@@ -359,7 +362,7 @@ impl Provider for Kmsp11 {
 
     fn generation(
         &self,
-        object: &ObjectCfg,
+        object: Object<'_>,
         spec: &SpecCfg,
         loc: &Locator,
         binding: Option<Binding>,
@@ -414,7 +417,17 @@ impl Provider for Kmsp11 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cakeys_core::config::ObjectCfg;
     use std::collections::BTreeMap;
+
+    /// The destruction note is about creating a key, so only a refused generation or creation
+    /// carries it, never a missing mechanism (review 2026-11-23 B-9).
+    #[test]
+    fn the_hint_goes_only_where_it_applies() {
+        assert!(Kmsp11.hint(Topic::Generate).is_some_and(|h| h.contains("30 days")));
+        assert!(Kmsp11.hint(Topic::Create).is_some());
+        assert_eq!(Kmsp11.hint(Topic::Mechanism), None);
+    }
 
     fn object(kt: Kt, curve: Option<&str>, bits: Option<u64>, len: Option<u64>) -> ObjectCfg {
         let class = if matches!(kt, Kt::Ec | Kt::Rsa) { Class::PrivateKey } else { Class::SecretKey };
@@ -441,7 +454,7 @@ mod tests {
     }
 
     fn pick(o: &ObjectCfg, s: &SpecCfg, b: Option<Binding>) -> std::result::Result<String, String> {
-        algorithm_for(o, s, b).map(|r| r.algorithm.clone()).map_err(|e| e.to_string())
+        Object::new(o).and_then(|o| algorithm_for(o, s, b)).map(|r| r.algorithm.clone()).map_err(|e| e.to_string())
     }
 
     #[test]
@@ -488,7 +501,9 @@ mod tests {
             version: String::new(),
             cryptoki: String::new(),
         };
-        assert!(Kmsp11.matches(&module("Google                          ")));
+        // Unpadded by `token::module_info` (review 2026-11-23 B-26): compared exactly.
+        assert!(Kmsp11.matches(&module("Google")));
+        assert!(!Kmsp11.matches(&module("Google LLC")));
         assert!(!Kmsp11.matches(&module("SoftHSM")));
     }
 
@@ -589,10 +604,13 @@ mod tests {
         let s = spec(&[yes("CKA_SIGN")], &[]);
         let at =
             |label: Option<&str>, id: Option<&str>| Locator { label: label.map(Into::into), id: id.map(Into::into) };
-        let g = Kmsp11.generation(&ec, &s, &at(Some("signing-1"), None), Some(Binding::PopSign)).unwrap().unwrap();
+        let g = Kmsp11
+            .generation(Object::new(&ec).unwrap(), &s, &at(Some("signing-1"), None), Some(Binding::PopSign))
+            .unwrap()
+            .unwrap();
         assert_eq!(g.keygen, MechanismType::ECC_KEY_PAIR_GEN);
         assert_eq!(g.template[0], Attribute::Label(b"signing-1".to_vec()));
-        assert!(Kmsp11.generation(&ec, &s, &at(Some("a b"), None), None).is_err());
-        assert!(Kmsp11.generation(&ec, &s, &at(Some("x"), Some("01")), None).is_err());
+        assert!(Kmsp11.generation(Object::new(&ec).unwrap(), &s, &at(Some("a b"), None), None).is_err());
+        assert!(Kmsp11.generation(Object::new(&ec).unwrap(), &s, &at(Some("x"), Some("01")), None).is_err());
     }
 }

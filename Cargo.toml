@@ -109,7 +109,7 @@ tempfile = "3"
 # runs with `-D warnings`, so everything here is clean at the stated level.
 [workspace.lints.rust]
 # The two exemptions are `#[expect]`ed and carry `// SAFETY:` comments: the loader lookup of the
-# module file the lock records (crates/pkcs11/src/token/mod.rs), and p11-fault, a PKCS#11 module
+# module file the lock records (crates/pkcs11/src/token/library.rs), and p11-fault, a PKCS#11 module
 # whose C ABI is the whole crate.
 unsafe_code = "deny"
 # Private is the default: an item is `pub` only when another crate uses it (a sibling, a crate's

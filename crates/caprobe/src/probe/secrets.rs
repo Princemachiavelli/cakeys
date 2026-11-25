@@ -1,4 +1,4 @@
-//! The secret-key operation probes (`docs/CAPROBE_PROFILE_COVERAGE.md`, Parts 1, 4 and 5): the
+//! The secret-key operation probes (`docs/archive/CAPROBE_PROFILE_COVERAGE.md`, Parts 1, 4 and 5): the
 //! commitments cakeys computes (`commit.*`), the symmetric modes (`crypt.*`) and the key
 //! derivations (`derive.CKM_*.*`). Each writes a row, yes or no, per key type it tried; a
 //! mechanism the module does not list is not tried, and so is left to `[untested]`.
@@ -16,7 +16,6 @@ use cryptoki::mechanism::aes_ctr::AesCtrParams;
 use cryptoki::mechanism::ekdf::AesCbcDeriveParams;
 use cryptoki::mechanism::hkdf::{HkdfParams, HkdfSalt};
 use cryptoki::mechanism::misc::{ExtractParams, KeyDerivationStringData};
-use cryptoki::mechanism::vendor_defined::VendorDefinedMechanism;
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass, ObjectHandle};
 use cryptoki::session::Session;
@@ -99,37 +98,13 @@ pub(super) fn probe_commits(made: &mut Made, profile: &mut Draft) -> Result<()> 
             }
         }
     }
-    probe_des3_cmac(made, profile)
-}
-
-/// `CKM_DES3_CMAC` (the spec's `0x138`) takes no parameters, and the pinned cryptoki has no name
-/// for it: called by its raw type through `VendorDefined`. `commit.cmac-des3.CKK_DES3.24`, over a
-/// Triple DES key made to sign, twice the same.
-fn probe_des3_cmac(made: &mut Made, profile: &mut Draft) -> Result<()> {
-    let Ok(mt) = MechanismType::try_from(0x138) else { return Ok(()) };
-    if !made.tok.lists(mt) || !generated(profile, Kt::Des3).contains(&24) {
-        return Ok(());
-    }
-    let cap = Capability::Commit { kind: "cmac-des3".into(), key_type: KeyKind::from("CKK_DES3"), bytes: 24 };
-    let key = match made.create_secret(&secret_object(Kt::Des3, 24), &spec(&["CKA_SIGN"], &[]))? {
-        Ok(h) => h,
-        Err(e) => {
-            refusal_row(made, profile, cap, &e, "a key with CKA_SIGN is refused");
-            return Ok(());
-        }
-    };
-    let mech = Mechanism::VendorDefined(VendorDefinedMechanism::new::<()>(mt, None));
-    let sign = || made.session.sign(&mech, key, COMMIT_LABEL.as_bytes());
-    match (sign(), sign()) {
-        (Ok(a), Ok(b)) if a == b && !a.is_empty() => profile.set(cap, Answer::Yes, None, None),
-        (Ok(_), Ok(_)) => profile.set(cap, Answer::No, Some("it does not give one MAC twice".into()), None),
-        (Err(e), _) | (_, Err(e)) => profile.set(cap, Answer::No, Some(ck_said("C_Sign", &e).to_string()), None),
-    }
+    // No `CKM_DES3_CMAC`: cryptoki names no 0x138, neither to call nor in the module's list
+    // (review 2026-11-23 D-10, docs/OPEN.md).
     Ok(())
 }
 
 fn commit_row(made: &mut Made, profile: &mut Draft, kt: Kt, c: Commit, bytes: u32, distinct: bool) -> Result<()> {
-    let cap = Capability::Commit { kind: token::commit_kind(c).to_owned(), key_type: KeyKind::from(kt.name()), bytes };
+    let cap = Capability::Commit { kind: c.profile_kind().to_owned(), key_type: KeyKind::from(kt.name()), bytes };
     let object = secret_object(kt, bytes);
     let usage = spec(&[c.usage()], &[]);
     let key = match made.create_secret(&object, &usage)? {
@@ -146,8 +121,14 @@ fn commit_row(made: &mut Made, profile: &mut Draft, kt: Kt, c: Commit, bytes: u3
             return Ok(());
         }
     };
-    let again = made.tok.commit(key, &object, c, COMMIT_LABEL).ok();
-    if again.as_ref() != Some(&first) {
+    let again = match made.tok.commit(key, &object, c, COMMIT_LABEL) {
+        Ok(v) => v,
+        Err(e) => {
+            refusal_row(made, profile, cap, &e, "the commitment, again");
+            return Ok(());
+        }
+    };
+    if again != first {
         profile.set(cap, Answer::No, Some("the same key does not give the same commitment twice".into()), None);
         return Ok(());
     }

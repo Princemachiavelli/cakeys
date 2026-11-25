@@ -1,7 +1,6 @@
-# What both builds of the workspace share (nix/package.nix, the regular `buildRustPackage`, and
-# nix/package-crane.nix, crane's, which `nix flake check` uses): the source, the outputs, the
-# inputs, the cryptoki patches, the features and the integration-test environment. Each builder
-# adds only what is its own.
+# What the workspace's build (nix/package-crane.nix: the checks' build and, without its check
+# phase, packages.cakeys) is made of: the source, the outputs, the inputs, the cryptoki patches,
+# the features and the integration-test environment.
 {
   lib,
   stdenv,
@@ -25,7 +24,7 @@
   # for aarch64-darwin, and tpm2-pkcs11 and its tools are not packaged there, so there is no
   # module for it to attest. Darwin builds the tools with ykcs11 alone; `withTpm2 = false` builds
   # and tests that configuration on Linux too:
-  #   nix build --impure --expr '(builtins.getFlake "path:.").packages.x86_64-linux.cakeys.override { withTpm2 = false; }'
+  #   nix build --impure --expr '(builtins.getFlake "path:.").packages.x86_64-linux.cakeys-crane.override { withTpm2 = false; }'
   withTpm2 ? stdenv.hostPlatform.isLinux,
 }:
 let
@@ -76,9 +75,7 @@ in
 
   # What only the patched cryptoki above has, as each tool's one `patched-cryptoki` feature
   # (review D3): the mechanisms it names (CKM_AES_KEY_WRAP_KWP, CKM_RSA_AES_KEY_WRAP), which
-  # camigrate uses and caprobe probes (`kwp`); and a failure's CK_RV and CKR_* name (`rv-value`),
-  # which the probe's busy-session handling branches on. caprobe refuses to write a profile
-  # without them; tests hold each tool's feature to its parts and fail when the patched binding
+  # camigrate uses and caprobe probes (`kwp`). caprobe refuses to write a profile without them; tests hold each tool's feature to its parts and fail when the patched binding
   # is linked without them.
   features = [
     "cakeys/patched-cryptoki"
@@ -124,6 +121,8 @@ in
         ../.config/nextest.toml
         # The exit-code table the tests hold to `KmError::exit_code`.
         ../docs/CAKEYS.md
+        # The config reference the `config_doc` test reads.
+        ../docs/CONFIG.md
         # A YubiKey's lock, the one from real hardware the lock round trip reads
         # (`cakeys_core::fuzzing`).
         ../examples/yubikey-secureboot.lock
@@ -194,46 +193,21 @@ in
       tpm2-abrmd
       dbus
     ];
-    preCheck = lib.optionalString canCheck (
-      ''
-        # The software tokens, as every harness sets them up (nix/token-env.sh).
-        export CAKEYS_TOKEN_ENV_SH=${./token-env.sh}
-        . $CAKEYS_TOKEN_ENV_SH
-        softhsm_conf $TMPDIR
-        softhsm_init kmtest
-        export CAKEYS_TEST_MODULE=${softhsmForTests}/lib/softhsm/libsofthsm2.so
-        export CAKEYS_TEST_REQUIRE=1
+    preCheck = lib.optionalString canCheck ''
+      # The software tokens and every suite's variables, as every harness sets them up
+      # (nix/token-env.sh's test_env; scripts/local-tests.sh calls it too). kryoptic (PKCS#11
+      # 3.2) runs the shared reference suite as well.
+      export CAKEYS_TOKEN_ENV_SH=${./token-env.sh}
+      . $CAKEYS_TOKEN_ENV_SH
+      test_env $TMPDIR \
+        ${softhsmForTests}/lib/softhsm/libsofthsm2.so \
+        ${kryoptic}/lib/libkryoptic_pkcs11${sharedLibrary} \
+        ${lib.getLib p11-kit}/lib/pkcs11/p11-kit-client.so \
+        ${./p11kit-test-env.sh} ${./tpm2-test-env.sh} \
+        ${pkcs11-provider}/lib/ossl-modules ${lib.optionalString tpm2 "${lib.getLib tpm2-pkcs11}/lib/libtpm2_pkcs11.so ${lib.getLib tpm2VendorModule}/lib/libtpm2_pkcs11.so"}
 
-        # kryoptic (PKCS#11 3.2): the shared reference suite runs against it too.
-        kryoptic_conf $TMPDIR
-        export CAKEYS_KRYOPTIC_MODULE=${kryoptic}/lib/libkryoptic_pkcs11${sharedLibrary}
-        kryoptic_init $CAKEYS_KRYOPTIC_MODULE kmtest
-        export CAKEYS_KRYOPTIC_REQUIRE=1
-
-        # The templates of a per-test token set (nix/test-tokens.sh, every test's runner): the
-        # two software tokens as just initialised, before any test touches them.
-        export CAKEYS_TOKEN_TEMPLATE=$TMPDIR/token-template
-        mkdir -p $CAKEYS_TOKEN_TEMPLATE
-        cp -r $TMPDIR/softhsm-tokens $TMPDIR/kryoptic.sql $CAKEYS_TOKEN_TEMPLATE/
-        export CAKEYS_P11KIT_ENV_SH=${./p11kit-test-env.sh} CAKEYS_TPM_ENV_SH=${./tpm2-test-env.sh}
-
-        # p11-kit forwarding and the software TPM: test-tokens.sh starts a server and a swtpm
-        # per test for the suites that use them, and there is no shared one to fall back on, so
-        # a suite its lists leave out fails here as under scripts/local-tests.sh (review D9).
-        export CAKEYS_P11KIT_CLIENT=${lib.getLib p11-kit}/lib/pkcs11/p11-kit-client.so
-        export CAKEYS_P11KIT_REQUIRE=1
-
-        # OpenSSL through pkcs11-provider reads what `check --format pkcs11-provider-pem` writes.
-        export CAKEYS_PKCS11_PROVIDER_DIR=${pkcs11-provider}/lib/ossl-modules
-
-        export HOME=$TMPDIR
-      ''
-      + lib.optionalString tpm2 ''
-        export CAKEYS_TPM_MODULE=${lib.getLib tpm2-pkcs11}/lib/libtpm2_pkcs11.so
-        export CAKEYS_TPM_VENDOR_MODULE=${lib.getLib tpm2VendorModule}/lib/libtpm2_pkcs11.so
-        export CAKEYS_TPM_REQUIRE=1 CAKEYS_TPM_VENDOR_REQUIRE=1
-      ''
-    );
+      export HOME=$TMPDIR
+    '';
 
     meta = {
       description = "Content-addressed identity for PKCS#11 objects";

@@ -277,8 +277,10 @@ dependencies = [
  "cakeys-profile",
  "cakeys-tpm2-pkcs11",
  "cakeys-ykcs11",
+ "clap",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -342,6 +344,7 @@ dependencies = [
  "der",
  "getrandom 0.4.3",
  "libc",
+ "p11-names",
  "rsa",
  "toml",
  "x509-cert",

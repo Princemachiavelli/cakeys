@@ -99,6 +99,19 @@ pub enum Encoding {
 /// secp256k1's verifier insists on the low one, so it is normalized first.
 #[must_use]
 pub fn ecdsa(spki: &[u8], msg: &[u8], sig: &[u8], encoding: Encoding, hash: Option<HashAlg>) -> Verdict {
+    ecdsa_over(spki, sig, encoding, |own| hash.unwrap_or(own).digest(msg))
+}
+
+/// ECDSA over `digest`, a hash the caller computed of a hash [`HashAlg`] does not name
+/// (`CKM_ECDSA_SHA224`'s): the probe verifies what it signs, so an unlisted mechanism is added
+/// only on a signature that verified (review 2026-11-23 D-2).
+#[must_use]
+pub fn ecdsa_prehash(spki: &[u8], digest: &[u8], sig: &[u8], encoding: Encoding) -> Verdict {
+    ecdsa_over(spki, sig, encoding, |_| digest.to_vec())
+}
+
+/// [`ecdsa()`] with the digest `digest` computes from the curve's own hash.
+fn ecdsa_over(spki: &[u8], sig: &[u8], encoding: Encoding, digest: impl FnOnce(HashAlg) -> Vec<u8>) -> Verdict {
     macro_rules! curve {
         ($curve:ty, $own:expr, $info:expr) => {{
             let k = match p256::elliptic_curve::PublicKey::<$curve>::try_from($info) {
@@ -113,7 +126,7 @@ pub fn ecdsa(spki: &[u8], msg: &[u8], sig: &[u8], encoding: Encoding, hash: Opti
                 Ok(s) => s.normalize_s(),
                 Err(e) => return Some(Err(Refused::Signature(e.to_string()))),
             };
-            let digest = hash.unwrap_or($own).digest(msg);
+            let digest = digest($own);
             Some(checked(ecdsa::VerifyingKey::<$curve>::from(k).verify_prehash(&digest, &sig)))
         }};
     }
@@ -198,6 +211,24 @@ mod tests {
         );
         assert_eq!(rsa_pkcs1v15::<Sha256>(spki.as_bytes(), b"m", &s.to_bytes()), None);
         assert_eq!(ed25519(spki.as_bytes(), b"m", &s.to_bytes()), None);
+    }
+
+    /// ECDSA over a digest the caller computed, of a hash `HashAlg` does not name: a P-256
+    /// signature over SHA-224 verifies against that digest and no other (review 2026-11-23 D-2).
+    #[test]
+    fn ecdsa_over_a_callers_digest() {
+        use p256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
+        use pkcs8::EncodePublicKey;
+        let k = SigningKey::from_slice(&[3u8; 32]).unwrap();
+        let spki = k.verifying_key().to_public_key_der().unwrap();
+        let digest = sha2::Sha224::digest(b"m");
+        let s: Signature = k.sign_prehash(&digest).unwrap();
+        assert_eq!(ecdsa_prehash(spki.as_bytes(), &digest, &s.to_bytes(), Encoding::Raw), Some(Ok(())));
+        assert!(matches!(
+            ecdsa_prehash(spki.as_bytes(), &sha2::Sha224::digest(b"x"), &s.to_bytes(), Encoding::Raw),
+            Some(Err(Refused::Signature(_)))
+        ));
+        assert!(matches!(ecdsa(spki.as_bytes(), b"m", &s.to_bytes(), Encoding::Raw, None), Some(Err(_))));
     }
 
     /// `None` has one meaning: the SPKI names another kind of key (or is none). A key of the

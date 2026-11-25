@@ -29,8 +29,9 @@ impl Token {
             .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
         let mut template = Secret(self.session_template(SessionKey::HostKek)?);
         template.0.push(Attribute::Value(kek.to_vec()));
-        let refused =
-            |what: &str, e: CkError| self.unsupported(format!("{what} on '{}': {e}", self.name)).with_rv(rv_of(&e));
+        let refused = |what: &str, e: CkError| {
+            self.unsupported_for(Topic::Mechanism, format!("{what} on '{}': {e}", self.name)).with_rv(rv_of(&e))
+        };
         let session_kek =
             self.session.create_object(&template.0).map_err(|e| refused("making the host's session key", e))?;
         drop(template);
@@ -63,13 +64,16 @@ impl Token {
     /// `Unsupported` when the module will not create it (`C_CreateObject`).
     pub fn create_private(
         &self,
-        object: &ObjectCfg,
+        object: Object<'_>,
         mut base: Vec<Attribute>,
         parts: &PrivateParts,
     ) -> Result<ObjectHandle> {
         match parts {
             PrivateParts::Ec(scalar) | PrivateParts::Edwards(scalar) => {
-                base.push(Attribute::EcParams(curve_of(object)?.params().to_vec()));
+                let curve = object.curve().ok_or_else(|| {
+                    KmError::Conflict(format!("an EC private key's parts for {}", object.cfg()).into())
+                })?;
+                base.push(Attribute::EcParams(curve.params().to_vec()));
                 base.push(Attribute::Value(scalar.to_vec()));
             }
             PrivateParts::Rsa(p) => base.extend([
@@ -96,15 +100,21 @@ impl Token {
         self.create_secret_template(&Secret(base))
     }
 
-    /// Import a key from the host's plaintext the provider's own way (`Provider::import_plaintext`:
+    /// Import a key from the host's plaintext the provider's own way (`PlaintextVia::Tool`:
     /// `tpm2_ptool import` for tpm2-pkcs11), under `object`'s type and `loc`. The key is in the
     /// module's store afterwards, but this open token does not see it: open the token again.
     ///
     /// # Errors
     ///
-    /// Whatever the provider refuses.
+    /// `Unsupported` where the provider imports through `C_CreateObject`; whatever the tool
+    /// refuses.
     pub fn import_plaintext(&self, object: &ObjectCfg, loc: &Locator, key: &[u8]) -> Result<()> {
-        self.provider.import_plaintext(&crate::provider::ImportCtx {
+        let crate::provider::PlaintextVia::Tool(_, import) = self.provider.plaintext_import() else {
+            return Err(KmError::Unsupported(
+                format!("{} imports no plaintext outside PKCS#11", self.provider.name()).into(),
+            ));
+        };
+        import(&crate::provider::ImportCtx {
             cfg: &self.cfg,
             token_name: &self.name,
             pin: self.pin.as_ref().map(|p| p.as_str()),
@@ -125,8 +135,11 @@ impl Token {
     fn create_secret_template(&self, template: &Secret) -> Result<ObjectHandle> {
         let create = || {
             self.session.create_object(&template.0).map_err(|e| {
-                self.unsupported(format!("creating the key on '{}': C_CreateObject: {} ({e})", self.name, rv_name(&e)))
-                    .with_rv(rv_of(&e))
+                self.unsupported_for(
+                    Topic::Create,
+                    format!("creating the key on '{}': C_CreateObject: {} ({e})", self.name, rv_name(&e)),
+                )
+                .with_rv(rv_of(&e))
             })
         };
         self.managing("importing a key", create)

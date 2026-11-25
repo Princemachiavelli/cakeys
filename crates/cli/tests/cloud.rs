@@ -24,6 +24,8 @@ use std::process::{Command, Output};
 
 /// Unsupported: what cakeys refuses before creating anything (docs/CAKEYS.md, exit codes).
 const UNSUPPORTED: i32 = 15;
+/// Done, and the lock written (docs/CAKEYS.md): every run here that records something.
+const LOCK_WRITTEN: i32 = 22;
 
 fn scripts() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/cloud")
@@ -152,18 +154,19 @@ fn aws_cluster(mode: &str) {
             // (and billed) a key all the same (review cloud.rs F2). Deleting one never made is 0.
             for (spec, token) in &keys {
                 created.borrow_mut().push((*spec, *token));
-                let o = cakeys(&["create", "--spec", spec, "--token", token]);
-                assert_eq!(code(&o), Some(0), "{mode}: create {spec} on {token}: {}", text(&o));
+                // The run's lock is its own, new: started by its first writing run.
+                let o = cakeys(&["--new-lock", "create", "--spec", spec, "--token", token]);
+                assert_eq!(code(&o), Some(LOCK_WRITTEN), "{mode}: create {spec} on {token}: {}", text(&o));
             }
             if mode == "FIPS" {
                 // The FIPS profile adds no Ed25519 stand-in: refused before anything is made.
-                let o = cakeys(&["create", "--spec", "ed25519", "--token", "cloudhsm"]);
+                let o = cakeys(&["--new-lock", "create", "--spec", "ed25519", "--token", "cloudhsm"]);
                 assert_eq!(code(&o), Some(UNSUPPORTED), "{mode}: ed25519: {}", text(&o));
                 assert!(text(&o).contains("CKM_EC_EDWARDS_KEY_PAIR_GEN"), "{}", text(&o));
             }
             for (spec, token) in &keys {
-                let o = cakeys(&["verify", "--spec", spec, "--token", token]);
-                assert_eq!(code(&o), Some(0), "{mode}: verify {spec} on {token}: {}", text(&o));
+                let o = cakeys(&["check", "--spec", spec, "--token", token]);
+                assert_eq!(code(&o), Some(0), "{mode}: check {spec} on {token}: {}", text(&o));
             }
             let mut moves = vec![("movable", "softhsm", "cloudhsm"), ("outbound", "cloudhsm", "softhsm")];
             if mode == "NON_FIPS" {
@@ -171,7 +174,7 @@ fn aws_cluster(mode: &str) {
                 moves.push(("ed25519", "cloudhsm", "softhsm"));
                 created.borrow_mut().push(("ed-in", "softhsm"));
                 let o = cakeys(&["create", "--spec", "ed-in", "--token", "softhsm"]);
-                assert_eq!(code(&o), Some(0), "{mode}: create ed-in on softhsm: {}", text(&o));
+                assert_eq!(code(&o), Some(LOCK_WRITTEN), "{mode}: create ed-in on softhsm: {}", text(&o));
                 let o = camigrate(&["migrate", "ed-in", "--from", "softhsm", "--to", "cloudhsm", "--dry-run"]);
                 assert_eq!(code(&o), Some(UNSUPPORTED), "{mode}: ed-in into cloudhsm: {}", text(&o));
                 assert!(text(&o).contains("migration.refuses"), "{}", text(&o));
@@ -179,17 +182,17 @@ fn aws_cluster(mode: &str) {
             for (key, from, to) in moves {
                 created.borrow_mut().push((key, to));
                 let o = camigrate(&["migrate", key, "--from", from, "--to", to]);
-                assert_eq!(code(&o), Some(0), "{mode}: migrate {key} {from} -> {to}: {}", text(&o));
+                assert_eq!(code(&o), Some(LOCK_WRITTEN), "{mode}: migrate {key} {from} -> {to}: {}", text(&o));
                 assert!(text(&o).contains("rsa-oaep-sha1+aes-kwp"), "{}", text(&o));
-                let o = cakeys(&["verify", "--spec", key, "--token", to]);
-                assert_eq!(code(&o), Some(0), "{mode}: verify {key} on {to}: {}", text(&o));
+                let o = cakeys(&["check", "--spec", key, "--token", to]);
+                assert_eq!(code(&o), Some(0), "{mode}: check {key} on {to}: {}", text(&o));
             }
         },
         || {
             // The transport keys last: what was created first goes last.
             for (spec, token) in created.borrow().iter().rev() {
-                let o = cakeys(&["delete", "--spec", spec, "--token", token]);
-                if code(&o) != Some(0) {
+                let o = cakeys(&["--new-lock", "delete", "--spec", spec, "--token", token]);
+                if !matches!(code(&o), Some(0 | LOCK_WRITTEN)) {
                     eprintln!("cleanup: delete {spec} on {token} ({mode}) failed: {}", text(&o));
                 }
             }
@@ -219,23 +222,24 @@ fn gcp_cloud_kms_end_to_end() {
     with_cleanup(
         || {
             for spec in ["rsa-pop-unwrap", "aes"] {
-                let o = cakeys(&["create", "--spec", spec, "--token", "gcp"]);
+                // The run's lock is its own, new: started by its first writing run.
+                let o = cakeys(&["--new-lock", "create", "--spec", spec, "--token", "gcp"]);
                 assert_eq!(code(&o), Some(UNSUPPORTED), "{spec}: {}", text(&o));
             }
             for spec in keys {
                 created.borrow_mut().push(spec);
-                let o = cakeys(&["create", "--spec", spec, "--token", "gcp"]);
-                assert_eq!(code(&o), Some(0), "create {spec}: {}", text(&o));
+                let o = cakeys(&["--new-lock", "create", "--spec", spec, "--token", "gcp"]);
+                assert_eq!(code(&o), Some(LOCK_WRITTEN), "create {spec}: {}", text(&o));
             }
             for spec in keys {
-                let o = cakeys(&["verify", "--spec", spec, "--token", "gcp"]);
-                assert_eq!(code(&o), Some(0), "verify {spec}: {}", text(&o));
+                let o = cakeys(&["check", "--spec", spec, "--token", "gcp"]);
+                assert_eq!(code(&o), Some(0), "check {spec}: {}", text(&o));
             }
         },
         || {
             for spec in created.borrow().iter() {
-                let o = cakeys(&["delete", "--spec", spec, "--token", "gcp"]);
-                if code(&o) != Some(0) {
+                let o = cakeys(&["--new-lock", "delete", "--spec", spec, "--token", "gcp"]);
+                if !matches!(code(&o), Some(0 | LOCK_WRITTEN)) {
                     eprintln!("cleanup: delete {spec} failed: {}", text(&o));
                 }
             }

@@ -16,7 +16,7 @@ use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::token::Occupied;
-use cakeys_pkcs11::{Template, Token, Via, templates};
+use cakeys_pkcs11::{Template, Token, Topic, Via, templates};
 use cryptoki::object::ObjectHandle;
 
 /// Move `src`'s key on `from` to `dst` on `to` through the host by `method` (`host-pkcs8` or
@@ -44,8 +44,7 @@ pub(crate) fn import(
     let (h, spki) = source_key(src, from, lock, notes)?;
     // The target first: nothing is in plaintext yet when it refuses.
     let occupied = landing(dst, to, spki.as_deref())?;
-    let plain = hand_over(from, h)?;
-    check_identity(dst, lock, &plain)?;
+    let plain = hand_over(from, h, dst, lock)?;
     let origin = origin(src.token_name, method, Exposure::Host);
     create_landed(dst, to, lock, &plain, spki.as_deref(), &occupied, origin, notes)
 }
@@ -89,16 +88,25 @@ fn check_identity(dst: &Target, lock: &Lock, plain: &[u8]) -> Result<()> {
 fn source_key(src: &Target, from: &Token, lock: &Lock, notes: &mut Notes) -> Result<(ObjectHandle, Option<Vec<u8>>)> {
     ops::verify(src, from, lock, notes)?;
     let loc = &src.on_token.locator;
-    let h = from.find_key(src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string().into()))?;
+    let h = from.find_key(&src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string().into()))?;
     let spki = (src.object.class == Class::PrivateKey).then(|| from.spki(h, loc)).transpose()?;
     Ok((h, spki))
 }
 
-/// The key `h` of `from` in this process's memory (`Token::extract`, by RFC 5649).
-fn hand_over(from: &Token, h: ObjectHandle) -> Result<zeroize::Zeroizing<Vec<u8>>> {
-    let kwp = rfc5649(from)
-        .ok_or_else(|| from.unsupported(format!("'{}' offers no RFC 5649 key wrap to hand the key over", from.name)))?;
-    from.extract(h, &kwp)
+/// The key `h` of `from` in this process's memory (`Token::extract`, by RFC 5649), its identity
+/// checked against what the lock pins for `dst` ([`check_identity`]) before any path can write
+/// it: the one way a move from a token holds the plaintext, so none writes an unchecked key
+/// (`tpm2_ptool` once did: review 2026-11-23 C-13).
+fn hand_over(from: &Token, h: ObjectHandle, dst: &Target, lock: &Lock) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    let kwp = rfc5649(from).ok_or_else(|| {
+        from.unsupported_for(
+            Topic::Mechanism,
+            format!("'{}' offers no RFC 5649 key wrap to hand the key over", from.name),
+        )
+    })?;
+    let plain = from.extract(h, &kwp)?;
+    check_identity(dst, lock, &plain)?;
+    Ok(plain)
 }
 
 /// Create the key `plain` (a private key's PKCS#8, of the public key `spki`, or a secret key's
@@ -178,13 +186,16 @@ pub(crate) fn import_ptool(
         return Err(KmError::Conflict(
             format!(
                 "objects already sit under the locator of {dst}, and the lock records no realisation there; \
-             refusing to import over them"
+             refusing to import over them. {}",
+                crate::public::unrecorded_hint(dst)
             )
             .into(),
         ));
     }
-    let plain = hand_over(from, h)?;
-    to.import_plaintext(dst.object, &dst.on_token.locator, &plain)?;
+    // Checked as on every host path: the wrong key never reaches the TPM, nor the PIN
+    // tpm2_ptool's command line.
+    let plain = hand_over(from, h, dst, lock)?;
+    to.import_plaintext(&dst.object, &dst.on_token.locator, &plain)?;
     drop(plain);
     // The key is in the TPM from here on: a reopen that fails leaves it there, unrecorded, and
     // the next run refuses its locator (13). Say what is there and how to resolve it.
@@ -203,7 +214,7 @@ pub(crate) fn import_ptool(
         Ok(_) => Ok(Moved::Imported),
         Err(err) => {
             // The locator held nothing of the key's classes before: this removes only the import.
-            match to.destroy(dst.object, &dst.on_token.locator) {
+            match to.destroy(&dst.object, &dst.on_token.locator) {
                 Ok(0) => {}
                 Ok(n) => notes.say(format!("removed {n} object(s) just imported for {dst}: {err}")),
                 Err(d) => notes.say(format!("what was just imported for {dst} is still on the token ({d})")),
@@ -226,8 +237,8 @@ fn create(dst: &Target, to: &Token, plain: &[u8], spki: Option<&[u8]>, made: &mu
     }
     let key = match dst.object.class {
         Class::PrivateKey => {
-            let kt = dst.object.key_type.ok_or_else(|| KmError::Validation(format!("{dst}: no key type").into()))?;
-            let parts = private_from_pkcs8(plain, kt, dst.object.curve.as_deref())?;
+            let kt = dst.object.key_type().ok_or_else(|| KmError::Validation(format!("{dst}: no key type").into()))?;
+            let parts = private_from_pkcs8(plain, kt, dst.object.curve())?;
             to.create_private(dst.object, base, &parts)?
         }
         Class::SecretKey => to.create_secret(base, plain)?,

@@ -47,7 +47,7 @@ object.
 | `kcv-ecb-dec` | AES, DES3 | ECB *decryption* of such a block | `CKA_DECRYPT` | `aes_128_192_and_decrypt_only_match_host_oracles`, `des3_check_values_match_host_oracles` |
 | `kw` | AES | RFC 3394 key wrap of a fixed key (SHA-256(label)) | `CKA_WRAP` | `aes_commitments_match_host_oracles` |
 | `piv-attestation` | private/public keys (YubiKey PIV) | Canonical digest of what the slot's attestation certificate asserts (§3.7), verified to the pinned Yubico root; per realisation | opt-in `attestation = true` (no login needed to read the certificates) | `fixture_chain_verifies_and_pins`, `the_yubico_roots_are_pinned`, `issuers_must_be_cas_within_their_path_length` |
-| `tpm-certify` | private and secret keys on tpm2-pkcs11 tokens | Canonical digest of the Name and qualified Name a native `TPM2_Certify` attests (§3.7), host-verified against a provisioned AK; per realisation | opt-in `attestation = true`, the module's TCTI + store, the PIN | `tpm2_keys_attest_their_tpm_residence`, `tpm2_each_token_pins_its_own_attestation`, `tpm2_attested_material_travels_to_a_second_hsm` |
+| `tpm-certify` | private keys on tpm2-pkcs11 tokens, and HMAC and generic secret keys through the store path | Canonical digest of the Name and qualified Name a native `TPM2_Certify` attests (§3.7), host-verified against a provisioned AK, bound to the material: a private key's SPKI, a secret key's HMAC commitment computed again by the certified object; per realisation | opt-in `attestation = true`, the module's TCTI + store, the PIN | `tpm2_keys_attest_their_tpm_residence`, `tpm2_each_token_pins_its_own_attestation`, `tpm2_attested_material_travels_to_a_second_hsm` |
 
 - **Commitment schemes never reveal what the token computed.** The lock stores only SHA-256 of the
   token's output, never a MAC or ciphertext under the key — `aes_commitments_…` asserts the raw
@@ -182,8 +182,11 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   `lock` is the lock verb: it never creates, and `create` is the one verb that writes keys
   (2026-11-15). Like `nix build` with `flake.lock`: what the lock lacks is recorded (first use included), but a
   locked ID, anchor, binding, type or immutable is never overwritten — those changes fail even
-  when the lock is written. `--no-update-lock` compares only (`--update-lock` names the
-  default). First use is trust on first use, so the review is the `keys.lock` diff.
+  when the lock is written. `lock --dry-run` and `delete --dry-run` compare only, and
+  `create --no-update-lock` creates without recording. First use is trust on first use, so the
+  review is the `keys.lock` diff, and a run that wrote the lock exits 22, never 0, so a caller
+  handles that review on purpose. A lock that is not there is refused (17) unless `--new-lock`:
+  a mistyped `--lock` never starts a second lock (review 2026-11-23, C-4).
 - **A write that replaces a realisation says what it accepted,** one line each (`re-recorded
   …`): what keys.toml changed (locator, object, `publicOnly`, spec digest) and policy
   attributes the lock did not record are notes; a policy attribute or immutable that changed
@@ -198,22 +201,22 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   declared attribute the token does not show is a conflict (13), never re-recorded. IDs,
   downgrades, immutables, attestations and types stay refused even when the lock is written.
 - **Where the lock cannot be written, a writing run is refused (21) before any token is
-  touched** — never a key created and then not recorded — naming `--no-update-lock`: inside a
+  touched** — never a key created and then not recorded — naming `--dry-run`: inside a
   Nix build sandbox (`NIX_BUILD_TOP` set without `IN_NIX_SHELL`, which `nix develop` also
   sets, and without `CAKEYS_ALLOW_NIX_STORE_KEYS=1`, docs/FILE.md), where a write would be lost with the build, or when the lock file or its directory is
-  not writable (`access(2)`). `check`, `verify` and `resolve` never write and are unaffected —
+  not writable (`access(2)`). `check` and `resolve` never write and are unaffected —
   `lock_is_written_by_default_and_refused_where_it_cannot_be`.
 - **A computed scheme missing from an otherwise matching lock is a note.** This happens, for
   example, when a newer version computes more schemes.
-  - With nothing to compare, it is first use: `lock` records it; `--no-update-lock`,
-    `verify` and `check` fail as a first use (exit 18, apart from a mismatch's 10), printing `got:`.
+  - With nothing to compare, it is first use: `lock` records it; `lock --dry-run` and
+    `check` fail as a first use (exit 18, apart from a mismatch's 10), printing `got:`.
   - An explicitly requested `check <obj>.id.<scheme>` needs that scheme locked.
   - Test: `a_new_scheme_missing_from_the_lock_is_a_note_unless_requested`.
 
 ### 3.6 Proof of possession (`binding`)
 
 A private key's identity hashes a public key, which may come from a separate object (§3.2). Each
-time it resolves a private key (`resolve`, `verify`, `lock`, `check`, `delete`), cakeys binds the
+time it resolves a private key (`resolve`, `lock`, `check`, `delete`), cakeys binds the
 key to its identity:
 
 1. The host builds a challenge: `"cakeys/pop/v1\0" ‖ SHA-256(SPKI) ‖ 32-byte nonce` from the OS
@@ -235,7 +238,9 @@ key to its identity:
      The token must offer the mechanism and the key's own `CKA_ALLOWED_MECHANISMS`, where it
      can be read, must allow it: a key pinned to `CKM_ECDSA` or `CKM_RSA_PKCS` proves through the
      fallback (the object matrix, OPEN.md). Every binding below chooses the same way, and one
-     whose mechanisms the list allows none of is refused (15) naming them. A proof records only
+     whose mechanisms the list allows none of is refused naming them: at load (17) when the spec
+     declares the list (`plan::proof_mechanisms`), on the token (15) when only the object carries
+     it. A proof records only
      its binding, never the mechanism.
 
      On a key the token reports `CKA_ALWAYS_AUTHENTICATE` (declared or not), the same proof runs
@@ -259,23 +264,26 @@ key to its identity:
        ephemeral key the host generated, so reading it reveals nothing the host did not already
        hold. The binding is still `pop-ecdh`. Where the profile does not say, the sealed form
        is tried first and the extractable one when the module refuses to derive into a sealed
-       secret; a derivation that ran and failed is never retried
+       secret (a template refusal: `CKR_ATTRIBUTE_VALUE_INVALID`, `CKR_ATTRIBUTE_TYPE_INVALID`,
+       `CKR_TEMPLATE_INCONSISTENT`, `CKR_TEMPLATE_INCOMPLETE`), or will not MAC with one; a key
+       that may not derive, or a derivation that ran and failed, is never retried
        (`an_ecdh_proof_falls_back_to_the_extractable_secret`).
      - **Read-write session (an exception to M1).** tpm2-pkcs11 keeps derived secrets as
        store rows, so it refuses `C_DeriveKey` in a read-only session (`derive.ecdh.read-only`
-       no). A read-only verb's (`verify`, `check`) proof then derives in a read-write
+       no). A read-only verb's (`resolve`, `check`) proof then derives in a read-write
        session opened for it, and destroys the row again. That is the one write a read-only
        verb makes. Where the store itself is read-only (a sandbox mounting it so), `pop-ecdh`
        stays unavailable (16) on such a token.
      - **Misreported attribute.** ykcs11 reports `CKA_DERIVE = false` on every key from a
        fixed table while its keys derive. The provider repairs the reported value
-       (`Provider::repair`), so `CKA_DERIVE = true` checks and is recorded. A lock
-       recorded before that repair fails `verify` once (14, "CKA_DERIVE false -> true"), and
+       (`Provider::policy_flag`), so `CKA_DERIVE = true` checks and is recorded. A lock
+       recorded before that repair fails `check` once (14, "CKA_DERIVE false -> true"), and
        `lock` re-records it.
-   - `pop-decrypt` (RSA keys that only decrypt): the host encrypts the challenge to the public key
+   - `pop-decrypt` (RSA keys that only decrypt): the host encrypts a fresh 32-byte secret (not
+     the 78-byte challenge, which OAEP-SHA-256 cannot carry in a 1024-bit key) to the public key
      with RSA-OAEP (SHA-1, MGF1-SHA1 — the PKCS#11 baseline; SoftHSM implements no other OAEP);
      the token decrypts with `CKM_RSA_PKCS_OAEP`. A token that refuses the hash's parameters
-     before decrypting is asked SHA-256, then SHA-512, each with a fresh challenge (Cloud KMS
+     before decrypting is asked SHA-256, then SHA-512: the same secret, encrypted again under each hash (Cloud KMS
      binds each key to one, which `CKA_ALLOWED_MECHANISMS` cannot say [run]); a decryption that
      began and failed is never retried, since a module may leave it active (tpm2-pkcs11 [run]).
      `pop-unwrap` tries the hashes alike. Where the token or the key's
@@ -319,7 +327,11 @@ Outcomes:
 The lock records the binding per realisation (`pop-sign`, `pop-sign-pin`, `pop-ecdh`,
 `pop-decrypt`, `pop-unwrap` or `token-asserted`). The `pop-*` methods share the top rank — each proves possession of the same
 key — so a realisation never weakens unless it drops to `token-asserted`, which is refused
-(exit 14), also when the lock is written — `binding_downgrade_is_refused`.
+(exit 14), also when the lock is written — `binding_downgrade_is_refused`. Another spec whose
+locator finds the same token object (the same object, token and locator) is held to the same
+binding, attestation and mode: a second spec is no way to record that object weaker. A spec
+with another locator realises another copy, which may differ
+(`a_second_spec_of_the_same_object_cannot_record_it_weaker`).
 
 ### 3.7 Attestation commitments (`piv-attestation`, `tpm-certify`)
 
@@ -329,8 +341,8 @@ content-addressed identity — one per token type that can produce it:
 
 | Scheme | Token | Evidence | Anchor pinned in the lock |
 |---|---|---|---|
-| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen`; under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while every other verb only warns about a chain out of its dates. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
-| `tpm-certify` | tpm2-pkcs11 tokens | a `TPM2_Certify` over the object's Name with a fresh random nonce, host-verified. A module with the vendor mechanism `CKM_TPM2_CERTIFY` (upstream/tpm2-pkcs11/) runs it itself (`C_Sign` on the object; the signer is a persistent AK by handle, or with `options.akLabel` a token object through `CKM_TPM2_CERTIFY_OBJECT`, which needs no TCTI or store); the object's public area is its `CKA_TPM2_PUB_BLOB`, whose Name the statement must carry. Any other module is attested natively (tss-esapi) as follows: the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the EK certificate's root, when one verifies and the AK activates a credential with that EK (§3.7); else the Attestation Key's SPKI |
+| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen` whose `keyUsage`, when present, has `keyCertSign`, and no certificate of the chain with a critical extension cakeys does not process (RFC 5280 §4.2; the same walk holds an EK certificate, which must also name `tcg-kp-EKCertificate` when it names purposes); under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while every other verb only warns about a chain out of its dates. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
+| `tpm-certify` | tpm2-pkcs11 tokens | a `TPM2_Certify` over the object's Name with a fresh random nonce, host-verified. A module with the vendor mechanism `CKM_TPM2_CERTIFY` (upstream/tpm2-pkcs11/) runs it itself (`C_Sign` on the object; the signer is a persistent AK by handle, or with `options.akLabel` a token object through `CKM_TPM2_CERTIFY_OBJECT`, which needs no TCTI or store); the object's public area is its `CKA_TPM2_PUB_BLOB`, whose Name the statement must carry. Any other module is attested natively (tss-esapi) as follows: the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. A secret key has no public key to cross-check, so the loaded object computes the key's HMAC commitment again (`TPM2_HMAC` over the commitment's input), which must be the commitment the module computed: a store row or a module pointing at another TPM object is refused (13), not attested (review 2026-11-23 B-1, `tpm2_a_secret_keys_attestation_is_bound_to_its_material`). A secret key without an HMAC commitment (AES, Triple DES), a SHA-224 HMAC key (the TPM defines no SHA-224) and any secret key through the module's own certify, which never lets cakeys load the object, are refused (15). Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the EK certificate's root, when one verifies and the AK activates a credential with that EK (§3.7); else the Attestation Key's SPKI |
 
 - **The commitment hashes asserted content, never signed bytes.** A PIV certificate is minted
   per session with a random serial and a randomized ECDSA signature; a `TPMS_ATTEST` carries a
@@ -368,7 +380,8 @@ content-addressed identity — one per token type that can produce it:
   no Attestation Key, no attestation certificate — fails (14) as a scheme downgrade, while
   evidence that is *wrong* keeps its own code (13). That strictness is chosen, not sprung, and
   it is one-way: opting out again (`attestation = false`) is a downgrade too, also when
-  the lock is written; a realisation that should stop attesting needs a new object name. A provider
+  the lock is written, and so is a second spec of the same token object without it (§3.6); a
+  realisation that should stop attesting needs a new object name. A provider
   that attests nothing (SoftHSM, kryoptic, p11-kit) refuses the opt-in up front (15, before
   anything is created), as does a class it cannot attest (PIV: asymmetric keys only; TPM:
   private and secret keys — a public-key object is stored without a private blob, and
@@ -382,7 +395,7 @@ content-addressed identity — one per token type that can produce it:
 - **The TPM Attestation Key** is a restricted signing key (P-256, ECDSA-SHA256, empty auth,
   owner hierarchy) that cakeys provisions at a persistent handle and never uses for anything
   but certify: a restricted key signs only TPM-generated structures. Only `lock` (and
-  `create`, through it) provisions it; `resolve`, `verify` and `check` never change the TPM, and
+  `create`, through it) provisions it; `resolve` and `check` never change the TPM, and
   fail (16, or 14 once locked) when it is missing — `tpm2_keys_attest_their_tpm_residence`
   compares the persistent handles around a `check`. A key already at the handle is used only if its public area is exactly
   cakeys' template (restricted sign-only P-256, fixedTPM, empty policy) — anything else is a
@@ -395,7 +408,12 @@ content-addressed identity — one per token type that can produce it:
   the host does not have the Name of the module's primary without the TPM or the store, so the
   signature under the pinned key is what identifies the signer (for the persistent AK, a primary
   of the owner hierarchy, it is `H(0x40000001 ‖ Name)`, and the host compares it with what the TPM reads). Trust in it is TOFU through the pinned
-  `root`, unless the next paragraph's EK → AK activation chains it to the manufacturer.
+  `root`, unless the next paragraph's EK → AK activation chains it to the manufacturer. With
+  `akLabel` the TOFU is the module's, not the TPM's: the AK's public area and its restricted,
+  fixedTPM attributes are what the module reports (`CKA_TPM2_PUB_BLOB`), never read from the TPM,
+  and the module route takes no EK activation, so a module with no TPM behind it could sign any
+  statement under a key it made. Every run that attests this way warns so; `akHandle` reads the
+  AK from the TPM (review 2026-11-23 B-2).
 - **EK → AK activation** (review D5). With an Endorsement Key certificate, the AK is proven to
   reside in a TPM its manufacturer certified, on every attestation. The certificate is
   `options.ekCertificate` (a PEM file, leaf then intermediates), else the one the TPM keeps in
@@ -453,11 +471,11 @@ What may be created and adopted:
 - **The admin credential (`soCredentialFile`/`soCredentialEnv`) is read only by a step that needs the SO.** A
   provider declares that its module creates and destroys objects only in an SO session
   (ykcs11 does); elsewhere the user creates and deletes, and the credential (the SO PIN) is read
-  only by `camigrate transport --trusted` (CAMIGRATE.md D2) —
+  only by `camigrate transport --trust-on` (CAMIGRATE.md D2) —
   `admin_credential_is_read_only_by_security_officer_steps`.
   Login state is per token, so the step logs the user out, logs in as SO, generates (or
   destroys), logs out and logs the user back in; the SO credential is read just before and
-  zeroized after. `resolve`, `verify` and `check` never read it.
+  zeroized after. `resolve` and `check` never read it.
 - **Only `cakeys create` makes keys,** and only on a pair whose `origin` is `create`; `lock`
   and `check` find what is there (2026-11-15: `check` is a read). Certificates, public keys and
   data objects are adopted or imported, never created —
@@ -525,7 +543,7 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
   records every attribute the object shows for its class, declared or not — the booleans
   (SoftHSM EC private keys, for example, default to `CKA_DECRYPT`, `CKA_UNWRAP` and
   `CKA_SIGN_RECOVER`) and, on key objects, `CKA_ALLOWED_MECHANISMS` when the token reports a
-  non-empty list. A recorded attribute that changes or becomes unreadable fails `verify` (exit 14)
+  non-empty list. A recorded attribute that changes or becomes unreadable fails `check` (exit 14)
   until `lock`; a newly readable one is a note. With `publicOnly`, this is the
   public object's vector.
 - **Immutables** (`CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`, `CKA_ALWAYS_SENSITIVE`,
@@ -553,12 +571,15 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
   updaters on different tokens queue instead of losing each other's realisations (one that waits
   says so first: `note: waiting for <lock>.lck`). Readers never
   take it: the rename makes each read a consistent snapshot. A leftover `.lck` is harmless
-  (advisory, released when its holder exits) — `update_lock_waits_for_the_sidecar_lock`. The guard,
+  (advisory, released when its holder exits) — `update_lock_waits_for_the_sidecar_lock` — and is
+  opened read-only when it exists, so another user's never refuses the run. The guard,
   the write and the writability check go to the file the lock path resolves to: a symlinked lock
-  is written through, and its two names share one guard.
+  is written through, and its two names share one guard. A rewritten lock keeps the old one's
+  mode, and its owner and group as far as the writer may set them
+  (`a_saved_lock_keeps_its_mode_and_a_read_only_sidecar_guards`).
 - **`gc`** collects entries the config no longer names (finding D3): every
   `[realisations.<spec>.<token>]` whose spec dropped the token and every `[objects.<name>]` gone
-  from `keys.toml`. It prints the stale table names and removes exactly those with `--apply`; live
+  from `keys.toml`. It prints the stale table names and removes exactly those (`--dry-run` only prints); live
   objects keep their `ids`, since the same material may live on other tokens or come back.
 - **URIs are pure locators** (RFC 7512), with no `module-path`. They carry the token `serial`
   (tokens may share a label) and always the object `type`.
@@ -580,12 +601,12 @@ Annotated, with the reasons behind each table: [`LOCK.md`](LOCK.md).
   duplicate-free list; `certificateType` and `publicAttributes` take part only when set, under
   their own key. Curves are canonical (`secp256r1`, never an alias), so a curve alias is the same
   type and the same digest. Pinned by `spec_digests_are_pinned`.
-- **A realisation record is required.** `verify`/`check` of a (spec, token) pair the lock does not
+- **A realisation record is required.** `check` of a (spec, token) pair the lock does not
   record fails (exit 14) even when the material matches the locked IDs: the lock describes where
   objects live, not only what they are — `s3_an_unrecorded_token_is_a_precondition_failure`.
   First use, with no locked IDs to compare, is exit 18 with `got:`.
 - **The record is compared** with keys.toml: a different `object`, `locator`, `publicOnly` or spec
-  digest fails `verify`/`check` (exit 14, naming each change) until `lock`
+  digest fails `check` (exit 14, naming each change) until `lock`
   re-records it, like a lockfile that is out of date — `s4_a_public_only_flip_is_a_spec_change`,
   `s8_a_retargeted_spec_is_a_spec_change`. A changed locator or object is never reported as an
   unexplained hash mismatch.
@@ -672,7 +693,7 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
   not `CKA_EXTRACTABLE` or `CKA_SENSITIVE`, and "never more than one object" holds only if the
   module's search returns every match, once: native-pkcs11 reports constant policy for any
   keychain key, and its searches both hide duplicates and show one key twice (PLAN.md A0b). A provider can repair a known misreport, as
-  `repair` does for ykcs11's `CKA_DERIVE`, but not a module that does not know.
+  `policy_flag` does for ykcs11's `CKA_DERIVE`, but not a module that does not know.
 - **`piv-attestation` proves no liveness** (no verifier nonce in Yubico's certificate, §3.7):
   a malicious module could replay an old one. `tpm-certify` is nonce-bound, so it proves the
   object was loaded in that TPM at verify time.
@@ -685,7 +706,7 @@ The reviews these come from are archived: `docs/archive/REVIEW-2026-11-11.md` (c
   (firmware 5.7.4, ykcs11 2.7.3): ykcs11 exposes the slot attestation certificate by label
   suffix and shared `CKA_ID`, and the f9 certificate by its bare label, with no login at all;
   the chains (slot → f9 → `Yubico PIV Attestation B 1` → `Yubico Attestation Intermediate B 1`
-  → `Yubico Attestation Root 1`) verify, also with openssl; `lock`, `verify`
+  → `Yubico Attestation Root 1`) verify, also with openssl; `lock`
   and `check` pass on keys generated on device, a tampered ID is 10, a tampered root or an
   opt-out 14, an imported key under a locked attestation 14 and unlocked 15; creating with
   `soCredentialFile` generates; and `C_DestroyObject` was confirmed to leave the key in the slot. The
@@ -738,10 +759,14 @@ label and the hash itself. Everything else is fixed by definition:
 - binding names (`pop-sign`, `pop-sign-pin`, `pop-ecdh`, `pop-decrypt`, `pop-unwrap`, `token-asserted`) and their rank (the
   `pop-*` methods share the top rank). The challenge layout
   (`cakeys/pop/v1`) is pinned by `message_layout_is_pinned`, though nothing stored depends on it;
-- lock field names (`objects`, `ids`, `realisations`, `object`, `locator`, `specDigest`,
-  `schemes`, `pairs`, `publicOnly`, `binding`, `policy`, `immutables`, `observation`, `observed`,
-  `provenance`, `origin`, `observations`, `provider`, `cakeysVersion`, `profile`,
-  `module`, `token`, `mechanisms`, `uri`);
+- lock field names: `version`; `objects` with `type` (`class`, `keyType`, `curve`,
+  `modulusBits`, `valueLen`, `certificateType`), `ids`, `commitmentLabel`, `publicKey`;
+  `realisations` with `object`, `locator`, `specDigest`, `mode`, `schemes`, `pairs`, `publicOnly`,
+  `binding`, `policy`, `immutables`, `attestation` (`kind`, `root`, `id`), `observation`,
+  `observed` (`uri`, `session`) and `provenance` (`origin`: `from`, `method`, `exposure`,
+  `declared`); `observations` with `provider`, `cakeysVersion`, `profile`, `mechanisms`,
+  `module` (`path`, `hash`, `description`, `manufacturer`, `version`, `cryptoki`), `token`
+  (`model`, `serial`, `firmware`, ...) and `capabilities` (`answer`, `evidence`, `via`);
 - `keys.toml` keys;
 - exit codes;
 - the URI shape.

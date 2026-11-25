@@ -4,7 +4,7 @@
 //! Updating one is a deliberate diff of both, with the file compared to its source first
 //! (roots/README.md).
 
-use sha2::{Digest, Sha256};
+include!("../pin-roots.rs");
 
 /// Each embedded file and its SHA-256 (`sha256sum`), as AMD's key distribution server serves it
 /// (fetched 2026-11-18).
@@ -14,14 +14,5 @@ const PINNED: &[(&str, &str)] = &[
 ];
 
 fn main() {
-    for (path, pinned) in PINNED {
-        println!("cargo::rerun-if-changed={path}");
-        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
-        let got = base16ct::lower::encode_string(&Sha256::digest(&bytes));
-        assert!(
-            got == *pinned,
-            "{path} has SHA-256 {got}, and build.rs pins {pinned}: compare the file with its source \
-             (roots/README.md) before changing either"
-        );
-    }
+    pin_roots(PINNED);
 }

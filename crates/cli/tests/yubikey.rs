@@ -145,8 +145,8 @@ impl Env {
     fn lifecycle(&self, c: &Case) {
         let spec = format!("{}-yubikey", c.name);
         let r = ["create", "--spec", &spec, "--token", "yubikey", "--no-update-lock"];
-        let adopt = ["lock", "--spec", &spec, "--token", "yubikey", "--no-update-lock"];
-        let record = ["lock", "--spec", &spec, "--token", "yubikey", "--update-lock"];
+        let adopt = ["lock", "--spec", &spec, "--token", "yubikey", "--dry-run"];
+        let record = ["lock", "--spec", &spec, "--token", "yubikey"];
 
         // First use: generated into an empty slot (SO login), or adopted where an earlier run
         // left a key — `create` refuses a key the lock does not pin (19), `lock` takes it — and
@@ -175,13 +175,13 @@ impl Env {
         assert_eq!(lock["objects"][c.name]["ids"]["rfc7093m4"].as_str(), Some(got.as_str()), "the first-use id");
 
         // Verify in a fresh process: the proof of possession runs again, unattended.
-        let verify = ["verify", "--spec", &spec, "--token", "yubikey"];
+        let verify = ["check", "--spec", &spec, "--token", "yubikey"];
         let verified = self.km(&verify);
         assert_eq!(code(&verified), 0, "{}: {}", c.name, String::from_utf8_lossy(&verified.stderr));
 
         // Delete is refused: ykcs11 would clear only the slot's certificate and report success
         // while the key stays. Nothing changes — the realisation stays and still verifies.
-        let deleted = self.km(&["delete", "--spec", &spec, "--token", "yubikey", "--update-lock"]);
+        let deleted = self.km(&["delete", "--spec", &spec, "--token", "yubikey"]);
         assert_eq!(code(&deleted), 15, "{}: {}", c.name, String::from_utf8_lossy(&deleted.stderr));
         assert!(String::from_utf8_lossy(&deleted.stderr).contains("ykman piv keys delete"));
         assert!(self.lock()["realisations"][spec.as_str()]["yubikey"].is_table(), "the realisation stays");

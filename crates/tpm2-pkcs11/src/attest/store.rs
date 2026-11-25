@@ -109,7 +109,7 @@ impl Store {
     ///
     /// `Unavailable` when the database cannot be opened or a query fails (a wrong directory is
     /// an error, never a fresh store the module might pick up); `NotFound` when the store holds
-    /// no token with the label. A key row whose attrs cannot be parsed refuses no other row: it
+    /// no token with the label, `Ambiguous` (12) when it holds several. A key row whose attrs cannot be parsed refuses no other row: it
     /// is kept aside ([`Store::refused`]).
     pub(crate) fn open(dir: &Path, token_label: &str) -> Result<Store> {
         let path = dir.join(DB_NAME);
@@ -119,19 +119,41 @@ impl Store {
             .map_err(|e| KmError::Unavailable(format!("opening tpm2-pkcs11 store {}: {e}", path.display()).into()))?;
         // `sealobjects.tokid` and `tobjects.tokid` reference `tokens.id` (db.c schema), not the
         // primary `tokens.pid` that several tokens may share.
-        let (tok_id, config, objauth) = db
-            .query_row(
-                "SELECT tokens.id, pobjects.config, pobjects.objauth FROM tokens
-                 JOIN pobjects ON pobjects.id = tokens.pid WHERE tokens.label = ?1",
-                [token_label],
-                |r| Ok((r.get::<_, i64>(0)?, text(r, 1)?, text(r, 2)?)),
-            )
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => KmError::NotFound(
+        // Every token of the label: two of one label are told apart by the serial the module
+        // derives, which the store does not hold, so the seal and rows of the other could be read
+        // (review 2026-11-23 B-13). Refused rather than guessed.
+        let tokens: Vec<(i64, String, String)> = {
+            let reading = |e: rusqlite::Error| KmError::Unavailable(format!("reading pobjects: {e}").into());
+            let mut stmt = db
+                .prepare(
+                    "SELECT tokens.id, pobjects.config, pobjects.objauth FROM tokens
+                     JOIN pobjects ON pobjects.id = tokens.pid WHERE tokens.label = ?1",
+                )
+                .map_err(reading)?;
+            let rows = stmt
+                .query_map([token_label], |r| Ok((r.get::<_, i64>(0)?, text(r, 1)?, text(r, 2)?)))
+                .map_err(reading)?;
+            rows.collect::<rusqlite::Result<_>>().map_err(reading)?
+        };
+        let (tok_id, config, objauth) = match <[_; 1]>::try_from(tokens) {
+            Ok([one]) => one,
+            Err(tokens) if tokens.is_empty() => {
+                return Err(KmError::NotFound(
                     format!("token '{token_label}' in the tpm2-pkcs11 store {}", path.display()).into(),
-                ),
-                e => KmError::Unavailable(format!("reading pobjects: {e}").into()),
-            })?;
+                ));
+            }
+            Err(tokens) => {
+                return Err(KmError::Ambiguous(
+                    format!(
+                        "{} tokens are labelled '{token_label}' in the tpm2-pkcs11 store {}, which records no serial to \
+                         tell them apart: relabel all but one",
+                        tokens.len(),
+                        path.display()
+                    )
+                    .into(),
+                ));
+            }
+        };
         let parent = parse_parent(&config, &objauth)?;
         // The seal blobs arrive as raw marshaled `TPM2B_`s (sqlite BLOB values), the auth salt
         // as its hex string.
@@ -466,8 +488,8 @@ mod tests {
     }
 
     /// A store file is read as the module wrote it: a token's rows, an unset `objauth` as the
-    /// empty auth value. A token the store does not hold is 11; a file that is no tpm2-pkcs11
-    /// store is unavailable (16), never taken for an empty one.
+    /// empty auth value. A token the store does not hold is 11, one it holds twice 12; a file
+    /// that is no tpm2-pkcs11 store is unavailable (16), never taken for an empty one.
     #[test]
     fn a_store_file_is_read_or_refused() {
         let dir = std::env::temp_dir().join(format!("cakeys-tpm2-store-{}", std::process::id()));
@@ -505,6 +527,9 @@ mod tests {
         assert!(store.refused[0].to_string().contains("invalid utf-8"), "{}", store.refused[0]);
         assert!(store.find(b"0a", Some(b"k1"), CLASS_PRIVATE_KEY).is_ok());
         assert!(matches!(Store::open(&dir, "another"), Err(KmError::NotFound(_))));
+        // A second token of the label is refused (12), never the first row taken (B-13).
+        Connection::open(dir.join(DB_NAME)).unwrap().execute("INSERT INTO tokens VALUES (8, 1, 'kmtest')", []).unwrap();
+        assert!(matches!(Store::open(&dir, "kmtest"), Err(KmError::Ambiguous(m)) if m.contains("2 tokens")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

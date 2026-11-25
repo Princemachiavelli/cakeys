@@ -9,10 +9,11 @@
 //!
 //! Needs the reference suite's `CAKEYS_TEST_MODULE`; skipped without it.
 //!
-//! One test, and one `caprobe::main_from` call, per process: `main_from` activates the
-//! process's profile set, which a second activation refuses (review `template_hook.rs` F2). The
-//! control is a run of the binary for that reason. A second in-process test here needs
-//! `main_from` to take an already active set first (caprobe's lib.rs).
+//! The control is a run of the binary, not a second in-process `caprobe::main_from`: the
+//! profile set is built once per process, and a later call reuses it only for the same profile
+//! directories (caprobe's lib.rs), so the control keeps its own process and stays independent
+//! of the run under test. (Review `template_hook.rs` F2 forced this when a second activation
+//! was refused; since `main_from` reuses the set, it is a choice.)
 
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
@@ -28,8 +29,8 @@ use std::sync::Mutex;
 /// What each template the provider was asked is for.
 static ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// Refuses the template of every secret key cakeys generates, and nothing else; records what
-/// each template is for in [`ASKED`].
+/// Refuses the template of every secret key cakeys generates and of a secp256k1 pair, and
+/// nothing else; records what each template is for in [`ASKED`].
 struct RefusesSecrets;
 
 impl Provider for RefusesSecrets {
@@ -56,6 +57,9 @@ impl Provider for RefusesSecrets {
             Template::Generate(d, Half::Key) if d.object.class == ObjectClass::SecretKey => {
                 Err(KmError::Unsupported("the test provider refuses secret-key generation".into()))
             }
+            Template::Generate(d, Half::Key) if d.object.curve.as_deref() == Some("secp256k1") => {
+                Err(KmError::Unsupported("the test provider refuses secp256k1".into()))
+            }
             _ => Ok(()),
         }
     }
@@ -70,7 +74,7 @@ fn the_write_probes_make_their_secret_keys_through_the_provider() {
     w.write_config(&tokens.replacen("[tokens.ref]\n", "[tokens.ref]\nprovider = \"refuses-secrets\"\n", 1));
     let (config, out) = (w.dir.join("keys.toml"), w.dir.join("profile.toml"));
     let registry = caprobe::default_registry().with(RefusesSecrets);
-    let args = ["caprobe", "--config", config.to_str().unwrap(), "probe", "--token", "ref", "--write"];
+    let args = ["caprobe", "--config", config.to_str().unwrap(), "probe", "--token", "ref", "--write-probes"];
     // 2048 bits: the RSA transport key the wrap probes use.
     let more = ["--rsa-max-bits", "2048", "--out", out.to_str().unwrap()];
     let exit = caprobe::main_from(&registry, args.iter().chain(&more));
@@ -80,6 +84,10 @@ fn the_write_probes_make_their_secret_keys_through_the_provider() {
     assert!(profile.contains("\"prove.pop-unwrap.CKK_RSA.1024\" = { answer = \"yes\" }"), "{profile}");
     // But it made no AES key to wrap.
     assert!(!profile.contains("wrap.rsa-oaep."), "{profile}");
+    // A pair the provider refused was never asked of the module: no row, neither yes nor the
+    // module's no (review 2026-11-23 D-4: it was written as the module's refusal).
+    assert!(!profile.contains("\"generate.CKK_EC.secp256k1\""), "{profile}");
+    assert!(profile.contains("\"generate.CKK_EC.secp256r1\" = { answer = \"yes\" }"), "{profile}");
     // The move probes asked the provider too (review pkcs11 templates.rs F3: no test reached
     // these hooks with a provider of its own).
     let asked = ASKED.lock().unwrap().clone();
@@ -96,4 +104,5 @@ fn the_write_probes_make_their_secret_keys_through_the_provider() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let profile = std::fs::read_to_string(&control).unwrap();
     assert!(profile.contains("\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\" }"), "{profile}");
+    assert!(profile.contains("\"generate.CKK_EC.secp256k1\" = { answer = \"yes\" }"), "{profile}");
 }

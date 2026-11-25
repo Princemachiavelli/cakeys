@@ -6,7 +6,7 @@ use super::*;
 fn ec_lifecycle() {
     let Some(e) = env("ec_lifecycle") else { return };
     e.config(EC);
-    let r = ["lock", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"];
+    let r = ["lock", "--spec", "signing-soft", "--token", "ref", "--dry-run"];
     let c = ["create", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"];
 
     // Only `create` creates: `lock` and `check` find nothing, and name it.
@@ -26,11 +26,11 @@ fn ec_lifecycle() {
     assert_eq!(e.code(&["resolve", "--spec", "signing-soft", "--token", "ref"]), 0);
 
     // Record it; now lock is a no-op success.
-    assert_eq!(e.code(&recording(&r)), 0);
+    assert_eq!(e.code(&recording(&r)), 22);
     assert_eq!(e.locked_id("signing", "rfc7093m4"), got);
     assert_eq!(e.code(&r), 0);
 
-    let verify = e.km(&["verify", "--spec", "signing-soft", "--token", "ref"]);
+    let verify = e.km(&["check", "--spec", "signing-soft", "--token", "ref"]);
     assert_eq!(code(&verify), 0);
     let uri = stdout(&verify);
     assert!(
@@ -48,28 +48,32 @@ fn ec_lifecycle() {
     assert!(!stdout(&check).contains('?'), "{}", stdout(&check));
 
     // DELETE + If-Match.
-    let del = ["delete", "--spec", "signing-soft", "--token", "ref", "--update-lock"];
+    let del = ["delete", "--spec", "signing-soft", "--token", "ref"];
     let wrong = e.km(&[&del[..], &["--if-match", "sha256-AAAA"]].concat());
     assert_eq!(code(&wrong), 14);
-    assert_eq!(e.code(&["verify", "--spec", "signing-soft", "--token", "ref"]), 0);
+    assert_eq!(e.code(&["check", "--spec", "signing-soft", "--token", "ref"]), 0);
     // The right one deletes (review delete.rs F1: only a wrong one was tested).
     let right = e.km(&[&del[..], &["--if-match", &got]].concat());
-    assert_eq!(code(&right), 0, "{}", stderr(&right));
-    assert_eq!(e.code(&del), 0, "delete of an absent object succeeds");
-    assert_eq!(e.code(&["verify", "--spec", "signing-soft", "--token", "ref"]), 11);
+    assert_eq!(code(&right), 22, "{}", stderr(&right));
+    assert_eq!(e.code(&del), 0, "delete of an absent object succeeds, and changes nothing");
+    assert_eq!(e.code(&["check", "--spec", "signing-soft", "--token", "ref"]), 11);
     // Both halves gone from the token, not only unfound (review delete.rs F3).
     assert_eq!(e.session().labelled("ec-lifecycle"), []);
     assert!(e.lock().get("realisations").and_then(|r| r.get("signing-soft")).is_none());
 
-    // Deleting something that never existed succeeds even with no expected identity anywhere.
+    // Deleting something that never existed succeeds even with no expected identity anywhere,
+    // and writes no lock.
     std::fs::remove_file(e.dir.join("keys.lock")).unwrap();
-    assert_eq!(e.code(&["delete", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"]), 0);
-    // ...but a present object with no expected identity is never deleted blindly.
-    let fresh = e.km(&c);
+    assert_eq!(e.code(&["--new-lock", "delete", "--spec", "signing-soft", "--token", "ref"]), 0);
+    assert!(!e.dir.join("keys.lock").exists());
+    // ...but a present object with no expected identity is never deleted blindly, nor planned.
+    let fresh = e.km(&[&["--new-lock"][..], &c].concat());
     assert_eq!(code(&fresh), 18);
-    let unlocked = ["delete", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"];
+    let unlocked = ["--new-lock", "delete", "--spec", "signing-soft", "--token", "ref"];
     assert_eq!(e.code(&unlocked), 14);
-    assert_eq!(e.code(&["verify", "--spec", "signing-soft", "--token", "ref"]), 18);
+    assert_eq!(e.code(&[&unlocked[..], &["--dry-run"]].concat()), 14);
+    assert_eq!(e.code(&["check", "--spec", "signing-soft", "--token", "ref"]), 17, "no lock");
+    assert_eq!(e.code(&["--new-lock", "check", "--spec", "signing-soft", "--token", "ref"]), 18);
     // `--if-match` is the expected identity where no lock gives one.
     let o = e.km(&[&unlocked[..], &["--if-match", &got_hash(&fresh)]].concat());
     assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -100,12 +104,12 @@ fn gc_prints_then_removes_stale_entries() {
     let Some(e) = env("gc") else { return };
     let object = "[objects.signing]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n";
     e.config(EC.replace("ec-lifecycle", "gc-key").as_str());
-    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "signing-soft", "--token", "ref"]), 22);
     let id = e.locked_id("signing", "rfc7093m4");
     let key = || e.lock()["realisations"]["signing-soft"]["ref"]["observation"].as_str().unwrap().to_owned();
 
     // Nothing stale: prints nothing, and --apply writes nothing.
-    for args in [&["gc"][..], &["gc", "--apply"][..]] {
+    for args in [&["gc"][..], &["gc"][..]] {
         let o = e.km(args);
         assert_eq!(code(&o), 0, "{args:?}");
         assert_eq!(stdout(&o), "");
@@ -118,12 +122,12 @@ fn gc_prints_then_removes_stale_entries() {
     // live on elsewhere).
     e.config(object);
     let stale = format!("realisations.signing-soft.ref\nobservations.\"{}\"", key());
-    let o = e.km(&["gc"]);
+    let o = e.km(&["gc", "--dry-run"]);
     assert_eq!(code(&o), 0);
     assert_eq!(stdout(&o), stale);
     assert!(e.lock()["realisations"]["signing-soft"]["ref"].is_table(), "not removed before --apply");
-    let o = e.km(&["gc", "--apply"]);
-    assert_eq!(code(&o), 0);
+    let o = e.km(&["gc"]);
+    assert_eq!(code(&o), 22);
     assert_eq!(stdout(&o), stale);
     assert!(e.lock().get("realisations").and_then(|r| r.get("signing-soft")).is_none());
     assert_eq!(e.locked_id("signing", "rfc7093m4"), id);
@@ -135,20 +139,20 @@ fn gc_prints_then_removes_stale_entries() {
     let spec_full =
         format!("{spec_body}tokens.ref = {{ locator = {{ CKA_LABEL = \"gc-key\" }}, origin = \"create\" }}\n");
     e.config(&format!("{object}\n{spec_full}"));
-    assert_eq!(e.code(&["lock", "--spec", "signing-soft", "--token", "ref", "--update-lock"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "signing-soft", "--token", "ref"]), 22);
     e.config(&format!("{object}\n{spec_no_token}"));
     let stale = format!("realisations.signing-soft.ref\nobservations.\"{}\"", key());
-    assert_eq!(stdout(&e.km(&["gc"])), stale);
-    assert_eq!(e.code(&["gc", "--apply"]), 0);
+    assert_eq!(stdout(&e.km(&["gc", "--dry-run"])), stale);
+    assert_eq!(e.code(&["gc"]), 22);
     assert!(e.lock().get("realisations").and_then(|r| r.get("signing-soft")).is_none());
 
     // The object too is gone from keys.toml: its record is collected.
     e.config("");
-    assert_eq!(stdout(&e.km(&["gc"])), "objects.signing");
+    assert_eq!(stdout(&e.km(&["gc", "--dry-run"])), "objects.signing");
     assert!(e.lock()["objects"]["signing"].is_table(), "not removed before --apply");
-    assert_eq!(e.code(&["gc", "--apply"]), 0);
+    assert_eq!(e.code(&["gc"]), 22);
     assert!(e.lock().get("objects").and_then(|o| o.get("signing")).is_none());
-    assert_eq!(stdout(&e.km(&["gc"])), "");
+    assert_eq!(stdout(&e.km(&["gc", "--dry-run"])), "");
 }
 
 /// A public key object of another key under a private key's locator is a conflict (13) for
@@ -186,7 +190,7 @@ tokens.ref = { locator = { CKA_LABEL = "del-other" }, origin = "create" }
 "#,
     );
     for spec in ["k", "other"] {
-        assert_eq!(e.code(&["create", "--spec", spec, "--token", "ref"]), 0);
+        assert_eq!(e.code(&["create", "--spec", spec, "--token", "ref"]), 22);
     }
     let of_class = |class, label: &str| {
         s.find_objects(&[Attribute::Class(class), Attribute::Label(label.as_bytes().to_vec())]).unwrap()
@@ -203,19 +207,19 @@ tokens.ref = { locator = { CKA_LABEL = "del-other" }, origin = "create" }
     planted.extend(s.get_attributes(other, &[AttributeType::Modulus, AttributeType::PublicExponent]).unwrap());
     s.create_object(&planted).unwrap();
     assert_eq!(of_class(ObjectClass::PUBLIC_KEY, "del-rsa").len(), 2);
-    for verb in ["verify", "resolve"] {
+    for verb in ["check", "resolve"] {
         let o = e.km(&[verb, "--spec", "k", "--token", "ref"]);
         assert_eq!(code(&o), 13, "{verb}: {}", stderr(&o));
         assert!(stderr(&o).contains("holds another key"), "{verb}");
     }
     assert_eq!(e.code(&["check", "k", "--token", "ref"]), 13);
 
-    let del = |token| e.km(&["delete", "--spec", "k", "--token", token, "--no-update-lock"]);
+    let del = |token| e.km(&["delete", "--spec", "k", "--token", token]);
     assert_eq!(code(&del("ref-anon")), 16);
     assert_eq!(of_class(ObjectClass::PRIVATE_KEY, "del-rsa").len(), 1, "nothing deleted unseen");
 
     let o = del("ref");
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert!(stderr(&o).contains("left 1 public key object(s)"));
     assert_eq!(of_class(ObjectClass::PRIVATE_KEY, "del-rsa").len(), 0, "the identified private key is gone");
     let left = of_class(ObjectClass::PUBLIC_KEY, "del-rsa");

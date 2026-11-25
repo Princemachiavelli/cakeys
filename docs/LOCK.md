@@ -101,7 +101,7 @@ compared fields are required.
 # The object this spec realised. A spec retargeted to another object is reported as such (14).
 object = "ec"
 # SHA-256 of the spec's canonical JSON (the object type plus its declared attributes). A changed
-# spec fails `verify` (14, "changed in keys.toml") until `lock` re-records it.
+# spec fails `check` (14, "changed in keys.toml") until `lock` re-records it.
 specDigest = "sha256-2NHAGifN/zSvJ77DXQKy3lmAaVkj5Ci1IxO7QSius0A="
 # How the identity was established, strongest first: direct (a hash of public material),
 # commitment (the token computes over a label), wrap-rebind (through a temporary copy of an
@@ -111,7 +111,7 @@ mode = "direct"
 schemes = ["rfc7093m4"]
 # How the private key was bound to the public key its identity hashes: the token signed a fresh
 # challenge the host verified (pop-sign; pop-sign-pin when the key is CKA_ALWAYS_AUTHENTICATE and
-# each signature took a context-specific login; or pop-ecdh, pop-decrypt). `token-asserted` means the
+# each signature took a context-specific login; or pop-ecdh, pop-decrypt, pop-unwrap). `token-asserted` means the
 # token's word only. Dropping from any pop-* to token-asserted is refused (14). Not stored, but
 # derived from the binding, the class and the attestation kind: the `assurance` that `lock`
 # and the Nix view report. A pop-* binding (or a tpm-certify attestation) is a "proof" no replay
@@ -223,7 +223,7 @@ generation on the token: a curve recorded `via = "by-name"` is retried by name) 
 planner read them before the module profile of the token's kind (they decide, it is a prior),
 and a recorded *no* refuses there as a profile's does. A recorded answer that names no `via`
 keeps the profile's. They are observations
-(DESIGN §3.5): they never change a verdict of `check`, `verify` or `lock`, and a run that
+(DESIGN §3.5): they never change a verdict of `check` or `lock`, and a run that
 records none leaves them as they were. Only what a run demonstrated is recorded, so today they
 only ever say *yes*.
 
@@ -271,7 +271,9 @@ id = "sha256-ZksMSOtJ2hgO/UZqtKLLVWmYXOko4O1YP0F3lhXVDA4="
 
 ## How a write behaves
 
-`lock` and `delete` write the lock by default (`--no-update-lock` compares only), and a write
+`lock`, `create` and `delete` write the lock by default (`lock --dry-run` and `delete --dry-run`
+compare only, `create --no-update-lock` records nothing). A run that wrote it exits 22, and a lock
+that is not there is refused (17) unless `--new-lock` (CAKEYS.md, "Exit codes"). A write
 only *fills gaps*: what the lock lacks is recorded (first use included), but a locked ID, type,
 binding, attestation or immutable is never overwritten. Those changes fail even when the lock is
 written — different material needs a new object name. Policy and spec drift, which can be

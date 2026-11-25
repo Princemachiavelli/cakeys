@@ -30,7 +30,7 @@ fn env(name: &str) -> Option<(Suite, String)> {
 }
 
 /// Each proof of possession on the real TPM, unattended: signing (P-256), deriving (P-384,
-/// tpm2-pkcs11's extractable path, and in a read-write session for the read-only `verify`) and
+/// tpm2-pkcs11's extractable path, and in a read-write session for the read-only `check`) and
 /// decrypting (RSA-2048, OAEP). The resolved profile is this TPM's pair, not swtpm's.
 #[test]
 fn keys_generate_and_prove_possession_each_way() {
@@ -51,12 +51,12 @@ fn keys_generate_and_prove_possession_each_way() {
     }
     e.config(&body);
     for (n, _, _, binding) in cases {
-        let o = e.km(&["create", "--spec", n, "--token", "ftpm", "--update-lock"]);
+        let o = e.km(&["create", "--spec", n, "--token", "ftpm"]);
         assert_eq!(code(&o), 0, "{n}: {}", stderr(&o));
         assert_eq!(e.lock()["realisations"][n]["ftpm"]["binding"].as_str(), Some(binding), "{n}");
         let profile = e.observation(n, "ftpm")["profile"].clone();
         assert_eq!(profile.as_str(), Some(pair.as_str()), "the token resolves its own pair profile");
-        let o = e.km(&["verify", "--spec", n, "--token", "ftpm"]);
+        let o = e.km(&["check", "--spec", n, "--token", "ftpm"]);
         assert_eq!(code(&o), 0, "{n}: {}", stderr(&o));
     }
     // What the profile says it cannot do is refused before anything is generated.
@@ -79,7 +79,7 @@ fn unwrap_only_keys_cannot_prove_possession() {
          [specs.u]\nobject = \"u\"\nattributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }\n\
          tokens.ftpm = { locator = { CKA_LABEL = \"ftpm-unwrap\" }, origin = \"create\", binding = \"pop-unwrap\" }\n",
     );
-    let o = e.km(&["create", "--spec", "u", "--token", "ftpm", "--update-lock"]);
+    let o = e.km(&["create", "--spec", "u", "--token", "ftpm"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("never unwraps") && !stderr(&o).contains("created"), "{}", stderr(&o));
 }
@@ -116,11 +116,11 @@ fn keys_attest_their_residence_on_the_real_tpm() {
     );
     // The P-256 key is generated; the HMAC key was imported above and is adopted.
     for (verb, spec) in [("create", "p256"), ("lock", "hmac")] {
-        let o = e.km(&[verb, "--spec", spec, "--token", "ftpm", "--update-lock"]);
+        let o = e.km(&[verb, "--spec", spec, "--token", "ftpm"]);
         assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
         let att = &e.lock()["realisations"][spec]["ftpm"]["attestation"];
         assert_eq!(att["kind"].as_str(), Some("tpm-certify"), "{spec}");
-        assert_eq!(e.code(&["verify", "--spec", spec, "--token", "ftpm"]), 0, "{spec}");
+        assert_eq!(e.code(&["check", "--spec", spec, "--token", "ftpm"]), 0, "{spec}");
         let got: serde_json::Value =
             serde_json::from_str(&stdout(&e.km(&["resolve", "--spec", spec, "--token", "ftpm"]))).unwrap();
         assert_eq!(got["assurance"].as_str(), Some("proof"), "{spec}: {got}");
@@ -159,7 +159,7 @@ fn keys_attest_to_the_manufacturer_on_the_real_tpm() {
     );
     assert_ne!(with_ek, toml, "the token section names its label");
     std::fs::write(e.dir.join("keys.toml"), with_ek).unwrap();
-    let o = e.km(&["create", "--spec", "p256", "--token", "ftpm", "--update-lock"]);
+    let o = e.km(&["create", "--spec", "p256", "--token", "ftpm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     // The anchor is one of the built-in AMD fTPM roots (crates/tpm2-pkcs11/roots), not the AK.
     let att = &e.lock()["realisations"]["p256"]["ftpm"]["attestation"];
@@ -167,7 +167,7 @@ fn keys_attest_to_the_manufacturer_on_the_real_tpm() {
         ["sha256-iZucnW6SbECq776jkFFz8A97Uq1utNLTLm/LGXlxDis=", "sha256-XPGFn/vSzRjBM0XUdpK+pOokZPv7dCmDZPqXnoMyKfY="];
     assert!(att["root"].as_str().is_some_and(|r| amd.contains(&r)), "{att}");
     for verb in
-        [&["verify", "--spec", "p256", "--token", "ftpm"][..], &["check", "p256.id.tpm-certify", "--token", "ftpm"]]
+        [&["check", "--spec", "p256", "--token", "ftpm"][..], &["check", "p256.id.tpm-certify", "--token", "ftpm"]]
     {
         let o = e.km(verb);
         assert_eq!(code(&o), 0, "{verb:?}: {}", stderr(&o));

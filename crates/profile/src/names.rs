@@ -143,13 +143,6 @@ named! {
     }
 }
 
-named! {
-    /// What a layer's restriction applies to.
-    Operation {
-        Generate = "generate",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +172,5 @@ mod tests {
         let names: Vec<&str> = kinds.iter().map(KeyKind::name).collect();
         assert_eq!(names, ["CKK_AES", "CKK_EC", "CKK_EC_EDWARDS", "CKK_FUTURE", "CKK_RSA"]);
         assert_eq!(Proof::from("pop-ecdh").to_string(), "pop-ecdh");
-        assert!(matches!(Operation::from("generate"), Operation::Generate));
     }
 }

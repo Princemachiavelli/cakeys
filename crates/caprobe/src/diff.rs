@@ -2,7 +2,7 @@
 //! a claimed profile says, over the rows a probe can observe. Empty is conformance — the
 //! shipped profile is what the module does; non-empty is drift, each line naming the row.
 
-use cakeys_profile::{Capability, KeyKind, Operation, Profile, Row};
+use cakeys_profile::{Capability, KeyKind, Profile, Row};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Compare the probe-observable rows of `generated` against `claimed`: one line per
@@ -104,7 +104,7 @@ fn optional(what: &str, generated: Option<&String>, claimed: Option<&String>, ou
 /// type. Two rows for one pair on one side are a line of their own, never one of them
 /// compared as if it were the only one.
 fn restrictions(generated: &Profile, claimed: &Profile, out: &mut Vec<String>) {
-    let mut key = |p: &Profile, side: &str| -> BTreeMap<(Operation, KeyKind), (Option<u32>, Option<u32>)> {
+    let mut key = |p: &Profile, side: &str| -> BTreeMap<(String, KeyKind), (Option<u32>, Option<u32>)> {
         let mut rows = BTreeMap::new();
         for r in &p.restrict {
             let k = (r.operation.clone(), r.key_type.clone());

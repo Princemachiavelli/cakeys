@@ -673,8 +673,9 @@ fn create(s: &Session, row: &Row, label: &str) -> Result<(), String> {
 /// the provenance the lock pins (the immutables that are true): what tells an imported private
 /// key from a generated one, whose identity is the same.
 fn outcome(w: &Workdir, spec: &str, token: &str, immutables: bool) -> Result<String, (i32, String)> {
-    let o = w.km(&["lock", "--spec", spec, "--token", token, "--update-lock"]);
-    if code(&o) != 0 {
+    let o = w.km(&["lock", "--spec", spec, "--token", token]);
+    // 22: recorded, so the lock was written; 0: the lock already held it.
+    if !matches!(code(&o), 0 | 22) {
         return Err((code(&o), stderr(&o)));
     }
     let r = &w.lock()["realisations"][spec][token];

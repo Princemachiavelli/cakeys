@@ -10,9 +10,9 @@
 //! `profiles` keys.toml names. A token with neither is skipped, with a note.
 
 use crate::ops::{self, Target};
-use crate::provider::Registry;
+use crate::registry::Registry;
 use crate::resolution::{self, Resolved};
-use cakeys_core::config::{Binding, Lock, Mode, ObjectCfg, TokenCfg, TokenObservation};
+use cakeys_core::config::{Binding, KeyOrigin, Lock, Mode, ObjectCfg, TokenCfg, TokenObservation};
 use cakeys_core::{KmError, Result};
 use cakeys_profile::{Capability, Effective, On, Set, Verdict};
 
@@ -85,7 +85,7 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
 /// The capability of proving `t`'s private key the way its spec binds it
 /// (`plan::expected_binding`), when that is a proof.
 fn proof(t: &Target) -> Option<Capability> {
-    proof_capability(t.object, cakeys_core::plan::expected_binding(t)?)
+    proof_capability(&t.object, cakeys_core::plan::expected_binding(t)?)
 }
 
 /// What a capability row of `object` is on: its curve, or its modulus size.
@@ -141,6 +141,16 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
              token opens",
             stack.provider
         ));
+    }
+    // A key the pair makes on the token (created, imported, or from its file) goes where the
+    // module can place it: ykcs11's PIV slots by CKA_ID alone (review 2026-11-23 B-3).
+    if let Some(p) = &provider
+        && t.object.class.is_key()
+        && t.on_token.key_origin() != KeyOrigin::Adopt
+        && let Err(e) = p.placement(&t.on_token.locator)
+    {
+        out.refusals.push(format!("{t}: provider '{}': {e}", p.name()));
+        return Ok(out);
     }
     // A module that generates from its own template refuses what it cannot make (kmsp11).
     let own = match provider.as_ref().filter(|_| creates).map(|p| ops::own_generation(t, p.as_ref())) {
@@ -209,50 +219,65 @@ pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates
             out.notes.push(format!("{t}: the profiles do not decide ({})", lines.join("; ")));
         }
     }
-    if needs.generation.is_some()
-        && let Some(kt) = t.object.key_type
-    {
-        let verdict = if kt.is_asymmetric() {
-            let bits = t.object.modulus_bits.and_then(|b| u32::try_from(b).ok());
-            eff.generate(kt.name(), t.object.curve.as_deref(), bits)
-        } else {
-            // A secret key's length: keys.toml's `valueLen`, or what its type fixes.
-            let bytes = t.object.value_len.or_else(|| kt.fixed_value_len());
-            eff.generate_secret(kt.name(), bytes.and_then(|b| u32::try_from(b).ok()))
-        };
-        match verdict {
-            Verdict::Yes { .. } => {}
-            v @ Verdict::No { .. } => {
-                out.refusals.push(format!("{t}: token '{token}' cannot generate it: {v}"));
-            }
-            v @ Verdict::Unknown { .. } => out.notes.push(format!("{t}: generation not decided: {v}")),
+    // The generation's type, curve and size; then a secret key's commitments: refused only when
+    // the profile measured every one the spec declares and the module cannot compute any (an
+    // unmeasured one is the advertised list's); a note when none is a yes and some are
+    // undecided, as for a generation.
+    let generated = needs.generation.and_then(|_| generating(t, &eff, token));
+    for said in generated.into_iter().chain(commitments(t, &eff, token)) {
+        match said {
+            Ok(refusal) => out.refusals.push(refusal),
+            Err(undecided) => out.notes.push(undecided),
         }
-    }
-    // A secret key's commitments: refused only when the profile measured every one the spec
-    // declares and the module cannot compute any (an unmeasured one is the advertised list's).
-    if let Some(refusal) = commitments_refused(t, &eff, token) {
-        out.refusals.push(refusal);
     }
     Ok(out)
 }
 
-/// The refusal when `t` is a secret key whose every declared commitment the profile measured as
-/// one the module cannot compute.
-fn commitments_refused(t: &Target, eff: &Effective, token: &str) -> Option<String> {
+/// What the profiles say of generating `t`'s key, its type, curve and size: `Ok`, the refusal;
+/// `Err`, a note, when undecided; `None` when it is a yes or `t` names no key type.
+fn generating(t: &Target, eff: &Effective, token: &str) -> Option<std::result::Result<String, String>> {
+    let kt = t.object.key_type?;
+    let verdict = if kt.is_asymmetric() {
+        let bits = t.object.modulus_bits.and_then(|b| u32::try_from(b).ok());
+        eff.generate(kt.name(), t.object.curve.as_deref(), bits)
+    } else {
+        // A secret key's length: keys.toml's `valueLen`, or what its type fixes.
+        let bytes = t.object.value_len.or_else(|| kt.fixed_value_len());
+        eff.generate_secret(kt.name(), bytes.and_then(|b| u32::try_from(b).ok()))
+    };
+    match verdict {
+        Verdict::Yes { .. } => None,
+        v @ Verdict::No { .. } => Some(Ok(format!("{t}: token '{token}' cannot generate it: {v}"))),
+        v @ Verdict::Unknown { .. } => Some(Err(format!("{t}: generation not decided: {v}"))),
+    }
+}
+
+/// What the profiles say of `t`'s declared commitments when it is a secret key: `Ok`, the
+/// refusal, when the profile measured every one as one the module cannot compute; `Err`, a
+/// note, when none is a yes and one the profile measured is not decided at this length (review
+/// 2026-11-23 A-1); `None` when one is a yes, there are none, or the undecided ones were never
+/// measured (the advertised list's).
+fn commitments(t: &Target, eff: &Effective, token: &str) -> Option<std::result::Result<String, String>> {
     let kt = t.object.key_type.filter(|_| t.object.class == cakeys_core::types::ObjectClass::SecretKey)?;
     let bytes = t.object.value_len.or_else(|| kt.fixed_value_len()).and_then(|b| u32::try_from(b).ok());
     let verdicts: Vec<(&str, Verdict)> = cakeys_core::plan::declared_commits(t)
         .iter()
         .map(|c| {
-            let kind = crate::token::commit_kind(*c);
+            let kind = c.profile_kind();
             (kind, eff.commit(kind, kt.name(), bytes))
         })
         .collect();
-    if verdicts.is_empty() || !verdicts.iter().all(|(_, v)| matches!(v, Verdict::No { .. })) {
+    if verdicts.is_empty() || verdicts.iter().any(|(_, v)| matches!(v, Verdict::Yes { .. })) {
         return None;
     }
     let lines: Vec<String> = verdicts.iter().map(|(k, v)| format!("{k}: {v}")).collect();
-    Some(format!("{t}: token '{token}' computes none of its commitments ({})", lines.join("; ")))
+    if verdicts.iter().all(|(_, v)| matches!(v, Verdict::No { .. })) {
+        return Some(Ok(format!("{t}: token '{token}' computes none of its commitments ({})", lines.join("; "))));
+    }
+    verdicts
+        .iter()
+        .any(|(k, v)| matches!(v, Verdict::Unknown { .. }) && eff.measured_commit(k, kt.name()))
+        .then(|| Err(format!("{t}: commitments not decided ({})", lines.join("; "))))
 }
 
 #[cfg(test)]

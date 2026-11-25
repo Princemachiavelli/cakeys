@@ -122,8 +122,10 @@ let
           "cp /etc/km/keys.toml /root/keys.toml",
       )
 
-      with subtest("validate"):
-          print(machine.succeed(f"{km} validate"))
+      with subtest("no lock yet: refused (17) unless --new-lock starts one"):
+          assert "--new-lock" in expect(f"{km} validate", 17)
+          print(machine.succeed(f"{km} --new-lock validate"))
+          machine.fail("test -e /root/keys.lock")
 
       ${
         if isVM then
@@ -133,12 +135,12 @@ let
                 assert "`cakeys create` makes it" in out, out
                 # The key is created out of band; the sandbox's check then fails like a FOD with
                 # a fake hash, and never creates a second key (else: exit 12, ambiguous).
-                first = got(expect(f"{km} create --spec signing-soft --token softhsm --no-update-lock", 18))
+                first = got(expect(f"{km} --new-lock create --spec signing-soft --token softhsm --no-update-lock", 18))
                 assert got(build(ok=False)) == first
-                expect(f"{km} resolve --spec signing-soft --token softhsm", 0)
+                expect(f"{km} --new-lock resolve --spec signing-soft --token softhsm", 0)
 
-            with subtest("record out of band, then the consumer builds"):
-                expect(f"{km} lock --spec signing-soft --token softhsm --update-lock", 0)
+            with subtest("record out of band (22: the lock was written), then the consumer builds"):
+                expect(f"{km} --new-lock lock --spec signing-soft --token softhsm", 22)
                 assert first in machine.succeed("cat /root/keys.lock")
                 machine.succeed("cp /root/keys.lock /root/keys.lock.built")
                 out = build("--arg lock /root/keys.lock.built")
@@ -148,10 +150,11 @@ let
         else
           ''
             with subtest("only create creates; first use fails with got:"):
-                expect(f"{km} lock --spec signing-soft --token softhsm --no-update-lock", 11)
-                first = got(expect(f"{km} create --spec signing-soft --token softhsm --no-update-lock", 18))
-                assert got(expect(f"{km} lock --spec signing-soft --token softhsm --no-update-lock", 18)) == first
-                expect(f"{km} lock --spec signing-soft --token softhsm --update-lock", 0)
+                expect(f"{km} --new-lock lock --spec signing-soft --token softhsm --dry-run", 11)
+                first = got(expect(f"{km} --new-lock create --spec signing-soft --token softhsm --no-update-lock", 18))
+                assert got(expect(f"{km} --new-lock lock --spec signing-soft --token softhsm --dry-run", 18)) == first
+                expect(f"{km} --new-lock lock --spec signing-soft --token softhsm", 22)
+                expect(f"{km} lock --spec signing-soft --token softhsm", 0)
           ''
       }
 
@@ -166,27 +169,29 @@ let
           ).strip()
           assert oracle == first, f"{oracle} != {first}"
 
-      with subtest("verify and check print the URI"):
-          assert expect(f"{km} verify --spec signing-soft --token softhsm", 0).startswith("pkcs11:")
+      with subtest("check prints the URI, by pair and by identity"):
+          assert expect(f"{km} check --spec signing-soft --token softhsm", 0).startswith("pkcs11:")
           assert expect(f"{km} check signing.id.rfc7093m4", 0).startswith("pkcs11:")
 
       with subtest("wrap-rebind identity for an extractable AES key"):
           got(expect(f"{km} create --spec kek-wrap --token softhsm --no-update-lock", 18))
-          expect(f"{km} lock --spec kek-wrap --token softhsm --update-lock", 0)
+          expect(f"{km} lock --spec kek-wrap --token softhsm", 22)
           lock = machine.succeed("cat /root/keys.lock")
           assert 'mode = "wrap-rebind"' in lock, lock
           # The AES session copy gets every AES commitment.
           for scheme in ["cmac", "kcv-ecb", "kw"]:
               assert re.search(rf'^"?{scheme}"? = "sha256-', lock, re.M), (scheme, lock)
-          expect(f"{km} verify --spec kek-wrap --token softhsm", 0)
+          expect(f"{km} check --spec kek-wrap --token softhsm", 0)
 
       with subtest("DELETE + If-Match is idempotent and guarded"):
-          delete = f"{km} delete --spec signing-soft --token softhsm --update-lock"
+          delete = f"{km} delete --spec signing-soft --token softhsm"
           expect(f"{delete} --if-match sha256-AAAA", 14)
-          expect(f"{km} verify --spec signing-soft --token softhsm", 0)
+          expect(f"{km} check --spec signing-soft --token softhsm", 0)
+          expect(f"{delete} --dry-run", 0)
+          expect(f"{km} check --spec signing-soft --token softhsm", 0)
+          expect(delete, 22)
           expect(delete, 0)
-          expect(delete, 0)
-          expect(f"{km} verify --spec signing-soft --token softhsm", 11)
+          expect(f"{km} check --spec signing-soft --token softhsm", 11)
 
       ${lib.optionalString isVM ''
         with subtest("caveat: a cached consumer does not re-contact the token; --check does"):

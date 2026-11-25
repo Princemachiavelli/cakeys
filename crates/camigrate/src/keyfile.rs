@@ -103,6 +103,25 @@ pub(crate) fn read(
     }
 }
 
+/// A key file's private key (PKCS #8 DER), the certificates beside it, and how it was read.
+pub(crate) type PrivateKey = (Zeroizing<Vec<u8>>, Vec<Vec<u8>>, Method);
+
+/// The one private key the file `bytes` holds, as PKCS#8 and the format it came in, and the
+/// certificates beside it: what `import --in` takes from a key file, which names no object
+/// (the lock's identity of the key says which), in every format [`read`] reads (review
+/// 2026-11-23 C-6). `pass` opens an encrypted one.
+///
+/// # Errors
+///
+/// As [`read`] for a private key.
+pub(crate) fn private_key(bytes: &[u8], pass: Option<&str>) -> Result<PrivateKey> {
+    let entries = entries(bytes, pass, None)?;
+    let certificates =
+        entries.iter().filter_map(|e| if let Entry::Certificate(c) = e { Some(c.clone()) } else { None }).collect();
+    let (pkcs8, method) = one_key(entries)?;
+    Ok((pkcs8, certificates, method))
+}
+
 /// Whether the file `bytes` holds a private key, plain or encrypted, told by shape alone and
 /// before anything is decoded: a certificate object taken from a bundle or a PKCS#12 decodes
 /// the key beside it, so its import puts key plaintext in this process's memory too.
@@ -272,7 +291,7 @@ fn public_key(entries: Vec<Entry>) -> Result<Vec<u8>> {
 /// The key `spki` (canonical) is of `object`'s type: RSA, or EC or Edwards on its curve; and
 /// as many bits as `modulusBits` says.
 fn check_type(spki: &[u8], object: &ObjectCfg) -> Result<()> {
-    let curve = id::spki_curve(spki).map_err(|e| bad(format!("its key: {e}")))?;
+    let curve = id::KeyAlg::of_spki(spki).map(id::KeyAlg::curve).map_err(|e| bad(format!("its key: {e}")))?;
     let fits = match (object.key_type, curve) {
         (Some(KeyType::Rsa), None) => {
             use rsa::traits::PublicKeyParts as _;
@@ -573,7 +592,8 @@ mod tests {
                 (Some(want.as_slice()), &method, Exposure::File),
                 "{file}"
             );
-            cakeys_core::plaintext::private_from_pkcs8(&m.bytes, KeyType::Ec, Some("secp256r1")).unwrap();
+            cakeys_core::plaintext::private_from_pkcs8(&m.bytes, KeyType::Ec, Some(cakeys_core::id::Curve::P256))
+                .unwrap();
             assert_eq!(host_ids(&p256(), &m), [(Scheme::Rfc7093m4, id::sri(&want))], "{file}");
         }
         let rsa = object(Class::PrivateKey, Some(KeyType::Rsa), None);
@@ -651,9 +671,12 @@ mod tests {
         let p256 = p256();
         let ssh = b"-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n";
         let crl = b"-----BEGIN X509 CRL-----\nAAAA\n-----END X509 CRL-----\n";
-        let cases: [(&[u8], Option<&str>, &str); 7] = [
+        let cases: [(&[u8], Option<&str>, &str); 8] = [
             (&fixture("p256.legacy-enc.pem"), PASS, "openssl pkcs8 -topk8"),
             (&fixture("p256.legacy.p12"), PASS, "openssl pkcs12 -in old.p12 -legacy"),
+            // Its key in a plain keyBag: said as such, not as a file without a key (review
+            // 2026-11-23 C-22).
+            (&fixture("p256.nokeypbe.p12"), PASS, "whose key is not encrypted (a keyBag, `-keypbe NONE`)"),
             (&fixture("p256.enc.pem"), None, "no passphrase is given"),
             (&fixture("p256.enc.pem"), Some("other"), "does not open under this passphrase"),
             (ssh, None, "ssh-keygen -p -m PKCS8"),

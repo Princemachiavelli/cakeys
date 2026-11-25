@@ -139,6 +139,8 @@ pkgs.testers.runNixOSTest {
     systemd.tmpfiles.rules = [
       "d ${vm.softhsm.tokens} 0700 root root -"
       "d /var/lib/km 0700 root root -"
+      # The deployment's lock, started empty: `cakeys --new-lock` would start the same.
+      "f /var/lib/km/keys.lock 0600 root root - version = 1"
     ];
     nix.settings.substituters = lib.mkForce [ ];
     virtualisation.additionalPaths = [ guestBuilds ];
@@ -149,6 +151,11 @@ pkgs.testers.runNixOSTest {
     import re
 
     km = "cakeys --config /etc/km/keys.toml --lock /var/lib/km/keys.lock"
+
+    def expect(cmd, code):
+        status, out = machine.execute(cmd + " 2>&1")
+        assert status == code, f"{cmd}: exit {status}, wanted {code}\n{out}"
+        return out
 
     ${vm.guestBuild}
 
@@ -198,9 +205,10 @@ pkgs.testers.runNixOSTest {
         assert "`cakeys create` makes it" in machine.succeed(
             "journalctl -u cakeys-check-signing.service --no-pager"
         )
-        machine.succeed(f"{km} create --spec signing-soft --token softhsm --update-lock")
+        # Created and recorded: 22, the lock was written.
+        expect(f"{km} create --spec signing-soft --token softhsm", 22)
         machine.fail("test -e /run/cakeys/signing.pem")
-        machine.succeed(f"{km} lock --spec signing-soft --token softhsm --update-lock")
+        expect(f"{km} lock --spec signing-soft --token softhsm", 0)
         machine.succeed("systemctl start signer.service")
         # The check passed and finished: inactive, so the next start of signer runs it again.
         check = "systemctl show --value -p Result -p ActiveState cakeys-check-signing.service"
@@ -223,7 +231,7 @@ pkgs.testers.runNixOSTest {
         )
         # Key gone: restarting signer runs the check again, which fails and makes no new key.
         # No hand stop of the check unit: a restart alone must re-check (review D5).
-        machine.succeed(f"{km} delete --spec signing-soft --token softhsm --no-update-lock")
+        expect(f"{km} delete --spec signing-soft --token softhsm", 22)
         machine.fail("systemctl restart signer.service")
         # Refused by the check run again, not only by a signer that could not sign: a check
         # left active from the earlier pass would still say success.

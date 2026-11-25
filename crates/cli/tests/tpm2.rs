@@ -125,7 +125,7 @@ tokens.tpm = { locator = { CKA_LABEL = "refusal-des3" }, origin = "create" }
     }
     assert_eq!(e.code(&["create", "--spec", "ed", "--token", "tpm", "--no-update-lock"]), 15);
     // No CKM_AES_CMAC: a sign-only AES spec has no commitment here.
-    assert_eq!(e.code(&["lock", "--spec", "aes-mac", "--token", "tpm", "--no-update-lock"]), 15);
+    assert_eq!(e.code(&["lock", "--spec", "aes-mac", "--token", "tpm", "--dry-run"]), 15);
 }
 
 #[test]
@@ -158,17 +158,17 @@ fn tpm2_generated_keys_match_der_oracle() {
         let first = e.km(&["create", "--spec", &spec, "--token", "tpm", "--no-update-lock"]);
         assert_eq!(code(&first), 18, "{k}");
         assert_eq!(
-            got_hash(&e.km(&["lock", "--spec", &spec, "--token", "tpm", "--no-update-lock"])),
+            got_hash(&e.km(&["lock", "--spec", &spec, "--token", "tpm", "--dry-run"])),
             got_hash(&first),
             "{k}: no duplicate"
         );
-        assert_eq!(e.code(&["lock", "--spec", &spec, "--token", "tpm", "--update-lock"]), 0, "{k}");
+        assert_eq!(e.code(&["lock", "--spec", &spec, "--token", "tpm"]), 22, "{k}");
         // A session opened now: tpm2-pkcs11 sessions don't see objects created after they opened.
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki_with(&e.session(), k, unwrap_tpm2)), "{k}");
         let binding = if k == "tpm-p521" { "token-asserted" } else { "pop-sign" };
         assert_eq!(e.lock()["realisations"][&spec]["tpm"]["binding"].as_str(), Some(binding), "{k}");
         let pubs = format!("{k}-pub");
-        assert_eq!(e.code(&["lock", "--spec", &pubs, "--token", "tpm-anon", "--update-lock"]), 0, "{k}");
+        assert_eq!(e.code(&["lock", "--spec", &pubs, "--token", "tpm-anon"]), 22, "{k}");
     }
 }
 
@@ -209,10 +209,10 @@ fn tpm2_proves_possession_by_deriving() {
          [specs.p]\nobject = \"p\"\nattributes = { CKA_DERIVE = true }\n\
          tokens.tpm = { locator = { CKA_LABEL = \"ecdh-p256\" }, origin = \"create\", binding = \"pop-ecdh\" }\n",
     );
-    let o = e.km(&["create", "--spec", "p", "--token", "tpm", "--update-lock"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let o = e.km(&["create", "--spec", "p", "--token", "tpm"]);
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert_eq!(e.lock()["realisations"]["p"]["tpm"]["binding"].as_str(), Some("pop-ecdh"));
-    let o = e.km(&["verify", "--spec", "p", "--token", "tpm"]);
+    let o = e.km(&["check", "--spec", "p", "--token", "tpm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
 }
 
@@ -295,7 +295,7 @@ tokens.tpm = { locator = { CKA_LABEL = "imp-hmac384" }, origin = "adopt" }
 "#,
     );
     for (spec, token) in [("p256", "tpm"), ("rsa", "tpm-anon"), ("hmac", "tpm"), ("hmac384", "tpm")] {
-        assert_eq!(e.code(&["lock", "--spec", spec, "--token", token, "--update-lock"]), 0, "{spec}");
+        assert_eq!(e.code(&["lock", "--spec", spec, "--token", token]), 22, "{spec}");
     }
     assert_eq!(e.locked_id("p256", "rfc7093m4"), IMPORT_P256);
     assert_eq!(e.locked_id("rsa", "rfc7093m4"), IMPORT_RSA2048);
@@ -319,11 +319,11 @@ fn tpm2_aes_key_is_identified_by_its_kcv() {
          [specs.aes]\nobject = \"aes\"\nattributes = { CKA_ENCRYPT = true, CKA_SENSITIVE = true }\n\
          tokens.tpm = { locator = { CKA_LABEL = \"kcv-aes\" }, origin = \"adopt\" }\n",
     );
-    let r = ["lock", "--spec", "aes", "--token", "tpm", "--no-update-lock"];
+    let r = ["lock", "--spec", "aes", "--token", "tpm", "--dry-run"];
     let first = e.km(&r);
     assert_eq!(code(&first), 18);
     assert_eq!(got_hash(&e.km(&r)), got_hash(&first));
-    assert_eq!(e.code(&recording(&r)), 0);
+    assert_eq!(e.code(&recording(&r)), 22);
     assert_eq!(e.code(&["check", "aes.id.kcv-ecb"]), 0);
 
     let s = e.session();
@@ -358,11 +358,11 @@ fn tpm2_private_data_object_is_identified_by_its_value() {
          tokens.tpm = { locator = { CKA_LABEL = \"tpm-data\" }, origin = \"adopt\" }\n",
     );
     // Undeclared, its hash would be an offline guessing oracle nobody agreed to: refused.
-    let o = e.km(&["lock", "--spec", "blob-undeclared", "--token", "tpm", "--update-lock"]);
+    let o = e.km(&["lock", "--spec", "blob-undeclared", "--token", "tpm"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("declare CKA_PRIVATE = true"), "{}", stderr(&o));
-    let o = e.km(&["lock", "--spec", "blob", "--token", "tpm", "--update-lock"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let o = e.km(&["lock", "--spec", "blob", "--token", "tpm"]);
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert_eq!(e.locked_id("blob", "valuehash"), sri(&value));
     assert_eq!(e.code(&["check", "blob", "--spec", "blob"]), 0);
 }
@@ -384,7 +384,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
          [specs.p256]\nobject = \"p256\"\nattributes = { CKA_SIGN = true }\n\
          tokens.tpm = { locator = { CKA_LABEL = \"attest-p256\" }, origin = \"create\", attestation = true }\n",
     );
-    let r = ["lock", "--spec", "p256", "--token", "tpm", "--no-update-lock"];
+    let r = ["lock", "--spec", "p256", "--token", "tpm", "--dry-run"];
     let first = e.km(&["create", "--spec", "p256", "--token", "tpm", "--no-update-lock"]);
     assert_eq!(code(&first), 18, "first use: got the ID, the lock is written by review");
     let got: serde_json::Value =
@@ -392,7 +392,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
     let ids = got["ids"].as_object().unwrap();
     assert_eq!(ids.len(), 1, "only the portable rfc7093m4 is an object ID: {ids:?}");
     assert!(got["attestation"]["id"].as_str().unwrap().starts_with("sha256-"));
-    assert_eq!(e.code(&recording(&r)), 0);
+    assert_eq!(e.code(&recording(&r)), 22);
     // The lock: the attestation lives on the realisation (per device), the portable ID on the
     // object; the realisation pins the AK beside its attestation ID.
     assert!(e.lock()["objects"]["p256"]["ids"].get("tpm-certify").is_none());
@@ -403,7 +403,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
     assert!(att["root"].as_str().unwrap().starts_with("sha256-"));
     assert_ne!(att["id"].as_str(), Some(e.locked_id("p256", "rfc7093m4").as_str()));
     // Verify is a fresh certify run: a new nonce, the same stable Name.
-    assert_eq!(e.code(&["verify", "--spec", "p256", "--token", "tpm"]), 0);
+    assert_eq!(e.code(&["check", "--spec", "p256", "--token", "tpm"]), 0);
     assert_eq!(e.code(&["check", "p256.id.tpm-certify", "--token", "tpm"]), 0);
     // The AK is persistent at the default handle: a second run reuses it, so the root is stable.
     let again = e.km(&["resolve", "--spec", "p256", "--token", "tpm"]);
@@ -422,7 +422,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
     };
     std::fs::write(e.dir.join("keys.toml"), alt("0x81000017")).unwrap();
     for _ in 0..2 {
-        let o = e.km(&["verify", "--spec", "p256", "--token", "tpm"]);
+        let o = e.km(&["check", "--spec", "p256", "--token", "tpm"]);
         assert_eq!(code(&o), 14, "{}", stderr(&o));
         assert!(stderr(&o).contains("no Attestation Key at 0x81000017"));
     }
@@ -463,7 +463,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
              [specs.hmac]\nobject = \"hmac\"\nattributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n\
              tokens.tpm = { locator = { CKA_LABEL = \"attest-hmac\" }, origin = \"adopt\", attestation = true }\n",
         );
-        assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "tpm", "--update-lock"]), 0);
+        assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "tpm"]), 22);
         assert!(e.lock()["objects"]["hmac"]["ids"].get("commitment").is_some());
         assert!(e.locked_attestation("hmac", "tpm")["id"].as_str().is_some());
         // A TPM-held secret key, certified: a fresh proof, not the replayable fingerprint a
@@ -509,12 +509,12 @@ fn tpm2_attestation_activates_a_credential_to_the_certified_ek() {
         assert_eq!(code(o), want, "{why}: {}", stderr(o));
         assert!(stderr(o).contains(why), "expected {why:?} in {}", stderr(o));
     };
-    let lock = ["lock", "--spec", "a", "--token", "tpm", "--update-lock"];
-    let verify = ["verify", "--spec", "a", "--token", "tpm"];
+    let lock = ["lock", "--spec", "a", "--token", "tpm"];
+    let verify = ["check", "--spec", "a", "--token", "tpm"];
 
     // First use, as before the EK certificate: the AK's own key is the anchor.
     config("");
-    assert_eq!(e.code(&lock), 0);
+    assert_eq!(e.code(&lock), 22);
     let first_use = e.locked_attestation("a", "tpm")["root"].clone();
     ek("ek-ecc.pem", "other-ca.pem");
     refused(&e.km(&lock), 13, "signed by no pinned root");
@@ -526,7 +526,7 @@ fn tpm2_attestation_activates_a_credential_to_the_certified_ek() {
     let mut edited = e.lock();
     edited["realisations"]["a"]["tpm"].as_table_mut().unwrap().remove("attestation").unwrap();
     e.write_lock(&edited);
-    assert_eq!(e.code(&lock), 0);
+    assert_eq!(e.code(&lock), 22);
     // The lock pins the test CA's key, the anchor the EK certificate verified to.
     let ca_spki =
         Command::new("openssl").args(["pkey", "-in", &path("ca.key"), "-pubout", "-outform", "DER"]).output().unwrap();
@@ -613,7 +613,7 @@ fn tpm2_the_salted_session_keeps_the_token_secrets_off_the_wire() {
     let has_key_text = |bytes: &[u8]| bytes.windows(64).any(|w| w.iter().all(u8::is_ascii_hexdigit));
 
     config(&format!("options = {{ ekCertificate = \"{}\", ekRoots = \"{}\" }}", path("ek-ecc.pem"), path("ca.pem")));
-    assert_eq!(e.code(&["lock", "--spec", "a", "--token", "tpm", "--update-lock"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "a", "--token", "tpm"]), 22);
     let salted = wire(&resolve);
     assert!(!has(&salted, &seal_auth), "the seal auth crossed the transport in the clear");
     assert!(!has_key_text(&salted), "the wrapping key crossed the transport in the clear");
@@ -757,8 +757,8 @@ fn tpm2_each_token_pins_its_own_attestation() {
          tokens.tpm2 = {{ locator = {{ CKA_LABEL = \"two-hmac\" }}, origin = \"adopt\", attestation = true }}\n",
         e.module
     ));
-    assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "tpm", "--update-lock"]), 0);
-    assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "tpm2", "--update-lock"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "tpm"]), 22);
+    assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "tpm2"]), 22);
     let lock = e.lock();
     let ids = lock["objects"]["hmac"]["ids"].as_table().unwrap();
     assert_eq!(ids.keys().collect::<Vec<_>>(), ["commitment"], "{ids:?}");
@@ -766,7 +766,7 @@ fn tpm2_each_token_pins_its_own_attestation() {
     assert_ne!(one["id"].as_str(), two["id"].as_str(), "two imports, two TPM objects, two attestations");
     assert_eq!(one["root"].as_str(), two["root"].as_str(), "one TPM, one AK");
     for t in ["tpm", "tpm2"] {
-        assert_eq!(e.code(&["verify", "--spec", "hmac", "--token", t]), 0);
+        assert_eq!(e.code(&["check", "--spec", "hmac", "--token", t]), 0);
     }
 }
 
@@ -817,8 +817,8 @@ fn tpm2_attested_material_travels_to_a_second_hsm() {
         .unwrap();
     // The portable identity first, from the token without attestation; the TPM realisation
     // then joins the same object through the shared commitment scheme, pinning its attestation.
-    assert_eq!(e.code(&["lock", "--spec", "hmac-soft", "--token", "soft", "--update-lock"]), 0);
-    assert_eq!(e.code(&["lock", "--spec", "hmac-tpm", "--token", "tpm", "--update-lock"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "hmac-soft", "--token", "soft"]), 22);
+    assert_eq!(e.code(&["lock", "--spec", "hmac-tpm", "--token", "tpm"]), 22);
     let lock = e.lock();
     let ids = lock["objects"]["hmac"]["ids"].as_table().unwrap();
     assert_eq!(ids.keys().collect::<Vec<_>>(), ["commitment"], "the portable ID only: {ids:?}");
@@ -827,10 +827,10 @@ fn tpm2_attested_material_travels_to_a_second_hsm() {
     assert_eq!(e.locked_id("hmac", "commitment"), sri(&mac.finalize().into_bytes()));
     assert!(e.locked_attestation("hmac-tpm", "tpm")["id"].as_str().unwrap().starts_with("sha256-"));
     // The copy on the second HSM verifies through the commitment; the TPM through both.
-    assert_eq!(e.code(&["verify", "--spec", "hmac-soft", "--token", "soft"]), 0);
-    assert_eq!(e.code(&["verify", "--spec", "hmac-tpm", "--token", "tpm"]), 0);
+    assert_eq!(e.code(&["check", "--spec", "hmac-soft", "--token", "soft"]), 0);
+    assert_eq!(e.code(&["check", "--spec", "hmac-tpm", "--token", "tpm"]), 0);
     // Opting into attestation on a module that attests nothing is refused up front (15).
-    let o = e.km(&["lock", "--spec", "hmac-attest-soft", "--token", "soft", "--no-update-lock"]);
+    let o = e.km(&["lock", "--spec", "hmac-attest-soft", "--token", "soft", "--dry-run"]);
     assert_eq!(code(&o), 15);
     assert!(stderr(&o).contains("attests nothing"), "{}", stderr(&o));
 }
@@ -846,7 +846,7 @@ fn unwrap_only_keys_are_refused_before_generation() {
          [specs.u]\nobject = \"u\"\nattributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }\n\
          tokens.tpm = { locator = { CKA_LABEL = \"refusal-unwrap\" }, origin = \"create\", binding = \"pop-unwrap\" }\n",
     );
-    let o = e.km(&["lock", "--spec", "u", "--token", "tpm", "--no-update-lock"]);
+    let o = e.km(&["lock", "--spec", "u", "--token", "tpm", "--dry-run"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("never unwraps") && !stderr(&o).contains("created"), "{}", stderr(&o));
 }
@@ -864,8 +864,12 @@ fn row_value(attrs: &str, ty: u64) -> String {
 /// Rewrite the attrs of the private-key row whose `CKA_LABEL` is `label` in the test's store,
 /// as another process (the module) will read them.
 fn edit_private_row(label: &str, edit: impl FnOnce(&str) -> String) {
-    let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
-    let db = rusqlite::Connection::open(std::path::Path::new(&store).join("tpm2_pkcs11.sqlite3")).unwrap();
+    edit_private_row_in(&std::env::var("TPM2_PKCS11_STORE").unwrap(), label, edit);
+}
+
+/// [`edit_private_row`] in the store in directory `store`.
+fn edit_private_row_in(store: &str, label: &str, edit: impl FnOnce(&str) -> String) {
+    let db = rusqlite::Connection::open(std::path::Path::new(store).join("tpm2_pkcs11.sqlite3")).unwrap();
     let hex = label.bytes().fold(String::new(), |hex, b| hex + &format!("{b:02x}"));
     let rows: Vec<(i64, String)> = db
         .prepare("SELECT id, CAST(attrs AS TEXT) FROM tobjects")
@@ -897,7 +901,7 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
          [specs.a]\nobject = \"a\"\nattributes = { CKA_SIGN = true }\n\
          tokens.tpm = { locator = { CKA_LABEL = \"store-a\" }, origin = \"adopt\", attestation = true, binding = \"token-asserted\" }\n",
     );
-    let r = ["lock", "--spec", "a", "--token", "tpm", "--no-update-lock"];
+    let r = ["lock", "--spec", "a", "--token", "tpm", "--dry-run"];
     let o = e.km(&r);
     assert_eq!(code(&o), 18, "{}", stderr(&o));
     let refused = |why: &str| {
@@ -965,9 +969,78 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
         e.module,
         e.dir.join("pin").display()
     ));
-    let o = e.km(&["lock", "--spec", "t", "--token", "trans", "--no-update-lock"]);
+    let o = e.km(&["lock", "--spec", "t", "--token", "trans", "--dry-run"]);
     assert!(stderr(&o).contains("the token's primary is transient"), "{}", stderr(&o));
     assert_eq!(code(&o), 16, "{}", stderr(&o));
+}
+
+/// A secret key's `tpm-certify` is bound to its material (review 2026-11-23 B-1): the TPM
+/// computes the key's HMAC commitment again with the very object it certified, and it must be
+/// the commitment the module computed. A copy of the store (`tpm2Store`) whose row for the key
+/// carries another HMAC key's TPM blobs makes cakeys certify that other key while the module
+/// commits with the real one: refused (13), where that other key's attestation was pinned
+/// before. An AES key has no HMAC commitment for the TPM to compute again: refused (15).
+#[test]
+fn tpm2_a_secret_keys_attestation_is_bound_to_its_material() {
+    let Some(e) = env("attest-bound") else { return };
+    if !hmac_types_fixed("CAKEYS_TPM_REQUIRE") || !on_swtpm() {
+        return;
+    }
+    for (label, value) in [("bound-a", &HMAC_VALUE[..]), ("bound-b", &b"another key-management hmac key!"[..])] {
+        let file = e.dir.join(format!("{label}.bin"));
+        std::fs::write(&file, value).unwrap();
+        ptool(&[
+            "import",
+            "--algorithm=hmac:sha256",
+            &format!("--privkey={}", file.display()),
+            &format!("--key-label={label}"),
+        ]);
+    }
+    ptool(&["addkey", "--algorithm=aes256", "--key-label=bound-aes"]);
+    // The copy: bound-a's row carries bound-b's TPM blobs and auth (CKA_TPM2_OBJAUTH_ENC,
+    // _PUB_BLOB, _PRIV_BLOB); the module reads the original.
+    let copy = e.dir.join("copied-store");
+    std::fs::create_dir_all(&copy).unwrap();
+    let store = std::env::var("TPM2_PKCS11_STORE").unwrap();
+    std::fs::copy(std::path::Path::new(&store).join("tpm2_pkcs11.sqlite3"), copy.join("tpm2_pkcs11.sqlite3")).unwrap();
+    let copy = copy.to_str().unwrap();
+    let tpm_attrs = [0x8F00_0001_u64, 0x8F00_0002, 0x8F00_0003];
+    let mut b_values = Vec::new();
+    edit_private_row_in(copy, "bound-b", |attrs| {
+        b_values = tpm_attrs.iter().map(|t| row_value(attrs, *t)).collect();
+        attrs.to_owned()
+    });
+    edit_private_row_in(copy, "bound-a", |attrs| {
+        tpm_attrs.iter().zip(&b_values).fold(attrs.to_owned(), |a, (t, b)| a.replace(&row_value(&a, *t), b))
+    });
+    let config = |options: &str| {
+        e.write_config(&format!(
+            "[tokens.tpm]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n{options}\n\n\
+             [objects.mac]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_SHA256_HMAC\"\nvalueLen = 32\n\n\
+             [specs.mac]\nobject = \"mac\"\nattributes = {{ CKA_SIGN = true, CKA_EXTRACTABLE = true }}\n\
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"bound-a\" }}, origin = \"adopt\", attestation = true }}\n\n\
+             [objects.aes]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
+             [specs.aes]\nobject = \"aes\"\nattributes = {{ CKA_ENCRYPT = true }}\n\
+             tokens.tpm = {{ locator = {{ CKA_LABEL = \"bound-aes\" }}, origin = \"adopt\", attestation = true }}\n",
+            e.module,
+            e.dir.join("pin").display()
+        ));
+    };
+    let lock = |spec: &str| e.km(&["lock", "--spec", spec, "--token", "tpm", "--dry-run"]);
+    // The module's own store: the certified object computes the key's commitment again.
+    config("");
+    let o = lock("mac");
+    assert_eq!(code(&o), 18, "{}", stderr(&o));
+    // The copy: cakeys certifies bound-b, while the module commits with bound-a.
+    config(&format!("options = {{ tpm2Store = \"{copy}\" }}"));
+    let o = lock("mac");
+    assert_eq!(code(&o), 13, "{}", stderr(&o));
+    assert!(stderr(&o).contains("its HMAC commitment is not the one the key computes"), "{}", stderr(&o));
+    // An AES key: no HMAC commitment to bind its certify to.
+    config("");
+    let o = lock("aes");
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("binds a secret key to the TPM object it certifies"), "{}", stderr(&o));
 }
 
 /// Every key type tpm2-pkcs11 generates is attested with its own public area: P-384, P-521 and
@@ -993,10 +1066,10 @@ fn tpm2_attests_each_key_type() {
         .concat(),
     );
     for spec in ["p384", "p521", "rsa"] {
-        let o = e.km(&["create", "--spec", spec, "--token", "tpm", "--update-lock"]);
-        assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+        let o = e.km(&["create", "--spec", spec, "--token", "tpm"]);
+        assert_eq!(code(&o), 22, "{spec}: {}", stderr(&o));
         assert_eq!(e.locked_attestation(spec, "tpm")["kind"].as_str(), Some("tpm-certify"), "{spec}");
-        assert_eq!(e.code(&["verify", "--spec", spec, "--token", "tpm"]), 0, "{spec}");
+        assert_eq!(e.code(&["check", "--spec", spec, "--token", "tpm"]), 0, "{spec}");
     }
 }
 
@@ -1053,6 +1126,8 @@ fn tpm2_vendor_module_attests_as_the_store_path_does() {
     let resolve = |token: &str| -> serde_json::Value {
         let o = e.km(&["resolve", "--spec", "p256", "--token", token]);
         assert_eq!(code(&o), 0, "{token}: {}", stderr(&o));
+        // The persistent AK is read from the TPM: no caveat, unlike akLabel's (review 2026-11-23 B-2).
+        assert!(!stderr(&o).contains("only the module vouches for"), "{token}: {}", stderr(&o));
         serde_json::from_str(&stdout(&o)).unwrap()
     };
     let (vendor, store) = (resolve("tpm"), resolve("store"));
@@ -1061,11 +1136,11 @@ fn tpm2_vendor_module_attests_as_the_store_path_does() {
     assert_eq!(vendor["attestation"]["root"], store["attestation"]["root"], "the same persistent AK signed");
     // Each realisation, locked through its own path, verifies: the same ID and root were pinned.
     for token in ["tpm", "store"] {
-        assert_eq!(e.code(&recording(&["lock", "--spec", "p256", "--token", token, "--no-update-lock"])), 0, "{token}");
+        assert_eq!(e.code(&recording(&["lock", "--spec", "p256", "--token", token, "--dry-run"])), 22, "{token}");
     }
     assert_eq!(e.locked_attestation("p256", "tpm"), e.locked_attestation("p256", "store"));
     for token in ["tpm", "store"] {
-        assert_eq!(e.code(&["verify", "--spec", "p256", "--token", token]), 0, "{token}");
+        assert_eq!(e.code(&["check", "--spec", "p256", "--token", token]), 0, "{token}");
     }
 }
 
@@ -1087,11 +1162,15 @@ fn tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store() {
     let before = on_swtpm().then(persistent_handles);
     let first = e.km(&["create", "--spec", "p256", "--token", "tpm", "--no-update-lock"]);
     assert_eq!(code(&first), 18, "{}", stderr(&first));
-    assert_eq!(e.code(&recording(&["lock", "--spec", "p256", "--token", "tpm", "--no-update-lock"])), 0);
+    assert_eq!(e.code(&recording(&["lock", "--spec", "p256", "--token", "tpm", "--dry-run"])), 22);
     let att = e.locked_attestation("p256", "tpm");
     assert_eq!(att["kind"].as_str(), Some("tpm-certify"));
     for _ in 0..2 {
-        assert_eq!(e.code(&["verify", "--spec", "p256", "--token", "tpm"]), 0);
+        // Each run says what this signer cannot establish: only the module vouches for it
+        // (review 2026-11-23 B-2: nothing said so).
+        let o = e.km(&["check", "--spec", "p256", "--token", "tpm"]);
+        assert_eq!(code(&o), 0, "{}", stderr(&o));
+        assert!(stderr(&o).contains("its tpm-certify signer (akLabel) is a key only the module vouches for"));
         assert_eq!(e.code(&["check", "p256.id.tpm-certify", "--token", "tpm"]), 0);
     }
     // No persistent AK was made: the TPM's handles are as they were.
@@ -1105,18 +1184,18 @@ fn tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store() {
     // Reads never make one: another label is a downgrade (14), naming it.
     config(&format!("akLabel = \"other-ak\", {none}"));
     for _ in 0..2 {
-        let o = e.km(&["verify", "--spec", "p256", "--token", "tpm"]);
+        let o = e.km(&["check", "--spec", "p256", "--token", "tpm"]);
         assert_eq!(code(&o), 14, "{}", stderr(&o));
         assert!(stderr(&o).contains("no Attestation Key labelled \"other-ak\""), "{}", stderr(&o));
     }
     // An ordinary key is no Attestation Key: it could sign a forged statement (13).
     config(&format!("akLabel = \"vendor-ak-p256\", {none}"));
-    let o = e.km(&["verify", "--spec", "p256", "--token", "tpm"]);
+    let o = e.km(&["check", "--spec", "p256", "--token", "tpm"]);
     assert_eq!(code(&o), 13, "{}", stderr(&o));
     assert!(stderr(&o).contains("is not a cakeys Attestation Key"), "{}", stderr(&o));
     // Both Attestation Keys at once are two answers to one question (17).
     config("akLabel = \"cakeys-ak\", akHandle = \"0x81000017\"");
-    assert_eq!(e.code(&["verify", "--spec", "p256", "--token", "tpm"]), 17);
+    assert_eq!(e.code(&["check", "--spec", "p256", "--token", "tpm"]), 17);
 
     // nixpkgs' module has no such mechanism: asked for, it is said so, not read around — an
     // attestation that cannot be computed is a downgrade of the locked one (14).
@@ -1125,7 +1204,7 @@ fn tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store() {
         &(token_of(&e, "tpm", &store_module, "options = { akLabel = \"cakeys-ak\" }")
             + &p256_spec("vendor-ak-p256", &[])),
     );
-    let o = e.km(&["verify", "--spec", "p256", "--token", "tpm"]);
+    let o = e.km(&["check", "--spec", "p256", "--token", "tpm"]);
     assert_eq!(code(&o), 14, "{}", stderr(&o));
     assert!(stderr(&o).contains("CKM_TPM2_AK_PAIR_GEN"), "{}", stderr(&o));
 }
@@ -1149,7 +1228,7 @@ fn tpm2_attestation_finds_its_store_and_tpm_as_configured() {
             e.dir.join("pin").display()
         ));
     };
-    let r = ["lock", "--spec", "a", "--token", "tpm", "--no-update-lock"];
+    let r = ["lock", "--spec", "a", "--token", "tpm", "--dry-run"];
     config(&format!("options = {{ tcti = \"{tcti}\" }}"));
     assert_eq!(e.code(&r), 18, "the TCTI from the options");
 
@@ -1264,7 +1343,7 @@ fn tpm2_attestation_says_what_it_lacks() {
         ));
     };
     let pin = format!("pinFile = \"{}\"", e.dir.join("pin").display());
-    let r = ["lock", "--spec", "a", "--token", "tpm", "--no-update-lock"];
+    let r = ["lock", "--spec", "a", "--token", "tpm", "--dry-run"];
     let refused = |o: &std::process::Output, want: i32, why: &str| {
         assert_eq!(code(o), want, "{why}: {}", stderr(o));
         assert!(stderr(o).contains(why), "expected {why:?} in {}", stderr(o));
