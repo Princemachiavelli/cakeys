@@ -33,14 +33,16 @@ impl Run<'_> {
                 format!("'{from}' offers no RFC 5649 key wrap to hand the key over"),
             )
         })?;
-        let pkcs8 = source.extract(h, &kwp)?;
+        // The key the source handed over is the one the lock pins, before a file holds it
+        // (review 2026-11-24 D-5).
+        let pkcs8 = cakeys_pkcs11::ops::check_identity(&src, &self.lock, source.extract(h, &kwp)?)?;
         let bytes = match p.method {
             Some(Method::Pkcs12) => {
                 let cert = self.paired_certificate(&p.object, from, &source, notes)?;
                 let id = local_key_id(&self.lock, &p.object)?;
-                file::write_pkcs12(&pkcs8, &cert, &pass, id.as_bytes())?
+                file::write_pkcs12(pkcs8.plaintext(), &cert, &pass, id.as_bytes())?
             }
-            _ => file::write_pkcs8(&pkcs8, &pass)?.into_bytes(),
+            _ => file::write_pkcs8(pkcs8.plaintext(), &pass)?.into_bytes(),
         };
         drop(pkcs8);
         write_whole(out, &bytes, 0o600)?;
@@ -156,7 +158,8 @@ impl Run<'_> {
             exposure: Exposure::File,
             declared: false,
         };
-        let moved = host::create_and_record(&dst, &target, &mut self.lock, &pkcs8, Some(&spki), origin, notes)?;
+        let pkcs8 = cakeys_pkcs11::ops::Extracted::from_file(pkcs8);
+        let moved = host::create_and_record(&dst, &target, &mut self.lock, pkcs8, Some(&spki), origin, notes)?;
         match moved {
             public::Moved::Imported => {
                 tally.moved(Of::pair(&dst), "imported", Some(&method_name));
@@ -418,7 +421,8 @@ fn from_its_file(
     let origin = Origin { from: "file".into(), method: method.clone(), exposure: m.exposure, declared: false };
     let moved = match class {
         Class::PrivateKey | Class::SecretKey => {
-            host::create_and_record(dst, to, lock, &m.bytes, m.spki.as_deref(), origin, notes)
+            let plain = cakeys_pkcs11::ops::Extracted::from_file(m.bytes.clone());
+            host::create_and_record(dst, to, lock, plain, m.spki.as_deref(), origin, notes)
         }
         _ => public::create_as(dst, to, &m.bytes, origin, lock, notes),
     };

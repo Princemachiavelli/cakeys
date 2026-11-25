@@ -134,9 +134,11 @@ name, as [CONFIG.md](CONFIG.md) already says for any object.
   half has to hash to the same value.
 - A secret key's commitments (`cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`, HMAC) are computed on the
   host from the plaintext, under the object's commitment label. The token then has to compute
-  the same ones. That is new code in `cakeys_core::id`: the host side of each scheme the spec's
-  usage bits choose (DESIGN §3.1), using RustCrypto's `aes`, `cmac`, `hmac` and `des`. It gives
-  a secret key the same check before writing that a private key already gets.
+  the same ones. Built in `cakeys_pkcs11::ops::check_identity` (review 2026-11-24 D-5): the host
+  side of each scheme, using RustCrypto's `aes`, `cmac`, `hmac` and `des`. Once a first token
+  has pinned a secret key, its file is checked against those commitments before any later
+  import writes it, as a private key's is. On its first use the lock pins nothing to check yet,
+  and the first token's own commitments pin it.
 - Certificates, public keys and data objects are identified as today (`certhash`, the SPKI's
   `rfc7093m4`, `valuehash`), computed on the host from the bytes before `C_CreateObject`.
 
@@ -362,12 +364,6 @@ Tests:
 
 Not built:
 
-- **Host-side commitments for secret keys (F3, F-d).**
-  - What happens instead: the first token's commitments pin a secret key. Every later token is
-    checked after it creates the key, and what it made is removed on a mismatch, as for any
-    import.
-  - Why that is enough for now: every token here that takes a secret key can delete one. A
-    host-side check matters for a token that cannot.
 - **A property test over formats.** The unit tests use fixed fixtures; the `key_file` fuzz
   target feeds the reader arbitrary bytes, not keys re-encoded across formats.
 - **The NixOS populate unit (F-e).**

@@ -8,6 +8,7 @@
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
 
+use common::state;
 use common::xref::{Env, Ref};
 use common::*;
 use std::path::PathBuf;
@@ -334,6 +335,16 @@ fn every_spelling_of_a_secret_key_imports_as_the_same_key() {
         open_session(&soft.module, soft.token_label, "1234").labelled(&format!("spell-{i}")).is_empty(),
         "a refused file left objects"
     );
+
+    // Another key's file is not the key the lock pins: 10, from the host's own commitment,
+    // before anything is made (review 2026-11-24 D-5).
+    let other = e.dir.join("other.key");
+    std::fs::write(&other, [0x5a; 32]).unwrap();
+    config(i, other.to_str().unwrap(), "");
+    let before = state::snapshot(&[&e.dir.join("keys.lock")], &[soft.view()]);
+    let o = import(i);
+    assert_eq!(code(&o), 10, "{}", stderr(&o));
+    state::assert_unchanged(&before, &state::snapshot(&[&e.dir.join("keys.lock")], &[soft.view()]), "another key");
 }
 
 /// An attestation a provider gives only of keys its device generated (PIV) is refused (15) on a

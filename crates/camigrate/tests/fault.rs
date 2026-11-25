@@ -8,9 +8,10 @@
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
 
+use common::state;
 use common::xref::{Env, Ref};
 use common::*;
-use cryptoki::object::{Attribute, AttributeType, CertificateType, ObjectClass};
+use cryptoki::object::{Attribute, CertificateType, ObjectClass};
 use std::fmt::Write as _;
 use x509_cert::der::{Decode as _, Encode as _};
 
@@ -109,19 +110,11 @@ fn sessions(e: &Env, name: &str) -> Vec<u64> {
         .collect()
 }
 
-/// Every token object on `module`'s token `kmtest`: its class, label, ID and key type, sorted
-/// (an object's handle may differ from one session to the next).
-fn objects(module: &str) -> Vec<String> {
-    let s = open_session(module, "kmtest", "1234");
-    let kinds = [AttributeType::Class, AttributeType::Label, AttributeType::Id, AttributeType::KeyType];
-    let mut all: Vec<String> = s
-        .find_objects(&[Attribute::Token(true)])
-        .unwrap()
-        .into_iter()
-        .map(|h| format!("{:?}", s.get_attributes(h, &kinds).unwrap()))
-        .collect();
-    all.sort();
-    all
+/// The lock and both tokens as they are now (`state::snapshot`): `SoftHSM` itself, past the
+/// shim (`real`), and kryoptic.
+fn now(e: &Env, real: &str) -> state::Snapshot {
+    let softhsm = state::TokenView { module: real, ..e.refs[0].view() };
+    state::snapshot(&[&e.dir.join("keys.lock")], &[softhsm, e.refs[1].view()])
 }
 
 /// A move the module fails part-way: the source's wrap, the target's unwrap, the creation or
@@ -173,9 +166,8 @@ fn a_move_the_module_fails_is_refused_and_undone() {
     };
     // Both tokens, the source's too: a key-encryption key or a loaded transport key the error
     // path left as a token object would show there (review fault.rs F1: only the target's label
-    // was looked for). `real` is SoftHSM itself, past the shim.
-    let tokens = || (objects(&real), objects(&e.refs[1].module));
-    let before = tokens();
+    // was looked for); and the lock.
+    let before = now(&e, &real);
     for (name, args, plan, exit, why) in &cases {
         let (code, said, fired) = faulted(&e, name, plan, args);
         assert_eq!(code, *exit, "{name}: {said}");
@@ -185,8 +177,7 @@ fn a_move_the_module_fails_is_refused_and_undone() {
         // target was opened read-only for the plan, then again read-write for the move).
         assert_eq!(sessions(&e, name).len(), 1, "{name}: sessions opened {:?}", sessions(&e, name));
         assert_eq!(on_target(&format!("f-{}", args[1])), 0, "{name}: left objects on the target");
-        assert_eq!(tokens(), before, "{name}: left objects on a token");
-        assert_eq!(std::fs::read(e.dir.join("keys.lock")).unwrap(), lock, "{name}: changed the lock");
+        state::assert_unchanged(&before, &now(&e, &real), name);
     }
     // The undoing itself refused: what was imported is still there, and said to be. (`call = 6`:
     // `kk`'s proof, as in "proof".)
@@ -206,6 +197,56 @@ fn a_move_the_module_fails_is_refused_and_undone() {
         let o = e.cakeys(&e.refs[0], &["check", "--spec", &spec, "--token", to]);
         assert_eq!(common::code(&o), 0, "{spec} on {to}: {}", stderr(&o));
     }
+}
+
+/// A source that hands over another key than the one asked for (p11-fault's `wrap_label`:
+/// `C_WrapKey` wraps `f-kk` where it was asked for `f-ek`) is caught on the host before anything
+/// is written (review 2026-11-24 D-5, and C-13 for the host move): no key file is written, no
+/// key is made on the target, each run is 10, and the lock and both tokens are as they were.
+/// Without the substitution, each goes through.
+#[test]
+fn a_source_that_hands_over_another_key_writes_nothing() {
+    let Some((e, real)) = tokens("fault-other-key") else { return };
+    let (soft, kry) = (&e.refs[0], &e.refs[1]);
+    // A second extractable P-256 key on the shimmed token, to hand over in `ek`'s place.
+    let o = e.km_alone(soft, &["migrate", "kk", "--from", "kryoptic", "--to", "softhsm"]);
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
+    let (out, pass, lock) = (e.dir.join("ek.p8"), e.dir.join("pass"), e.dir.join("keys.lock"));
+    std::fs::write(&pass, "correct horse\n").unwrap();
+    let (out_s, pass_s) = (out.to_str().unwrap(), pass.to_str().unwrap());
+    let other = "[[rule]]\nfn = \"C_WrapKey\"\nof_label = \"f-ek\"\nwrap_label = \"f-kk\"\n";
+    // The host path out of softhsm: its sealed ways hidden, RFC 5649 to the host is what is left.
+    let host_only = "[[rule]]\nfn = \"C_GetMechanismList\"\n\
+                     hide_mechanisms = [\"CKM_RSA_PKCS_OAEP\", \"CKM_RSA_AES_KEY_WRAP\", \"CKM_ECDH1_DERIVE\"]\n\n";
+    let file: &[&str] = &[
+        "export",
+        "ek",
+        "--from",
+        "softhsm",
+        "--to-key-file",
+        "pkcs8",
+        "--out",
+        out_s,
+        "--passphrase-file",
+        pass_s,
+        "--allow-host-plaintext",
+    ];
+    let host: &[&str] = &["migrate", "ek", "--from", "softhsm", "--to", "kryoptic", "--allow-host-plaintext"];
+    // SoftHSM itself, past the shim, as the other tests look at it.
+    let softhsm = state::TokenView { module: &real, ..soft.view() };
+    let views = [softhsm, kry.view()];
+    let now = || state::snapshot(&[&lock, &out], &views);
+    for (name, args, plan) in [("key-file", file, other.to_owned()), ("host", host, format!("{host_only}{other}"))] {
+        let before = now();
+        let (code, said, _) = faulted(&e, name, &plan, args);
+        assert_eq!(code, 10, "{name}: {said}");
+        state::assert_unchanged(&before, &now(), name);
+    }
+    for (name, args, plan, exit) in [("key-file-ok", file, "", 0), ("host-ok", host, host_only, 22)] {
+        let (code, said, _) = faulted(&e, name, plan, args);
+        assert_eq!(code, exit, "{name}: {said}");
+    }
+    assert!(out.exists(), "no key file without the substitution");
 }
 
 /// An SO step that succeeded is said to have succeeded (token/mod.rs F2): the SO's

@@ -179,9 +179,12 @@ target's transport key alone, with a warning.
 - It is the sanctioned exception to "`create` is refused when the lock already pins the
   material": generated material could not match, imported material must.
 - After creating, it realises and compares with the bundle's and the lock's IDs; a mismatch
-  removes exactly what it created. On every `host` path the identity is checked on the host
-  first (10 before anything is written): ykcs11 cannot erase a key, so for a YubiKey that check
-  is the only safety net.
+  removes exactly what it created. Wherever a key is plaintext on the host (a `host` move, a
+  key file written by `export --to-key-file` or read by `import`), its identity is checked on
+  the host first, 10 before anything is written: a private key's `rfc7093m4`, and every
+  commitment the lock pins for a secret key, computed here (`ops::check_identity`). ykcs11
+  cannot erase a key, so for a YubiKey that check is the only safety net; for a key file it is
+  the only check there is, since whoever imports the file does not compare it with the lock.
 - The target spec's attributes are the unwrap template, explicit and complete (kryoptic sets no
   usage otherwise), less the attributes whose `unwrap.template.*` row answers no (SoftHSM: `CKA_VALUE_LEN`).
 
