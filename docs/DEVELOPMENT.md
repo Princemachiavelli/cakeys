@@ -167,7 +167,13 @@ variables, and only for that suite's pass.
 `nix/test-count.toml` says. A test that goes is brought back, or the same diff lowers the manifest
 (`--write`) and says why; a new test needs no edit. It runs on every system in seconds:
 `nix develop -c python3 -I nix/test-count.py .` names the tests gone since the manifest's commit
-(or `--base <rev>`).
+(or `--base <rev>`). At run time, nextest writes every test it ran to
+`<target>/nextest/default/junit.xml` (`.config/nextest.toml`) and `skip` logs each skip to
+`$CAKEYS_SKIP_LOG` (`test_env`). After the check phase and `scripts/local-tests.sh`,
+`nix/test-count.py --junit` prints each binary's run and skipped counts and the skips by name. It
+fails when a binary that the run's cargo arguments build ran other tests than its source has: a
+binary lost, or a test left out. With nextest arguments, local-tests only reports. Every nextest
+run passes `--no-tests=fail`.
 
 ## Verification beyond tests
 

@@ -11,6 +11,7 @@
   stdenv,
   cargo-mutants,
   cargo-nextest,
+  python3,
   quint,
   # The toolchain at Cargo.toml's rust-version (pkgs.nix), for `msrv`.
   msrvToolchain,
@@ -72,7 +73,15 @@ let
   cargoTestCommandFor =
     filter:
     "cargo nextest run \${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE} ${base.cargoExtraArgs}"
-    + " --no-fail-fast --show-progress none -E ${lib.escapeShellArg filter}";
+    + " --no-fail-fast --no-tests=fail --show-progress none -E ${lib.escapeShellArg filter}";
+
+  # What a nextest run ran and skipped, per test binary (nix/test-count.py): it fails when a
+  # binary the cargo arguments build ran other tests than its source has (one lost, or a whole
+  # binary). `partial` for a run a filter narrows: the counts alone.
+  testCount =
+    partial:
+    "${python3}/bin/python3 -I ${./test-count.py} . --junit \${CARGO_TARGET_DIR:-target}/nextest/default/junit.xml"
+    + " --skips $CAKEYS_SKIP_LOG ${lib.optionalString partial "--partial"} -- ${base.cargoExtraArgs}";
 
   # Without the `tpm2` and `ykcs11` features: the tools build without tpm2-tss and sqlite (their
   # own dependency set).
@@ -199,8 +208,12 @@ craneLib.buildPackage (
     nativeBuildInputs = base.nativeBuildInputs ++ [ cargo-nextest ];
     ${runner} = "bash ${./test-tokens.sh}";
     cargoTestCommand = "cargo nextest run \${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE}";
-    # No progress bar: the build log is not a terminal, whatever nextest sees.
-    cargoTestExtraArgs = "--no-fail-fast --show-progress none";
+    # No progress bar: the build log is not a terminal, whatever nextest sees. A run with no
+    # test fails (it is nextest's default, said here).
+    cargoTestExtraArgs = "--no-fail-fast --no-tests=fail --show-progress none";
+    # Each test binary's run and skipped counts in the log, and a failure where a binary ran
+    # other tests than its source has (review 2026-11-24 C-11; docs/DEVELOPMENT.md "Testing").
+    postCheck = lib.optionalString common.canCheck (testCount false);
     # The check phase holds spec-coverage/cakeys.toml to the baseline and manual.toml from its
     # own `used` rows; regenerating them from a traced run is the spec-coverage report below.
     passthru = {
@@ -341,6 +354,7 @@ craneLib.buildPackage (
           buildPhaseCargoCommand = ''
             export CAKEYS_TRACE_DIR=$TMPDIR/coverage-trace
             ${cargoTestCommandFor "not (binary(fault) | test(committed_coverage_is_generated_from_the_trace))"}
+            ${testCount true}
             unset CAKEYS_TRACE_DIR
             CAKEYS_COVERAGE_TRACE=$TMPDIR/coverage-trace CAKEYS_UPDATE_COVERAGE=1 \
               ${cargoTestCommandFor "test(committed_coverage_is_generated_from_the_trace)"}
@@ -373,7 +387,7 @@ craneLib.buildPackage (
           preBuild = common.args.preCheck;
           ${runner} = "bash ${./test-tokens.sh}";
           cargoLlvmCovCommand = "nextest";
-          cargoLlvmCovExtraArgs = "--no-report --no-fail-fast --show-progress none";
+          cargoLlvmCovExtraArgs = "--no-report --no-fail-fast --no-tests=fail --show-progress none";
           postBuild = ''
             mkdir -p $out
             cargo llvm-cov report --release --lcov --output-path $out/lcov.info

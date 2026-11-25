@@ -47,6 +47,10 @@ test_env() {
   # unless a hardware or cloud suite's (crates/test-skip.rs; review 2026-11-24 C-11). The fault
   # suites' own require variable is here too, apart from the routing that sets their module.
   export CAKEYS_REQUIRE_ALL=1 CAKEYS_FAULT_REQUIRE=1
+  # Each skip that may happen, one line each (binary, test, require variable, why): the runner
+  # reports them per binary with what ran (nix/test-count.py --skips).
+  export CAKEYS_SKIP_LOG=$dir/skips.log
+  : >"$CAKEYS_SKIP_LOG"
   softhsm_conf "$dir"
   softhsm_init kmtest
   export CAKEYS_TEST_MODULE=$2 CAKEYS_TEST_REQUIRE=1
