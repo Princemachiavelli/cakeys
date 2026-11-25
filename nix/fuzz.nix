@@ -23,6 +23,7 @@
   rustPlatform,
   cargo-fuzz,
   writeShellApplication,
+  runCommand,
   cargo,
   rustc,
   stdenv,
@@ -83,11 +84,23 @@ let
         openssl pkey -pubin -outform DER -out "fuzz/corpus/public_key/$(basename "$c" .der).spki"
     done
   '';
+
+  # The crates fuzz/Cargo.lock shares with Cargo.lock at a version or source Cargo.lock does not
+  # have: the fuzzed parsers would not be the shipped ones (review 2026-11-24 A, "fuzz/Cargo.lock
+  # vs Cargo.lock").
+  drift =
+    let
+      rows = lock: (lib.importTOML lock).package;
+      key = p: "${p.name} ${p.version} ${p.source or "path"}";
+      shipped = lib.genAttrs (map key (rows ../Cargo.lock)) (_: true);
+      named = lib.genAttrs (map (p: p.name) (rows ../Cargo.lock)) (_: true);
+    in
+    map key (lib.filter (p: named ? ${p.name} && !(shipped ? ${key p})) (rows ../fuzz/Cargo.lock));
 in
 assert lib.assertMsg (
   unlisted == [ ]
 ) "fuzz/fuzz_targets/ has files no [[bin]] in fuzz/Cargo.toml names: ${toString unlisted}";
-{
+rec {
   inherit targets;
 
   smoke = rustPlatform.buildRustPackage {
@@ -139,6 +152,40 @@ assert lib.assertMsg (
     '';
     installPhase = "touch $out";
   };
+
+  # checks.fuzz-lock: fuzz/Cargo.lock still holds every crate the fuzz crate and the workspace
+  # crates it reaches need, each it shares with Cargo.lock at Cargo.lock's version. fuzz/ is its
+  # own workspace with its own lock, which only `smoke` reads, on Linux in CI's vm job: a
+  # dependency the workspace gained without that lock kept the job red from 38967ae to 61b7000.
+  # `cargo metadata --locked`, offline, from the sources `smoke` vendors from that lock, needs no
+  # build, so it runs in the light job and on every system.
+  lock =
+    runCommand "cakeys-fuzz-lock"
+      {
+        nativeBuildInputs = [ cargo ];
+        inherit (smoke) src cargoDeps;
+      }
+      ''
+        ${lib.optionalString (drift != [ ]) ''
+          echo "fuzz/Cargo.lock has ${lib.concatStringsSep ", " drift}, which Cargo.lock does not:" \
+            "cargo update --manifest-path fuzz/Cargo.toml -p <crate> --precise <Cargo.lock's version>" >&2
+          exit 1
+        ''}
+        export CARGO_HOME=$PWD/.cargo-home
+        mkdir -p $CARGO_HOME
+        # The vendored crates in place of crates.io and of cryptoki's git source, as checks.deny
+        # reads them (nix/deny.nix).
+        sed "s|directory = \"cargo-vendor-dir\"|directory = \"$cargoDeps\"|" \
+          $cargoDeps/.cargo/config.toml >$CARGO_HOME/config.toml
+        cp -r $src src
+        chmod -R u+w src
+        if ! cargo metadata --locked --offline --format-version 1 --manifest-path src/fuzz/Cargo.toml >/dev/null; then
+          echo "fuzz/Cargo.lock does not hold what fuzz/Cargo.toml and the crates it reaches need:" \
+            "cargo update --manifest-path fuzz/Cargo.toml --workspace" >&2
+          exit 1
+        fi
+        touch $out
+      '';
 
   run = writeShellApplication {
     name = "cakeys-fuzz";

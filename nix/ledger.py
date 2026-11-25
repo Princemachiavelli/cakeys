@@ -10,10 +10,11 @@ since, and the file as it is now. This fails when:
   say;
 - a file is not what its run wrote and no `[[artifact.hand-edits]]` row says so, or such rows
   stand beside a file that is the run's output again;
-- the code on its path (`code`: globs from the root, `@name` for a `[groups]` list) changed
-  since the run, unless `[artifact.acknowledged]` names that code's hash with who, why and what
-  still needs a run on the hardware. An acknowledgement of other code fails as well, and so
-  does one beside code that is the run's again;
+- the code on its path (`code`: globs from the root, `@name` for a `[groups]` list, and lock
+  entries, `Cargo.lock#<package>` or `flake.lock#<input>`) changed since the run, unless
+  `[artifact.acknowledged]` names that code's hash with who, why and what still needs a run on
+  the hardware. An acknowledgement of other code fails as well, and so does one beside code
+  that is the run's again;
 - a module profile under profiles/modules/ has no entry, or a path or glob names no file, or a
   table has a key this script does not read;
 - a regeneration probes other RSA sizes than the rest (review 2026-11-24 E-8): each file in
@@ -21,13 +22,18 @@ since, and the file as it is now. This fails when:
   and an artifact's `regen` may name no other value and no file that is not there.
 
 The hashes are of the files in the tree, not git's: the Nix sandbox has no .git. A failure
-prints the hash to record.
+prints the hash to record. In the code's hash a Rust source counts as its tokens, so a comment,
+a doc comment or rustfmt's spacing changes nothing, and a literal or any other token does; every
+other file counts byte for byte. A lock entry counts as its parsed value: the package's rows of
+that name in a Cargo.lock, or the locked source of the root input of that name in a flake.lock,
+so a bump of the rest of the lock changes nothing.
 
 Usage: python3 -I ledger.py ROOT. Prints each artifact's state and every failure; exits 1 on a
 failure.
 """
 
 import hashlib
+import json
 import pathlib
 import re
 import sys
@@ -38,6 +44,21 @@ LEDGER = "profiles/LEDGER.toml"
 RSA_FLAG = re.compile(r"--rsa-max-bits[\"',\s]*(\d+)")
 # A repository path in a `regen` command.
 REPO_PATH = re.compile(r"\b(?:crates|examples|nix|profiles|scripts)/[\w.+/-]*\w")
+# A lock entry in `code`: a lock file and the name of the entry in it.
+LOCK_ENTRY = re.compile(r"(?P<file>(?:[\w.+-]+/)*(?P<kind>Cargo|flake)\.lock)#(?P<name>[\w.+-]+)")
+# A Rust token, as rustc splits one from the next. Strings, raw strings and block comments are
+# read on by `rust_tokens`; a punctuation run is read longest first, so `&&` and `& &` differ.
+RUST_TOKEN = re.compile(
+    r"""(?P<space>\s+)
+    | (?P<line>//[^\n]*)
+    | (?P<block>/\*)
+    | (?P<raw>[bc]?r(?P<hashes>\#*)")
+    | (?P<string>[bc]?")
+    | (?P<char>b?'(?:\\(?:u\{[0-9a-fA-F_]*\}|.)|[^\\'\n])')
+    | (?P<word>\w+)
+    | (?P<punct><<=|>>=|\.\.\.|\.\.=|::|->|=>|==|!=|<=|>=|&&|\|\||[-+*/%^&|]=|<<|>>|\.\.|.)""",
+    re.X | re.S,
+)
 
 # The keys each table may have: a near miss (`acknowledgement`) fails rather than being ignored.
 KEYS = {
@@ -54,27 +75,88 @@ def file_hash(path):
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def rust_tokens(text):
+    """`text`'s tokens without its comments (doc comments too) and the whitespace between them."""
+    tokens, i = [], 0
+    while i < len(text):
+        m = RUST_TOKEN.match(text, i)
+        start, i = i, m.end()
+        if m["line"] or m["space"]:
+            continue
+        if m["block"]:  # Rust's block comments nest
+            depth = 1
+            while depth and i < len(text):
+                step = text[i : i + 2]
+                depth += {"/*": 1, "*/": -1}.get(step, 0)
+                i += 2 if step in ("/*", "*/") else 1
+            continue
+        if m["raw"]:
+            end = text.find('"' + m["hashes"], i)
+            i = len(text) if end < 0 else end + 1 + len(m["hashes"])
+        elif m["string"]:
+            while i < len(text) and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+            i += 1
+        tokens.append(text[start:i])
+    return tokens
+
+
+def source_hash(path):
+    """A file's hash in the code's: a Rust source's tokens, any other file's bytes."""
+    if path.suffix != ".rs":
+        return file_hash(path)
+    text = path.read_bytes().decode("utf-8", "surrogateescape")
+    tokens = "".join(f"{len(t)}:{t}" for t in rust_tokens(text))
+    return "rust-tokens:sha256:" + hashlib.sha256(tokens.encode("utf-8", "surrogateescape")).hexdigest()
+
+
+def lock_entry(root, selector):
+    """The lock entry `selector` names, as canonical JSON; None when there is no such entry."""
+    m = LOCK_ENTRY.fullmatch(selector)
+    try:
+        text = (root / m["file"]).read_text()
+        if m["kind"] == "Cargo":
+            rows = [p for p in tomllib.loads(text).get("package", []) if p.get("name") == m["name"]]
+            return json.dumps(rows, sort_keys=True) if rows else None
+        lock = json.loads(text)
+        nodes, node, path = lock["nodes"], lock["root"], [m["name"]]
+        while path:
+            node = nodes[node]["inputs"][path.pop(0)]
+            if isinstance(node, list):  # an input that follows another: a path from the root
+                node, path = lock["root"], node + path
+        return json.dumps(nodes[node]["locked"], sort_keys=True)
+    except (OSError, ValueError, KeyError, TypeError, tomllib.TOMLDecodeError):
+        return None
+
+
 def code_files(root, patterns, groups):
-    """The files `patterns` name under `root`, and the patterns that name none."""
-    files, empty = set(), []
+    """The files and the lock entries `patterns` name under `root`, and what names nothing."""
+    files, entries, empty = set(), {}, []
     for pattern in patterns:
         if pattern.startswith("@") and pattern[1:] not in groups:
-            empty.append(f"{pattern} (no such group)")
+            empty.append(f"glob {pattern} (no such group) names no file")
             continue
         for glob in groups[pattern[1:]] if pattern.startswith("@") else [pattern]:
+            if LOCK_ENTRY.fullmatch(glob):
+                entries[glob] = lock_entry(root, glob)
+                if entries[glob] is None:
+                    empty.append(f"entry {glob} names nothing")
+                continue
             found = {p for p in root.glob(glob) if p.is_file()}
             if not found:
-                empty.append(glob)
+                empty.append(f"glob {glob} names no file")
             files |= found
-    return sorted(files), empty
+    return sorted(files), entries, empty
 
 
-def code_hash(root, files):
-    """One hash over each file's path and content: a file added, removed, renamed or changed
-    changes it."""
+def code_hash(root, files, entries):
+    """One hash over each file's path and content, and each lock entry: a file added, removed,
+    renamed or changed, or an entry bumped, changes it."""
     h = hashlib.sha256()
     for f in files:
-        h.update(f"{f.relative_to(root).as_posix()}\0{file_hash(f)}\n".encode())
+        h.update(f"{f.relative_to(root).as_posix()}\0{source_hash(f)}\n".encode())
+    for name, value in sorted(entries.items()):
+        h.update(f"{name}\0{value}\n".encode())
     return "sha256:" + h.hexdigest()
 
 
@@ -180,15 +262,15 @@ def check_run(root, a, path, where, groups, report, misses):
     state = f"probed {probed.get('by')} ({probed.get('date')})"
     if edits:
         state += f", hand-edited since by {', '.join(e.get('by', '?') for e in edits)}"
-    files, empty = code_files(root, a.get("code", []), groups)
-    for glob in empty:
-        misses.append(f"{where}: code glob {glob} names no file")
+    files, entries, empty = code_files(root, a.get("code", []), groups)
+    for what in empty:
+        misses.append(f"{where}: code {what}")
     if not a.get("code"):
         if "code-hash" in probed or ack:
             misses.append(f"{where}: no code on its path, so no code-hash and no [artifact.acknowledged]")
         report.append(f"captured  {path}: {state}")
         return
-    code = code_hash(root, files)
+    code = code_hash(root, files, entries)
     if code == probed.get("code-hash"):
         if ack:
             misses.append(f"{where}: [artifact.acknowledged], but the code on its path is the run's: drop it")

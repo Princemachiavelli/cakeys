@@ -9,6 +9,7 @@
   deny,
   demo,
   fuzz,
+  kani-library-lock,
   mkTest,
   softhsm-unwrap-value-len-tested,
 }:
@@ -26,6 +27,14 @@
   inherit (cakeys) msrv;
   # cargo-deny offline (see `deny` in pkgs.nix): reproducible with the flake.lock.
   deny = deny.check;
+  # fuzz/Cargo.lock still holds what the fuzz crate needs, at Cargo.lock's versions (nix/fuzz.nix,
+  # `lock`): the fuzz run is Linux's and CI's vm job's, this resolution every system's and the
+  # light job's.
+  fuzz-lock = fuzz.lock;
+  # nix/kani/library-Cargo.lock is the Kani nightly's own (nix/kani.nix, `libraryLock`): the Kani
+  # build is x86_64-linux's and CI's kani job's, this comparison every system's and the light
+  # job's.
+  inherit kani-library-lock;
   # Every test and function the docs name is a `fn`, and every docs/*.md cited exists
   # (nix/doc-references.py). Its own fileset, so a docs edit does not rebuild crane.
   doc-references =
@@ -54,7 +63,8 @@
     '';
   # What was measured on hardware or a cloud and no build repeats (profiles/LEDGER.toml,
   # nix/ledger.py): a file changed, or the code on its path changed since its run, fails until
-  # the ledger records it. Its fixture tests first. Its own fileset, like doc-references.
+  # the ledger records it. Its fixture tests first. Its own fileset, like doc-references: what
+  # the ledger's `code` names, lock entries included (a path it lacks names no file and fails).
   ledger =
     let
       src = pkgs.lib.fileset.toSource {
@@ -65,6 +75,9 @@
           ./nix
           ./scripts
           ./examples
+          ./upstream/rust-cryptoki
+          ./Cargo.lock
+          ./flake.lock
         ];
       };
     in
