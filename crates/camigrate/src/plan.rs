@@ -6,6 +6,7 @@
 //! the lock's, in `cakeys_core::migrate`.
 
 use crate::side::{PlaintextImport, ProbedWays, Side};
+use cakeys_core::KmError;
 use cakeys_core::config::{AttrValue, Immutables, ObjectCfg};
 use cakeys_core::migrate::{Exposure, Method, OaepHash};
 use cakeys_core::types::ObjectClass;
@@ -70,6 +71,37 @@ pub(crate) struct Plan {
     pub reasons: Vec<String>,
     /// What changes on the way (attestation, a declared vendor level, ...).
     pub notes: Vec<String>,
+    /// The refusal that blocked it, where a rule the write asks did (placement 17, an occupied
+    /// locator 13): the run would end with it, so the plan does ([`Refused::error`]; review
+    /// 2026-11-24 D-2, D-3). `None`: ready, or blocked for a reason of the plan's own (15).
+    #[serde(skip)]
+    pub refused: Option<Refused>,
+}
+
+/// The exit code and the rule of a refusal that blocked a plan ([`Plan::refuse`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Refused {
+    exit: u8,
+    rule: Option<&'static str>,
+}
+
+impl Refused {
+    /// `text` as the error the run ends with: of this refusal's exit code and rule. A plan's
+    /// rules refuse with these codes, and with 15 otherwise.
+    pub(crate) fn error(self, text: String) -> KmError {
+        let m = text.into();
+        let e = match self.exit {
+            13 => KmError::Conflict(m),
+            14 => KmError::PreconditionFailed(m),
+            16 => KmError::Unavailable(m),
+            17 => KmError::Validation(m),
+            _ => KmError::Unsupported(m),
+        };
+        match self.rule {
+            Some(rule) => e.with_rule(rule),
+            None => e,
+        }
+    }
 }
 
 #[expect(clippy::ref_option, reason = "serde's serialize_with hands the field by reference")]
@@ -88,6 +120,15 @@ impl Plan {
         self.reasons.push(why.into());
     }
 
+    /// [`Self::block`] for the refusal `e` of a rule the write asks: the plan, if it was ready,
+    /// ends with `e`'s exit code and rule ([`Self::refused`]).
+    pub(crate) fn refuse(&mut self, e: KmError) {
+        if self.ready {
+            self.refused = Some(Refused { exit: e.exit_code(), rule: e.rule() });
+        }
+        self.block(crate::trust::reason(e));
+    }
+
     /// [`Self::block`], `why` said first: what keeps the object home outranks how it would move.
     pub(crate) fn block_first(&mut self, why: impl Into<String>) {
         self.ready = false;
@@ -102,11 +143,20 @@ impl Plan {
             ready: true,
             reasons: vec![],
             notes: vec![],
+            refused: None,
         }
     }
 
     fn impossible(m: &Material, reasons: Vec<String>) -> Plan {
-        Plan { object: m.object.into(), method: None, exposure: None, ready: false, reasons, notes: vec![] }
+        Plan {
+            object: m.object.into(),
+            method: None,
+            exposure: None,
+            ready: false,
+            reasons,
+            notes: vec![],
+            refused: None,
+        }
     }
 }
 

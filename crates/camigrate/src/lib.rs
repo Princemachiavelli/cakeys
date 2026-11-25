@@ -675,7 +675,8 @@ impl Run<'_> {
             });
         }
         if items.is_empty() {
-            return Err(KmError::Unsupported(format!("nothing on '{from}' can go into a bundle").into()).into());
+            // With the refusal that kept the first object out, as the plan says it.
+            return Err(moves.refusal(format!("nothing on '{from}' can go into a bundle")).into());
         }
         let source = self.source(from, source, notes)?;
         let wraps = items.iter().any(|i| i.method != Method::Public);
@@ -961,7 +962,7 @@ impl Run<'_> {
             trusted_transport,
         };
         let (mut moves, source, target) = tokens::plan_moves(&self.lock, opener.registry, &req, source, &open, notes)?;
-        landing::block(self, ctx, &mut moves);
+        landing::block(self, ctx, &mut moves, target.as_ref());
         match show {
             Show::No => {}
             Show::Stdout => show_plans(ctx.from, &moves, ctx.how.json)?,
@@ -974,7 +975,7 @@ impl Run<'_> {
         // Every --spec selects an object moving to the token, checked where the run checked it:
         // once nothing is blocked (15 first). Here, so the dry run exits as the run does (D9;
         // review 2026-11-23 C-2: it said ready for a --spec the run refused).
-        if let (false, Some(to)) = (ctx.dest.bundle(), ctx.dest.token())
+        if let (false, Some(to)) = (ctx.dest.bundle(), ctx.dest.to())
             && moves.plans.iter().all(|p| p.ready)
         {
             specs_select(cfg, ctx.specs, moves.plans.iter().map(|p| p.object.as_str()), to, MOVE)?;

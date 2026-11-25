@@ -474,19 +474,13 @@ impl<'a> Dest<'a> {
         Ok(Dest::Transport(path, to, file))
     }
 
-    /// The token the operator named: a move's or a bundle's target. A key file has none.
+    /// The token the operator named, which the plan is made against: a move's target, or a
+    /// bundle's, made for it or for its transport file (review 2026-11-24 D-4: a transport
+    /// file's was planned against none). A key file has none.
     pub(crate) fn to(&self) -> Option<&'a str> {
         match self {
             Dest::Token(name) | Dest::Bundle(name) | Dest::Transport(_, name, _) => Some(name),
             Dest::File(_) => None,
-        }
-    }
-
-    /// The token the plan is made against: the target of a move, or a bundle's.
-    pub(crate) fn token(&self) -> Option<&'a str> {
-        match self {
-            Dest::Token(name) | Dest::Bundle(name) => Some(name),
-            Dest::Transport(..) | Dest::File(_) => None,
         }
     }
 
@@ -567,15 +561,21 @@ impl Moves {
             return Ok(());
         }
         // With why: the run itself prints no plan, only `--dry-run` does.
-        Err(KmError::Unsupported(
-            format!(
-                "{} of {} objects cannot move as invoked ({})",
-                blocked.len(),
-                self.plans.len(),
-                blocked.join(" | ")
-            )
-            .into(),
-        ))
+        Err(self.refusal(format!(
+            "{} of {} objects cannot move as invoked ({})",
+            blocked.len(),
+            self.plans.len(),
+            blocked.join(" | ")
+        )))
+    }
+
+    /// `text` as the error of the first blocked plan's refusal ([`Plan::refused`]): the one the
+    /// run would end with, as the run itself meets it; `Unsupported` (15) for a plan of none.
+    pub(crate) fn refusal(&self, text: String) -> KmError {
+        match self.plans.iter().find(|p| !p.ready).and_then(|p| p.refused) {
+            Some(r) => r.error(text),
+            None => KmError::Unsupported(text.into()),
+        }
     }
 }
 

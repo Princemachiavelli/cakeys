@@ -1623,6 +1623,106 @@ fn locked_transport_keys_are_held_to_one_rule() {
     assert!(copy.is_empty(), "a 1024-bit key was made trusted");
 }
 
+/// Where the module can place a key (`Provider::placement`) is planned where a move lands, as
+/// the import asks it before its write (review 2026-11-24 D-2): into a PIV token (a `SoftHSM`
+/// token bound to ykcs11, which places a key by `CKA_ID` alone, never under a label nor in f9's
+/// attestation slot, `CKA_ID = "19"`), `migrate --dry-run` refuses as the run does (17), and
+/// nothing reaches the token.
+#[test]
+fn placement_is_planned_where_a_move_lands() {
+    let Some(e) = env("placement") else { return };
+    let Some([soft]) = e.needs("placement", ["softhsm"]) else { return };
+    let so = e.dir.join("so-pin");
+    std::fs::write(&so, "5678\n").unwrap();
+    let pair = |spec: &str, locator: &str| {
+        format!(
+            "[specs.{spec}]\nobject = \"pl\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.piv = {{ locator = {{ {locator} }}, origin = \"import\" }}\n\n"
+        )
+    };
+    let body = format!(
+        "[tokens.piv]\nmodule = \"{}\"\ntokenLabel = \"{}\"\nprovider = \"ykcs11\"\npinFile = \"{}\"\nsoCredentialFile = \"{}\"\n\n",
+        soft.module,
+        soft.token_label,
+        e.dir.join("pin").display(),
+        so.display()
+    ) + "[objects.pl]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n"
+        + &Env::spec(
+            "pl-src",
+            "pl",
+            "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n",
+            &[soft],
+            "pl-src",
+            CREATE,
+        )
+        + &pair("pl-label", "CKA_LABEL = \"pl-label\"")
+        + &pair("pl-f9", "CKA_ID = \"19\"");
+    e.config(&body);
+    assert_eq!(code(&e.cakeys(soft, &["create", "--spec", "pl-src", "--token", "softhsm"])), 22);
+    let session = || open_session(&soft.module, soft.token_label, "1234");
+    let before = session().find_objects(&[]).unwrap().len();
+    for (spec, said) in [("pl-label", "ignores CKA_LABEL"), ("pl-f9", "\"19\" names none")] {
+        let migrate = ["migrate", "pl", "--from", "softhsm", "--to", "piv", "--spec", spec, "--allow-host-plaintext"];
+        let o = e.km_alone(soft, &[&migrate[..], &["--dry-run"]].concat());
+        assert_eq!(code(&o), 17, "{spec}, dry: {} {}", stdout(&o), stderr(&o));
+        assert!(stdout(&o).contains(said), "{spec}, dry: {}", stdout(&o));
+        // The twin: the run refuses as its dry run did.
+        let o = e.km(soft, &migrate);
+        assert_eq!(code(&o), 17, "{spec}: {}", stderr(&o));
+        assert!(stderr(&o).contains(said), "{spec}: {}", stderr(&o));
+        assert_eq!(session().find_objects(&[]).unwrap().len(), before, "{spec}: an object reached the token");
+    }
+}
+
+/// A target locator another key sits under is planned where a move lands, as the import asks it
+/// before its write (docs/CAMIGRATE.md D6, If-None-Match; review 2026-11-24 D-3): `migrate
+/// --dry-run` refuses (13) as the run does, which the dry-run twin once admitted after a ready
+/// plan.
+#[test]
+fn an_occupied_locator_is_planned() {
+    let Some((e, [soft, kry, _])) = two_targets("occupied") else { return };
+    let t = open_session(&kry.module, kry.token_label, "1234");
+    t.generate_key_pair(
+        &cryptoki::mechanism::Mechanism::EccKeyPairGen,
+        &[Attribute::Token(true), Attribute::Label(b"xbt-mv".to_vec()), Attribute::EcParams(P256.to_vec())],
+        &[Attribute::Token(true), Attribute::Label(b"xbt-mv".to_vec()), Attribute::Sign(true)],
+    )
+    .unwrap();
+    drop(t);
+    let migrate = ["migrate", "mv", "--from", "softhsm", "--to", "kryoptic"];
+    refused(&e.km_alone(&soft, &[&migrate[..], &["--dry-run"]].concat()), 13, "would collide with");
+    refused(&e.km(&soft, &migrate), 13, "would collide with");
+    assert_eq!(open_session(&kry.module, kry.token_label, "1234").labelled("xbt-mv").len(), 2, "imported over it");
+}
+
+/// An export plans against the target `--to` names, whether it reaches the token or only its
+/// transport file (review 2026-11-24 D-4: a transport file's plan asked none of the landing
+/// rules): a landing pair that opts into an attestation kryoptic's provider cannot make is
+/// refused by both plans and both exports (15), as by the import there and by a move, and
+/// nothing is written.
+#[test]
+fn exports_plan_against_their_target_either_way() {
+    let Some((e, [soft, kry, _])) = two_targets("landing-either") else { return };
+    let prod = file_arg(&e, "prod.transport.toml");
+    assert_eq!(code(&e.km(&kry, &["transport", "--token", "kryoptic", "--out", &prod])), 0);
+    let toml = e.dir.join("keys.toml");
+    let text = std::fs::read_to_string(&toml).unwrap();
+    let plain = "tokens.kryoptic = { locator = { CKA_LABEL = \"xbt-mv\" }, origin = \"import\" }";
+    assert!(text.contains(plain), "{text}");
+    let attested = plain.replace("origin = \"import\" }", "origin = \"import\", attestation = true }");
+    std::fs::write(&toml, text.replace(plain, &attested)).unwrap();
+    let said = "attests nothing";
+    let out = file_arg(&e, "attested.bundle.toml");
+    let export = ["export", "mv", "--from", "softhsm", "--to", "kryoptic"];
+    for extra in [&[][..], &["--to-transport-file", &prod]] {
+        let args = [&export[..], extra].concat();
+        refused(&e.km_alone(&soft, &[&args[..], &["--dry-run"]].concat()), 15, said);
+        refused(&e.km(&soft, &[&args[..], &["--out", &out]].concat()), 15, said);
+        assert!(!std::path::Path::new(&out).exists(), "{extra:?}: a bundle was written");
+    }
+    refused(&e.km(&soft, &["migrate", "mv", "--from", "softhsm", "--to", "kryoptic"]), 15, said);
+}
+
 /// A token names its transport key (`transportWith`, docs/CAMIGRATE.md D3), and realising it records
 /// its public key in the lock, held to the locked identity: a source then plans and exports to
 /// that token from the lock alone, the target unreachable. Without the recorded key, a plan
@@ -2227,7 +2327,9 @@ fn a_failed_reopen_after_ptool_says_what_is_in_the_tpm() {
 /// the target once skipped them all (the plan looked for its one pair, found two and asked
 /// nothing), so an attestation the target's provider cannot give of an imported key (PIV) was
 /// not refused before the move wrote the key. kryoptic stands in for the device, its token named
-/// `piv` and bound to the `ykcs11` provider. Without `--spec` the plan says it cannot pick.
+/// `piv` and bound to the `ykcs11` provider, each pair in a PIV slot by `CKA_ID` (under a label,
+/// placement refuses first: `placement_is_planned_where_a_move_lands`). Without `--spec` the plan
+/// says it cannot pick.
 #[test]
 fn landing_checks_follow_the_spec_named() {
     let Some(e) = env("landing-spec") else { return };
@@ -2238,7 +2340,7 @@ fn landing_checks_follow_the_spec_named() {
     let landing = |spec: &str, id: &str, extra: &str| {
         format!(
             "[specs.{spec}]\nobject = \"ls\"\nattributes = {{ CKA_SIGN = true }}\n\
-             tokens.piv = {{ locator = {{ CKA_ID = \"{id}\", CKA_LABEL = \"{spec}\" }}, origin = \"import\"{extra} }}\n\n"
+             tokens.piv = {{ locator = {{ CKA_ID = \"{id}\" }}, origin = \"import\"{extra} }}\n\n"
         )
     };
     let body = format!(
@@ -2276,10 +2378,8 @@ fn landing_checks_follow_the_spec_named() {
         &["migrate", "ls", "--from", "softhsm", "--to", "piv", "--spec", "ls-attested", "--allow-host-plaintext"],
     );
     assert_eq!(code(&o), 15, "{}", stderr(&o));
-    assert!(
-        open_session(&kry.module, kry.token_label, "1234").labelled("ls-attested").is_empty(),
-        "nothing was imported"
-    );
+    let id = Attribute::Id(vec![0x17]);
+    assert!(open_session(&kry.module, kry.token_label, "1234").find_objects(&[id]).unwrap().is_empty(), "imported");
 }
 
 /// The host path's guards (docs/CAMIGRATE.md D6), into `SoftHSM` behind p11-kit, where the plan

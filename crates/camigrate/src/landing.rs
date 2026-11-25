@@ -1,26 +1,32 @@
 //! The planner's rules past the method choice (review 2026-11-23 C-23: they sat in lib.rs, a
 //! third layer after `plan::plan` and `tokens::plan_moves`): what keeps an object home, which
-//! pair a move lands on, what the landing token must take, what a bundle or a key file can
-//! carry, and the transport key a sealed move wraps to. [`block`] runs them over a run's plans,
-//! in one place, so the dry run and the run block alike (C-2).
+//! pair a move lands on, what the landing token must take (the write's own rules, asked with
+//! the functions the write asks them with: review 2026-11-24 D-2, D-3), and what a bundle or a
+//! key file can carry. [`block`] runs them over a run's plans, in one place, so the dry run and
+//! the run block alike (C-2).
 
 use cakeys_core::KmError;
 use cakeys_core::config::{Config, KeyOrigin, Lock, SpecCfg, SpecTokenCfg};
 use cakeys_core::migrate::{Exposure, Method};
-use cakeys_pkcs11::Registry;
-use cakeys_pkcs11::ops::{Notes, Target};
+use cakeys_core::types::ObjectClass as Class;
+use cakeys_pkcs11::ops::{self, Notes, Seat, Target, Verb};
+use cakeys_pkcs11::{Registry, Token};
 
 use crate::plan::{self, FileFormat};
-use crate::{MoveCtx, Run, tokens};
+use crate::{MoveCtx, Run, host, public, tokens};
 
 /// Block each plan the run would refuse, said in the plan, in the order the run meets it: what
 /// never leaves `from` (said first), a target with no import pair, the landing pair's own
 /// checks — or, with nothing landing on a token, the source's export — and what the destination
 /// carries. The transport key a sealed move wraps to is the plan's (`tokens::plan_moves`).
-pub(crate) fn block(run: &Run, ctx: &MoveCtx, moves: &mut tokens::Moves) {
+/// `target` is the target token of a move, when it opened: what lands there now is checked
+/// against it as the write checks it.
+pub(crate) fn block(run: &Run, ctx: &MoveCtx, moves: &mut tokens::Moves, target: Option<&Token>) {
     let (cfg, registry) = (&run.opener.cfg, run.opener.registry);
     let MoveCtx { objects, from, dest, specs, .. } = *ctx;
-    let (bundle, target_token) = (dest.bundle(), dest.token());
+    let (bundle, target_token) = (dest.bundle(), dest.to());
+    // What lands on the target now, a move's, meets the target token's own checks there.
+    let lands = target.filter(|_| !bundle);
     // Without names, what is kept home is left out quietly; named, it is refused (15).
     if objects.is_empty() {
         moves.plans.retain(|p| no_export(cfg, &p.object, from).is_none());
@@ -38,7 +44,12 @@ pub(crate) fn block(run: &Run, ctx: &MoveCtx, moves: &mut tokens::Moves) {
         }
         match target_token {
             Some(to) => match import_target(cfg, &p.object, to, spec_for(cfg, specs, &p.object), MOVE) {
-                Ok(landing) => landing_checks(p, &landing, &moves.source, moves.target.as_ref(), registry),
+                Ok(landing) => {
+                    landing_checks(p, &landing, &moves.source, moves.target.as_ref(), registry);
+                    if let Some(tok) = lands {
+                        landed_checks(p, &landing, tok, &run.lock);
+                    }
+                }
                 // A move must pick its landing pair now: several, and no `--spec` naming
                 // one, is refused by the run, so by the plan. (An object with none is
                 // blocked already, by `no_import_pair`.) A bundle lands later, under the
@@ -93,9 +104,12 @@ pub(crate) fn import_checks(
 /// What a ready plan `p` must still pass where it lands on `to`, said in the plan since the run
 /// would refuse it: the target's `lock` must prove possession of a private key the way its spec
 /// says; the providers must take the templates the move sends (`Provider::template`, refused
-/// before anything is created); an imported key is never attested where the provider attests
-/// only what the device made (PIV, docs/CAMIGRATE.md D8), the check the import itself makes.
-/// `dst` is the landing pair, the one `--spec` names.
+/// before anything is created); and the static rules every import asks before its write
+/// (`ops::static_rules`, [`Verb::Import`]): where the module can place the key (a PIV slot by
+/// `CKA_ID`, review 2026-11-24 D-2), the attestation the spec opts into, and never one of an
+/// imported key where the provider attests only what the device made (PIV, docs/CAMIGRATE.md
+/// D8). A provider this plan cannot name defers them, said in the notes. `dst` is the landing
+/// pair, the one `--spec` names.
 fn landing_checks(
     p: &mut plan::Plan,
     dst: &Target,
@@ -116,12 +130,74 @@ fn landing_checks(
             Err(why) => p.block(why),
         }
     }
-    if let (true, Some(target)) = (p.ready, target)
-        && let Ok(Some(provider)) = registry.named(&target.provider)
-        && let Err(why) = cakeys_pkcs11::ops::check_imported_attestation(dst, provider.as_ref())
-    {
-        p.block(why);
+    if let (true, Some(target)) = (p.ready, target) {
+        static_checks(p, dst, &target.provider, registry);
     }
+}
+
+/// [`landing_checks`]' static rules of `dst`, with the provider named `provider`.
+fn static_checks(p: &mut plan::Plan, dst: &Target, provider: &str, registry: &Registry) {
+    let named = registry.named(provider);
+    let seat = match &named {
+        Ok(Some(p)) => Seat::Resolved(p.as_ref()),
+        Ok(None) => Seat::Unresolved(format!("provider '{provider}' is not in this build")),
+        Err(e) => Seat::Unresolved(e.to_string()),
+    };
+    let verdicts = ops::plan_mode(dst).and_then(|mode| ops::static_rules(dst, mode, seat, Verb::Import, None));
+    match verdicts {
+        Ok(v) => {
+            p.notes.extend(ops::deferred_lines(&v.deferred));
+            if let Some(r) = v.refusals.into_iter().next() {
+                p.refuse(r.error);
+            }
+        }
+        Err(e) => p.refuse(e),
+    }
+}
+
+/// What a ready plan `p` that lands on the open token `to` now (a move's) must pass there, as
+/// the write asks it of `to` before anything is created: the import's own checks
+/// (`ops::check_import`) and a locator nothing would collide with ([`public::free_locator`];
+/// review 2026-11-24 D-3: only the run asked it, and refused 13 after a ready plan). A pair the
+/// lock records there already is verified by the run, and moves nothing.
+fn landed_checks(p: &mut plan::Plan, dst: &Target, to: &Token, lock: &Lock) {
+    if !p.ready || lock.realisation(dst.spec_name, dst.token_name).is_some() {
+        return;
+    }
+    if let Err(e) = ops::check_import(dst, to) {
+        return p.refuse(e);
+    }
+    let spki = match public_half(dst, to, lock) {
+        Ok(spki) => spki,
+        Err(e) => return p.refuse(e),
+    };
+    let landed = public::free_locator(dst, to, spki.as_deref()).and_then(|occupied| {
+        if p.method == Some(Method::Tpm2Ptool) { host::ptool_free(dst, &occupied) } else { Ok(()) }
+    });
+    if let Err(e) = landed {
+        p.refuse(e);
+    }
+}
+
+/// The public key of `dst`'s object that a public key object under its locator on `to`
+/// already holds, the identity the lock pins (`rfc7093m4`): the key's public half, which the
+/// import reuses, so no collision ([`public::free_locator`]). The run holds the source's, which
+/// it verifies to be that identity first.
+///
+/// # Errors
+///
+/// `Unavailable` (16) when the token fails a search.
+fn public_half(dst: &Target, to: &Token, lock: &Lock) -> cakeys_core::Result<Option<Vec<u8>>> {
+    let pinned = lock.objects.get(dst.object_name).and_then(|o| o.ids.get("rfc7093m4"));
+    let (true, Some(pinned)) = (matches!(dst.object.class, Class::PrivateKey | Class::PublicKey), pinned) else {
+        return Ok(None);
+    };
+    let loc = &dst.on_token.locator;
+    Ok(to
+        .find(cryptoki::object::ObjectClass::PUBLIC_KEY, loc)?
+        .into_iter()
+        .filter_map(|p| to.spki(p, loc).ok())
+        .find(|spki| cakeys_core::id::sri(spki) == *pinned))
 }
 
 /// Whether a bundle carries what `method` moves: sealed keys and public objects.

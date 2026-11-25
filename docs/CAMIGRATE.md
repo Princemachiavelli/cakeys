@@ -196,8 +196,14 @@ generation (`CKA_LOCAL` is false).
 **D9. `--dry-run` is the real planner.** One code path turns (objects, source, target) into a
 per-object plan: method, exposure, and the reasons for everything impossible. The plan also
 blocks what the target could not prove afterwards (its spec's binding needs a mechanism the
-target lacks, e.g. Ed25519 through p11-kit). The main test is a property: for every source,
-target and class in the reference matrix, the dry-run verdict is the outcome.
+target lacks, e.g. Ed25519 through p11-kit). It asks the rules each import asks before its
+write, with the same functions, on the target `--to` names, whether the export reaches it or
+only its transport file: where the module can place the key (a PIV slot by `CKA_ID`, not f9:
+17), the attestation the spec opts into (15); and, on a target a `migrate` reaches, the
+import's own checks and an empty locator (13). A blocked plan exits as the refusal that
+blocked it, so the dry run exits as the run would; a rule it cannot decide (a provider this
+build lacks) is said as deferred. The main test is a property: for every source, target and
+class in the reference matrix, the dry-run verdict is the outcome.
 
 **D10. Provider crates add their own methods, under a declared exposure.** A vendor provider
 (Luna, CloudHSM, nShield, a vendor tool) contributes methods named `vendor:<provider>/<name>`,
@@ -314,7 +320,8 @@ tss-esapi), and phase 7, vendor methods, which wait for hardware. Both are in [O
 - **The dry-run property** (D9), over the reference matrix: SoftHSM, kryoptic, p11-kit and
   swtpm/tpm2-pkcs11 as sources and targets, every class and the key types each takes. A ready
   move exits 22 (the lock written), records its `origin`, and `cakeys check` accepts it on the
-  target with its proof of possession; a blocked one is 15 with nothing changed.
+  target with its proof of possession; a blocked one exits as the refusal that blocked it (15,
+  or the rule's own: 17 for a PIV slot, 13 for an occupied locator) with nothing changed.
 - **Refusals**, each with its pinned exit code: non-extractable keys, a source that never
   exports, a target missing a curve or mechanism, host paths without the flag, an occupied
   locator, a transport key the lock does not pin, a transport file or bundle of another target,

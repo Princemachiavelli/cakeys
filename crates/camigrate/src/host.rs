@@ -61,6 +61,26 @@ fn landing(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Result<Occupied> {
     free_locator(dst, to, spki)
 }
 
+/// `tpm2_ptool import` makes the key pair whole, so the locator must hold not even its public
+/// half (`occupied`), which a creation through the module would reuse.
+///
+/// # Errors
+///
+/// `Conflict` (13) for a public key object under the locator.
+pub(crate) fn ptool_free(dst: &Target, occupied: &Occupied) -> Result<()> {
+    if occupied.public_half.is_none() {
+        return Ok(());
+    }
+    Err(KmError::Conflict(
+        format!(
+            "objects already sit under the locator of {dst}, and the lock records no realisation there; refusing \
+             to import over them. {}",
+            crate::public::unrecorded_hint(dst)
+        )
+        .into(),
+    ))
+}
+
 /// The identity of the plaintext key on the host, before anything is written: a token that
 /// cannot delete what it imported (a `YubiKey`'s PIV slot) must never receive the wrong key.
 ///
@@ -182,16 +202,7 @@ pub(crate) fn import_ptool(
     }
     let (h, spki) = source_key(src, from, lock, notes)?;
     let occupied = landing(dst, to, spki.as_deref())?;
-    if occupied.public_half.is_some() {
-        return Err(KmError::Conflict(
-            format!(
-                "objects already sit under the locator of {dst}, and the lock records no realisation there; \
-             refusing to import over them. {}",
-                crate::public::unrecorded_hint(dst)
-            )
-            .into(),
-        ));
-    }
+    ptool_free(dst, &occupied)?;
     // Checked as on every host path: the wrong key never reaches the TPM, nor the PIN
     // tpm2_ptool's command line.
     let plain = hand_over(from, h, dst, lock)?;
