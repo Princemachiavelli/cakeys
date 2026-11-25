@@ -20,7 +20,8 @@ pub struct Rule {
     pub(crate) function: Fn,
     /// Only the n-th call of the process (from 1); every call when `None`.
     pub call: Option<u64>,
-    /// Only calls on an object with this `CKA_LABEL` (attribute and key rules).
+    /// Only calls on an object with this `CKA_LABEL` (attribute and key rules; under
+    /// `wrap_label`, the key wrapped).
     pub of_label: Option<Vec<u8>>,
     /// What it does to them.
     pub(crate) action: Action,
@@ -55,6 +56,9 @@ pub enum Action {
     /// A function taking a key: the object with this label (and the key's class) is used
     /// instead of the one the caller names.
     UseLabel(Vec<u8>),
+    /// `C_WrapKey`: the object with this label (and the class of the caller's) is wrapped
+    /// instead of the key the caller names, so the blob holds another key than the one shown.
+    WrapLabel(Vec<u8>),
     /// `C_FindObjects`: the objects with this label are not found.
     HideLabel(Vec<u8>),
     /// A function returning bytes: the last byte it returns is another.
@@ -132,6 +136,7 @@ struct RuleText {
     truncate: Option<usize>,
     add_label: Option<String>,
     use_label: Option<String>,
+    wrap_label: Option<String>,
     hide_label: Option<String>,
     #[serde(default)]
     corrupt: bool,
@@ -241,14 +246,39 @@ impl Plan {
     }
 }
 
-/// The functions whose forwarder runs `hook` (forward.rs's table): `substitute_key` for those
-/// whose third argument is the key they use (what `use_label` substitutes), `corrupt_output` for
-/// those that return bytes through a buffer and its length (what `corrupt` changes).
-fn hooked(hook: &str) -> Vec<Fn> {
-    Fn::ALL.iter().copied().filter(|f| f.hook() == Some(hook)).collect()
+/// The functions whose forwarder runs one of `hooks` (forward.rs's table): `substitute_key` and
+/// `wrap_key` for those whose third argument is the key they use (what `use_label`
+/// substitutes), `corrupt_output` for those that return bytes through a buffer and its length
+/// (what `corrupt` changes).
+fn hooked(hooks: &[&str]) -> Vec<Fn> {
+    Fn::ALL.iter().copied().filter(|f| f.hook().is_some_and(|h| hooks.contains(&h))).collect()
 }
 
-fn rule(r: RuleText) -> Result<Rule, String> {
+/// What an attribute rule may say of its attribute: `drop`, `value`, `from_label`, `length`,
+/// `truncate`, each taken from `r`.
+fn attribute_changes(r: &mut RuleText) -> Result<Vec<AttributeChange>, String> {
+    let mut changes = Vec::new();
+    if r.drop {
+        changes.push(AttributeChange::Drop);
+    }
+    if let Some(hex) = &r.value {
+        changes.push(AttributeChange::Value(unhex(hex).ok_or("value is hex")?));
+    }
+    if let Some(label) = r.from_label.take() {
+        changes.push(AttributeChange::FromLabel(label.into_bytes()));
+    }
+    match r.length.as_deref() {
+        Some("unavailable") => changes.push(AttributeChange::Unavailable),
+        Some(other) => return Err(format!("length = \"{other}\": only \"unavailable\"")),
+        None => {}
+    }
+    if let Some(n) = r.truncate {
+        changes.push(AttributeChange::Truncate(n));
+    }
+    Ok(changes)
+}
+
+fn rule(mut r: RuleText) -> Result<Rule, String> {
     let function = Fn::ALL.iter().copied().find(|f| f.name() == r.function).ok_or_else(|| {
         if r.function == "C_GetFunctionList" {
             "the entry point itself cannot be faulted".to_owned()
@@ -274,6 +304,7 @@ fn rule(r: RuleText) -> Result<Rule, String> {
     let flags = |values: Vec<Value>| -> Result<CK_FLAGS, String> {
         values.into_iter().try_fold(0, |all, v| Ok(all | v.resolve(word, by_name)?))
     };
+    let mut changes = attribute_changes(&mut r)?;
     let mut actions = Vec::new();
     if let Some(rv) = r.rv {
         actions.push(Action::Rv { rv: rv.resolve("return value", names::rv)?, when: r.when.unwrap_or_default() });
@@ -283,24 +314,6 @@ fn rule(r: RuleText) -> Result<Rule, String> {
     if !r.set_flags.is_empty() || !r.clear_flags.is_empty() {
         only(&[Fn::C_GetTokenInfo, Fn::C_GetSlotInfo], "set_flags/clear_flags")?;
         actions.push(Action::Flags { set: flags(r.set_flags)?, clear: flags(r.clear_flags)? });
-    }
-    let mut changes = Vec::new();
-    if r.drop {
-        changes.push(AttributeChange::Drop);
-    }
-    if let Some(hex) = &r.value {
-        changes.push(AttributeChange::Value(unhex(hex).ok_or("value is hex")?));
-    }
-    if let Some(label) = r.from_label {
-        changes.push(AttributeChange::FromLabel(label.into_bytes()));
-    }
-    match r.length.as_deref() {
-        Some("unavailable") => changes.push(AttributeChange::Unavailable),
-        Some(other) => return Err(format!("length = \"{other}\": only \"unavailable\"")),
-        None => {}
-    }
-    if let Some(n) = r.truncate {
-        changes.push(AttributeChange::Truncate(n));
     }
     match (r.attribute, changes.len()) {
         (Some(attribute), 1) => {
@@ -317,15 +330,19 @@ fn rule(r: RuleText) -> Result<Rule, String> {
         actions.push(Action::AddLabel(label.into_bytes()));
     }
     if let Some(label) = r.use_label {
-        only(&hooked("substitute_key"), "use_label")?;
+        only(&hooked(&["substitute_key", "wrap_key"]), "use_label")?;
         actions.push(Action::UseLabel(label.into_bytes()));
+    }
+    if let Some(label) = r.wrap_label {
+        only(&[Fn::C_WrapKey], "wrap_label")?;
+        actions.push(Action::WrapLabel(label.into_bytes()));
     }
     if let Some(label) = r.hide_label {
         only(&[Fn::C_FindObjects], "hide_label")?;
         actions.push(Action::HideLabel(label.into_bytes()));
     }
     if r.corrupt {
-        only(&hooked("corrupt_output"), "corrupt")?;
+        only(&hooked(&["corrupt_output"]), "corrupt")?;
         actions.push(Action::Corrupt);
     }
     if !r.hide_mechanisms.is_empty() {
@@ -340,13 +357,14 @@ fn rule(r: RuleText) -> Result<Rule, String> {
         1 => actions.remove(0),
         0 => {
             return Err("nothing to do: give rv, set_flags, clear_flags, attribute, add_label, hide_label, \
-                        use_label, corrupt, hide_mechanisms or abort"
+                        use_label, wrap_label, corrupt, hide_mechanisms or abort"
                 .into());
         }
         _ => return Err("one thing per rule".into()),
     };
-    if r.of_label.is_some() && !matches!(action, Action::Attribute { .. } | Action::UseLabel(_)) {
-        return Err("of_label goes with attribute or use_label".into());
+    if r.of_label.is_some() && !matches!(action, Action::Attribute { .. } | Action::UseLabel(_) | Action::WrapLabel(_))
+    {
+        return Err("of_label goes with attribute, use_label or wrap_label".into());
     }
     Ok(Rule { function, call: r.call, of_label: r.of_label.map(String::into_bytes), action })
 }
@@ -395,7 +413,9 @@ mod tests {
              [[rule]]\nfn = \"C_GetAttributeValue\"\nattribute = 0x181\nfrom_label = \"other\"\n\n\
              [[rule]]\nfn = \"C_GetAttributeValue\"\nattribute = \"CKA_EC_POINT\"\ntruncate = 3\n\n\
              [[rule]]\nfn = \"C_FindObjects\"\ncall = 1\nadd_label = \"decoy\"\n\n\
-             [[rule]]\nfn = \"C_DecryptInit\"\nof_label = \"shown\"\nuse_label = \"used\"\n",
+             [[rule]]\nfn = \"C_DecryptInit\"\nof_label = \"shown\"\nuse_label = \"used\"\n\n\
+             [[rule]]\nfn = \"C_WrapKey\"\nof_label = \"shown\"\nwrap_label = \"wrapped\"\n\n\
+             [[rule]]\nfn = \"C_WrapKey\"\nuse_label = \"used\"\n",
         )
         .unwrap();
         let actions: Vec<&Action> = plan.rules().iter().map(|r| &r.action).collect();
@@ -406,7 +426,10 @@ mod tests {
         assert_eq!(*actions[3], point(AttributeChange::Truncate(3)));
         assert_eq!(*actions[4], Action::AddLabel(b"decoy".to_vec()));
         assert_eq!(*actions[5], Action::UseLabel(b"used".to_vec()));
+        assert_eq!(*actions[6], Action::WrapLabel(b"wrapped".to_vec()));
+        assert_eq!(*actions[7], Action::UseLabel(b"used".to_vec()));
         assert_eq!(plan.rules()[1].of_label.as_deref(), Some(&b"k"[..]));
+        assert_eq!(plan.rules()[6].of_label.as_deref(), Some(&b"shown"[..]));
         // An attribute or flag rule is no return value.
         let call = plan.count(Fn::C_GetTokenInfo);
         assert_eq!((plan.before(&call), plan.after(&call)), (None, None));
@@ -463,6 +486,9 @@ mod tests {
                 "only \"unavailable\"",
             ),
             ("[[rule]]\nfn = \"C_Sign\"\nuse_label = \"x\"\n", "use_label is for C_EncryptInit"),
+            // The key wrapped is the fourth argument of C_WrapKey alone.
+            ("[[rule]]\nfn = \"C_UnwrapKey\"\nwrap_label = \"x\"\n", "wrap_label is for C_WrapKey"),
+            ("[[rule]]\nfn = \"C_WrapKey\"\nwrap_label = \"x\"\nuse_label = \"y\"\n", "one thing per rule"),
             ("[[rule]]\nfn = \"C_FindObjectsInit\"\nadd_label = \"x\"\n", "add_label is for C_FindObjects"),
             ("[[rule]]\nfn = \"C_FindObjects\"\nadd_label = \"x\"\nrv = 0\n", "one thing per rule"),
             ("[[rule]]\nfn = \"C_FindObjects\"\nadd_label = \"x\"\nof_label = \"y\"\n", "of_label goes with"),

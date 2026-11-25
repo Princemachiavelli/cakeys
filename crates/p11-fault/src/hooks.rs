@@ -8,9 +8,10 @@
 use crate::plan::{Action, AttributeChange, Call};
 use crate::{Fatal, Shim};
 use cryptoki_sys::{
-    CK_ATTRIBUTE, CK_ATTRIBUTE_TYPE, CK_MECHANISM_TYPE, CK_OBJECT_CLASS, CK_OBJECT_HANDLE, CK_RV, CK_SESSION_HANDLE,
-    CK_SESSION_INFO, CK_SLOT_ID, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CKA_CLASS, CKA_LABEL, CKF_RW_SESSION,
-    CKF_SERIAL_SESSION, CKR_ATTRIBUTE_TYPE_INVALID, CKR_BUFFER_TOO_SMALL, CKR_OK, CKR_SESSION_READ_WRITE_SO_EXISTS,
+    CK_ATTRIBUTE, CK_ATTRIBUTE_TYPE, CK_BYTE, CK_MECHANISM, CK_MECHANISM_TYPE, CK_OBJECT_CLASS, CK_OBJECT_HANDLE,
+    CK_RV, CK_SESSION_HANDLE, CK_SESSION_INFO, CK_SLOT_ID, CK_SLOT_INFO, CK_TOKEN_INFO, CK_ULONG, CKA_CLASS, CKA_LABEL,
+    CKF_RW_SESSION, CKF_SERIAL_SESSION, CKR_ATTRIBUTE_TYPE_INVALID, CKR_BUFFER_TOO_SMALL, CKR_OK,
+    CKR_SESSION_READ_WRITE_SO_EXISTS,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::raw::c_void;
@@ -254,24 +255,70 @@ pub(crate) unsafe fn substitute_key(
     session: CK_SESSION_HANDLE,
     key: CK_OBJECT_HANDLE,
 ) -> Result<(CK_OBJECT_HANDLE, Option<usize>), Fatal> {
+    let used = |action: &Action| match action {
+        Action::UseLabel(label) => Some(label.clone()),
+        _ => None,
+    };
+    // SAFETY: the caller's session and handle.
+    unsafe { substitute(shim, call, session, key, "use_label", used) }
+}
+
+/// `C_WrapKey`: the wrapping key a `use_label` rule names, and the key wrapped a `wrap_label`
+/// rule names, each of the class of the caller's, in place of the caller's. A `wrap_label`
+/// rule's `of_label` names the key wrapped: the blob then holds another key than the one shown.
+#[expect(clippy::too_many_arguments, reason = "C_WrapKey's arguments, after the shim and the call")]
+pub(crate) unsafe fn wrap_key(
+    shim: &Shim,
+    call: &Call,
+    session: CK_SESSION_HANDLE,
+    mechanism: *mut CK_MECHANISM,
+    key: CK_OBJECT_HANDLE,
+    wrapped: CK_OBJECT_HANDLE,
+    out: *mut CK_BYTE,
+    len: *mut CK_ULONG,
+) -> Outcome {
+    let other = |action: &Action| match action {
+        Action::WrapLabel(label) => Some(label.clone()),
+        _ => None,
+    };
+    // SAFETY: real-module calls on the caller's session and handles.
+    let ((key, used), (wrapped, swapped)) = unsafe {
+        (substitute_key(shim, call, session, key)?, substitute(shim, call, session, wrapped, "wrap_label", other)?)
+    };
+    // SAFETY: the caller's arguments, with the handles the rules name in place of the caller's.
+    let rv = unsafe { real!(shim, C_WrapKey)(session, mechanism, key, wrapped, out, len) };
+    Ok((rv, used.or(swapped)))
+}
+
+/// The handle a function uses in place of the caller's `handle`: the caller's, or the object
+/// the first matching rule for it names (`label_of` its action's label; `what` the rule kind,
+/// for the message), of the class of the caller's.
+unsafe fn substitute(
+    shim: &Shim,
+    call: &Call,
+    session: CK_SESSION_HANDLE,
+    handle: CK_OBJECT_HANDLE,
+    what: &str,
+    label_of: impl Fn(&Action) -> Option<Vec<u8>>,
+) -> Result<(CK_OBJECT_HANDLE, Option<usize>), Fatal> {
     for (i, rule) in shim.plan.matching(call) {
-        let Action::UseLabel(label) = &rule.action else { continue };
+        let Some(label) = label_of(&rule.action) else { continue };
         // SAFETY: real-module calls on the caller's session and handles.
         unsafe {
-            if !is_of(shim, session, key, rule.of_label.as_deref())? {
+            if !is_of(shim, session, handle, rule.of_label.as_deref())? {
                 continue;
             }
             // Nothing under the label is the plan's mistake, as for `from_label`: the caller's own
             // key run under a rule the trace says fired would pass a test for the wrong reason
             // (hooks.rs F1).
-            let class = class_of(shim, session, key);
-            let other = named(shim, session, label, class)?.first().copied().ok_or_else(|| {
-                Fatal(format!("use_label: no object labelled {} of the key's class", String::from_utf8_lossy(label)))
+            let class = class_of(shim, session, handle);
+            let other = named(shim, session, &label, class)?.first().copied().ok_or_else(|| {
+                Fatal(format!("{what}: no object labelled {} of the key's class", String::from_utf8_lossy(&label)))
             })?;
             return Ok((other, Some(i)));
         }
     }
-    Ok((key, None))
+    Ok((handle, None))
 }
 
 /// `C_GetAttributeValue`: the attributes a rule names are answered by the shim, the others by
@@ -529,6 +576,11 @@ mod tests {
         static SO_HELD: Cell<bool> = const { Cell::new(false) };
         /// A count `C_FindObjects` reports on the shim's own session instead of its batch.
         static OWN_COUNT: Cell<CK_ULONG> = const { Cell::new(0) };
+        /// The objects under each label, where a test names them: the shim's own search then
+        /// finds those its template's label names. Unset, it finds [`LABELLED`] for any label.
+        static LABELS: RefCell<Vec<(&'static [u8], Vec<CK_OBJECT_HANDLE>)>> = const { RefCell::new(Vec::new()) };
+        /// The wrapping key and the key wrapped the last `C_WrapKey` got.
+        static WRAPPED: Cell<(CK_OBJECT_HANDLE, CK_OBJECT_HANDLE)> = const { Cell::new((0, 0)) };
     }
 
     unsafe extern "C" fn get_session_info(_: CK_SESSION_HANDLE, info: *mut CK_SESSION_INFO) -> CK_RV {
@@ -556,15 +608,40 @@ mod tests {
         CKR_OK
     }
 
-    unsafe extern "C" fn find_init(session: CK_SESSION_HANDLE, _: *mut CK_ATTRIBUTE, _: CK_ULONG) -> CK_RV {
+    unsafe extern "C" fn find_init(session: CK_SESSION_HANDLE, template: *mut CK_ATTRIBUTE, n: CK_ULONG) -> CK_RV {
         if session != OWN {
             return CKR_OK;
         }
         let rv = OWN_INIT.get();
         if rv == CKR_OK {
-            OWN_LEFT.set(vec![LABELLED]);
+            // SAFETY: the shim's own template of `n` entries, each value as long as it says.
+            let label = unsafe { std::slice::from_raw_parts(template, usize::try_from(n).unwrap()) }
+                .iter()
+                .find(|e| e.type_ == CKA_LABEL)
+                .map(|e| unsafe {
+                    std::slice::from_raw_parts(e.pValue.cast::<u8>(), usize::try_from(e.ulValueLen).unwrap()).to_vec()
+                });
+            let found = LABELS.with_borrow(|labels| {
+                if labels.is_empty() {
+                    return vec![LABELLED];
+                }
+                labels.iter().find(|(l, _)| Some(*l) == label.as_deref()).map(|(_, h)| h.clone()).unwrap_or_default()
+            });
+            OWN_LEFT.set(found);
         }
         rv
+    }
+
+    unsafe extern "C" fn wrap(
+        _: CK_SESSION_HANDLE,
+        _: *mut CK_MECHANISM,
+        key: CK_OBJECT_HANDLE,
+        wrapped: CK_OBJECT_HANDLE,
+        _: *mut CK_BYTE,
+        _: *mut CK_ULONG,
+    ) -> CK_RV {
+        WRAPPED.set((key, wrapped));
+        CKR_OK
     }
 
     unsafe extern "C" fn find(
@@ -678,6 +755,33 @@ mod tests {
         let got = search(&shim, &[&[1]]);
         SO_HELD.set(false);
         assert_eq!(got, [vec![1, LABELLED]]);
+    }
+
+    /// `wrap_label` wraps the object its label names in place of the key wrapped, where
+    /// `of_label` names the key wrapped: not where it names the wrapping key, nor another key
+    /// wrapped. A label naming nothing is the plan's mistake, never the caller's key wrapped under
+    /// a rule said to have fired.
+    #[test]
+    fn a_wrap_label_wraps_another_key() {
+        let mut m = module();
+        m.C_WrapKey = Some(wrap);
+        LABELS.set(vec![(b"shown", vec![10]), (b"other", vec![11])]);
+        let wrap_of = |shim: &Shim, key, wrapped| {
+            let call = shim.plan.count(Fn::C_WrapKey);
+            let mut len = 0;
+            // SAFETY: the fake module's function, which reads no pointer.
+            let out = unsafe {
+                wrap_key(shim, &call, CALLER, std::ptr::null_mut(), key, wrapped, std::ptr::null_mut(), &raw mut len)
+            };
+            out.map(|(rv, fired)| (rv, fired, WRAPPED.get()))
+        };
+        let shim = fake(&m, "[[rule]]\nfn = \"C_WrapKey\"\nof_label = \"shown\"\nwrap_label = \"other\"\n", None);
+        assert_eq!(wrap_of(&shim, 5, 10).unwrap(), (CKR_OK, Some(1), (5, 11)));
+        assert_eq!(wrap_of(&shim, 10, 12).unwrap(), (CKR_OK, None, (10, 12)));
+        let shim = fake(&m, "[[rule]]\nfn = \"C_WrapKey\"\nwrap_label = \"none\"\n", None);
+        let fatal = wrap_of(&shim, 5, 10).unwrap_err();
+        LABELS.set(Vec::new());
+        assert!(fatal.0.contains("wrap_label: no object labelled none"), "{}", fatal.0);
     }
 
     /// `corrupt` changes the last byte the module returned, inside the caller's buffer; a module

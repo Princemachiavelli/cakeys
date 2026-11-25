@@ -655,3 +655,111 @@ fn a_failed_attribute_read_is_never_an_answer() {
     std::fs::write(&lock, &before).unwrap();
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// A token on the shim for [`each_lie_kind_fires`], each object under its own name as its label
+/// and made by cakeys with no plan, so that an object standing in for another differs from it in
+/// material alone: `k`, `k2` and `k-other` (P-256, signing); `s` and `s-other` (generic secrets
+/// with no usage bit, so identified by wrap-rebind: wrapped, unwrapped as a session copy, an HMAC
+/// commitment on the copy); `w` (AES that only wraps: its commitment is a wrap); and `n` (AES),
+/// declared and not made.
+fn told(name: &str) -> Option<Workdir> {
+    suite_var(REF.module_var, REF.require_var, name)?;
+    let w = Workdir::new(name);
+    let object = |name: &str, kind: &str, attributes: &str| {
+        format!(
+            "[objects.{name}]\n{kind}\n\n[specs.{name}]\nobject = \"{name}\"\nattributes = {{ {attributes} }}\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"{name}\" }}, origin = \"create\" }}\n\n"
+        )
+    };
+    let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+    let secret = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 32";
+    let aes = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32";
+    let rebound = "CKA_SIGN = false, CKA_SENSITIVE = true, CKA_EXTRACTABLE = true";
+    let wraps = "CKA_WRAP = true, CKA_UNWRAP = true, CKA_SIGN = false, CKA_ENCRYPT = false, CKA_SENSITIVE = true, \
+                 CKA_EXTRACTABLE = false";
+    w.write_config(
+        &[
+            reference_tokens(&fault_shim(), &w.dir),
+            object("k", ec, "CKA_SIGN = true"),
+            object("k2", ec, "CKA_SIGN = true"),
+            object("k-other", ec, "CKA_SIGN = true"),
+            object("s", secret, rebound),
+            object("s-other", secret, rebound),
+            object("w", aes, wraps),
+            object("n", aes, "CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false"),
+        ]
+        .concat(),
+    );
+    for spec in TOLD {
+        let o = w.km(&["create", "--spec", spec, "--token", "ref"]);
+        assert_eq!(code(&o), 22, "{spec}, no plan: {}", stderr(&o));
+    }
+    Some(w)
+}
+
+/// The objects [`told`] makes.
+const TOLD: [&str; 6] = ["k", "k2", "k-other", "s", "s-other", "w"];
+
+/// One row of [`each_lie_kind_fires`].
+struct Lie {
+    /// The rule.
+    rule: String,
+    /// The run it meets.
+    run: Vec<&'static str>,
+    /// The run's exit, where that is the lie's effect.
+    exit: Option<i32>,
+    /// What cakeys says.
+    says: &'static str,
+    /// The functions the trace shows the rule fired on: none for a lie aimed past the run, which
+    /// must not fire.
+    fires: &'static [&'static str],
+}
+
+/// Each lie kind `p11-fault` tells beyond the first table (`docs/FAULT_SHIM.md`; review 2026-11-24
+/// phase 2, L1), one row per kind: the rule, the run it meets, the exit where it is the lie's
+/// effect, what cakeys says, and the functions the trace shows the rule fired on. Every row
+/// leaves the lock as it was, and with no plan every object still verifies afterwards: each
+/// effect was the lie's. Every row is run before any is judged, so one run of the suite names
+/// every row that is wrong.
+#[test]
+fn each_lie_kind_fires() {
+    let Some(w) = told("fault-each-lie") else { return };
+    let check = |spec: &'static str| vec!["check", "--spec", spec, "--token", "ref"];
+    let rows = [
+        // The key wrapped is another (`wrap_label`): the session copy wrap-rebind commits on is
+        // another key's, so the identity is not the lock's.
+        Lie {
+            rule: "fn = \"C_WrapKey\"\nof_label = \"s\"\nwrap_label = \"s-other\"".into(),
+            run: check("s"),
+            exit: Some(10),
+            says: "hash mismatch in identity of",
+            fires: &["C_WrapKey"],
+        },
+    ];
+    let lock_path = w.dir.join("keys.lock");
+    let lock = std::fs::read(&lock_path).unwrap();
+    let mut wrong = Vec::new();
+    for (i, Lie { rule, run, exit, says, fires }) in rows.iter().enumerate() {
+        let (plan, trace) = (w.dir.join("plan.toml"), w.dir.join(format!("lie-{i}.jsonl")));
+        std::fs::write(&plan, format!("[[rule]]\n{rule}\n")).unwrap();
+        let o = w.km_env(run, &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)]);
+        let fired: Vec<String> = fired(&trace).iter().map(|l| l["fn"].as_str().unwrap_or("?").to_owned()).collect();
+        let said = stderr(&o);
+        let as_said = fired.is_empty() == fires.is_empty() && fired.iter().all(|f| fires.contains(&f.as_str()));
+        let kept = std::fs::read(&lock_path).unwrap() == lock;
+        if exit.is_some_and(|e| e != code(&o)) || !said.contains(says) || !as_said || !kept {
+            wrong.push(format!(
+                "row {i}: {rule}\n  {run:?}: exit {}, fired {fired:?}, lock kept {kept}: {said}",
+                code(&o)
+            ));
+        }
+    }
+    // With no plan, the same token still verifies: every effect above was the lie's.
+    for spec in TOLD {
+        let o = w.km(&check(spec));
+        if code(&o) != 0 {
+            wrong.push(format!("{spec} with no plan: exit {}: {}", code(&o), stderr(&o)));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

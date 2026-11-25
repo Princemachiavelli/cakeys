@@ -5,8 +5,8 @@
 //!
 //! `=> hook` hands the call to `hooks::hook`, which forwards it itself and may change what the
 //! caller sees; `=> substitute_key` forwards with the third argument, a key, replaced by the
-//! one a rule names; `=> corrupt_output` forwards, then changes the last byte returned where a
-//! rule says so.
+//! one a rule names (`=> wrap_key` too, and the fourth, the key wrapped); `=> corrupt_output`
+//! forwards, then changes the last byte returned where a rule says so.
 //!
 //! `[kind(args), ...]` names what the trace reads from the arguments once the call returns
 //! (`trace::Detail`): the mechanism, a template, the user type, the session flags.
@@ -185,7 +185,7 @@ forward! {
     C_DecryptVerifyUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_GenerateKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG, arg5: *mut CK_OBJECT_HANDLE) [mechanism(arg2), template(arg3, arg4)];
     C_GenerateKeyPair(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG, arg5: *mut CK_ATTRIBUTE, arg6: CK_ULONG, arg7: *mut CK_OBJECT_HANDLE, arg8: *mut CK_OBJECT_HANDLE) [mechanism(arg2), template(arg3, arg4), template(arg5, arg6)];
-    C_WrapKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: CK_OBJECT_HANDLE, arg5: *mut CK_BYTE, arg6: *mut CK_ULONG) => substitute_key [mechanism(arg2)];
+    C_WrapKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: CK_OBJECT_HANDLE, arg5: *mut CK_BYTE, arg6: *mut CK_ULONG) => wrap_key [mechanism(arg2)];
     C_UnwrapKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: *mut CK_BYTE, arg5: CK_ULONG, arg6: *mut CK_ATTRIBUTE, arg7: CK_ULONG, arg8: *mut CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2), template(arg6, arg7)];
     C_DeriveKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: *mut CK_ATTRIBUTE, arg5: CK_ULONG, arg6: *mut CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2), template(arg4, arg5)];
     C_SeedRandom(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);

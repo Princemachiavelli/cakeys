@@ -124,9 +124,10 @@ unsafe extern "C" fn C_FindObjects(s: CK_SESSION_HANDLE, out: *mut CK_OBJECT_HAN
 ```
 
 The `=> substitute_key` form marks the functions that take a key (`C_SignInit`, `C_DecryptInit`,
-`C_DeriveKey`, `C_UnwrapKey`, `C_WrapKey`, ...): a `use_label` rule substitutes the handle
-before forwarding; `=> corrupt_output` marks those whose output a rule may change. The plan's
-lists of both are generated from these marks.
+`C_DeriveKey`, `C_UnwrapKey`, ...): a `use_label` rule substitutes the handle before forwarding.
+`C_WrapKey`'s `=> wrap_key` does that too, and substitutes the key wrapped under a `wrap_label`
+rule; `=> corrupt_output` marks those whose output a rule may change. The plan's lists of all
+three are generated from these marks.
 
 ### The plan
 
@@ -173,6 +174,13 @@ fn = "C_DecryptInit"
 of_label = "shown"
 use_label = "used"
 
+# Another key wrapped than the one named (of its class; none under the label fails the call):
+# the blob holds another key's material. `of_label` names the key wrapped.
+[[rule]]
+fn = "C_WrapKey"
+of_label = "shown"
+wrap_label = "other"
+
 # Found objects hidden; a byte of what a call returns changed (C_Sign, C_SignFinal, C_Encrypt,
 # C_Decrypt); mechanisms no longer listed.
 [[rule]]
@@ -203,7 +211,7 @@ refuses what the client does next. To model a module that fails the operation, f
 that does the work, after it: `call = 2`, `when = "after"` for a client that asks the length
 first.
 
-**Labels to handles.** `of_label`, `from_label`, `add_label` and `use_label` are resolved
+**Labels to handles.** `of_label`, `from_label`, `add_label`, `use_label` and `wrap_label` are resolved
 through a session of the shim's own (`C_OpenSession` on the caller's slot, read from
 `C_GetSessionInfo`), so resolving never interrupts a find the caller has open. The session is
 read-only, or read-write where the module refuses a read-only one because the caller holds an
@@ -274,6 +282,11 @@ never yields a wrong plaintext to compare. The challenge was encrypted to the pu
 identity names, so that answer means another key: `CKR_ENCRYPTED_DATA_INVALID`/`_LEN_RANGE`
 and `CKR_WRAPPED_KEY_INVALID`/`_LEN_RANGE` are now a conflict (13). A module that answers a
 general error instead (SoftHSM's `C_UnwrapKey`) stays unavailable: nothing in it says which.
+
+`each_lie_kind_fires` takes each rule kind added since, one row each on a token of its own
+(`told`): the rule, the run, the exit and the message, and the functions the trace shows it
+fired on. Another key wrapped (`wrap_label`) under a secret key's wrap-rebind gives 10: the
+session copy committed on is another key's.
 
 A second test, `a_creation_that_cannot_be_identified_is_undone_or_reported`, takes §8.1's
 "refused operations leave nothing behind": a key created whose proof then fails is removed
