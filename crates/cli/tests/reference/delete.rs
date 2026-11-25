@@ -49,8 +49,7 @@ fn ec_lifecycle() {
 
     // DELETE + If-Match.
     let del = ["delete", "--spec", "signing-soft", "--token", "ref"];
-    let wrong = e.km(&[&del[..], &["--if-match", "sha256-AAAA"]].concat());
-    assert_eq!(code(&wrong), 14);
+    e.refused(&[&del[..], &["--if-match", "sha256-AAAA"]].concat(), 14, "if-match");
     assert_eq!(e.code(&["check", "--spec", "signing-soft", "--token", "ref"]), 0);
     // The right one deletes (review delete.rs F1: only a wrong one was tested).
     let right = e.km(&[&del[..], &["--if-match", &got]].concat());
@@ -70,8 +69,8 @@ fn ec_lifecycle() {
     let fresh = e.km(&[&["--new-lock"][..], &c].concat());
     assert_eq!(code(&fresh), 18);
     let unlocked = ["--new-lock", "delete", "--spec", "signing-soft", "--token", "ref"];
-    assert_eq!(e.code(&unlocked), 14);
-    assert_eq!(e.code(&[&unlocked[..], &["--dry-run"]].concat()), 14);
+    e.refused(&unlocked, 14, "if-match");
+    e.refused(&[&unlocked[..], &["--dry-run"]].concat(), 14, "if-match");
     assert_eq!(e.code(&["check", "--spec", "signing-soft", "--token", "ref"]), 17, "no lock");
     assert_eq!(e.code(&["--new-lock", "check", "--spec", "signing-soft", "--token", "ref"]), 18);
     // `--if-match` is the expected identity where no lock gives one.
@@ -90,9 +89,7 @@ fn ec_lifecycle() {
 
     // A re-created key is new material: the lock pins the old identity, so `create` is
     // refused up front (D1) and regeneration can never satisfy it.
-    let o = e.km(&c);
-    assert_eq!(code(&o), 14);
-    assert!(stderr(&o).contains("creating it would generate different material"), "{}", stderr(&o));
+    e.refused(&c, 14, "pinned-lost");
     assert_eq!(e.code(&r), 11);
     assert_eq!(e.code(&del), 0, "nothing was created, so absent is success again");
 }
@@ -215,8 +212,8 @@ tokens.ref = { locator = { CKA_LABEL = "del-other" }, origin = "create" }
     assert_eq!(e.code(&["check", "k", "--token", "ref"]), 13);
 
     let del = |token| e.km(&["delete", "--spec", "k", "--token", token]);
-    assert_eq!(code(&del("ref-anon")), 16);
-    assert_eq!(of_class(ObjectClass::PRIVATE_KEY, "del-rsa").len(), 1, "nothing deleted unseen");
+    // Nothing deleted unseen: the token as it was.
+    e.refused(&["delete", "--spec", "k", "--token", "ref-anon"], 16, "needs-login");
 
     let o = del("ref");
     assert_eq!(code(&o), 22, "{}", stderr(&o));

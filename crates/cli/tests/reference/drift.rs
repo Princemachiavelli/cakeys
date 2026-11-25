@@ -215,8 +215,7 @@ fn allowed_mechanisms_and_public_attributes() {
     e.config(&spec("\"CKM_BOGUS\"", "CKA_VERIFY = false"));
     assert_eq!(e.code(&["create", "--spec", "k", "--token", "ref", "--no-update-lock"]), 17);
     e.config(&spec("\"CKM_ECDSA\", \"CKM_BOGUS\"", "CKA_VERIFY = false"));
-    assert_eq!(e.code(&["create", "--spec", "k", "--token", "ref", "--no-update-lock"]), 15);
-    assert!(s.labelled("attrs").is_empty(), "nothing was created");
+    e.refused(&["create", "--spec", "k", "--token", "ref", "--no-update-lock"], 15, "templates");
 
     // Created with the restriction; the public half honors publicAttributes (the default
     // CKA_VERIFY = true is left out where they override it).
