@@ -5,8 +5,10 @@
 //! per-use PIN and allowed mechanisms) and realised. The outcome per object — the mode, schemes
 //! and binding recorded, or the exit code, or the token refusing to hold such an object — is
 //! spec-coverage/objects/<token>.toml, generated and pinned:
-//! `CAKEYS_UPDATE_OBJECTS=$PWD/spec-coverage/objects` rewrites it there
-//! (`scripts/local-tests.sh -E 'test(object_matrix)'`).
+//! `CAKEYS_UPDATE_OBJECTS=$PWD/spec-coverage/objects` regenerates it there
+//! (`scripts/local-tests.sh -E 'test(object_matrix)'`): beside the committed table as `.new`,
+//! or over it with `CAKEYS_ACCEPT=1` (`cakeys_profile::regenerate`, docs/DEVELOPMENT.md,
+//! "Golden files").
 //! What each refused row printed is in the test's directory, `report.txt`.
 //!
 //! Four families, in this order: generated keys and imported secret keys ([`Row`]); imported
@@ -724,7 +726,7 @@ pub struct Target<'a> {
 }
 
 /// Create the grid on `t`, lock every object, and compare the table with the committed one
-/// (or rewrite it, under `CAKEYS_UPDATE_OBJECTS`).
+/// (or regenerate it, under `CAKEYS_UPDATE_OBJECTS`).
 ///
 /// # Panics
 ///
@@ -817,9 +819,9 @@ pub fn check(t: &Target<'_>) {
     if let Some(dir) = std::env::var_os("CAKEYS_UPDATE_OBJECTS") {
         std::fs::create_dir_all(&dir).unwrap();
         let rewritten = Path::new(&dir).join(&file);
-        std::fs::write(&rewritten, &text).unwrap();
+        let written = cakeys_profile::regenerate::write(&rewritten, &text, cakeys_profile::regenerate::accepted());
         // Said in the log: a run with the variable set compares nothing (review object_matrix F2).
-        eprintln!("rewrote {}, not compared (CAKEYS_UPDATE_OBJECTS is set)", rewritten.display());
+        eprintln!("{}, not compared (CAKEYS_UPDATE_OBJECTS is set)", written.unwrap());
         return;
     }
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec-coverage/objects").join(&file);

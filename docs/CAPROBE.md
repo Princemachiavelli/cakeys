@@ -15,7 +15,7 @@ standards, **[src]** read in a module's source, **[todo]** still to verify.
 $ caprobe supports [<CKM_*|CKK_*|CKP_*|curve>] (--profile <p> | --token <t>) [--layer <l> ...] \
     [--bits <n>] [--class pq|hmac|key-wrap|oaep] [--oaep] [--profiles <dir>]
 $ caprobe caps --token <t>
-$ caprobe probe --token <t> [--write-probes] [--out <file>] [--diff <profile>] [--name <profile>] [--profiles <dir>]
+$ caprobe probe --token <t> [--write-probes] [--out <file> [--accept]] [--diff <profile>] [--name <profile>] [--profiles <dir>]
 ```
 
 - `supports` asks the profiles alone; no token is touched, and `--profile` needs no keys.toml.
@@ -59,7 +59,7 @@ data provider: without its code it is refused (17).
 
 **The baseline** (`profiles/baselines/pkcs11-3.2.toml`) is generated from the OASIS 3.2 headers,
 vendored unmodified at `profiles/baselines/headers/pkcs11-3.2/`, and pinned by a test
-(`CAKEYS_UPDATE_BASELINE=1` rewrites it). It is the vocabulary of one spec revision: every
+(`CAKEYS_UPDATE_BASELINE=1` regenerates it, beside it until `CAKEYS_ACCEPT=1`). It is the vocabulary of one spec revision: every
 mechanism, key type, attribute (the array attributes included), object class, curve, function
 and parameter set, and the other constant families (return values, flags, user types, session
 states, certificate and hardware-feature types, MGFs and IV generators, KDFs, sources,
@@ -152,7 +152,9 @@ means try, except for what cannot be undone.
 `[migration]`, the `move.*` rows and `[manual]` are written by hand; the probe preserves them
 and the diff never compares them, so a reader always knows which rows were observed. `--out`
 keeps them only from a file of the profile just probed: one of another family is refused (17),
-and one of another name of the family unless `--name` says which it is. Where a
+and one of another name of the family unless `--name` says which it is. A file there that the
+profile differs from is replaced only with `--accept`; otherwise the profile goes beside it, as
+`<file>.new`, for review ([DEVELOPMENT.md](DEVELOPMENT.md), "Golden files"). Where a
 probed `import.*`, `create.*`, `export.*` or `unwrap.*` row covers an object's type it decides
 before `[migration]` and `move.*`, which answer for the rest until every committed profile
 carries the probed rows ([archive/CAPROBE_MIGRATION.md](archive/CAPROBE_MIGRATION.md) M4). A mechanism the
@@ -430,7 +432,7 @@ that the listed rows are exactly the ones the pull request moved ([DEVELOPMENT.m
 
 - **Algebra and the baseline**: modes, intersection, by-class queries; the baseline the vendored
   headers generate equals the committed one, compared parsed (`CAKEYS_UPDATE_BASELINE=1`
-  rewrites it); frozen spellings are pinned. `checks.profiles` runs the pinned `supports` cases
+  regenerates it); frozen spellings are pinned. `checks.profiles` runs the pinned `supports` cases
   against the built binary, including an unpatched binding modelled through `--profiles`.
 - **Conformance**, in every Nix build's check phase: a fresh probe of SoftHSM, kryoptic and
   tpm2-pkcs11-on-swtpm conforms to its committed profile and regenerates it byte for byte; the

@@ -182,9 +182,14 @@ struct ProbeArgs {
     /// `YubiKey`'s).
     #[arg(long)]
     write_probes: bool,
-    /// Write the generated profile here; default: stdout.
+    /// Write the generated profile here; default: stdout. A file already there that differs is
+    /// replaced only with --accept: else the profile goes beside it, as `<file>.new`, to be
+    /// reviewed first (docs/DEVELOPMENT.md, "Golden files").
     #[arg(long)]
     out: Option<PathBuf>,
+    /// Replace the --out file with the regenerated profile, rather than writing `<file>.new`.
+    #[arg(long, requires = "out")]
+    accept: bool,
     /// Name the generated profile, e.g. `tpm2-pkcs11/1.10+swtpm` for a module on one kind of
     /// hardware; default: the claimed profile's name with --diff, else `<provider>/<version>`.
     #[arg(long)]
@@ -388,7 +393,7 @@ fn run_probe(
     };
     let mut profile = probe::generate(&tok, tcfg, &req, notes)?;
     match &a.out {
-        Some(path) => write_profile(path, &mut profile, a.write_probes, a.name.is_some(), notes)?,
+        Some(path) => write_profile(path, &mut profile, a.write_probes, a.name.is_some(), a.accept, notes)?,
         None => print!("{}", emit::profile(&profile)),
     }
     let Some(claimed) = claimed else { return Ok(()) };
@@ -418,12 +423,15 @@ fn run_probe(
 /// the file's `[migration]` claims (docs/CAMIGRATE.md evidence, never probe-observable). Refused onto
 /// an existing file that does not parse (regenerating it would silently drop those claims),
 /// onto any existing file from a read-only probe (it would drop every write-probe row), and onto
-/// another profile's file (`probe::keep_claims`; `renamed`: `--name` was given).
+/// another profile's file (`probe::keep_claims`; `renamed`: `--name` was given). Written as every
+/// golden file is (`cakeys_profile::regenerate`): over a file that differs only when `accept`ed,
+/// else beside it as `<file>.new` (review 2026-11-24 C-8).
 fn write_profile(
     path: &Path,
     profile: &mut cakeys_profile::Profile,
     write: bool,
     renamed: bool,
+    accept: bool,
     notes: &mut Notes,
 ) -> anyhow::Result<()> {
     // Only a file that is not there has nothing to keep: one that cannot be read may hold claims.
@@ -432,8 +440,10 @@ fn write_profile(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).with_context(|| format!("reading {} to keep its claims", path.display())),
     }
-    cakeys_core::config::write_whole(path, emit::profile(profile).as_bytes(), 0o666)?;
-    notes.say(format!("wrote {}", path.display()));
+    let written = cakeys_profile::regenerate::write_with(path, &emit::profile(profile), accept, |p, text| {
+        anyhow::Ok(cakeys_core::config::write_whole(p, text.as_bytes(), 0o666)?)
+    })?;
+    notes.say(written.to_string());
     Ok(())
 }
 

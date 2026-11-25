@@ -58,7 +58,8 @@ Development happens on NixOS or on macOS with Determinate Nix. Neither provides 
 - Generated profiles must stay byte-identical to the committed ones, and only the Nix-built
   binary carries the patched cryptoki the probe needs: `profiles/LEDGER.toml` names each
   profile's command (`scripts/regen-profiles.sh` for the software tokens). The baseline is
-  regenerated with `CAKEYS_UPDATE_BASELINE=1`, then `nix fmt`.
+  regenerated with `CAKEYS_UPDATE_BASELINE=1 CAKEYS_ACCEPT=1`, then `nix fmt`. Every
+  regeneration is written beside the file it would replace until accepted ("Golden files").
 - What only hardware or a cloud can measure is in `profiles/LEDGER.toml`, with its last run. A
   change to the code on its path, or a hand edit, fails `checks.ledger` until the ledger records
   it: an `[artifact.acknowledged]` saying who, why and what needs a run, or a hand-edit row.
@@ -217,7 +218,7 @@ run passes `--no-tests=fail`.
 A golden file is what a build regenerates and compares with: the object matrix's tables
 (`spec-coverage/objects/`), the profiles of the software tokens, `spec-coverage/cakeys.toml` and
 the baseline. The code under test writes them, so a test against one detects a change, not an
-error (review 2026-11-24 C-8). Three things stand in front of them:
+error (review 2026-11-24 C-8). What stands in front of them:
 
 - **The ledger records each change.** `profiles/LEDGER.toml` has a `[golden."<path>"]` entry per
   file (CAPROBE.md, "The ledger"): every change adds a record naming the file it made and each
@@ -226,6 +227,12 @@ error (review 2026-11-24 C-8). Three things stand in front of them:
   `nix/golden-rows.py --base <rev>` fails when the record lists other rows than the diff moved,
   and writes them, old and new, to the job summary. `nix develop -c python3 -I
   nix/golden-rows.py --stub` prints the record to fill in.
+- **A regeneration waits beside the file.** Every writer of one (`caprobe probe --out`, each
+  `CAKEYS_UPDATE_*` test, the regeneration scripts) goes through `cakeys_profile::regenerate`: a
+  file the new text differs from is replaced only when accepted, by `caprobe probe --accept` or
+  `CAKEYS_ACCEPT=1` (for a test or a script); otherwise the text goes beside it as `<file>.new`,
+  which git ignores and `golden-rows.py --stub` reads. The baseline is formatted after it is
+  written: stub it once accepted and formatted.
 
 ## Verification beyond tests
 

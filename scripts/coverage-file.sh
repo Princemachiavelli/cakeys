@@ -26,9 +26,16 @@ CAKEYS_TRACE_DIR=$trace scripts/local-tests.sh -E \
   'not (binary(fault) | test(committed_coverage_is_generated_from_the_trace))'
 # The rewrite through local-tests too, so it reuses that build (the same tree copy, features and
 # target directory) instead of building the workspace again here. The test rewrites the file in
-# the tree copy it runs in; it is copied back.
+# the tree copy it runs in (beside it as .new, or over it with CAKEYS_ACCEPT=1: docs/DEVELOPMENT.md,
+# "Golden files"); it is copied back as it was written.
 CAKEYS_COVERAGE_TRACE=$trace CAKEYS_UPDATE_COVERAGE=1 scripts/local-tests.sh -E \
   'package(caprobe) & kind(lib) & test(committed_coverage_is_generated_from_the_trace)'
-cp target/local-tests/tree/spec-coverage/cakeys.toml spec-coverage/cakeys.toml
+copy=target/local-tests/tree/spec-coverage
+if [ -e "$copy/cakeys.toml.new" ]; then
+  cp "$copy/cakeys.toml.new" spec-coverage/
+else
+  rm -f spec-coverage/cakeys.toml.new
+  cp "$copy/cakeys.toml" spec-coverage/
+fi
 git -C "$repo" diff --stat -- spec-coverage/cakeys.toml
 echo "coverage-file: the tests behind each used row: $trace/coverage-report.txt"

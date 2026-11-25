@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Regenerate the committed module profiles the reference suites check (docs/CAPROBE.md phase
 # 3): softhsm/2.7, kryoptic/1.5 and tpm2-pkcs11/1.10+swtpm, each probed with --write-probes on a fresh
-# token set up the way the Nix check phase sets it up (nix/package-common.nix), and written over
-# its committed file — [migration] and [manual] kept. Afterwards `git diff profiles/` is the
-# drift; the build's conformance tests then pass.
+# token set up the way the Nix check phase sets it up (nix/package-common.nix), and written
+# beside its committed file as <file>.new, or over it with CAKEYS_ACCEPT=1 (caprobe's --accept;
+# docs/DEVELOPMENT.md, "Golden files") — [migration] and [manual] kept. Afterwards the .new
+# files (or, accepted, `git diff profiles/`) are the drift; the build's conformance tests then pass.
 #
 #   scripts/regen-profiles.sh <caprobe> <dir>
 #
@@ -75,7 +76,7 @@ for t in softhsm:softhsm/2.7:softhsm/2.7.toml kryoptic:kryoptic/1.5:kryoptic/1.5
   rc=0
   # The module profiles alone: profiles/ also holds LEDGER.toml, which is no profile.
   "$bin" --config "$dir/keys.toml" probe --profiles "$repo/profiles/modules" --token "$token" --write-probes --rsa-max-bits 4096 \
-    --diff "$name" --out "$repo/profiles/modules/$file" || rc=$?
+    --diff "$name" --out "$repo/profiles/modules/$file" ${CAKEYS_ACCEPT:+--accept} || rc=$?
   [ "$rc" = 0 ] || [ "$rc" = 15 ] || status=$rc
 done
 exit "$status"

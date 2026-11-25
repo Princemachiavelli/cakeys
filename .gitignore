@@ -11,3 +11,6 @@ result*
 # cloud project and account, so a stray copy must never be committed.
 *.tfstate
 *.tfstate.*
+# A regeneration waiting beside the golden file it would replace (docs/DEVELOPMENT.md, "Golden
+# files"): reviewed and accepted, never committed.
+*.new

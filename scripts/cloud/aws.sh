@@ -357,11 +357,14 @@ EOF
   fi
   # RSA up to 4096 bits, as every regeneration probes (profiles/LEDGER.toml, [regen]).
   runner "$(realpath "$bin")" --config /run/caprobe/keys.toml probe --profiles /run/caprobe/profiles \
-    --token cloudhsm --write-probes --rsa-max-bits 4096 --name "$name" "${diff[@]}" --out /run/caprobe/profile.toml || rc=$?
+    --token cloudhsm --write-probes --rsa-max-bits 4096 --name "$name" "${diff[@]}" --out /run/caprobe/profile.toml --accept || rc=$?
   runner rm -f /run/caprobe/pin
   # 15 is drift against the committed profile: written anyway, for review.
   [[ $rc == 0 || $rc == 15 ]] || exit "$rc"
   mkdir -p "$(dirname "$out")"
+  # The runner's copy is accepted above; the committed profile is replaced only with
+  # CAKEYS_ACCEPT=1, else the profile goes beside it (docs/DEVELOPMENT.md, "Golden files").
+  [[ -f $out && -z ${CAKEYS_ACCEPT:-} ]] && out=$out.new
   runner cat /run/caprobe/profile.toml >"$out"
   echo "wrote $out"
   return "$rc"

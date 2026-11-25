@@ -19,6 +19,7 @@ pub mod effective;
 pub mod embedded;
 pub mod names;
 pub mod profile;
+pub mod regenerate;
 
 pub use baseline::Baseline;
 pub use capability::{Answer, By, Capability, DEVICE_FAILED_RV, Move, On, Row, Way, names_device_failure};

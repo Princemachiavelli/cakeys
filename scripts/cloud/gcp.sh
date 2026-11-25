@@ -176,7 +176,8 @@ EOF
       out=$repo/profiles/modules/$name.toml
       mkdir -p "$(dirname "$out")"
       # RSA up to 4096 bits, as every regeneration probes (profiles/LEDGER.toml, [regen]).
-      args+=(--write-probes --rsa-max-bits 4096 --out "$out")
+      # Over the committed profile only with CAKEYS_ACCEPT=1: else beside it, as $out.new.
+      args+=(--write-probes --rsa-max-bits 4096 --out "$out" ${CAKEYS_ACCEPT:+--accept})
       [[ -f $out ]] && args+=(--diff "$name")
     else
       out=$state/${variant}-read-only.toml

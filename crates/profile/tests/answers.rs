@@ -3,11 +3,12 @@
 //! row a consumer reads directly, for every embedded profile. A change of
 //! the profile format must leave this text unchanged (`tests/answers.txt`); a change of what a
 //! profile says regenerates it with `CAKEYS_WRITE_ANSWERS=1 cargo test -p cakeys-profile --test
-//! answers`, which then fails, so a regenerating run is never a pass: review the diff, then run
-//! again without the variable.
+//! answers`, which then fails, so a regenerating run is never a pass: it writes `answers.txt.new`
+//! (`cakeys_profile::regenerate`); review it, then run again with `CAKEYS_ACCEPT=1` too, and
+//! then without either.
 
 use cakeys_profile::profile::Mode;
-use cakeys_profile::{Capability, Effective, Move, Profile, Set, Verdict};
+use cakeys_profile::{Capability, Effective, Move, Profile, Set, Verdict, regenerate};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -176,16 +177,14 @@ fn first_difference(got: &str, pinned: &str) -> Option<String> {
     ))
 }
 
-/// Compare `got` with the pinned text at `path`, or with `write`, put `got` there: an error
-/// either way, so a regenerating run never passes (review answers.rs F1: a shell that kept the
-/// variable accepted every change silently).
-fn pinned_or_written(got: &str, path: &Path, write: bool) -> Result<(), String> {
+/// Compare `got` with the pinned text at `path`, or with `write`, put `got` there
+/// ([`regenerate::write`]: over it only when `accept`ed): an error either way, so a
+/// regenerating run never passes (review answers.rs F1: a shell that kept the variable accepted
+/// every change silently).
+fn pinned_or_written(got: &str, path: &Path, write: bool, accept: bool) -> Result<(), String> {
     if write {
-        std::fs::write(path, got).map_err(|e| format!("{}: {e}", path.display()))?;
-        return Err(format!(
-            "{} rewritten (CAKEYS_WRITE_ANSWERS): review its diff, then run again without the variable",
-            path.display()
-        ));
+        let written = regenerate::write(path, got, accept).map_err(|e| format!("{}: {e}", path.display()))?;
+        return Err(format!("{written} (CAKEYS_WRITE_ANSWERS): review its diff, then run again without the variable"));
     }
     let pinned = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     first_difference(got, &pinned).map_or(Ok(()), Err)
@@ -195,7 +194,8 @@ fn pinned_or_written(got: &str, path: &Path, write: bool) -> Result<(), String> 
 fn every_profile_answers_as_pinned() {
     let got = answers(&Set::embedded().unwrap());
     let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/answers.txt"));
-    if let Err(e) = pinned_or_written(&got, path, std::env::var_os("CAKEYS_WRITE_ANSWERS").is_some()) {
+    let write = std::env::var_os("CAKEYS_WRITE_ANSWERS").is_some();
+    if let Err(e) = pinned_or_written(&got, path, write, regenerate::accepted()) {
         panic!("{e}");
     }
 }
@@ -205,13 +205,22 @@ fn every_profile_answers_as_pinned() {
 #[test]
 fn regenerating_fails_and_a_difference_says_where() {
     let path = std::env::temp_dir().join(format!("cakeys-answers-{}.txt", std::process::id()));
-    let e = pinned_or_written("a\nb\n", &path, true).unwrap_err();
-    assert!(e.contains("rewritten"), "{e}");
+    let e = pinned_or_written("a\nb\n", &path, true, false).unwrap_err();
+    assert!(e.contains("wrote"), "{e}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nb\n");
-    assert_eq!(pinned_or_written("a\nb\n", &path, false), Ok(()));
-    let e = pinned_or_written("a\nb\nc\n", &path, false).unwrap_err();
+    assert_eq!(pinned_or_written("a\nb\n", &path, false, false), Ok(()));
+    // Pinned already, the regeneration waits beside it until accepted (review 2026-11-24 C-8).
+    let new = regenerate::pending(&path);
+    let e = pinned_or_written("a\nB\n", &path, true, false).unwrap_err();
+    assert!(e.contains(&new.display().to_string()), "{e}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nb\n");
+    assert_eq!(std::fs::read_to_string(&new).unwrap(), "a\nB\n");
+    let e = pinned_or_written("a\nb\n", &path, true, true).unwrap_err();
+    assert!(e.contains("unchanged"), "{e}");
+    assert!(!new.exists());
+    let e = pinned_or_written("a\nb\nc\n", &path, false, false).unwrap_err();
     assert!(e.contains("line 3 (3 lines now, 2 pinned)") && e.contains("now:    \"c\"\n  pinned: <end>"), "{e}");
-    let e = pinned_or_written("a\n", &path, false).unwrap_err();
+    let e = pinned_or_written("a\n", &path, false, false).unwrap_err();
     assert!(e.contains("line 2 (1 lines now, 2 pinned)") && e.contains("now:    <end>\n  pinned: \"b\""), "{e}");
     std::fs::remove_file(&path).unwrap();
 }
