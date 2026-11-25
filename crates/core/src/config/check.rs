@@ -287,3 +287,337 @@ pub(super) fn env_ref(value: &str, what: &str, env: &dyn Fn(&str) -> Option<Stri
         KmError::Unavailable(format!("{what}: environment variable {name} (\"{value}\") is not set").into())
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{load_config_with, parse_config_with};
+    use std::path::Path;
+
+    /// Object, spec and token names have one grammar, checked at load (17): a reference splits
+    /// on `.id.`, and shell commands are built from them.
+    #[test]
+    fn names_are_letters_digits_dashes_and_underscores() {
+        let load = |object: &str, spec: &str, token: &str| {
+            let text = format!(
+                "[tokens.\"{token}\"]\ntokenLabel = \"t\"\n\n\
+                 [objects.\"{object}\"]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+                 [specs.\"{spec}\"]\nobject = \"{object}\"\nattributes = {{ CKA_SIGN = true }}\n\
+                 tokens.\"{token}\" = {{ locator = {{ CKA_LABEL = \"k\" }}, origin = \"adopt\" }}\n"
+            );
+            parse_config_with(&text, Path::new("keys.toml"), &|_| None)
+        };
+        load("k", "k-soft_2", "0soft").unwrap();
+        for (object, spec, token, what) in [
+            ("a b; echo pwned #", "s", "t", "object name \"a b; echo pwned #\""),
+            ("k.id.x", "s", "t", "object name \"k.id.x\""),
+            ("k", "-s", "t", "spec name \"-s\""),
+            ("k", "s", "my token", "token name \"my token\""),
+            ("k", "s", "", "token name \"\""),
+            ("k", "s", "tök", "token name \"tök\""),
+        ] {
+            let e = load(object, spec, token).unwrap_err();
+            assert!(matches!(e, KmError::Validation(_)) && e.to_string().contains(what), "{e}");
+        }
+    }
+
+    /// Every pair says how its object comes to be there (`origin`), checked at load (17): a
+    /// private or secret key states it; what is never generated (a certificate, a public key, a
+    /// data object, a `publicOnly` adoption, a `CKA_TRUSTED` key) is not `create`; and an object
+    /// is created by one pair at most. The retired `autoCreate` and `createOn` are unknown fields.
+    #[test]
+    fn origins_say_how_an_object_comes_to_be_on_a_token() {
+        let load = |class: &str, a: &str, b: &str, second_spec: &str| {
+            // A usage each pair can prove possession by; none for what has no private half.
+            let attributes = if class.contains("CKO_CERTIFICATE") || a.contains("publicOnly") {
+                ""
+            } else {
+                "attributes = { CKA_SIGN = true }\n"
+            };
+            let text = format!(
+                "[tokens.a]\ntokenLabel = \"a\"\n[tokens.b]\ntokenLabel = \"b\"\n\n\
+                 [objects.k]\n{class}\n\n\
+                 [specs.k]\nobject = \"k\"\n{attributes}\
+                 tokens.a = {{ locator = {{ CKA_LABEL = \"k\" }}{a} }}\n\
+                 tokens.b = {{ locator = {{ CKA_LABEL = \"k\" }}{b} }}\n{second_spec}"
+            );
+            parse_config_with(&text, Path::new("keys.toml"), &|_| None)
+        };
+        let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+        let aes = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32";
+        let cert = "class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"";
+        let (create, import, adopt) = (", origin = \"create\"", ", origin = \"import\"", ", origin = \"adopt\"");
+        let cfg = load(ec, create, import, "").unwrap();
+        let on = |t: &str| cfg.specs["k"].tokens[t].key_origin();
+        assert_eq!((on("a"), on("b")), (KeyOrigin::Create, KeyOrigin::Import));
+        load(aes, adopt, adopt, "").unwrap();
+        // What is never created is adopted unless it says otherwise.
+        let cfg = load(cert, "", import, "").unwrap();
+        assert_eq!(cfg.specs["k"].tokens["a"].key_origin(), KeyOrigin::Adopt);
+        load(ec, ", publicOnly = true", ", publicOnly = true, origin = \"adopt\"", "").unwrap();
+
+        let refused = |r: Result<Config>, what: &str| {
+            let e = r.unwrap_err();
+            assert!(matches!(e, KmError::Validation(_)) && e.to_string().contains(what), "{e}");
+        };
+        refused(load(ec, "", adopt, ""), "spec 'k' on token 'a': a private or secret key states its origin");
+        refused(load(aes, adopt, "", ""), "spec 'k' on token 'b': a private or secret key states its origin");
+        refused(load(cert, create, "", ""), "CKO_CERTIFICATE objects are adopted or imported, never created");
+        refused(load(ec, ", publicOnly = true, origin = \"import\"", adopt, ""), "never origin = \"import\"");
+        let trusted = "\n[specs.t]\nobject = \"k\"\nattributes = { CKA_WRAP = true, CKA_TRUSTED = true }\n";
+        refused(
+            load(aes, adopt, adopt, &format!("{trusted}tokens.a = {{ locator = {{ CKA_LABEL = \"t\" }}{create} }}\n")),
+            "CKA_TRUSTED = true cannot be generated",
+        );
+        // Created once: two tokens, or two specs on one token, would leave it to the run.
+        refused(load(ec, create, create, ""), "has origin = \"create\" on several pairs");
+        let second =
+            format!("\n[specs.k2]\nobject = \"k\"\ntokens.a = {{ locator = {{ CKA_LABEL = \"k\" }}{create} }}\n");
+        refused(load(ec, create, adopt, &second), "spec 'k' on token 'a', spec 'k2' on token 'a'");
+        // The retired keys.
+        refused(load(ec, ", autoCreate = true", adopt, ""), "unknown field `autoCreate`");
+        refused(load(&format!("{ec}\ncreateOn = \"a\""), create, adopt, ""), "unknown field `createOn`");
+    }
+
+    /// An object born in a file (docs/FILE.md F1, F2): `origin = "file"` on any number of pairs,
+    /// read from the object's `migrate.file`, which is never part of the type the lock pins; a
+    /// file is a birthplace, so the object is never also created; a secret file is kept out of
+    /// the Nix store, a literal path at load and a `$NAME` one when it is read.
+    #[test]
+    fn objects_born_in_files_read_their_migrate_file() {
+        let load = |object: &str, a: &str, b: &str| {
+            // A usage each pair can prove possession or commit by (DES3 only by encrypting).
+            let attributes = match object {
+                o if o.contains("CKO_CERTIFICATE") => "",
+                o if o.contains("CKK_DES3") => "attributes = { CKA_ENCRYPT = true }\n",
+                _ => "attributes = { CKA_SIGN = true }\n",
+            };
+            let text = format!(
+                "[tokens.a]\ntokenLabel = \"a\"\n[tokens.b]\ntokenLabel = \"b\"\n\n\
+                 [objects.k]\n{object}\n\n\
+                 [specs.k]\nobject = \"k\"\n{attributes}\
+                 tokens.a = {{ locator = {{ CKA_LABEL = \"k\" }}{a} }}\n\
+                 tokens.b = {{ locator = {{ CKA_LABEL = \"k\" }}{b} }}\n"
+            );
+            parse_config_with(&text, Path::new("keys.toml"), &|_| None)
+        };
+        let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
+        let cert = "class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"";
+        let file = |path: &str| format!("\nmigrate = {{ file = \"{path}\" }}");
+        let (from_file, create, adopt) = (", origin = \"file\"", ", origin = \"create\"", ", origin = \"adopt\"");
+        let cfg = load(&(ec.to_owned() + &file("/run/keys/k.pem")), from_file, from_file).unwrap();
+        assert_eq!(cfg.specs["k"].tokens["b"].key_origin(), KeyOrigin::File);
+        assert_eq!(
+            cfg.objects["k"],
+            ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Ec)) }
+        );
+        assert_eq!(cfg.object_file("k", &|_| None).unwrap(), Some(PathBuf::from("/run/keys/k.pem")));
+        // A `$NAME` path resolves when it is read: unset, it fails that read, not the load.
+        let cfg = load(&(ec.to_owned() + &file("$KEY_FILE")), from_file, adopt).unwrap();
+        assert!(cfg.object_file("k", &|_| None).is_err());
+        let store = |_: &str| Some("/nix/store/abc-k.pem".to_owned());
+        assert!(cfg.object_file("k", &store).unwrap_err().to_string().contains("Nix store"));
+        // A certificate is no secret: from the store it may come.
+        let cfg = load(&(cert.to_owned() + &file("/nix/store/abc-c.pem")), from_file, "").unwrap();
+        assert!(cfg.object_file("k", &|_| None).unwrap().is_some());
+
+        let refused = |r: Result<Config>, what: &str| {
+            let e = r.unwrap_err();
+            assert!(matches!(e, KmError::Validation(_)) && e.to_string().contains(what), "{e}");
+        };
+        refused(
+            load(ec, from_file, adopt),
+            "origin = \"file\" reads the object's migrate.file, and object 'k' names none",
+        );
+        refused(load(&(ec.to_owned() + &file("/k.pem")), create, adopt), "is born in its migrate.file");
+        refused(load(&(ec.to_owned() + &file("/nix/store/abc-k.pem")), from_file, adopt), "Nix store");
+        refused(
+            load(&(ec.to_owned() + "\nmigrate = { passphraseFile = \"/p\" }"), adopt, adopt),
+            "without migrate.file",
+        );
+        refused(load(&(ec.to_owned() + &file("$")), adopt, adopt), "migrate.file");
+        // A secret key's file may say how it spells the value; no other object's may.
+        let aes = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"";
+        let encoded = |e: &str| format!("\nmigrate = {{ file = \"/k\", encoding = \"{e}\" }}");
+        for e in ["raw", "hex", "base64"] {
+            let cfg = load(&(aes.to_owned() + &encoded(e)), from_file, adopt).unwrap();
+            assert_eq!(cfg.object_migrate["k"].encoding.map(|e| e.to_string()).as_deref(), Some(e));
+        }
+        // Without valueLen, the encoding is said; a key type's fixed length is a valueLen.
+        refused(
+            load(&(aes.to_owned() + &file("/k")), from_file, adopt),
+            "needs the key's valueLen or migrate.encoding",
+        );
+        load(&(aes.to_owned() + "\nvalueLen = 16" + &file("/k")), from_file, adopt).unwrap();
+        load(&("class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES3\"".to_owned() + &file("/k")), from_file, adopt)
+            .unwrap();
+        refused(load(&(ec.to_owned() + &encoded("hex")), from_file, adopt), "applies to secret keys only");
+        refused(load(&(aes.to_owned() + &encoded("base32")), from_file, adopt), "unknown variant `base32`");
+        refused(
+            load(&(aes.to_owned() + "\nmigrate = { encoding = \"hex\" }"), adopt, adopt),
+            "migrate.encoding without migrate.file",
+        );
+        refused(load(&(ec.to_owned() + "\nmigrate = { path = \"/k\" }"), adopt, adopt), "unknown field `path`");
+        refused(
+            load(&(ec.to_owned() + &file("/k.pem")), ", publicOnly = true, origin = \"file\"", adopt),
+            "never origin = \"file\"",
+        );
+    }
+
+    /// Every file keys.toml names to hold a secret is refused (17) when it resolves into the
+    /// world-readable Nix store: `pinFile`, `soCredentialFile`, `migrate.passphraseFile`, and a
+    /// secret object's `migrate.file`; at load for a literal path, and for a `$NAME` one when it
+    /// resolves (`pin_path` for a pin file, camigrate for a migrate path); through a symlink or a
+    /// `..` as directly (review config.rs F4).
+    #[test]
+    fn no_secret_file_is_in_the_nix_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = dir.path().join("result");
+        std::os::unix::fs::symlink("/nix/store", &result).unwrap();
+        let elsewhere = dir.path().join("keys");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let in_store = [
+            "/nix/store/abc-secret".to_owned(),
+            format!("{}/abc-secret", result.display()),
+            format!("{}/../result/abc-secret", elsewhere.display()),
+        ];
+        let outside = [format!("{}/secret", elsewhere.display()), format!("{}/../keys/secret", result.display())];
+        let ec = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n";
+        let fields = [
+            ("[tokens.t]\ntokenLabel = \"t\"\npinFile = \"{}\"\n", "token 't': pinFile"),
+            ("[tokens.t]\ntokenLabel = \"t\"\npinFile = \"/p\"\nsoCredentialFile = \"{}\"\n", "soCredentialFile"),
+            ("{ec}migrate = { file = \"/run/k.p12\", passphraseFile = \"{}\" }\n", "migrate.passphraseFile"),
+            ("{ec}migrate = { file = \"{}\" }\n", "object 'k': migrate.file"),
+        ];
+        let load = |text: &str| parse_config_with(text, Path::new("keys.toml"), &|_| None);
+        for (template, what) in fields {
+            let at = |p: &str| template.replace("{ec}", ec).replace("{}", p);
+            for p in &in_store {
+                let e = load(&at(p)).unwrap_err();
+                assert!(
+                    matches!(&e, KmError::Validation(m) if m.contains(what) && m.contains("Nix store")),
+                    "{what} {p}: {e}"
+                );
+            }
+            for p in &outside {
+                load(&at(p)).unwrap_or_else(|e| panic!("{what} {p}: {e}"));
+            }
+        }
+        // A `$NAME` pin file is checked when it resolves, as a migrate path is.
+        let cfg = load("[tokens.t]\ntokenLabel = \"t\"\npinFile = \"$PIN_FILE\"\n").unwrap();
+        let pin = cfg.tokens["t"].pin_path("t", &|_| Some(in_store[1].clone()));
+        assert!(matches!(&pin, Err(KmError::Validation(m)) if m.contains("Nix store")), "{:?}", pin.err());
+        let fine = cfg.tokens["t"].pin_path("t", &|_| Some(outside[0].clone()));
+        assert_eq!(fine.unwrap(), Some(PathBuf::from(&outside[0])));
+        // A `$NAME` migrate path is checked when camigrate resolves it, the passphrase's whatever
+        // the object holds.
+        let cfg = load(&format!("{ec}migrate = {{ file = \"$KEY\", passphraseFile = \"$PASS\" }}\n")).unwrap();
+        let store = |_: &str| Some(in_store[2].clone());
+        assert!(cfg.object_file("k", &store).unwrap_err().to_string().contains("Nix store"));
+        assert!(cfg.object_passphrase_file("k", &store).unwrap_err().to_string().contains("Nix store"));
+        let fine = |_: &str| Some(outside[0].clone());
+        assert_eq!(cfg.object_passphrase_file("k", &fine).unwrap(), Some(PathBuf::from(&outside[0])));
+        let cert = "[objects.k]\nclass = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"\n";
+        let cfg = load(&format!("{cert}migrate = {{ file = \"$KEY\", passphraseFile = \"$PASS\" }}\n")).unwrap();
+        assert!(cfg.object_file("k", &store).unwrap().is_some(), "a certificate is no secret");
+        assert!(cfg.object_passphrase_file("k", &store).is_err(), "a passphrase is");
+    }
+
+    /// `$NAME`/`${NAME}` in `pinFile` and `module` read the path from the environment when it is
+    /// used; a malformed reference is invalid at load (17), an unset one is unavailable where the
+    /// path is resolved (16), and a spec must reference an existing object at load.
+    #[test]
+    fn env_references_and_object_refs_are_checked_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let load = |body: &str| {
+            let p = dir.join("keys.toml");
+            std::fs::write(&p, body).unwrap();
+            load_config_with(&p, &|name| match name {
+                "KM_UNIT_TEST_PIN" => Some("/env/pin".to_owned()),
+                "KM_UNIT_TEST_MGM" => Some("/env/mgm".to_owned()),
+                _ => None,
+            })
+        };
+        let head = "[tokens.t]\ntokenLabel = \"x\"\n";
+        let env = |name: &str| (name == "KM_UNIT_TEST_PIN").then(|| "/env/pin".to_owned());
+        // A literal path is as written; $NAME and ${NAME} expand when the path is resolved.
+        let cfg = load(&format!("{head}pinFile = \"/literal/pin\"\n")).unwrap();
+        assert_eq!(cfg.tokens["t"].pin_path("t", &env).unwrap(), Some(PathBuf::from("/literal/pin")));
+        let cfg =
+            load(&format!("{head}pinFile = \"$KM_UNIT_TEST_PIN\"\nmodule = \"${{KM_UNIT_TEST_PIN}}\"\n")).unwrap();
+        assert_eq!(cfg.tokens["t"].pin_path("t", &env).unwrap(), Some(PathBuf::from("/env/pin")));
+        assert_eq!(
+            cfg.tokens["t"].module_path("t", &|_| Some("/env/pin".to_owned())).unwrap().as_deref(),
+            Some("/env/pin")
+        );
+        // A malformed reference fails at load, naming the file first, as every other load error
+        // does (review config.rs F6).
+        let file = format!("invalid: {}: ", dir.join("keys.toml").display());
+        let err = load(&format!("{head}pinFile = \"$HOME/x\"\n")).unwrap_err().to_string();
+        assert!(err.starts_with(&file) && err.contains("neither $NAME"), "{err}");
+        for body in [
+            "profileDirs = [\"$KM_UNIT_TEST_UNSET\"]\n".to_owned(),
+            format!("{head}soCredentialFile = \"$\"\n"),
+            format!("{head}module = \"$HOME/x.so\"\n"),
+            "[objects.o]\nclass = \"CKO_DATA\"\nmigrate = { file = \"${HOME\" }\n".to_owned(),
+        ] {
+            let err = load(&body).unwrap_err().to_string();
+            assert!(err.starts_with(&file), "{body}: {err}");
+        }
+        // A module, a PIN file and a credential file resolve when used, not at load: an unset
+        // variable fails only a run that opens that token (without --module for the module), so
+        // `validate` and a Nix build sandbox, which set none, load the file; a malformed
+        // reference still fails at load. Unset at use is the environment's, not the file's: 16
+        // (review 2026-11-23 A-14).
+        let unset = load(&format!(
+            "{head}module = \"$KM_UNIT_TEST_UNSET\"\npinFile = \"$KM_UNIT_TEST_UNSET\"\n\
+             soCredentialFile = \"$KM_UNIT_TEST_UNSET\"\n"
+        ))
+        .unwrap();
+        let t = &unset.tokens["t"];
+        for err in [
+            t.module_path("t", &|_| None).unwrap_err(),
+            t.pin_path("t", &|_| None).unwrap_err(),
+            t.so_credential_path("t", &|_| None).unwrap_err(),
+        ] {
+            assert!(matches!(err, KmError::Unavailable(_)), "{err}");
+            assert!(err.to_string().contains("KM_UNIT_TEST_UNSET"), "{err}");
+        }
+        assert!(load(&format!("{head}module = \"$HOME/x.so\"\n")).is_err());
+        // soCredentialFile expands the same way; an admin credential only comes with a user PIN.
+        let cfg = load(&format!("{head}pinFile = \"/p\"\nsoCredentialFile = \"$KM_UNIT_TEST_MGM\"\n")).unwrap();
+        let mgm = |name: &str| (name == "KM_UNIT_TEST_MGM").then(|| "/env/mgm".to_owned());
+        assert_eq!(cfg.tokens["t"].so_credential_path("t", &mgm).unwrap(), Some(PathBuf::from("/env/mgm")));
+        for admin in ["soCredentialFile = \"/so\"", "soCredentialEnv = \"SO\""] {
+            let err = load(&format!("{head}{admin}\n")).unwrap_err();
+            assert!(err.to_string().contains("needs a user PIN"), "{err}");
+        }
+        // A spec's object reference must exist, also when nothing uses the spec.
+        let err = load(&format!(
+            "{head}\n[objects.o]\nclass = \"CKO_DATA\"\n\n[specs.s]\nobject = \"missing\"\ntokens = {{}}\n"
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown object 'missing'"), "{err}");
+    }
+
+    /// A DES3 key is 24 bytes: `valueLen` left out loads as 24 (the same type, spec digest and
+    /// commitment label as writing it), and any other length is invalid at load (17).
+    #[test]
+    fn des3_value_len_is_the_key_types() {
+        let des3 = |len: &str| {
+            let text = format!("[objects.o]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES3\"\n{len}\n");
+            parse_config_with(&text, Path::new("keys.toml"), &|_| None)
+        };
+        assert_eq!(des3("").unwrap().objects["o"].value_len, Some(24));
+        assert_eq!(des3("").unwrap().objects["o"], des3("valueLen = 24").unwrap().objects["o"]);
+        for wrong in ["valueLen = 16", "valueLen = 0", "valueLen = 32"] {
+            let err = des3(wrong).unwrap_err();
+            assert!(matches!(&err, KmError::Validation(m) if m.contains("a CKK_DES3 key is 24 bytes")), "{err}");
+        }
+        // Only a secret key takes the fixed length; another class is refused by its type at load.
+        let text = "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_DES3\"\n";
+        let err = parse_config_with(text, Path::new("keys.toml"), &|_| None).unwrap_err();
+        assert!(matches!(&err, KmError::Unsupported(m) if m.contains("CKO_PRIVATE_KEY/CKK_DES3")), "{err}");
+    }
+}

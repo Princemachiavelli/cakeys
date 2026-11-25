@@ -399,4 +399,23 @@ mod tests {
         mode(dir.path(), 0o755);
         assert!(said.is_some_and(|s| s.contains("directory")));
     }
+
+    /// The store guard compares resolved paths component by component: a link into the root, a
+    /// `..` out of it and a sibling whose name only starts like it are told apart, existing or not.
+    #[test]
+    fn paths_resolve_before_they_compare() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("store");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(dir.path().join("store-not")).unwrap();
+        std::os::unix::fs::symlink(&root, dir.path().join("link")).unwrap();
+        let under = |p: &str| resolves_under(&dir.path().join(p), &root);
+        assert!(under("store/a"));
+        assert!(under("link/a/b"), "through a link, to a file that does not exist");
+        assert!(under("store-not/../store/a"));
+        assert!(!under("store-not/a"), "a string prefix is no parent");
+        assert!(!under("store/../a"));
+        assert!(!under("link/../a"), "the link's target's parent, not the link's");
+        assert!(!under("elsewhere/a"));
+    }
 }
