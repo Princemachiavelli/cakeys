@@ -87,6 +87,11 @@ pub enum Topic {
 /// one purpose, and [`Self::scratch_companion`] guards its scratch slot. A provider that seems to
 /// need a new hook overrides an operation in its own crate instead.
 ///
+/// What every provider holds, whatever its module, is the contract suite's
+/// (crates/cli-common/tests/provider_contract.rs, review 2026-11-24 K-1 to K-7): each method is
+/// a `Hook` there, with the test that holds it for every registered provider, and a method
+/// added here fails that suite until it has one.
+///
 /// The in-tree providers are crates of this workspace (`cakeys-ykcs11`, `cakeys-tpm2-pkcs11`,
 /// `cakeys-kmsp11`, `cakeys-aws-cloudhsm`); a crate outside it adds its own to a [`Registry`](crate::Registry)
 /// (the `custom-provider` example). A module with no fix-ups needs none: its capability

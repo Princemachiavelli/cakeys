@@ -32,4 +32,9 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+cryptoki.workspace = true
 tempfile.workspace = true
+toml.workspace = true
+# tests/provider_contract.rs loads its cdylib (K-5): as a dependency, every build of the tests
+# makes it.
+p11-fault = { path = "../p11-fault" }
