@@ -612,7 +612,8 @@ impl Run<'_> {
                 }
             }
         }
-        let refused: Vec<&ops::Planned> = planned.iter().filter(|p| p.action == ops::Action::Refuse).collect();
+        let refused = planned.iter().filter(|p| p.action == ops::Action::Refuse).count();
+        let stopped = refused > 0 && !how.skip_unsupported;
         for p in &planned {
             for r in &p.reasons() {
                 match p.action {
@@ -629,6 +630,16 @@ impl Run<'_> {
             }
         }
         if how.dry_run {
+            // What the run refuses once a token opens: each pair it would make or verify, on
+            // its token opened read-only, asked as the write asks it (review 2026-11-24 C-4). A
+            // run the profiles stop opens none, and neither does its dry run. A token that does
+            // not open ends it as it ends the run (16), its rows printed first.
+            let on_tokens = if stopped {
+                Ok(())
+            } else {
+                let open = |name: &str, notes: &mut Notes| opener.open(name, Access::Read, notes);
+                ops::plan_on_tokens(cfg, &mut planned, &open, &self.lock, notes)
+            };
             let rows: Vec<serde_json::Value> = planned
                 .iter()
                 .map(|p| {
@@ -646,14 +657,15 @@ impl Run<'_> {
                 })
                 .collect();
             print(&rows)?;
+            on_tokens?;
         }
-        if !refused.is_empty() && !how.skip_unsupported {
-            let one = refused.len() == 1;
+        if stopped {
+            let one = refused == 1;
             return Err(KmError::Unsupported(
                 format!(
                     "{} pair{} cannot be created, as the capability profiles say{}; pass --skip-unsupported to create \
                  the others",
-                    refused.len(),
+                    refused,
                     if one { "" } else { "s" },
                     if how.dry_run { "" } else { ": nothing was created" }
                 )
@@ -662,15 +674,21 @@ impl Run<'_> {
             .into());
         }
         if how.dry_run {
-            return Ok(());
+            // The first the run would meet ends it, with its own exit; the others are said.
+            let mut on_token = planned.into_iter().filter(|p| p.on_token).flat_map(|p| p.refusals);
+            let first = on_token.next();
+            for r in on_token {
+                eprintln!("{r}");
+            }
+            return first.map_or(Ok(()), |r| Err(KmError::from(r).into()));
         }
-        let pairs: Vec<(&str, &str)> = planned.iter().filter(|p| p.action.runs()).map(|p| (p.spec, p.token)).collect();
+        let ready: Vec<ops::Ready> = planned.iter().filter_map(ops::Planned::ready).collect();
         let open = |name: &str, notes: &mut Notes| opener.open(name, Access::Write, notes);
         // Each created key is recorded before the next pair is touched; what was created is
         // printed whatever ended the run, the only machine-readable record of it.
         let lock_path = &self.lock_path;
         let mut persist = |lock: &Lock| save_lock(lock_path, lock);
-        let done = ops::create_selected(cfg, &pairs, &open, &mut self.lock, how.write, &mut persist, notes);
+        let done = ops::create_selected(cfg, &ready, &open, &mut self.lock, how.write, &mut persist, notes);
         print(&done.created)?;
         if done.changed {
             notes.lock_written(lock_path);

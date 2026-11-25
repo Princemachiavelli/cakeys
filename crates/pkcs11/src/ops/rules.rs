@@ -75,6 +75,14 @@ rules! {
     LockWritable = "lock-writable",
 }
 
+impl Rule {
+    /// The rule named `name` ([`Rule::name`]), as an error carries it ([`KmError::rule`]).
+    #[must_use]
+    pub fn named(name: &str) -> Option<Rule> {
+        Rule::ALL.iter().copied().find(|r| r.name() == name)
+    }
+}
+
 impl std::fmt::Display for Rule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
@@ -210,6 +218,100 @@ impl Verdicts {
         }
         Err(refusals.swap_remove(0).into())
     }
+}
+
+/// The rules of `t` that ask its open token, in the order the write meets them: asked at plan
+/// time (`create --dry-run`, on the token opened read-only, [`plan_on_tokens`]) and again by the
+/// write just before it writes ([`create`]: the same function, so a race between them is caught
+/// the same way). A creation's, `verb` [`Verb::Create`]: a key under the locator the lock does
+/// not pin (`unpinned-exists`, 19; one it pins is verified instead, which no rule decides); what
+/// the open token lists ([`check_capabilities`], each refusal with its rule); a session without
+/// login where the object needs one (`needs-login`, 16); material the lock pins and the token
+/// lost, which a generation could never match (`pinned-lost`, 14, D1); any session without
+/// login, which cannot see a private object of another class under the locator (16); anything
+/// under it (`locator-free`, 13). The first refusal ends them, as it ends the write. An import's
+/// and a lock's stay their verbs' own (camigrate's `free_locator`, `lock`'s compare), and give
+/// none here (review 2026-11-24 C-4).
+///
+/// # Errors
+///
+/// A failure that is no rule's: the module's (16), several keys under the locator (12), or an
+/// error a check raised without naming its rule.
+pub fn token_rules(t: &Target, tok: &Token, lock: &Lock, verb: Verb) -> Result<Vec<Refusal>> {
+    if verb != Verb::Create {
+        return Ok(Vec::new());
+    }
+    let loc = &t.on_token.locator;
+    if tok.find_key(&t.object, loc, false)?.is_some() {
+        if pinned(t, lock).is_some() {
+            return Ok(Vec::new());
+        }
+        let e = KmError::Exists(
+            format!("{t} is already under its locator: nothing was created; `cakeys lock` records a key that is there")
+                .into(),
+        );
+        return Ok(vec![Refusal::new(Rule::UnpinnedExists, e)]);
+    }
+    // A check's own error, as the refusal of the rule it names; one naming none is no rule's.
+    let refused = |r: Result<()>| match r {
+        Ok(()) => Ok(None),
+        Err(e) => match e.rule().and_then(Rule::named) {
+            Some(rule) => Ok(Some(Refusal { rule, error: e })),
+            None => Err(e),
+        },
+    };
+    if let Some(r) = refused(check_capabilities(t, tok, plan_mode(t)?, Verb::Create))? {
+        return Ok(vec![r]);
+    }
+    // If-None-Match: never create over anything else under the locator. On a PIV token,
+    // generating into an occupied slot would silently replace its key. A session without login
+    // sees no private object, so it cannot tell the locator is free — nor that a private or
+    // secret key the lock pins is gone, which D1 below would say.
+    let free = "the locator is free";
+    if let Some(r) = refused(needs_login(t, tok, lock, free))? {
+        return Ok(vec![r]);
+    }
+    // D1: the lock already pins this object's material, so a fresh generation can only end in a
+    // mismatch. (Had this token held the same material, it would have been found above.)
+    if let Some(ids) = lock.objects.get(t.object_name).map(|o| &o.ids).filter(|ids| !ids.is_empty()) {
+        let e = KmError::PreconditionFailed(
+            format!(
+                "{t}: the lock already pins object '{}' ({}); creating it would generate different material that \
+                 can never match; put the same material under the locator, or give this token's key its own object \
+                 name",
+                t.object_name,
+                ids.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
+            )
+            .into(),
+        );
+        return Ok(vec![Refusal::new(Rule::PinnedLost, e)]);
+    }
+    // Whatever the object is, another class under the locator may be private.
+    if !tok.logged_in {
+        let e = KmError::Unavailable(
+            format!(
+                "{t}: a session without login cannot see private objects, so it cannot tell {free}; configure \
+                 pinFile or pinEnv for token '{}'",
+                t.token_name
+            )
+            .into(),
+        );
+        return Ok(vec![Refusal::new(Rule::NeedsLogin, e)]);
+    }
+    // Any class, unlike an import (`Token::occupied`): a certificate already there certifies
+    // some other key, never one generated now.
+    let present = tok.find_any(loc)?;
+    if !present.is_empty() {
+        let e = KmError::Conflict(
+            format!(
+                "{} objects of another class already sit under the locator of {t}; refusing to create",
+                present.len()
+            )
+            .into(),
+        );
+        return Ok(vec![Refusal::new(Rule::LocatorFree, e)]);
+    }
+    Ok(Vec::new())
 }
 
 /// Refuse (16) where `t`'s object was not found and a session without login could not have seen

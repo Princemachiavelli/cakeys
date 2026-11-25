@@ -80,7 +80,8 @@ pub enum Action {
     Verify,
     /// Left alone: its origin is not `create`.
     Skip,
-    /// The capability profiles say the token cannot make it.
+    /// A rule refuses it: the capability profiles' before any token opens, or the token's
+    /// ([`token_rules`], `create --dry-run`).
     Refuse,
 }
 
@@ -119,6 +120,36 @@ pub struct Planned<'a> {
     pub deferred: Vec<Deferred>,
     /// Why else: the skip's reason, the verification's.
     pub notes: Vec<String>,
+    /// Whether its refusals are the open token's ([`plan_on_tokens`]): the run ends there, as the
+    /// write's own [`token_rules`] would end it; `--skip-unsupported` skips only the profiles'.
+    pub on_token: bool,
+}
+
+/// A planned pair the run creates or verifies, no rule refusing it: what the write takes
+/// ([`create_selected`]). Only [`Planned::ready`] makes one.
+#[derive(Clone, Copy)]
+pub struct Ready<'p, 'a>(&'p Planned<'a>);
+
+impl<'a> Ready<'_, 'a> {
+    /// The spec.
+    #[must_use]
+    pub fn spec(&self) -> &'a str {
+        self.0.spec
+    }
+
+    /// The token.
+    #[must_use]
+    pub fn token(&self) -> &'a str {
+        self.0.token
+    }
+}
+
+impl<'a> Planned<'a> {
+    /// The pair, for the write, when the run creates or verifies it and no rule refuses it.
+    #[must_use]
+    pub fn ready(&self) -> Option<Ready<'_, 'a>> {
+        (self.action.runs() && self.refusals.is_empty()).then_some(Ready(self))
+    }
 }
 
 impl Planned<'_> {
@@ -164,6 +195,7 @@ pub fn plan_create<'a>(
             refusals: Vec::new(),
             deferred: Vec::new(),
             notes,
+            on_token: false,
         };
         let mode = plan_mode(&t)?;
         if let Some(why) = not_origin_create(&t) {
@@ -191,6 +223,44 @@ pub fn plan_create<'a>(
     Ok(out)
 }
 
+/// `create --dry-run`'s second half (review 2026-11-24 C-4): each pair the run would create or
+/// verify ([`Planned::ready`]), on its token opened by `open` (read-only), asked the token's
+/// rules ([`token_rules`]) as the write asks them, in the run's order, one token open at a time.
+/// A refusal makes its row [`Action::Refuse`], [`Planned::on_token`]; a pair they pass has
+/// nothing deferred left, the open token having decided it.
+///
+/// # Errors
+///
+/// Opening a token (16 when it is absent or a login fails), and a failure that is no rule's
+/// ([`token_rules`]).
+pub fn plan_on_tokens(
+    cfg: &Config,
+    planned: &mut [Planned<'_>],
+    open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
+    lock: &Lock,
+    notes: &mut Notes,
+) -> Result<()> {
+    let mut current: Option<Token> = None;
+    for p in planned.iter_mut().filter(|p| p.ready().is_some()) {
+        let t = Target::new(cfg, p.spec, p.token)?;
+        // Another token's module is finalized (dropped) before the next open.
+        let tok = match current.take().filter(|tok| tok.name == p.token) {
+            Some(tok) => current.insert(tok),
+            None => current.insert(open(p.token, notes)?),
+        };
+        // Create's rules, a verified pair's too: the write asks them of a pinned key it does
+        // not find.
+        let refusals = token_rules(&t, tok, lock, Verb::Create)?;
+        if refusals.is_empty() {
+            // The open token decided what the profiles left to it.
+            p.deferred.clear();
+        } else {
+            (p.action, p.refusals, p.on_token) = (Action::Refuse, refusals, true);
+        }
+    }
+    Ok(())
+}
+
 /// What [`create_selected`] did.
 pub struct Created {
     /// The realised objects, in the order they were created.
@@ -201,8 +271,9 @@ pub struct Created {
     pub failed: Option<KmError>,
 }
 
-/// The `create` verb: [`create`] over each of `pairs` (what [`plan_create`] decided to create or
-/// verify), in order. Every step of a pair, opening its token included, ends the run there,
+/// The `create` verb: [`create`] over each of `ready` (what [`plan_create`] decided to create or
+/// verify, no rule refusing it), in order; [`create`] asks the token's rules again before it
+/// writes. Every step of a pair, opening its token included, ends the run there,
 /// reported in [`Created::failed`] beside what was created before; a verified key is said in a
 /// note. Each pair that changed `lock` is `persist`ed before the next pair is touched, so a run
 /// killed or failing later never leaves a key on a token the lock file does not record; a
@@ -215,7 +286,7 @@ pub struct Created {
 /// None of its own: a pair's failure, or its record's, is [`Created::failed`].
 pub fn create_selected(
     cfg: &Config,
-    pairs: &[(&str, &str)],
+    ready: &[Ready<'_, '_>],
     open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
     lock: &mut Lock,
     write: LockWrite,
@@ -224,7 +295,7 @@ pub fn create_selected(
 ) -> Created {
     let mut out = Created { created: Vec::new(), changed: false, failed: None };
     let mut current: Option<Token> = None;
-    for &(spec_name, token_name) in pairs {
+    for (spec_name, token_name) in ready.iter().map(|r| (r.spec(), r.token())) {
         let mut pair = || -> Result<Made> {
             let t = Target::new(cfg, spec_name, token_name)?;
             // Another token's module is finalized (dropped) before the next open.

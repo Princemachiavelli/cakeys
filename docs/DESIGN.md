@@ -182,8 +182,10 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   `lock` is the lock verb: it never creates, and `create` is the one verb that writes keys
   (2026-11-15). Like `nix build` with `flake.lock`: what the lock lacks is recorded (first use included), but a
   locked ID, anchor, binding, type or immutable is never overwritten — those changes fail even
-  when the lock is written. `lock --dry-run` and `delete --dry-run` compare only, and
-  `create --no-update-lock` creates without recording. First use is trust on first use, so the
+  when the lock is written. `lock --dry-run`, `delete --dry-run` and `create --dry-run` open
+  the token read-only and ask what the run asks before it writes (review 2026-11-24 C-4: the
+  create dry run once planned without the token and passed where the run refused), and write
+  nothing; `create --no-update-lock` creates without recording. First use is trust on first use, so the
   review is the `keys.lock` diff, and a run that wrote the lock exits 22, never 0, so a caller
   handles that review on purpose. A lock that is not there is refused (17) unless `--new-lock`:
   a mistyped `--lock` never starts a second lock (review 2026-11-23, C-4).

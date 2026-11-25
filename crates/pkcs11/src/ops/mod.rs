@@ -382,9 +382,8 @@ fn absent(t: &Target) -> KmError {
 }
 
 /// Create `t`'s object, which `resolve` did not find, and resolve it. Refused before anything is
-/// created when the lock pins the object (D1), a session without login cannot see the locator,
-/// or anything sits under it; what was created is removed again when its identity cannot be
-/// established.
+/// created once [`token_rules`] found nothing to refuse; what was created is removed again when
+/// its identity cannot be established.
 /// Returns what was made and how the module made it, when other than asked.
 fn create_absent(
     t: &Target,
@@ -392,49 +391,6 @@ fn create_absent(
     lock: &Lock,
     notes: &mut Notes,
 ) -> Result<(Resolved, Option<hal::CreateNote>)> {
-    // If-None-Match: never create over anything else under the locator. On a PIV token,
-    // generating into an occupied slot would silently replace its key. A session without login
-    // sees no private object, so it cannot tell the locator is free — nor that a private or
-    // secret key the lock pins is gone, which D1 below would say.
-    let free = "the locator is free";
-    rules::needs_login(t, tok, lock, free)?;
-    // D1: the lock already pins this object's material, so a fresh generation can only end in a
-    // mismatch; refuse before anything is created. (Had this token held the same material,
-    // resolve would have found it.)
-    if let Some(ids) = lock.objects.get(t.object_name).map(|o| &o.ids).filter(|ids| !ids.is_empty()) {
-        return Err(KmError::PreconditionFailed(format!(
-            "{}: the lock already pins object '{}' ({}); creating it would generate different material that can never match; put the same material under \
-             the locator, or give this token's key its own object name",
-            t,
-            t.object_name,
-            ids.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
-        ).into()));
-    }
-    // Whatever the object is, another class under the locator may be private.
-    if !tok.logged_in {
-        let e = KmError::Unavailable(
-            format!(
-                "{t}: a session without login cannot see private objects, so it cannot tell {free}; configure \
-                 pinFile or pinEnv for token '{}'",
-                t.token_name
-            )
-            .into(),
-        );
-        return Err(Refusal::new(Rule::NeedsLogin, e).into());
-    }
-    // Any class, unlike an import (`Token::occupied`): a certificate already there certifies
-    // some other key, never one generated now.
-    let present = tok.find_any(&t.on_token.locator)?;
-    if !present.is_empty() {
-        return Err(KmError::Conflict(
-            format!(
-                "{} objects of another class already sit under the locator of {}; refusing to create",
-                present.len(),
-                t
-            )
-            .into(),
-        ));
-    }
     let made_otherwise = match tok.create(t.object, t.spec, &t.on_token.locator, cakeys_core::plan::expected_binding(t))
     {
         Ok(made) => made,
@@ -504,24 +460,19 @@ pub enum Made {
 /// `Unavailable` when a session without login cannot see the locator, `Conflict` when the
 /// locator is occupied by another class; and `compare`'s on the object just made.
 pub fn create(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes: &mut Notes) -> Result<Made> {
-    let mode = plan_mode(t)?;
+    plan_mode(t)?;
     if let Some(why) = not_origin_create(t) {
         return Err(KmError::Validation(format!("{t}: {why}").into()));
     }
-    if tok.find_key(&t.object, &t.on_token.locator, false)?.is_some() {
-        if pinned(t, lock).is_none() {
-            return Err(KmError::Exists(
-                format!(
-                    "{t} is already under its locator: nothing was created; `cakeys lock` records a key that is there"
-                )
-                .into(),
-            ));
-        }
+    if pinned(t, lock).is_some() && tok.find_key(&t.object, &t.on_token.locator, false)?.is_some() {
         let r = verify(t, tok, lock, notes)?;
         notes.say(format!("{t} is already there and matches the lock: nothing created"));
         return Ok(Made::Verified(r));
     }
-    check_capabilities(t, tok, mode, Verb::Create)?;
+    // The token's rules, as `create --dry-run` asked them: again now, just before the write.
+    if let Some(r) = token_rules(t, tok, lock, Verb::Create)?.into_iter().next() {
+        return Err(r.into());
+    }
     let (r, note) = create_absent(t, tok, lock, notes)?;
     let changed = reconcile::reconcile(t, &r, lock, &facts(t, tok, &r, Run::Created(note.as_ref())), write, notes)?;
     Ok(Made::Created(r, changed))

@@ -28,6 +28,51 @@ tokens.ref = { locator = { CKA_LABEL = "occupied" }, origin = "create" }
     assert_eq!(keys, []);
 }
 
+/// What `create` refuses once its token is open, `create --dry-run` refuses too, with the same
+/// exit and naming the rule, and changes nothing: another class under the locator
+/// (`locator-free`, 13), a key there the lock does not pin (`unpinned-exists`, 19), a pinned key
+/// the token lost (`pinned-lost`, 14), a token without login (`needs-login`, 16). The dry run
+/// once planned without the token and passed, 0, each time (review 2026-11-24 C-4).
+#[test]
+fn a_dry_run_refuses_what_the_run_refuses_on_the_token() {
+    let Some(e) = env("create-twins") else { return };
+    let s = e.session();
+    s.create_object(&cert_object(ADOPT_CERT, b"twin-occupied", None)).unwrap();
+    let key = |name: &str, token: &str| {
+        format!(
+            "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.{name}]\nobject = \"{name}\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.{token} = {{ locator = {{ CKA_LABEL = \"twin-{name}\" }}, origin = \"create\" }}\n\n"
+        )
+    };
+    e.config(&(key("occupied", "ref") + &key("exists", "ref") + &key("lost", "ref") + &key("anon", "ref-anon")));
+    // Made and not recorded: a first use (18).
+    assert_eq!(e.code(&["create", "--spec", "exists", "--token", "ref", "--no-update-lock"]), 18);
+    assert_eq!(e.code(&["create", "--spec", "lost", "--token", "ref"]), 22);
+    for h in s.labelled("twin-lost") {
+        s.destroy_object(h).unwrap();
+    }
+    let lock = e.dir.join("keys.lock");
+    for (spec, token, exit, rule) in [
+        ("occupied", "ref", 13, "locator-free"),
+        ("exists", "ref", 19, "unpinned-exists"),
+        ("lost", "ref", 14, "pinned-lost"),
+        ("anon", "ref-anon", 16, "needs-login"),
+    ] {
+        let args = ["create", "--spec", spec, "--token", token];
+        let (before, there) = (std::fs::read(&lock).unwrap(), s.labelled(&format!("twin-{spec}")).len());
+        let dry = e.km(&[&args[..], &["--dry-run"]].concat());
+        assert_eq!(code(&dry), exit, "{spec}, dry: {}", stderr(&dry));
+        let plan: serde_json::Value = serde_json::from_str(&stdout(&dry)).unwrap_or_default();
+        assert_eq!(plan[0]["refusals"][0]["rule"].as_str(), Some(rule), "{spec}: {plan}");
+        assert_eq!(plan[0]["action"].as_str(), Some("refuse"), "{spec}: {plan}");
+        assert_eq!(std::fs::read(&lock).unwrap(), before, "{spec}: the dry run wrote the lock");
+        assert_eq!(s.labelled(&format!("twin-{spec}")).len(), there, "{spec}: the dry run changed the token");
+        let real = e.km(&args);
+        assert_eq!(code(&real), exit, "{spec}, the run: {}", stderr(&real));
+    }
+}
+
 /// A session without login cannot see a private key: `create` on a pair whose key the lock pins,
 /// through a token with no PIN configured, says to configure one (16). It once said the key was
 /// gone and creating it would make other material (14, D1), for a key that was there.
