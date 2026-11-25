@@ -374,8 +374,8 @@ Two layers, because their lifetimes differ.
   backup. One entry point per provider with the same three verbs:
   `scripts/cloud/<provider> up | probe | down`, and `scripts/cloud/status`.
 
-`probe` runs `caprobe probe --token <t> --write-probes --rsa-max-bits 4096 --diff <profile> --out <file>`
-on the runner (or here, for GCP) and copies the generated TOML back.
+`probe` runs the write probe `profiles/LEDGER.toml` names for the profile, on the runner (or
+here, for GCP), and copies the generated TOML back.
 
 ### Safety against a leaked bill
 

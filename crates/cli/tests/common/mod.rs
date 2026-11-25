@@ -545,8 +545,8 @@ pub fn committed_profile(path: &str) -> std::path::PathBuf {
 /// first left behind on modules that cannot destroy everything they make (tpm2-pkcs11's sealed
 /// derived secrets: profiles/modules/tpm2-pkcs11/1.10+amd-ftpm.toml, `derive.destroy`).
 ///
-/// RSA up to 4096 bits, as every test probe: the probe's default runs to 16384, which takes a
-/// software token over a minute per size. The profiles the tests regenerate carry those sizes.
+/// RSA up to 4096 bits, as every regeneration (profiles/LEDGER.toml, `[regen]`): the probe's
+/// default runs to 16384, which takes a software token over a minute per size.
 pub fn assert_profile_conforms(
     km: impl Fn(&[&str]) -> Output,
     token: &str,
@@ -562,8 +562,8 @@ pub fn assert_profile_conforms(
     assert_eq!(code(&probe), 0, "a fresh probe drifts from {name}: {}", String::from_utf8_lossy(&probe.stderr));
     assert!(
         std::fs::read(scratch).unwrap() == committed,
-        "{path} is not what the probe generates: regenerate it with `caprobe probe --token <t> --write-probes \
-         --rsa-max-bits 4096 --diff {name} --out profiles/{path}` (scripts/regen-profiles.sh), never by hand"
+        "{path} is not what the probe generates: regenerate it as profiles/LEDGER.toml says for profiles/{path}, \
+         never by hand"
     );
     // A read-only probe conforms on what it observes; it may never overwrite the file.
     assert_eq!(code(&km(&["probe", "--token", token, "--diff", name])), 0);

@@ -15,6 +15,18 @@
 # Review 2026-11-24 E-7: every hardware and cloud profile is stale. The probe fixes of review
 # 2026-11-23 (fce5432, fcaa6aa, 61b7000) came after their probes, and edited them by hand.
 
+# Every regeneration probes RSA up to this size (review 2026-11-24 E-8): caprobe's default runs
+# to 16384, which takes a software token over a minute per size. Each source passes it, and no
+# `regen` below names another.
+[regen]
+rsa-max-bits = 4096
+sources = [
+  "scripts/regen-profiles.sh",
+  "scripts/cloud/aws.sh",
+  "scripts/cloud/gcp.sh",
+  "crates/cli/tests/common/mod.rs",
+]
+
 [groups]
 # What decides a probed row (docs/CAPROBE.md, "The probe"): the probe and its command; the token
 # operations it drives as the verbs do, the provider seam it calls and which provider claims the
@@ -187,9 +199,9 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:3002ea3dfbd0d5da23afcbe592f13b249ae24d38e3381be659bce4be77652922"
-by = "review 2026-11-24 E-7 (the ledger's first entry)"
-why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the aws-cloudhsm provider changed after the probe; rows the old logic wrote stand unchecked: the add row CKM_SHA224_RSA_PKCS, wrap.rsa-oaep.SHA-1 and SHA-256 = yes from before the host-blob check, and the RsaAes export rows of review 2026-11-24 E-3"
+code-hash = "sha256:7dece4435ca93095e97446ef3abfa5841800fcb4b36a97250133b6a661dae94c"
+by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the aws-cloudhsm provider changed after the probe; rows the old logic wrote stand unchecked: the add row CKM_SHA224_RSA_PKCS, wrap.rsa-oaep.SHA-1 and SHA-256 = yes from before the host-blob check, and the RsaAes export rows of review 2026-11-24 E-3; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote"
 reprobe = "the whole profile, by the regen command"
 
 [[artifact]]
@@ -232,9 +244,9 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:3002ea3dfbd0d5da23afcbe592f13b249ae24d38e3381be659bce4be77652922"
-by = "review 2026-11-24 E-7 (the ledger's first entry)"
-why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the aws-cloudhsm provider changed after the probe; rows the old logic wrote stand unchecked: the add rows, wrap.rsa-oaep from before the host-blob check, and the RsaAes export rows of review 2026-11-24 E-3"
+code-hash = "sha256:7dece4435ca93095e97446ef3abfa5841800fcb4b36a97250133b6a661dae94c"
+by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the aws-cloudhsm provider changed after the probe; rows the old logic wrote stand unchecked: the add rows, wrap.rsa-oaep from before the host-blob check, and the RsaAes export rows of review 2026-11-24 E-3; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote"
 reprobe = "the whole profile, by the regen command"
 
 [[artifact]]
@@ -267,9 +279,9 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:a81b811bcb31813fb53b79ea18608cba2a387427b1feb5cb5ca453cb494d040d"
-by = "review 2026-11-24 E-7 (the ledger's first entry)"
-why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the kmsp11 provider changed after the probe; the cannot rows of review 2026-11-24 E-5 come from cakeys' own table"
+code-hash = "sha256:da3800281a59bbed37e4af3e2ab3a9d31a25b5b71dc59983c91a6af3cd3835a0"
+by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the kmsp11 provider changed after the probe; the cannot rows of review 2026-11-24 E-5 come from cakeys' own table; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote"
 reprobe = "the whole profile, by the regen command"
 
 [[artifact]]
@@ -302,9 +314,9 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:a81b811bcb31813fb53b79ea18608cba2a387427b1feb5cb5ca453cb494d040d"
-by = "review 2026-11-24 E-7 (the ledger's first entry)"
-why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the kmsp11 provider changed after the probe; the cannot rows of review 2026-11-24 E-5 come from cakeys' own table"
+code-hash = "sha256:da3800281a59bbed37e4af3e2ab3a9d31a25b5b71dc59983c91a6af3cd3835a0"
+by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the kmsp11 provider changed after the probe; the cannot rows of review 2026-11-24 E-5 come from cakeys' own table; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote"
 reprobe = "the whole profile, by the regen command"
 
 # Captured from devices: nothing in this repository produces them, so no code is on their path.

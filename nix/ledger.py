@@ -15,7 +15,10 @@ since, and the file as it is now. This fails when:
   still needs a run on the hardware. An acknowledgement of other code fails as well, and so
   does one beside code that is the run's again;
 - a module profile under profiles/modules/ has no entry, or a path or glob names no file, or a
-  table has a key this script does not read.
+  table has a key this script does not read;
+- a regeneration probes other RSA sizes than the rest (review 2026-11-24 E-8): each file in
+  `[regen] sources` must pass `--rsa-max-bits` with `[regen] rsa-max-bits` and no other value,
+  and an artifact's `regen` may name no other value and no file that is not there.
 
 The hashes are of the files in the tree, not git's: the Nix sandbox has no .git. A failure
 prints the hash to record.
@@ -26,14 +29,20 @@ failure.
 
 import hashlib
 import pathlib
+import re
 import sys
 import tomllib
 
 LEDGER = "profiles/LEDGER.toml"
+# The size flag with its value, as a shell line or a Rust argument list writes it.
+RSA_FLAG = re.compile(r"--rsa-max-bits[\"',\s]*(\d+)")
+# A repository path in a `regen` command.
+REPO_PATH = re.compile(r"\b(?:crates|examples|nix|profiles|scripts)/[\w.+/-]*\w")
 
 # The keys each table may have: a near miss (`acknowledgement`) fails rather than being ignored.
 KEYS = {
-    "ledger": {"groups", "artifact"},
+    "ledger": {"regen", "groups", "artifact"},
+    "regen": {"rsa-max-bits", "sources"},
     "artifact": {"path", "from", "regen", "verified-by", "code", "hash", "probed", "hand-edits", "acknowledged"},
     "probed": {"by", "date", "hash", "code-hash"},
     "hand-edits": {"by", "what"},
@@ -69,6 +78,23 @@ def code_hash(root, files):
     return "sha256:" + h.hexdigest()
 
 
+def check_regen(root, regen, misses):
+    """Every regeneration path probes RSA up to the one size."""
+    unknown(regen, "regen", f"{LEDGER}: [regen]", misses)
+    bits = str(regen.get("rsa-max-bits"))
+    for src in regen.get("sources", []):
+        where = f"{LEDGER}: [regen] {src}"
+        if not (root / src).is_file():
+            misses.append(f"{where}: no such file")
+            continue
+        found = set(RSA_FLAG.findall((root / src).read_text()))
+        if not found:
+            misses.append(f"{where}: passes no --rsa-max-bits, so it probes to caprobe's default, not {bits}")
+        for other in sorted(found - {bits}):
+            misses.append(f"{where}: probes RSA up to {other}, not {bits}")
+    return bits
+
+
 def unknown(table, kind, where, misses):
     for k in sorted(set(table) - KEYS[kind]):
         misses.append(f"{where}: `{k}` is no key of {kind}")
@@ -82,6 +108,9 @@ def check(root):
         return [], [f"{LEDGER}: {e}"]
     report, misses = [], []
     unknown(ledger, "ledger", LEDGER, misses)
+    if "regen" not in ledger:
+        misses.append(f"{LEDGER}: no [regen]")
+    bits = check_regen(root, ledger.get("regen", {}), misses)
     groups = ledger.get("groups", {})
     for name in groups:
         if name.startswith("@") or not isinstance(groups[name], list):
@@ -97,6 +126,11 @@ def check(root):
         for k in ("path", "from", "regen"):
             if not a.get(k):
                 misses.append(f"{where}: no `{k}`")
+        for other in sorted(set(RSA_FLAG.findall(a.get("regen", ""))) - {bits}):
+            misses.append(f"{where}: its regen probes RSA up to {other}, not {bits}")
+        for named in REPO_PATH.findall(a.get("regen", "")):
+            if not (root / named).exists():
+                misses.append(f"{where}: its regen names {named}, which does not exist")
         if not (root / path).is_file():
             misses.append(f"{where}: no such file")
             continue

@@ -32,6 +32,7 @@ class Ledger(unittest.TestCase):
         self.write(CERT, CAPTURED)
         self.write("code/a.rs", "fn a() {}\n")
         self.write("code/b.rs", "fn b() {}\n")
+        self.write("scripts/regen.sh", "caprobe probe --write-probes --rsa-max-bits 4096 --out x\n")
         # The code's hash as the check prints it for pasting, read from a run that lacks it.
         code, out = self.run_with(code_hash="sha256:none")
         self.assertEqual(code, 1, out)
@@ -49,24 +50,28 @@ class Ledger(unittest.TestCase):
     def printed_code_hash(out):
         return re.search(r'code-hash = "(sha256:[0-9a-f]{64})"', out).group(1)
 
-    def run_with(self, *, module=None, code_hash=None, code='["@src"]', edits="", ack="", extra="", soft=""):
+    def run_with(self, *, module=None, code_hash=None, code='["@src"]', edits="", ack="", extra="", soft="", regen=""):
         """The check over the tree, with the ledger's entries as given; by default every hash is
         the tree's."""
         module, probed, captured = module or sha(PROBED), sha(PROBED), sha(CAPTURED)
         ledger = f"""
+[regen]
+rsa-max-bits = 4096
+sources = ["scripts/regen.sh"]
+
 [groups]
 src = ["code/*.rs"]
 
 [[artifact]]
 path = "{SOFT}"
 from = "a software token"
-regen = "a script"
+regen = "scripts/regen.sh"
 verified-by = "every build"
 {soft}
 [[artifact]]
 path = "{MODULE}"
 from = "a device"
-regen = "probe it on the device"
+regen = "{regen or 'probe it on the device'}"
 code = {code}
 hash = "{module}"
 {extra}
@@ -191,6 +196,24 @@ hash = "{captured}"
         code, out = self.run_with(soft="code = []\n")
         self.assertEqual(code, 1, out)
         self.assertIn("so it records no run: drop ['code']", out)
+
+    def test_every_regeneration_probes_the_same_rsa_sizes(self):
+        # Review 2026-11-24 E-8: the cloud scripts passed no size and probed to caprobe's default.
+        for script in ("caprobe probe --write-probes --rsa-max-bits 16384\n", "caprobe probe --write-probes\n"):
+            self.write("scripts/regen.sh", script)
+            code, out = self.run_with()
+            self.assertEqual(code, 1, out)
+            self.assertIn("scripts/regen.sh", out)
+        self.write("scripts/regen.sh", 'km(&["probe", "--write-probes", "--rsa-max-bits", "4096"])\n')
+        self.assertEqual(self.run_with()[0], 0)
+        code, out = self.run_with(regen="caprobe probe --write-probes --rsa-max-bits 2048")
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"{MODULE}: its regen probes RSA up to 2048, not 4096", out)
+
+    def test_a_regen_command_names_files_that_exist(self):
+        code, out = self.run_with(regen="scripts/gone.sh probe")
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"{MODULE}: its regen names scripts/gone.sh, which does not exist", out)
 
 
 if __name__ == "__main__":
