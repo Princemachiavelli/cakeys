@@ -2,14 +2,15 @@
 //! the unbound pass that probes the rest (docs/CAPROBE.md).
 
 use super::{
-    Attribute, Curve, Draft, GenerateRow, KeyKind, MONTGOMERY, Made, Mechanism, On, ckr, keygen_mechanism, operate,
-    secrets,
+    Attribute, Capability, Curve, Draft, GenerateRow, KeyKind, MONTGOMERY, Made, Mechanism, On, Refusal, ckr,
+    keygen_mechanism, operate, secrets, token,
 };
 
 /// A module that binds every key to one purpose at creation ([`BoundKey`], Google Cloud KMS):
 /// one key per binding, generated from the provider's exact template (no public template), and
 /// probed with only the mechanisms its binding serves. The curves and sizes no binding covers
-/// are tried without one ([`probe_unbound`]), so their `cannot` rows are observations too.
+/// are tried without one ([`probe_unbound`]); a refusal of that template names no curve or size,
+/// so it answers for none of them (review 2026-11-24 E-5).
 ///
 /// [`BoundKey`]: super::BoundKey
 pub(super) fn probe_bound(made: &mut Made, profile: &mut Draft) {
@@ -39,13 +40,17 @@ pub(super) fn probe_bound(made: &mut Made, profile: &mut Draft) {
         let (public, private) = match generated {
             Ok(keys) => keys,
             Err(e) => {
-                profile.note(key.name.clone(), format!("generation refused: {}", ckr(&e)));
-                match (&key.kind, &key.on) {
-                    (KeyKind::Ec, On::Item(curve)) if !ec.cannot.contains(curve) => ec.cannot.push(curve.clone()),
-                    (KeyKind::Rsa, On::Bits(b)) if !rsa.cannot_bits.contains(b) => rsa.cannot_bits.push(*b),
-                    (KeyKind::Aes, On::Bytes(n)) if !aes.cannot_bytes.contains(n) => aes.cannot_bytes.push(*n),
-                    _ => {}
-                }
+                let why = format!("generation refused: {}", ckr(&e));
+                profile.note(key.name.clone(), why.clone());
+                // The binding's own template names its curve or size: its refusal answers for it.
+                let row = match (&key.kind, &key.on) {
+                    (KeyKind::Ec, On::Item(_)) => &mut ec,
+                    (KeyKind::Rsa, On::Bits(_)) => &mut rsa,
+                    (KeyKind::Aes, On::Bytes(_)) => &mut aes,
+                    _ => continue,
+                };
+                let at = (&key.kind, key.on.clone());
+                profile.generation_refused(&mut made.undetermined, row, at, token::rv_of(&e), why);
                 continue;
             }
         };
@@ -85,7 +90,9 @@ pub(super) fn probe_bound(made: &mut Made, profile: &mut Draft) {
     profile.decrypt_oaep = oaep;
     // A size that generated under one binding and not another can: the refusal stays a note.
     rsa.cannot_bits.retain(|b| !rsa.can_bits.contains(b));
+    rsa.cannot_bits.dedup();
     ec.cannot.retain(|c| !ec.can.contains(c));
+    ec.cannot.dedup();
     probe_unbound(made, profile, &mut ec, &mut rsa);
     rsa.can_bits.sort_unstable();
     rsa.cannot_bits.sort_unstable();
@@ -103,7 +110,9 @@ pub(super) fn probe_bound(made: &mut Made, profile: &mut Draft) {
 /// call (`CKR_TEMPLATE_INCOMPLETE`), so nothing is created; anything that does generate is
 /// destroyed with the rest. A module that generates here is not purely purpose-bound, and the
 /// bare template names no curve or size, so nobody knows which it made: no row is written for
-/// that key type, and the run says so in its undetermined list.
+/// that key type, and the run says so in its undetermined list. A refusal of that template is
+/// no row either: it names no curve or size, so it answers for none (review 2026-11-24 E-5);
+/// each is an `[untested]` entry of cakeys' (its table of bindings bounds what was tried).
 pub(super) fn probe_unbound(made: &mut Made, profile: &mut Draft, ec: &mut GenerateRow, rsa: &mut GenerateRow) {
     let session = made.session;
     let bare = [Attribute::Label(b"cakeys-probe-unbound".to_vec())];
@@ -120,12 +129,16 @@ pub(super) fn probe_unbound(made: &mut Made, profile: &mut Draft, ec: &mut Gener
         }
         Err(e) => Some(ckr(&e)),
     };
+    let unbound_why = |refusal: &str| format!("no binding for it; a template naming none is refused: {refusal}");
+    let undecided = |profile: &mut Draft, kt: &KeyKind, on: On, refusal: &str| {
+        let c = Capability::Generate { key_type: kt.clone(), on };
+        profile.undecide(c, Refusal::Cakeys, unbound_why(refusal));
+    };
     if let Some(ec_refusal) = unbound(made, &Mechanism::EccKeyPairGen, &KeyKind::Ec) {
         for name in Curve::ALL.iter().filter(|c| !c.edwards()).map(|c| c.name()) {
             let name = name.to_owned();
             if !ec.can.contains(&name) && !ec.cannot.contains(&name) {
-                profile.note(name.clone(), format!("no binding for it; without one: {ec_refusal}"));
-                ec.cannot.push(name);
+                undecided(profile, &KeyKind::Ec, On::Item(name), &ec_refusal);
             }
         }
     }
@@ -136,17 +149,14 @@ pub(super) fn probe_unbound(made: &mut Made, profile: &mut Draft, ec: &mut Gener
         (KeyKind::EcMontgomery, Mechanism::EccMontgomeryKeyPairGen, montgomery),
     ] {
         let Some(refusal) = unbound(made, &mech, &kt) else { continue };
-        for name in &names {
-            profile.note(name.clone(), format!("no binding for it; without one: {refusal}"));
+        for name in names {
+            undecided(profile, &kt, On::Item(name), &refusal);
         }
-        profile.generate.insert(kt, GenerateRow { cannot: names, ..GenerateRow::default() });
     }
     let Some(rsa_refusal) = unbound(made, &Mechanism::RsaPkcsKeyPairGen, &KeyKind::Rsa) else { return };
     for bits in made.rsa_sizes.clone() {
         if !rsa.can_bits.contains(&bits) && !rsa.cannot_bits.contains(&bits) {
-            rsa.cannot_bits.push(bits);
-            let why = format!("no binding for it; without one: {rsa_refusal}");
-            profile.generation_evidence(&KeyKind::Rsa, On::Bits(bits), why);
+            undecided(profile, &KeyKind::Rsa, On::Bits(bits), &rsa_refusal);
         }
     }
 }

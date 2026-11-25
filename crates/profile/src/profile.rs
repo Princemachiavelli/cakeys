@@ -3,7 +3,7 @@
 //! advertises. The rows committed today carry this repo's \[run\] evidence; the probe (phase 3)
 //! regenerates them and fills the `advertise` lists.
 
-use crate::capability::{Answer, Capability, DECRYPT_OAEP, Move, On, Row, Rows, UNWRAP_TEMPLATE, WRAP_OAEP};
+use crate::capability::{Answer, By, Capability, DECRYPT_OAEP, Move, On, Row, Rows, UNWRAP_TEMPLATE, WRAP_OAEP};
 use crate::names::KeyKind;
 use std::collections::BTreeMap;
 
@@ -86,6 +86,15 @@ pub enum Why {
     Scope,
     /// No probe tries it yet.
     Unprobed,
+    /// Tried, and the module said `CKR_OK`, but nothing outside it could check the result (a
+    /// signature the host has no verifier for): never yes (review 2026-11-24 E-4).
+    Unverified,
+    /// A capability (the key is a row's) the module failed on with a device failure
+    /// ([`crate::DEVICE_FAILED_RV`]): no answer of the module's, so unknown, which refuses.
+    Device,
+    /// A capability cakeys or its provider refused before the module was asked (no verifier on
+    /// the host, a template the provider refuses): no answer of the module's either.
+    Cakeys,
 }
 
 impl Why {
@@ -99,7 +108,16 @@ impl Why {
             Why::Cloud => "cloud",
             Why::Scope => "scope",
             Why::Unprobed => "unprobed",
+            Why::Unverified => "unverified",
+            Why::Device => "device",
+            Why::Cakeys => "cakeys",
         }
+    }
+
+    /// Whether the entry is a capability's the probe could not decide (its key is a row's).
+    #[must_use]
+    pub fn undecided(self) -> bool {
+        matches!(self, Why::Device | Why::Cakeys)
     }
 }
 
@@ -371,7 +389,23 @@ impl Profile {
         let measured: std::collections::BTreeSet<String> =
             self.capabilities.iter().flat_map(|(c, r)| c.mechanisms(r.via.as_deref())).collect();
         let mut out = Vec::new();
-        for name in self.untested.keys() {
+        for (name, u) in &self.untested {
+            // A capability's entry: the probe tried it and could not decide (E-2).
+            if let Ok(c) = Capability::parse(name) {
+                if !u.why.undecided() {
+                    out.push(format!(
+                        "[untested] {name}: a capability's entry says device or cakeys, not {}",
+                        u.why.name()
+                    ));
+                }
+                if self.capabilities.contains_key(&c) {
+                    out.push(format!("[untested] {name}: also a row"));
+                }
+                continue;
+            }
+            if u.why.undecided() {
+                out.push(format!("[untested] {name}: {} names a capability, and this is none", u.why.name()));
+            }
             if !self.advertise.iter().any(|a| a == name) {
                 out.push(format!("[untested] {name}: the module does not advertise it"));
             }
@@ -391,22 +425,71 @@ impl Profile {
         self.profile.split_once('/').map_or(&self.profile, |(family, _)| family)
     }
 
-    /// The answer to `c`, if the profile has one.
+    /// The answer to `c`, if the profile has one. What the probe could not decide ([`Self::unknown`])
+    /// answers no: unknown is never planned as yes, and refuses as an unsupported capability
+    /// does (15), its evidence naming the re-probe (phase1-design §9.1).
     #[must_use]
     pub fn answer(&self, c: &Capability) -> Option<bool> {
+        if self.unknown(c).is_some() {
+            return Some(false);
+        }
         self.capabilities.get(c).map(|r| r.answer.yes())
     }
 
-    /// What shows the answer to `c`: its row's evidence, else the note an older profile kept for
-    /// it under `note` (the curve, or `"<key type> at <bits>"`).
+    /// Why `c` is unknown although the profile speaks of it: a legacy `no` citing a device
+    /// failure ([`Row::device_failed`]), or an `[untested]` entry of the capability's (the probe
+    /// tried and could not decide). `None` for a row that answers, or no word at all.
     #[must_use]
-    pub fn evidence(&self, c: &Capability, note: &str) -> Option<String> {
-        self.capabilities.get(c).and_then(|r| r.evidence.clone()).or_else(|| self.notes.get(note).cloned())
+    pub fn unknown(&self, c: &Capability) -> Option<String> {
+        const REPROBE: &str = "re-probe it (T2, profiles/LEDGER.toml)";
+        if let Some(r) = self.capabilities.get(c) {
+            let rv = r.device_failed()?;
+            return Some(format!(
+                "unknown, not the module's no: {rv} is the device failing (a legacy row: {}); {REPROBE}",
+                r.evidence.as_deref().unwrap_or_default()
+            ));
+        }
+        let u = self.untested.get(&c.to_string()).filter(|u| u.why.undecided())?;
+        Some(format!(
+            "unknown, not the module's no: the probe could not decide it ({}{}); {REPROBE}",
+            u.why.name(),
+            u.note.as_ref().map(|n| format!(": {n}")).unwrap_or_default()
+        ))
     }
 
-    /// Set the answer to `c`, with its evidence and how it succeeded.
-    pub fn set(&mut self, c: Capability, answer: Answer, evidence: Option<String>, via: Option<String>) {
-        self.capabilities.insert(c, Row { answer, evidence, via });
+    /// What shows the answer to `c`: why it is unknown, else its row's evidence, with how far
+    /// it is shown ([`Self::provenance`]), else the note an older profile kept for it under
+    /// `note` (the curve, or `"<key type> at <bits>"`).
+    #[must_use]
+    pub fn evidence(&self, c: &Capability, note: &str) -> Option<String> {
+        let shown = self.provenance(c);
+        let with = |e: String| match shown {
+            Some(p) => format!("{e} ({p})"),
+            None => e,
+        };
+        self.unknown(c)
+            .or_else(|| self.capabilities.get(c).and_then(|r| r.evidence.clone()).map(with))
+            .or_else(|| self.notes.get(note).cloned().map(with))
+            .or_else(|| shown.map(str::to_owned))
+    }
+
+    /// How little `c`'s row shows, for a note beside its answer (phase1-design §2.4): a probed
+    /// row without `by` is legacy, a yes only the module vouches for is unverified. `None` for
+    /// a row the host checked or the module refused, a hand-written claim (`move.*`, a layer's
+    /// rows), and no row.
+    #[must_use]
+    pub fn provenance(&self, c: &Capability) -> Option<&'static str> {
+        let row = self.capabilities.get(c).filter(|_| c.probed() && self.mode == Mode::Observed)?;
+        match row.by {
+            None => Some("a legacy row: provenance unknown"),
+            Some(By::Unverified) => Some("unverified: only the module says so"),
+            Some(By::Host | By::Module) => None,
+        }
+    }
+
+    /// Set the row of `c`.
+    pub fn set(&mut self, c: Capability, row: Row) {
+        self.capabilities.insert(c, row);
     }
 
     /// Of `asked`, the ones whose row answers yes; `None` when none of them has a row (never
@@ -474,7 +557,11 @@ impl Profile {
             Capability::Generate { key_type, on: On::Item(_) | On::Bits(_) | On::Bytes(_) } => Some(key_type.name()),
             _ => None,
         });
-        rows.chain(self.reported.keys().map(String::as_str)).collect()
+        let undecided = self.untested.iter().filter(|(_, u)| u.why.undecided()).filter_map(|(name, _)| {
+            let kt = name.strip_prefix("generate.")?.split_once('.')?.0;
+            Capability::parse(name).is_ok().then_some(kt)
+        });
+        rows.chain(undecided).chain(self.reported.keys().map(String::as_str)).collect()
     }
 
     /// What it generates of `key_type`, as its rows and reported range say; `None` when it
@@ -493,6 +580,7 @@ impl Profile {
                 continue;
             }
             any = true;
+            // A legacy row citing a device failure is a `no` already: it refuses, as unknown.
             match (on, r.answer) {
                 (On::Item(i), Answer::Yes) => {
                     row.can.push(i.clone());
@@ -508,36 +596,58 @@ impl Profile {
                 (On::Bytes(b), Answer::No) => row.cannot_bytes.push(*b),
             }
         }
+        // What the probe could not decide refuses as well, and stops interpolation past it: an
+        // undecided size between two that generated is no evidence the one between works.
+        for (name, _) in self.untested.iter().filter(|(_, u)| u.why.undecided()) {
+            let Ok(Capability::Generate { key_type: kt, on }) = Capability::parse(name) else { continue };
+            if kt != key_type {
+                continue;
+            }
+            any = true;
+            match on {
+                On::Item(i) => row.cannot.push(i),
+                On::Bits(b) => row.cannot_bits.push(b),
+                On::Bytes(b) => row.cannot_bytes.push(b),
+            }
+        }
         any.then_some(row)
     }
 
     /// Record what the probe saw `key_type` generate: each curve or size as a row (`via =
     /// "by-name"` for the curves only their name generates), the reported range apart. `notes`
-    /// gives a row its evidence, by the curve or by `"<key type> at <bits>"`.
+    /// gives a row its evidence, by the curve or by `"<key type> at <bits>"`. A size or curve
+    /// that generated is the host's (the pair found under the locator it asked for), one
+    /// refused the module's: the probe puts nothing else in `row`.
     pub fn set_generation(&mut self, key_type: &str, row: &GenerateRow) {
         let kind = KeyKind::from(key_type);
         let generate = |on| Capability::Generate { key_type: kind.clone(), on };
+        let probed = |answer, via| Row {
+            answer,
+            by: Some(if answer == Answer::Yes { By::Host } else { By::Module }),
+            evidence: None,
+            via,
+        };
         for i in &row.can {
             let via = row.by_name.contains(i).then(|| "by-name".to_owned());
-            self.set(generate(On::Item(i.clone())), Answer::Yes, None, via);
+            self.set(generate(On::Item(i.clone())), probed(Answer::Yes, via));
         }
         for i in &row.cannot {
-            self.set(generate(On::Item(i.clone())), Answer::No, None, None);
+            self.set(generate(On::Item(i.clone())), probed(Answer::No, None));
         }
         // A size in the unit the row reads back in (`On::size`): never a bits row that a re-read
         // would take for bytes.
         for b in &row.can_bits {
-            self.set(generate(On::size(&kind, *b)), Answer::Yes, None, None);
+            self.set(generate(On::size(&kind, *b)), probed(Answer::Yes, None));
         }
         for b in &row.cannot_bits {
-            self.set(generate(On::size(&kind, *b)), Answer::No, None, None);
+            self.set(generate(On::size(&kind, *b)), probed(Answer::No, None));
         }
         // A secret key's length is bytes whatever the key type (`generate.CKK_AES.32`).
         for b in &row.can_bytes {
-            self.set(generate(On::Bytes(*b)), Answer::Yes, None, None);
+            self.set(generate(On::Bytes(*b)), probed(Answer::Yes, None));
         }
         for b in &row.cannot_bytes {
-            self.set(generate(On::Bytes(*b)), Answer::No, None, None);
+            self.set(generate(On::Bytes(*b)), probed(Answer::No, None));
         }
         if row.min_bits.is_some() || row.max_bits.is_some() {
             self.reported.insert(key_type.to_owned(), Reported { min_bits: row.min_bits, max_bits: row.max_bits });
@@ -573,6 +683,151 @@ mod tests {
                 assert_eq!(p.generation(kt).is_some(), p.generation_key_types().contains(kt), "{} {kt}", p.profile);
             }
         }
+    }
+
+    /// What a note says of how far a row is shown (phase1-design §2.4): a probed row without
+    /// `by` is legacy, an unverified yes says so, and a row the host or the module showed, a
+    /// hand-written claim and a layer's row say nothing more.
+    #[test]
+    fn a_note_says_how_far_its_row_is_shown() {
+        let p = profile(
+            "\"generate.CKK_RSA.1024\" = { answer = \"no\", evidence = \"CKR_KEY_SIZE_RANGE\" }\n\
+             \"generate.CKK_RSA.2048\" = { answer = \"no\", by = \"module\", evidence = \"CKR_KEY_SIZE_RANGE\" }\n\
+             \"commit.cmac.CKK_AES.32\" = { answer = \"yes\", by = \"unverified\" }\n\
+             \"commit.cmac.CKK_AES.16\" = { answer = \"yes\", by = \"host\" }\n\
+             \"move.secret-unwrap\" = { answer = \"no\" }\n",
+        );
+        let rsa = |bits| Capability::Generate { key_type: KeyKind::Rsa, on: On::Bits(bits) };
+        let cmac = |bytes| Capability::Commit { kind: "cmac".into(), key_type: KeyKind::Aes, bytes };
+        assert_eq!(
+            p.evidence(&rsa(1024), "").as_deref(),
+            Some("CKR_KEY_SIZE_RANGE (a legacy row: provenance unknown)")
+        );
+        assert_eq!(p.evidence(&rsa(2048), "").as_deref(), Some("CKR_KEY_SIZE_RANGE"));
+        assert_eq!(p.provenance(&cmac(32)), Some("unverified: only the module says so"));
+        assert_eq!(p.provenance(&cmac(16)), None);
+        assert_eq!(p.provenance(&Capability::Move(Move::SecretUnwrap)), None);
+        let mut layer = p.clone();
+        layer.mode = Mode::Delta;
+        assert_eq!(layer.evidence(&rsa(1024), "").as_deref(), Some("CKR_KEY_SIZE_RANGE"));
+    }
+
+    /// A row's `by` holds only with the answers it can show: the module's is a no and never a
+    /// device failure, an unverified one a yes. Each wrong pair is refused at load, never read.
+    #[test]
+    fn provenance_holds_only_with_its_answers() {
+        let load = |row: &str| {
+            Profile::from_toml(&format!(
+                "profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n\"generate.CKK_RSA.2048\" = {row}\n"
+            ))
+        };
+        for bad in [
+            "{ answer = \"yes\", by = \"module\" }",
+            "{ answer = \"no\", by = \"unverified\" }",
+            "{ answer = \"no\", by = \"module\", evidence = \"generation refused: CKR_DEVICE_ERROR\" }",
+            "{ answer = \"no\", by = \"module\", evidence = \"a: CKR_MECHANISM_INVALID; b: CKR_GENERAL_ERROR\" }",
+            "{ answer = \"no\", by = \"device\" }",
+        ] {
+            assert!(load(bad).is_err(), "{bad}");
+        }
+        for good in [
+            "{ answer = \"no\", by = \"module\", evidence = \"CKR_DEVICE_ERRORS_ARE_NOT_A_NAME\" }",
+            "{ answer = \"no\", by = \"host\", evidence = \"another key\" }",
+            "{ answer = \"yes\", by = \"unverified\" }",
+            "{ answer = \"yes\", by = \"host\" }",
+            "{ answer = \"no\", evidence = \"CKR_DEVICE_ERROR\" }",
+        ] {
+            load(good).unwrap_or_else(|e| panic!("{good}: {e}"));
+        }
+    }
+
+    /// What the probe could not decide is unknown, which refuses as an unsupported capability
+    /// does and names the re-probe (phase1-design §2.4, §9.1): a legacy no citing a device
+    /// failure, and an `[untested]` entry keyed by the capability. Neither interpolates: a size
+    /// between two that generated, across an undecided one, is not yes.
+    #[test]
+    fn what_the_probe_could_not_decide_refuses_as_unknown() {
+        let p = Profile::from_toml(
+            "profile = \"m/1\"\nmode = \"observed\"\nadvertise = [\"CKM_X\"]\n[capabilities]\n\
+             \"generate.CKK_RSA.1024\" = { answer = \"yes\", by = \"host\" }\n\
+             \"generate.CKK_RSA.2048\" = { answer = \"yes\", by = \"host\" }\n\
+             \"generate.CKK_RSA.3072\" = { answer = \"no\", evidence = \"generation refused: CKR_GENERAL_ERROR\" }\n\
+             \"generate.CKK_RSA.4096\" = { answer = \"no\", evidence = \"generation refused: CKR_KEY_SIZE_RANGE\" }\n\
+             \"import.CKK_EC.secp256r1\" = { answer = \"no\", evidence = \"CKR_DEVICE_ERROR\" }\n\
+             [untested]\n\"generate.CKK_RSA.1536\" = { why = \"device\", note = \"CKR_HOST_MEMORY\" }\n\
+             \"prove.pop-sign.CKK_EC_EDWARDS.edwards448\" = { why = \"cakeys\", note = \"no Ed448 verifier\" }\n",
+        )
+        .unwrap();
+        assert_eq!(p.untested_problems(), Vec::<String>::new());
+        let rsa = |bits| Capability::Generate { key_type: KeyKind::Rsa, on: On::Bits(bits) };
+        for c in [
+            rsa(3072),
+            rsa(1536),
+            Capability::parse("import.CKK_EC.secp256r1").unwrap(),
+            Capability::parse("prove.pop-sign.CKK_EC_EDWARDS.edwards448").unwrap(),
+        ] {
+            assert_eq!(p.answer(&c), Some(false), "{c}");
+            let why = p.evidence(&c, "").unwrap_or_default();
+            assert!(
+                why.starts_with("unknown, not the module's no") && why.contains("(T2, profiles/LEDGER.toml)"),
+                "{c}: {why}"
+            );
+        }
+        // The module's own no, and a yes, are what they say.
+        assert_eq!(p.unknown(&rsa(4096)), None);
+        assert_eq!(p.answer(&rsa(2048)), Some(true));
+        assert_eq!(p.answer(&rsa(8192)), None);
+        let g = p.generation("CKK_RSA").unwrap();
+        assert!(g.cannot_bits.contains(&1536) && g.cannot_bits.contains(&3072), "{g:?}");
+        // An undecided entry is a capability's only, and never also a row.
+        let wrong = |untested: &str| {
+            let mut q = p.clone();
+            q.untested = toml::from_str(untested).unwrap();
+            q.untested_problems()
+        };
+        assert_eq!(wrong("\"generate.CKK_RSA.1536\" = { why = \"unprobed\" }").len(), 1);
+        assert_eq!(wrong("\"generate.CKK_RSA.2048\" = { why = \"device\" }").len(), 1);
+        assert_eq!(wrong("\"CKM_X\" = { why = \"cakeys\" }").len(), 1);
+    }
+
+    /// Which committed rows load as unknown: the legacy device failures of the hardware profiles
+    /// the probe cannot re-run here (phase1-design §2.4), and no other. A new one fails here
+    /// until it is listed, and the cloud profiles have none.
+    #[test]
+    fn the_committed_device_failures_are_these() {
+        let mut found: Vec<String> = Vec::new();
+        for p in crate::Set::embedded().unwrap().all() {
+            for c in p.capabilities.keys().filter(|c| p.unknown(c).is_some()) {
+                found.push(format!("{} {c}", p.profile));
+            }
+        }
+        let ykcs11 = [
+            "import.CKK_EC.brainpoolP256r1",
+            "import.CKK_EC.brainpoolP384r1",
+            "import.CKK_EC.secp256k1",
+            "import.CKK_EC.secp521r1",
+            "import.CKK_EC_EDWARDS.edwards25519",
+            "import.CKK_RSA.1024",
+            "import.CKK_RSA.1536",
+            "import.CKK_RSA.2048",
+            "import.CKK_RSA.3072",
+            "import.CKK_RSA.4096",
+        ];
+        // The software profiles, probed again with provenance (phase1-design §9.6), have none:
+        // their device failures are `[untested]` entries.
+        let mut expected: Vec<String> = [
+            "tpm2-pkcs11/1.10+amd-ftpm derive.ecdh.sealed",
+            "tpm2-pkcs11/1.10+amd-ftpm generate.CKK_EC.secp521r1",
+            "tpm2-pkcs11/1.10+amd-ftpm generate.CKK_RSA.1536",
+            "tpm2-pkcs11/1.10+amd-ftpm prove.pop-sign.CKK_EC.secp384r1",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(ykcs11.iter().map(|c| format!("ykcs11/2.7 {c}")))
+        .collect();
+        expected.sort();
+        found.sort();
+        assert_eq!(found, expected);
     }
 
     /// Every row `set_generation` writes reads back as itself from its key, for any key type:

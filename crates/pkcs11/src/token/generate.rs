@@ -427,7 +427,8 @@ mod tests {
             let mut p = Profile::new("ykcs11/2.7".into(), Mode::Observed);
             let generate =
                 Capability::Generate { key_type: "CKK_EC_EDWARDS".into(), on: On::Item("edwards25519".into()) };
-            p.capabilities.insert(generate, Row { answer: Answer::Yes, evidence: None, via: via.map(Into::into) });
+            p.capabilities
+                .insert(generate, Row { answer: Answer::Yes, by: None, evidence: None, via: via.map(Into::into) });
             p
         };
         let retry = |p: Option<&Profile>| by_name_retry(p, "CKK_EC_EDWARDS", "edwards25519");

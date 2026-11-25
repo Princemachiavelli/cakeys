@@ -198,8 +198,12 @@ behaviour or reach outside PKCS#11:
 - **Selection:** an explicit `provider` wins, either a code provider or a profile family; an
   unknown name is exit 17. Otherwise the first registered code provider that matches, then the
   profile family claiming the module's manufacturer, else `generic`. Two families claiming one
-  manufacturer are refused (17) until `provider` names one. Registry unit tests:
-  `selection_explicit_then_detected_then_generic`, `profiles_name_the_modules_code_does_not_claim`.
+  manufacturer are refused (17) until `provider` names one. A family whose provider is code
+  (`CODE_FAMILIES`: ykcs11, tpm2-pkcs11, kmsp11, aws-cloudhsm) never resolves to its profiles
+  alone: named or detected in a build without that code it is refused (17), and once its code
+  declined a module (a YubiHSM is Yubico's too) the module gets `generic`. Registry unit tests:
+  `selection_explicit_then_detected_then_generic`, `profiles_name_the_modules_code_does_not_claim`,
+  `a_code_family_never_resolves_to_its_data`.
 - **The fix-up rule:** a hook must return exactly what a spec-compliant module would, so
   identities are portable. That is also why the provider never takes part in an identity: the
   lock records it only as an observation (`observations.<key>.provider`, DESIGN §4.2), where a change warns.
