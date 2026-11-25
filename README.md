@@ -158,6 +158,7 @@ reach tokens only through p11-kit forwarding or a real TPM, never through a toke
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Crates, control flow, providers |
 | [docs/diagrams.md](docs/diagrams.md) | The model, a verb, proof of possession, the Nix loop |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Building, testing, the hardware rules |
+| [docs/REVIEWING.md](docs/REVIEWING.md) | How a finding is fixed (by class) and how a review is run |
 | [docs/OPEN.md](docs/OPEN.md) | Open and parked items |
 | `docs/archive/`, `reports/`, `research_notes/` | Dated reviews and plans still cited, the lock-format research |
 
