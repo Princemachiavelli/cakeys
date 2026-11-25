@@ -1,0 +1,381 @@
+# Mutation testing as a gate (docs/archive/REVIEW-2026-11-24/phase2-3-design.md §5): the mutants
+# no test catches, held by nix/mutants-baseline.py (`packages.mutants-gate`) to
+# nix/mutants-baseline.toml. Two tiers (nix/package-crane.nix, `mutantsScopes`):
+# - `unit`: code whose package's own tests are its tests, seconds a mutant;
+# - the token tier: its files under their package's own tests first (`tokens-first`), then what
+#   that left (`tokens`) under every crate's tests with the token suites, minutes a mutant.
+#
+# - Pull request: the mutants in the lines the change touches (`--in-diff`). `unit` is required
+#   (T0); the token tier is T1, in 4 shards, and refuses over 120 mutants rather than sample.
+# - Mondays at 02:00 UTC: the last week's changes on main, both tiers, the gate in `touched`
+#   mode. The first Monday of a month, instead, every mutant of both tiers in shards (`sweep`):
+#   the gate fails on new survivors and on stale entries, and the README's badge is published.
+# - By hand: either scheduled run, on any branch (the badge only from main).
+#
+# The gate is in report mode until the first sweep seeds the baseline (`enforce = false`): it
+# prints what would fail and passes, and the sweep uploads the seeded baseline to commit.
+#
+# Each report job builds with the read-only token and hands its report on as an artifact; the
+# badge's publish job, the only one that may write, runs no repository code (as reports.yml).
+name: mutants
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+    inputs:
+      run:
+        description: "sweep: every mutant; weekly: the last week's changes on this branch"
+        type: choice
+        options: [sweep, weekly]
+        default: sweep
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'scheduled' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # What this run mutates: the diff (none for a sweep), each tier's shards and the gate's mode.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      kind: ${{ steps.plan.outputs.kind }}
+      mode: ${{ steps.plan.outputs.mode }}
+      empty: ${{ steps.plan.outputs.empty }}
+      unit: ${{ steps.plan.outputs.unit }}
+      first: ${{ steps.plan.outputs.first }}
+      tokens: ${{ steps.plan.outputs.tokens }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          RUN: ${{ inputs.run }}
+        run: |
+          # Shard k of n is "k/n", k from 0 (cargo-mutants' --shard); "" is the tier unsharded.
+          shards() { if [ "$1" = 1 ]; then echo '[""]'; else jq -cn --argjson n "$1" '[range($n) | "\(.)/\($n)"]'; fi; }
+          mkdir -p "$RUNNER_TEMP/diff"
+          case $EVENT in
+          pull_request) kind=pr ;;
+          schedule) if [ "$(date -u +%-d)" -le 7 ]; then kind=sweep; else kind=weekly; fi ;;
+          *) kind=$RUN ;;
+          esac
+          case $kind in
+          pr)
+            git diff --merge-base "origin/$BASE_REF" HEAD -- 'crates/**/*.rs' >"$RUNNER_TEMP/diff/changes.diff"
+            echo "mode=diff" >>"$GITHUB_OUTPUT"
+            set -- 1 1 4
+            ;;
+          weekly)
+            base=$(git rev-list -1 --before='7 days ago' HEAD)
+            git diff "${base:-$(git hash-object -t tree /dev/null)}" HEAD -- 'crates/**/*.rs' >"$RUNNER_TEMP/diff/changes.diff"
+            echo "mode=touched" >>"$GITHUB_OUTPUT"
+            set -- 1 1 8
+            ;;
+          sweep)
+            echo "mode=sweep" >>"$GITHUB_OUTPUT"
+            set -- 4 4 16
+            ;;
+          esac
+          empty=false
+          if [ "$kind" != sweep ] && [ ! -s "$RUNNER_TEMP/diff/changes.diff" ]; then
+            empty=true
+            echo "No Rust source changed: nothing to mutate." >>"$GITHUB_STEP_SUMMARY"
+          fi
+          {
+            echo "kind=$kind"
+            echo "empty=$empty"
+            echo "unit=$(shards "$1")"
+            echo "first=$(shards "$2")"
+            echo "tokens=$(shards "$3")"
+          } >>"$GITHUB_OUTPUT"
+      - if: steps.plan.outputs.kind != 'sweep' && steps.plan.outputs.empty != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diff
+          path: ${{ runner.temp }}/diff/changes.diff
+          if-no-files-found: error
+          retention-days: 7
+
+  # The required check on a pull request: it runs, and passes at once, when no Rust source
+  # changed (so every step is guarded, not the job).
+  unit:
+    needs: plan
+    name: ${{ matrix.shard && format('unit {0}', matrix.shard) || 'unit' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.unit) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      SKIP: ${{ needs.plan.outputs.empty }}
+      KIND: ${{ needs.plan.outputs.kind }}
+      MODE: ${{ needs.plan.outputs.mode }}
+      TIER: unit
+      SHARD: ${{ matrix.shard }}
+    steps:
+      # The runner image's toolchains the build never uses: room for the Nix store.
+      - &free-disk
+        name: Free disk space
+        if: env.SKIP != 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - &checkout
+        if: env.SKIP != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - &nix
+        if: env.SKIP != 'true'
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
+        with:
+          diagnostic-endpoint: ""
+      # What the run builds (not what cache.nixos.org serves), kept in the GitHub Actions cache.
+      - &cache
+        if: env.SKIP != 'true'
+        uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          use-flakehub: false
+          diagnostic-endpoint: ""
+      - &diff
+        if: env.SKIP != 'true' && env.KIND != 'sweep'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: diff
+          path: ${{ runner.temp }}/diff
+      # cakeys-crane.mutantsTier (nix/package-crane.nix), the diff and the earlier reports handed
+      # in as paths; then the report, less each mutant's log and diff, for the jobs after.
+      - &build
+        name: Build the report
+        if: env.SKIP != 'true'
+        run: |
+          diff=null
+          if [ -s "$RUNNER_TEMP/diff/changes.diff" ]; then
+            diff="builtins.path { path = \"$RUNNER_TEMP/diff/changes.diff\"; name = \"changes.diff\"; }"
+          fi
+          shard=null
+          if [ -n "$SHARD" ]; then shard="\"$SHARD\""; fi
+          iterate=
+          if [ -d "$RUNNER_TEMP/first" ]; then
+            iterate="iterate = [$(for d in "$RUNNER_TEMP"/first/*/; do printf ' (builtins.path { path = "%s"; })' "${d%/}"; done) ];"
+          fi
+          nix build -L --out-link result --impure --expr \
+            "(builtins.getFlake \"git+file://$PWD?shallow=1\").packages.x86_64-linux.cakeys-crane.mutantsTier { tier = \"$TIER\"; diff = $diff; shard = $shard; $iterate }"
+          artifact="report-$TIER${SHARD:+-${SHARD%/*}}"
+          mkdir -p "$RUNNER_TEMP/reports/$artifact"
+          cp -rL result/. "$RUNNER_TEMP/reports/$artifact/"
+          chmod -R u+w "$RUNNER_TEMP/reports/$artifact"
+          rm -rf "$RUNNER_TEMP/reports/$artifact"/*/log "$RUNNER_TEMP/reports/$artifact"/*/diff
+          echo "ARTIFACT=$artifact" >>"$GITHUB_ENV"
+      - &upload
+        if: env.SKIP != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: ${{ runner.temp }}/reports/${{ env.ARTIFACT }}
+          if-no-files-found: error
+          retention-days: 30
+      # A pull request's or a week's unit tier is one job: its gate is here. A sweep's is below.
+      # The gate's verdict in the log and the job's summary; its exit is the step's.
+      - &gate
+        name: Gate
+        if: env.SKIP != 'true' && env.KIND != 'sweep'
+        run: |
+          set +e
+          nix run .#mutants-gate -- --mode "$MODE" "$RUNNER_TEMP"/reports/* | tee "$RUNNER_TEMP/gate.txt"
+          status=${PIPESTATUS[0]}
+          { echo "### mutants gate: $TIER"; echo '```text'; cat "$RUNNER_TEMP/gate.txt"; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+  tokens-first:
+    needs: plan
+    if: needs.plan.outputs.empty != 'true'
+    name: ${{ matrix.shard && format('tokens-first {0}', matrix.shard) || 'tokens-first' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.first) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      KIND: ${{ needs.plan.outputs.kind }}
+      TIER: tokens-first
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - *free-disk
+      - *checkout
+      - *nix
+      - *cache
+      - *diff
+      - *build
+      - *upload
+      # Each mutant left costs minutes in the token tier: a pull request's job does not sample.
+      - name: At most 120 mutants for the token tier
+        if: env.KIND == 'pr'
+        run: |
+          n=$(cat result/*/missed.txt result/*/timeout.txt | wc -l)
+          echo "The first pass leaves $n mutants to the token tier." >>"$GITHUB_STEP_SUMMARY"
+          if [ "$n" -gt 120 ]; then
+            echo "::error::$n mutants left for the token tier, over 120: split the change, or run scripts/mutants-diff.sh --tokens on a Linux builder and record it in Ran:"
+            exit 1
+          fi
+
+  tokens:
+    needs: [plan, tokens-first]
+    if: needs.plan.outputs.empty != 'true'
+    name: ${{ format('tokens {0}', matrix.shard) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.tokens) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      KIND: ${{ needs.plan.outputs.kind }}
+      TIER: tokens
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - *free-disk
+      - *checkout
+      - *nix
+      - *cache
+      - *diff
+      # Every shard of the first pass: what any of them caught, no shard of this tier tests.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: report-tokens-first*
+          path: ${{ runner.temp }}/first
+      - *build
+      - *upload
+
+  # The token tier's gate for a pull request or a week: both passes, one run.
+  tokens-gate:
+    needs: [plan, tokens-first, tokens]
+    if: needs.plan.outputs.kind != 'sweep' && needs.plan.outputs.empty != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MODE: ${{ needs.plan.outputs.mode }}
+      TIER: tokens
+    steps:
+      - &checkout-gate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - &nix-gate
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
+        with:
+          diagnostic-endpoint: ""
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: report-tokens*
+          path: ${{ runner.temp }}/reports
+      - *gate
+
+  # The monthly sweep's gate over every shard of both tiers, the badge (the mutants caught, of
+  # the viable ones) and, while the baseline is in report mode, the seeded baseline.
+  sweep:
+    needs: [plan, unit, tokens-first, tokens]
+    if: needs.plan.outputs.kind == 'sweep'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      badge: ${{ steps.badge.outputs.badge }}
+    steps:
+      - *checkout-gate
+      - *nix-gate
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: report-*
+          path: ${{ runner.temp }}/reports
+      - id: gate
+        run: |
+          set +e
+          nix run .#mutants-gate -- --mode sweep --merged "$RUNNER_TEMP/merged" "$RUNNER_TEMP"/reports/* | tee "$RUNNER_TEMP/gate.txt"
+          echo "status=${PIPESTATUS[0]}" >>"$GITHUB_OUTPUT"
+          { echo "### mutants gate: sweep"; echo '```text'; cat "$RUNNER_TEMP/gate.txt"; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
+      - id: badge
+        run: |
+          mkdir -p "$RUNNER_TEMP/badge"
+          bash scripts/badges.sh mutants "$RUNNER_TEMP/merged" >"$RUNNER_TEMP/badge/mutants.json"
+          echo "badge=ready" >>"$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: badge-mutants
+          path: ${{ runner.temp }}/badge/mutants.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Seed the baseline (report mode only)
+        id: seed
+        run: |
+          if grep -q '^enforce = false' nix/mutants-baseline.toml; then
+            cp nix/mutants-baseline.toml "$RUNNER_TEMP/mutants-baseline.toml"
+            nix run .#mutants-gate -- --mode sweep --seed --baseline "$RUNNER_TEMP/mutants-baseline.toml" "$RUNNER_TEMP"/reports/*
+            echo "seeded=true" >>"$GITHUB_OUTPUT"
+          fi
+      - if: steps.seed.outputs.seeded == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutants-baseline-seeded
+          path: ${{ runner.temp }}/mutants-baseline.toml
+          if-no-files-found: error
+          retention-days: 30
+      - name: Verdict
+        env:
+          STATUS: ${{ steps.gate.outputs.status }}
+        run: exit "$STATUS"
+
+  # No checkout and no Nix: nothing of the repository runs next to the write token. The badge
+  # is the sweep's even when its gate fails: the number is right either way.
+  publish-mutants:
+    needs: [plan, sweep]
+    if: ${{ !cancelled() && needs.plan.outputs.kind == 'sweep' && needs.sweep.outputs.badge == 'ready' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      REPORT: mutants
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: badge-${{ env.REPORT }}
+          path: ${{ runner.temp }}/badge
+      # The branch is created by the first run. reports.yml's coverage may push between the fetch
+      # and the push: fetch again and retry.
+      - name: Push the badge
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git init -q "$RUNNER_TEMP/badges"
+          cd "$RUNNER_TEMP/badges"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git config http.https://github.com/.extraheader "$auth"
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          for attempt in 1 2 3 4 5; do
+            if git fetch -q --depth 1 origin badges; then
+              git checkout -q --detach FETCH_HEAD
+            else
+              git checkout -q --orphan "first-$attempt"
+            fi
+            cp "$RUNNER_TEMP/badge/$REPORT.json" "$REPORT.json"
+            git add "$REPORT.json"
+            git diff --cached --quiet && exit 0
+            git commit -q -m "$REPORT badge for $GITHUB_SHA"
+            git push -q origin HEAD:refs/heads/badges && exit 0
+            sleep $((attempt * 5))
+          done
+          exit 1

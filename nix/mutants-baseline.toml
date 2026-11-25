@@ -1,0 +1,14 @@
+# The mutants no test catches that may stay, each with why (docs/REVIEWING.md), by file, keyed
+# as nix/mutants-baseline.py keys them. A pull request's gate fails on a survivor of its diff
+# not listed here; the monthly sweep (.github/workflows/mutants.yml) also on an entry that no
+# longer survives. `--write` removes entries, never adds them, and never raises `max`.
+#
+#   ["crates/core/src/reconcile.rs"]
+#   "compare: BinaryOperator ==→!=" = "a changed locator: lock.qnt leaves locators out (A-6)"
+#   "record: FnValue →Ok(())" = { why = "seeded 2026-12-07", reviewed = false }
+#
+# Report mode until the first sweep seeds it (the sweep uploads the seeded file): the gate
+# prints what would fail and passes. The commit that seeds it sets `enforce = true`.
+enforce = false
+# The entry count's ceiling: it only goes down, and a raise is a visible diff with its why.
+max = 0
