@@ -364,7 +364,7 @@ impl Token {
     ///
     /// As [`templates::rebind_copy`]; the provider's refusal.
     pub(crate) fn rebind_copy_template(&self, object: Object<'_>, commits: &[Commit]) -> Result<Vec<Attribute>> {
-        self.provider.adjusted(&Template::Session(SessionKey::RebindCopy), templates::rebind_copy(object, commits)?)
+        self.provider.adjusted_session(templates::rebind_copy(object, commits)?)
     }
 }
 

@@ -55,7 +55,7 @@ pub fn session_templates(
     mode: Mode,
     has: &dyn Fn(MechanismType) -> Option<bool>,
     ecdh_seals: Option<bool>,
-) -> Result<Vec<(crate::SessionKey, Vec<cryptoki::object::Attribute>)>> {
+) -> Result<Vec<crate::templates::SessionTemplate>> {
     use crate::SessionKey;
     use crate::templates::{rebind_copy, session};
     let mut out = Vec::new();
@@ -66,7 +66,7 @@ pub fn session_templates(
     };
     if let Some((binding, sealed)) = proof {
         let key = SessionKey::ProofSecret { binding, sealed };
-        out.push((key, session(key)));
+        out.push(session(key));
     }
     // The commitments the token implements, as `commits` picks them; none when that is not known.
     let usable: Option<Vec<Commit>> = wanted_commits(t, mode)
@@ -76,11 +76,11 @@ pub fn session_templates(
         .map(|cs| cs.into_iter().flatten().collect());
     let Some(commits) = usable.filter(|cs| !cs.is_empty()) else { return Ok(out) };
     if mode == Mode::WrapRebind {
-        out.push((SessionKey::RebindKek, session(SessionKey::RebindKek)));
-        out.push((SessionKey::RebindCopy, rebind_copy(t.object, &commits)?));
+        out.push(session(SessionKey::RebindKek));
+        out.push(rebind_copy(t.object, &commits)?);
     }
     if commits.contains(&Commit::Kw) {
-        out.push((SessionKey::KwInput, session(SessionKey::KwInput)));
+        out.push(session(SessionKey::KwInput));
     }
     Ok(out)
 }
@@ -100,8 +100,8 @@ fn check_templates(t: &Target, tok: &Token, mode: Mode, generating: bool) -> Res
         tok.generation_key(on)?;
         tok.generation_public(on, None)?;
     }
-    for (key, template) in session_templates(t, mode, &|m| Some(tok.has(m)), Some(tok.ecdh_seals()))? {
-        tok.provider.adjusted(&crate::Template::Session(key), template)?;
+    for template in session_templates(t, mode, &|m| Some(tok.has(m)), Some(tok.ecdh_seals()))? {
+        tok.provider.adjusted_session(template)?;
     }
     Ok(())
 }
@@ -141,8 +141,8 @@ pub fn plan_templates(
             provider.adjusted(&Template::Generate(on, Half::Public), public)?;
         }
     }
-    for (key, template) in session_templates(t, mode, has, ecdh_seals)? {
-        provider.adjusted(&Template::Session(key), template)?;
+    for template in session_templates(t, mode, has, ecdh_seals)? {
+        provider.adjusted_session(template)?;
     }
     Ok(None)
 }

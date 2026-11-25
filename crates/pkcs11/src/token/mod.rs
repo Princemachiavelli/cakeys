@@ -358,7 +358,7 @@ impl Token {
     ///
     /// The provider's refusal.
     pub fn session_template(&self, key: SessionKey) -> Result<Vec<Attribute>> {
-        self.provider.adjusted(&Template::Session(key), templates::session(key))
+        self.provider.adjusted_session(templates::session(key))
     }
 
     /// The key type of `h` as a spec-compliant module would report it: `CKA_KEY_TYPE`, repaired

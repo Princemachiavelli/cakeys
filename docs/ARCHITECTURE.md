@@ -143,7 +143,9 @@ behaviour or reach outside PKCS#11:
   `CKA_TRUSTED`, `CKA_ID`, `CKA_LABEL`, `CKA_MODIFIABLE`, `CKA_COPYABLE`, `CKA_DESTROYABLE`)
   changed, added or removed is refused (17) unless the change tightens it, a restriction set
   true or a permission false (review 2026-11-24 B-3: a session key's sealing was the provider's
-  to undo, and session keys are never read back). Every template is built in one place (`cakeys_pkcs11::templates`) and asked about before
+  to undo, and session keys are never read back). A session key's template is typed
+  (`templates::SessionTemplate`), so its sealing is the builder's and material is added beside
+  it (`with_material`), never over it. Every template is built in one place (`cakeys_pkcs11::templates`) and asked about before
   anything is created: the proof's and the commitments' session keys, which run once the object
   exists, by the capability check before it (`ops::check_templates`, and `ops::check_import`
   before camigrate's imports). A plan asks the same templates without a token (`gate::check`,

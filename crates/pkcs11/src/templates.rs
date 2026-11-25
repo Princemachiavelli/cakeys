@@ -16,7 +16,7 @@ use cakeys_core::id::Commit;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
-use cryptoki::object::{Attribute, CertificateType, KeyType, ObjectClass};
+use cryptoki::object::{Attribute, AttributeType, CertificateType, KeyType, ObjectClass};
 use std::collections::BTreeMap;
 
 /// Template attributes for declared policy values (a spec's `attributes`), each mechanism name
@@ -213,11 +213,86 @@ fn kind(object: &ObjectCfg) -> Vec<Attribute> {
     t
 }
 
+/// A session key's template, as only [`session`] and [`rebind_copy`] build it (review 2026-11-24
+/// B-8): the key it is for, and attributes that keep it off the token (`CKA_TOKEN = false`) and
+/// as sealed as its purpose says, which no caller can build otherwise or loosen after (the
+/// provider's adjustment is checked, `Provider::adjusted`; material is added by
+/// [`Self::with_material`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTemplate {
+    key: SessionKey,
+    attrs: Vec<Attribute>,
+}
+
+impl SessionTemplate {
+    /// The session key it is for.
+    #[must_use]
+    pub fn key(&self) -> SessionKey {
+        self.key
+    }
+
+    /// Its attributes.
+    #[must_use]
+    pub fn attributes(&self) -> &[Attribute] {
+        &self.attrs
+    }
+
+    /// Its `CKA_TOKEN`, `CKA_SENSITIVE` and `CKA_EXTRACTABLE`, where it sets them: what decides
+    /// whether the key outlives the session or can be read off the token.
+    #[must_use]
+    pub fn sealing(&self) -> [Option<bool>; 3] {
+        let flag = |want: AttributeType| {
+            self.attrs.iter().find_map(|a| match a {
+                Attribute::Token(b) | Attribute::Sensitive(b) | Attribute::Extractable(b)
+                    if a.attribute_type() == want =>
+                {
+                    Some(*b)
+                }
+                _ => None,
+            })
+        };
+        [flag(AttributeType::Token), flag(AttributeType::Sensitive), flag(AttributeType::Extractable)]
+    }
+
+    /// The same template with the key's public material `more` (a transport key's modulus and
+    /// exponent) beside its attributes.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` for an attribute the template has already, or a security attribute
+    /// (`provider::SECURITY`): material, not a change to what the template seals.
+    pub fn with_material(mut self, more: impl IntoIterator<Item = Attribute>) -> Result<SessionTemplate> {
+        for a in more {
+            let t = a.attribute_type();
+            if self.attrs.iter().any(|b| b.attribute_type() == t) || crate::provider::SECURITY.iter().any(|s| s.0 == t)
+            {
+                return Err(KmError::Validation(
+                    format!("the session key {:?}'s template takes {t:?} from cakeys alone, not as material", self.key)
+                        .into(),
+                ));
+            }
+            self.attrs.push(a);
+        }
+        Ok(self)
+    }
+}
+
+impl From<SessionTemplate> for Vec<Attribute> {
+    fn from(t: SessionTemplate) -> Self {
+        t.attrs
+    }
+}
+
 /// A session key's template, without its value (the host's KEK, the `kw` input) or its public
 /// material (the transport key's modulus and exponent), which the caller adds. wrap-rebind's
 /// copy is [`rebind_copy`]: this is its part that does not depend on the key.
 #[must_use]
-pub fn session(key: SessionKey) -> Vec<Attribute> {
+pub fn session(key: SessionKey) -> SessionTemplate {
+    SessionTemplate { key, attrs: session_attributes(key) }
+}
+
+/// [`session`]'s attributes.
+fn session_attributes(key: SessionKey) -> Vec<Attribute> {
     let secret = |kt| vec![Attribute::Class(ObjectClass::SECRET_KEY), Attribute::KeyType(kt), Attribute::Token(false)];
     match key {
         SessionKey::ProofSecret { sealed, .. } => {
@@ -287,8 +362,8 @@ pub fn session(key: SessionKey) -> Vec<Attribute> {
 /// # Errors
 ///
 /// Whatever the key type refuses.
-pub fn rebind_copy(object: Object<'_>, commits: &[Commit]) -> Result<Vec<Attribute>> {
-    let mut t = session(SessionKey::RebindCopy);
+pub fn rebind_copy(object: Object<'_>, commits: &[Commit]) -> Result<SessionTemplate> {
+    let mut t = session_attributes(SessionKey::RebindCopy);
     t.push(Attribute::KeyType(key_type_of(object)?));
     for c in commits {
         let usage = match c {
@@ -302,7 +377,7 @@ pub fn rebind_copy(object: Object<'_>, commits: &[Commit]) -> Result<Vec<Attribu
             t.push(usage);
         }
     }
-    Ok(t)
+    Ok(SessionTemplate { key: SessionKey::RebindCopy, attrs: t })
 }
 
 #[cfg(test)]
@@ -369,5 +444,46 @@ mod tests {
         ] {
             assert!(matches!(known_policy(&refused), Err(KmError::Validation(_))), "{refused:?}");
         }
+    }
+
+    /// Each session key's sealing, pinned (review 2026-11-24 B-8: flipping any of them passed
+    /// every test): never on the token; sensitive and not extractable where the key must not
+    /// leave (a sealed proof secret, wrap-rebind's KEK and copy, the host's KEK, the import
+    /// KEK); the export KEK sensitive but extractable, so it leaves only wrapped to the
+    /// transport key; readable only where it is public by design (the `kw` input, an unsealed
+    /// proof secret, which the module refused to seal); a transport public key neither.
+    #[test]
+    fn each_session_key_is_sealed_as_its_purpose_says() {
+        use cakeys_core::config::Binding;
+        let proof = |sealed| SessionKey::ProofSecret { binding: Binding::PopUnwrap, sealed };
+        let (sealed, readable, wrappable, public) = (
+            [Some(false), Some(true), Some(false)],
+            [Some(false), Some(false), Some(true)],
+            [Some(false), Some(true), Some(true)],
+            [Some(false), None, None],
+        );
+        let pinned = [
+            (proof(true), sealed),
+            (proof(false), readable),
+            (SessionKey::RebindKek, sealed),
+            (SessionKey::RebindCopy, sealed),
+            (SessionKey::KwInput, readable),
+            (SessionKey::HostKek, sealed),
+            (SessionKey::TransportKey, public),
+            (SessionKey::ExportKek, wrappable),
+            (SessionKey::ImportKek, sealed),
+        ];
+        for (key, want) in pinned {
+            let t = session(key);
+            assert_eq!((t.key(), t.sealing()), (key, want), "{key:?} as [CKA_TOKEN, CKA_SENSITIVE, CKA_EXTRACTABLE]");
+        }
+        let aes = ObjectCfg { value_len: Some(32), ..ObjectCfg::new(Class::SecretKey, Some(Kt::Aes)) };
+        let copy = rebind_copy(Object::new(&aes).unwrap(), &[Commit::Kw]).unwrap();
+        assert_eq!((copy.key(), copy.sealing()), (SessionKey::RebindCopy, sealed), "wrap-rebind's copy");
+        // Material is material: it does not unseal.
+        let loaded = session(SessionKey::HostKek).with_material([Attribute::ValueLen(32.into())]).unwrap();
+        assert_eq!(loaded.sealing(), sealed);
+        assert!(session(SessionKey::HostKek).with_material([Attribute::Extractable(true)]).is_err());
+        assert!(session(SessionKey::TransportKey).with_material([Attribute::Wrap(false)]).is_err(), "already there");
     }
 }

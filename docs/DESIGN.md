@@ -680,7 +680,10 @@ module and what real builds may reach.
   `CKA_TRUSTED`, `CKA_ID`, `CKA_LABEL`, `CKA_MODIFIABLE`, `CKA_COPYABLE` or `CKA_DESTROYABLE`
   is refused (17) before anything is made. A policy flag is repaired only for the
   (attribute, private key type) pairs the provider declares (`Provider::repairs`; ykcs11:
-  `CKA_DERIVE` of EC and X25519 keys).
+  `CKA_DERIVE` of EC and X25519 keys). A session key's template is a type,
+  `templates::SessionTemplate`, built only by `templates::session` and `rebind_copy` and asked of
+  the provider as the key it was built for (`adjusted_session`); each key's `CKA_TOKEN`,
+  `CKA_SENSITIVE` and `CKA_EXTRACTABLE` are pinned by a test (review 2026-11-24 B-8).
 - **Token paths reach only builds that require the token's feature.**
 
 ### 8.2 Not enforced / known gaps

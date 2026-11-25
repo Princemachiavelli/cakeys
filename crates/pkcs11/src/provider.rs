@@ -391,6 +391,16 @@ impl dyn Provider + '_ {
         }
         Ok(attrs.0)
     }
+
+    /// The session template `t` as the provider adjusts it ([`Self::adjusted`]), asked as the
+    /// session key it was built for, so the two cannot disagree.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::adjusted`].
+    pub fn adjusted_session(&self, t: crate::templates::SessionTemplate) -> Result<Vec<Attribute>> {
+        self.adjusted(&Template::Session(t.key()), t.into())
+    }
 }
 
 /// The value that tightens a security attribute ([`SECURITY`]), as its constructor and the
@@ -896,7 +906,7 @@ mod tests {
             Attribute::Trusted(false),
         ];
         for key in session_keys() {
-            let t = crate::templates::session(key);
+            let t: Vec<Attribute> = crate::templates::session(key).into();
             let req = Template::Session(key);
             let adjusted = |p: &dyn Provider| p.adjusted(&req, t.clone());
             for a in &loosened {
