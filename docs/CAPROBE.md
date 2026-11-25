@@ -52,7 +52,8 @@ vendor whose module needs no fix-ups needs no Rust. When no code provider claims
 module profile whose `[match] manufacturer` it reports names its provider by family
 (`provider::Data`). `softhsm` and `kryoptic` are such data providers, and
 `provider = "<family>"` selects one by name. Two families claiming one manufacturer are refused
-(17) until `provider` names one.
+(17) until `provider` names one. A family whose provider is code (`CODE_FAMILIES`) is never a
+data provider: without its code it is refused (17).
 
 ## The format: deltas over a spec baseline
 

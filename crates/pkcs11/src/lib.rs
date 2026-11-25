@@ -19,6 +19,6 @@ pub use provider::{
     Attributes, BoundKey, Checked, Create, Declared, Destroy, Generation, Generic, Half, Provider, SessionKey,
     Template, Topic, Via, keygen_mechanism,
 };
-pub use registry::Registry;
+pub use registry::{CODE_FAMILIES, Registry};
 pub use resolution::Resolved;
 pub use token::Token;
