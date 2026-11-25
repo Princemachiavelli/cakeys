@@ -132,7 +132,7 @@ fn placement_holds_on_every_path() {
     let want = (17, Some(Rule::Placement.name()));
 
     // The static gate, as `validate` and `create`'s plan ask it.
-    let stack = cakeys_pkcs11::gate::stack("t", &cfg.tokens["t"], &lock).unwrap().unwrap();
+    let stack = cakeys_pkcs11::gate::stack("t", &cfg.tokens["t"], &lock).unwrap();
     let v = cakeys_pkcs11::gate::check(&t, mode, &stack, &registry, ops::Verb::Create).unwrap();
     let rules: Vec<(u8, Rule)> = v.refusals.iter().map(|r| (r.error.exit_code(), r.rule)).collect();
     assert_eq!(rules, [(17, Rule::Placement)], "the gate");

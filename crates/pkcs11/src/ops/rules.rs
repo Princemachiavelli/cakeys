@@ -126,6 +126,20 @@ impl std::fmt::Display for Deferred {
     }
 }
 
+/// `deferred` as lines, one per pair and reason: `<why> (deferred: <rule>, <rule>)`, the rules
+/// in the order they were deferred.
+#[must_use]
+pub fn deferred_lines(deferred: &[Deferred]) -> Vec<String> {
+    let mut lines: Vec<(&str, Vec<&str>)> = Vec::new();
+    for d in deferred {
+        match lines.iter_mut().find(|(why, _)| *why == d.why) {
+            Some((_, rules)) => rules.push(d.rule.name()),
+            None => lines.push((&d.why, vec![d.rule.name()])),
+        }
+    }
+    lines.into_iter().map(|(why, rules)| format!("{why} (deferred: {})", rules.join(", "))).collect()
+}
+
 /// The provider a plan asks: the one that will run the write, or why it is not known yet. An
 /// unresolved seat defers every provider rule that applies, never skips it.
 pub enum Seat<'a> {

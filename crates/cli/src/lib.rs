@@ -542,14 +542,11 @@ impl Run<'_> {
             })?;
             provider.check_options(name, &t.options)?;
         }
+        // A token whose stack does not resolve is gated too: each pair on it defers its rules by
+        // name, saying why (review 2026-11-24 B-1).
         let mut stacks = BTreeMap::new();
         for (name, t) in &self.opener.cfg.tokens {
-            match cakeys_pkcs11::gate::stack(name, t, &self.lock)? {
-                Ok(stack) => {
-                    stacks.insert(name.as_str(), stack);
-                }
-                Err(why) => notes.note(format_args!("validate: {why}")),
-            }
+            stacks.insert(name.as_str(), cakeys_pkcs11::gate::stack(name, t, &self.lock)?);
         }
         let (mut refusals, mut modes) = (Vec::new(), Vec::new());
         for (spec_name, spec) in &self.opener.cfg.specs {
@@ -557,17 +554,15 @@ impl Run<'_> {
                 let t = Target::new(&self.opener.cfg, spec_name, token)?;
                 let mode = ops::plan_mode(&t)?;
                 modes.push((spec_name, token, mode.to_string()));
-                if let Some(stack) = stacks.get(token.as_str()) {
-                    let verb = ops::Verb::of(&t, &self.lock);
-                    let v = cakeys_pkcs11::gate::check(&t, mode, stack, self.opener.registry, verb)?;
-                    for d in &v.deferred {
-                        notes.note(format_args!("validate: {d}"));
-                    }
-                    refusals.extend(v.refusals.into_iter().map(|r| r.to_string()));
+                let verb = ops::Verb::of(&t, &self.lock);
+                let v = cakeys_pkcs11::gate::check(&t, mode, &stacks[token.as_str()], self.opener.registry, verb)?;
+                for d in ops::deferred_lines(&v.deferred) {
+                    notes.note(format_args!("validate: {d}"));
                 }
+                refusals.extend(v.refusals.into_iter().map(|r| r.to_string()));
             }
         }
-        for (name, stack) in &stacks {
+        for (name, stack) in stacks.iter().filter_map(|(name, s)| Some((name, s.as_ref().ok()?))) {
             for n in &stack.resolved.notes {
                 notes.note(format_args!("validate: token '{name}' ({}): {n}", stack.source));
             }
@@ -619,7 +614,7 @@ impl Run<'_> {
         }
         let refused: Vec<&ops::Planned> = planned.iter().filter(|p| p.action == ops::Action::Refuse).collect();
         for p in &planned {
-            for r in &p.reasons {
+            for r in &p.reasons() {
                 match p.action {
                     ops::Action::Skip => notes.note(format_args!(
                         "create: skipped '{}' (spec '{}') on token '{}': {r}",
@@ -637,9 +632,16 @@ impl Run<'_> {
             let rows: Vec<serde_json::Value> = planned
                 .iter()
                 .map(|p| {
+                    let deferred: Vec<serde_json::Value> =
+                        p.deferred.iter().map(|d| serde_json::json!({"rule": d.rule.name(), "why": d.why})).collect();
+                    let refusals: Vec<serde_json::Value> = p
+                        .refusals
+                        .iter()
+                        .map(|r| serde_json::json!({"rule": r.rule.name(), "exit": r.error.exit_code(), "error": r.error.to_string()}))
+                        .collect();
                     serde_json::json!({
-                        "spec": p.spec, "token": p.token, "object": p.object,
-                        "action": p.action.name(), "reasons": p.reasons,
+                        "spec": p.spec, "token": p.token, "object": p.object, "action": p.action.name(),
+                        "reasons": p.reasons(), "refusals": refusals, "deferred": deferred,
                     })
                 })
                 .collect();

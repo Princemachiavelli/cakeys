@@ -113,8 +113,21 @@ pub struct Planned<'a> {
     pub object: &'a str,
     /// What `create` does with it.
     pub action: Action,
-    /// Why: the skip's reason, the profiles' refusals, or what they leave undecided.
-    pub reasons: Vec<String>,
+    /// The rules that refuse it ([`Action::Refuse`]).
+    pub refusals: Vec<Refusal>,
+    /// The rules only the write can decide: the run asks them.
+    pub deferred: Vec<Deferred>,
+    /// Why else: the skip's reason, the verification's.
+    pub notes: Vec<String>,
+}
+
+impl Planned<'_> {
+    /// Why, as lines: the notes, the refusals, then what is deferred ([`deferred_lines`]).
+    #[must_use]
+    pub fn reasons(&self) -> Vec<String> {
+        let refusals = self.refusals.iter().map(ToString::to_string);
+        self.notes.iter().cloned().chain(refusals).chain(deferred_lines(&self.deferred)).collect()
+    }
 }
 
 /// What `create` does with each selected pair ([`create_pairs`]), decided from keys.toml, the
@@ -122,8 +135,8 @@ pub struct Planned<'a> {
 /// not `create` is skipped (unless the address names that one pair: an object or a spec, and a
 /// token); one whose object the lock pins is verified, never made again; every other pair goes
 /// through the static gate ([`crate::gate::check`]), whose *no* refuses it and whose *unknown*
-/// is a reason to try. A token whose profiles are not known without opening it is not gated
-/// here; the live check still refuses before generating.
+/// is deferred to the run. A token whose provider and profiles are known only when it opens
+/// defers each of their rules by name; the live check asks them before generating.
 ///
 /// # Errors
 ///
@@ -143,8 +156,15 @@ pub fn plan_create<'a>(
     let mut out = Vec::new();
     for (spec_name, token_name) in pairs {
         let t = Target::new(cfg, spec_name, token_name)?;
-        let planned =
-            |action, reasons| Planned { spec: spec_name, token: token_name, object: t.object_name, action, reasons };
+        let planned = |action, notes| Planned {
+            spec: spec_name,
+            token: token_name,
+            object: t.object_name,
+            action,
+            refusals: Vec::new(),
+            deferred: Vec::new(),
+            notes,
+        };
         let mode = plan_mode(&t)?;
         if let Some(why) = not_origin_create(&t) {
             if named {
@@ -161,16 +181,11 @@ pub fn plan_create<'a>(
             let token_cfg = &cfg.tokens[token_name];
             stacks.insert(token_name, crate::gate::stack(token_name, token_cfg, lock)?);
         }
-        out.push(match &stacks[token_name] {
-            Ok(stack) => {
-                let v = crate::gate::check(&t, mode, stack, registry, Verb::of(&t, lock))?;
-                if v.refusals.is_empty() {
-                    planned(action, [why, v.deferred.iter().map(ToString::to_string).collect()].concat())
-                } else {
-                    planned(Action::Refuse, v.refusals.iter().map(ToString::to_string).collect())
-                }
-            }
-            Err(e) => planned(action, [why, vec![format!("{t}: not checked before opening the token: {e}")]].concat()),
+        let v = crate::gate::check(&t, mode, &stacks[token_name], registry, Verb::of(&t, lock))?;
+        out.push(if v.refusals.is_empty() {
+            Planned { deferred: v.deferred, ..planned(action, why) }
+        } else {
+            Planned { refusals: v.refusals, ..planned(Action::Refuse, Vec::new()) }
         });
     }
     Ok(out)

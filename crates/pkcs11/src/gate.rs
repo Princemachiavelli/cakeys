@@ -83,16 +83,27 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
     })
 }
 
-/// Check `t` in `mode`, for the write `verb` ([`ops::Verb::of`]), against `stack`: the static
-/// rules ([`ops::static_rules`]) with the provider `stack` names and its profiles: placement, an
-/// attestation the provider must produce, every mechanism group [`ops::needs`] lists, and when
-/// `create` generates the key its generation, the mechanism and the type, curve and size. A
-/// provider this build lacks defers what only it could decide.
+/// Check `t` in `mode`, for the write `verb` ([`ops::Verb::of`]), against `stack` ([`stack`]'s
+/// answer for its token): the static rules ([`ops::static_rules`]) with the provider `stack`
+/// names and its profiles: placement, an attestation the provider must produce, every mechanism
+/// group [`ops::needs`] lists, and when `create` generates the key its generation, the
+/// mechanism and the type, curve and size. A stack that does not resolve, or a provider this
+/// build lacks, defers by name what only the open token could decide (review 2026-11-24 B-1).
 ///
 /// # Errors
 ///
 /// `Validation` (17) when no profile set is active ([`Registry::named`]).
-pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, verb: ops::Verb) -> Result<ops::Verdicts> {
+pub fn check(
+    t: &Target,
+    mode: Mode,
+    stack: &std::result::Result<Stack, String>,
+    registry: &Registry,
+    verb: ops::Verb,
+) -> Result<ops::Verdicts> {
+    let stack = match stack {
+        Ok(stack) => stack,
+        Err(why) => return ops::static_rules(t, mode, ops::Seat::Unresolved(why.clone()), verb, None),
+    };
     let provider = registry.named(&stack.provider)?;
     // A provider this build lacks and no profile names (a downstream one, as in the
     // custom-provider example): what it places, attests and adjusts is known only when the
@@ -157,8 +168,9 @@ mod tests {
         cakeys_profile::Set::activate_embedded().unwrap();
         let cfg = create_config();
         let t = Target::new(&cfg, "s", "t").unwrap();
-        let stack = Stack { resolved: Resolved::default(), provider: "custom".into(), source: "test" };
-        let v = check(&t, ops::plan_mode(&t).unwrap(), &stack, &Registry::new(), ops::Verb::Create).unwrap();
+        let stack =
+            |provider: &str| Ok(Stack { resolved: Resolved::default(), provider: provider.into(), source: "test" });
+        let v = check(&t, ops::plan_mode(&t).unwrap(), &stack("custom"), &Registry::new(), ops::Verb::Create).unwrap();
         let deferred: Vec<ops::Rule> = v.deferred.iter().map(|d| d.rule).collect();
         for rule in [ops::Rule::Placement, ops::Rule::OwnGeneration, ops::Rule::Templates] {
             assert!(deferred.contains(&rule), "{rule}: {:?}", v.deferred);
@@ -171,9 +183,17 @@ mod tests {
             "{:?}",
             v.deferred
         );
-        let known = Stack { provider: "softhsm".into(), ..stack };
-        let v = check(&t, ops::plan_mode(&t).unwrap(), &known, &Registry::new(), ops::Verb::Create).unwrap();
+        let v = check(&t, ops::plan_mode(&t).unwrap(), &stack("softhsm"), &Registry::new(), ops::Verb::Create).unwrap();
         assert!(!v.deferred.iter().any(|d| d.why.contains("is not in this build")), "{:?}", v.deferred);
+
+        // A token whose stack does not resolve: every rule a resolved one would ask is deferred,
+        // saying why (review 2026-11-24 B-1).
+        let unresolved = Err("token 't': no provider named".to_owned());
+        let v = check(&t, ops::plan_mode(&t).unwrap(), &unresolved, &Registry::new(), ops::Verb::Create).unwrap();
+        let rules: Vec<ops::Rule> = v.deferred.iter().map(|d| d.rule).collect();
+        let all = [ops::Rule::Placement, ops::Rule::OwnGeneration, ops::Rule::Templates, ops::Rule::Capability];
+        assert_eq!((rules.as_slice(), v.refusals.len()), (all.as_slice(), 0));
+        assert!(v.deferred.iter().all(|d| d.why.ends_with("token 't': no provider named")), "{:?}", v.deferred);
     }
 
     /// A lock observation that recorded answers but no module or token (an older lock): the
@@ -230,7 +250,7 @@ mod tests {
         cakeys_profile::Set::activate_embedded().unwrap();
         let cfg = create_config();
         let t = Target::new(&cfg, "s", "t").unwrap();
-        let stack = Stack { resolved: Resolved::default(), provider: "asked".into(), source: "test" };
+        let stack = Ok(Stack { resolved: Resolved::default(), provider: "asked".into(), source: "test" });
         let run = |refuses: bool, creates: bool| {
             let asked = Arc::new(Mutex::new(Vec::new()));
             let registry = Registry::new().with(Asked(Arc::clone(&asked), refuses));

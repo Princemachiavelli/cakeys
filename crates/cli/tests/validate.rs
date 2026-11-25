@@ -188,3 +188,33 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
         assert!(refused.contains("ykcs11 ignores CKA_LABEL when generating"), "{refused}");
     }
 }
+
+/// A token whose provider is known only when it opens (no `provider`, nothing in the lock: a
+/// ykcs11 module, say) still has its provider's rules asked: `validate` and `create --dry-run`
+/// defer each by name — where a key may go, the module's own generation, the templates, what the
+/// token can do — and never pass them in silence (review 2026-11-24 B-1). The run that opens the
+/// token decides them; a pair it would refuse (ykcs11: a key under a label, 17) differs from the
+/// dry run only by a rule the dry run named.
+#[test]
+fn a_provider_known_only_at_open_defers_its_rules_by_name() {
+    let w = Workdir::new("validate-unresolved-provider");
+    w.write_config(
+        "[tokens.yk]\nmodule = \"/nonexistent/libykcs11.so\"\ntokenLabel = \"YubiKey PIV\"\n\n\
+         [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.s]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
+         tokens.yk = { locator = { CKA_LABEL = \"under-a-label\" }, origin = \"create\" }\n",
+    );
+    let deferred = "(deferred: placement, own-generation, templates, capability)";
+    let out = w.km(&["validate"]);
+    let err = stderr(&out);
+    assert_eq!(code(&out), 0, "{err}");
+    let line = err.lines().find(|l| l.contains("'k' (spec 's') on token 'yk'")).unwrap_or_else(|| panic!("{err}"));
+    assert!(line.ends_with(deferred), "{line}");
+
+    let out = w.km(&["create", "--dry-run"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rules: Vec<&str> =
+        rows[0]["deferred"].as_array().unwrap().iter().map(|d| d["rule"].as_str().unwrap()).collect();
+    assert_eq!(rules, ["placement", "own-generation", "templates", "capability"], "{rows}");
+}
