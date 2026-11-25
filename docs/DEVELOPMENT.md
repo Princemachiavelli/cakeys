@@ -86,7 +86,7 @@ must pass:
 
 | Tier | What | Needs | Must pass |
 |---|---|---|---|
-| T0 | `.#checks-no-vm`: the crane build and its software-token suites (SoftHSM, kryoptic, p11-kit, swtpm, the fault shim), clippy, rustdoc, formatting, `doc-references`, `claims` (a universal claim of the documents that say what the tools guarantee names its tests in `docs/claims.toml`, or is counted against a number that only goes down), `test-count`, `oracle-count` (no test file asserts on a tool's prose more often than `nix/oracle-count.toml` allows, a number that only goes down), `ledger`, `fuzz-lock` and `kani-library-lock` (the second lockfiles still match: a drifted `fuzz/Cargo.lock` kept `vm` red from 38967ae to 61b7000) | Linux, no hardware | before a merge to `main` |
+| T0 | `.#checks-no-vm`: the crane build and its software-token suites (SoftHSM, kryoptic, p11-kit, swtpm, the fault shim), clippy, rustdoc, formatting, `doc-references`, `claims` (a universal claim of the documents that say what the tools guarantee names its tests in `docs/claims.toml`, or is counted against a number that only goes down), `test-count`, `oracle-count` (no test file asserts on a tool's prose more often than `nix/oracle-count.toml` allows, a number that only goes down), `ledger` (with the golden files: each change of what a build regenerates and compares with is recorded with the rows it moved and why; on a pull request the light job's `nix/golden-rows.py` holds the record to exactly the rows the diff moved), `fuzz-lock` and `kani-library-lock` (the second lockfiles still match: a drifted `fuzz/Cargo.lock` kept `vm` red from 38967ae to 61b7000) | Linux, no hardware | before a merge to `main` |
 | T1 | `.#checks-vm`: the NixOS VM tests and the fuzz smoke run | Linux with KVM | before a merge, or within a day of it; red is fixed forward first |
 | T2 | the YubiKey, AMD fTPM, Cloud KMS and CloudHSM suites and probes (`nix run .#coverage-full`, `scripts/cloud/*.sh`) | the device or a billed cloud account | on a schedule or before a release; recorded in the [ledger](CAPROBE.md#the-ledger) |
 
@@ -211,6 +211,21 @@ variables, and only for that suite's pass.
 fails when a binary that the run's cargo arguments build ran other tests than its source has: a
 binary lost, or a test left out. With nextest arguments, local-tests only reports. Every nextest
 run passes `--no-tests=fail`.
+
+### Golden files
+
+A golden file is what a build regenerates and compares with: the object matrix's tables
+(`spec-coverage/objects/`), the profiles of the software tokens, `spec-coverage/cakeys.toml` and
+the baseline. The code under test writes them, so a test against one detects a change, not an
+error (review 2026-11-24 C-8). Three things stand in front of them:
+
+- **The ledger records each change.** `profiles/LEDGER.toml` has a `[golden."<path>"]` entry per
+  file (CAPROBE.md, "The ledger"): every change adds a record naming the file it made and each
+  row that moved, with what it was and why the new value is right. `checks.ledger` fails a file
+  no record names, a why left `"TODO"` and a listed row that did not move. On a pull request,
+  `nix/golden-rows.py --base <rev>` fails when the record lists other rows than the diff moved,
+  and writes them, old and new, to the job summary. `nix develop -c python3 -I
+  nix/golden-rows.py --stub` prints the record to fill in.
 
 ## Verification beyond tests
 

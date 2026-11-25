@@ -43,6 +43,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The golden rows below compare with the pull request's base.
+          fetch-depth: 0
       - uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
         with:
           diagnostic-endpoint: ""
@@ -61,4 +63,12 @@ jobs:
       - name: Every output evaluates
         if: matrix.job == 'light'
         run: nix flake check --no-build
+      # A golden file the pull request changes lists in profiles/LEDGER.toml exactly the rows it
+      # moved, each with what it was (nix/golden-rows.py; checks.ledger holds the rest without
+      # git). The moved rows go to the job summary.
+      - name: Golden rows
+        if: matrix.job == 'light' && github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.base_ref }}
+        run: nix develop -c python3 -I nix/golden-rows.py --base "$(git merge-base "origin/$BASE" HEAD)" .
       - run: nix build -L ${{ matrix.build }}

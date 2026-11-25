@@ -110,11 +110,22 @@
         ];
       };
     in
-    pkgs.runCommand "cakeys-ledger" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-      set -o pipefail
-      python3 -I ${src}/nix/ledger-test.py
-      python3 -I ${src}/nix/ledger.py ${src} | tee $out
-    '';
+    # nix/golden-rows.py needs git, so CI's light job runs it on a pull request; here its
+    # fixture tests, on repositories they make.
+    pkgs.runCommand "cakeys-ledger"
+      {
+        nativeBuildInputs = [
+          pkgs.python3
+          pkgs.git
+        ];
+      }
+      ''
+        set -o pipefail
+        export HOME=$TMPDIR
+        python3 -I ${src}/nix/ledger-test.py
+        python3 -I ${src}/nix/golden-rows-test.py
+        python3 -I ${src}/nix/ledger.py ${src} | tee $out
+      '';
   # The software tokens are set up in one place, nix/token-env.sh (review D9): no other script
   # writes a SoftHSM configuration or initialises a token by hand, but those its header leaves
   # out (VM tests, old SoftHSM releases, upstream repros, a cloud host, p11-kit's own token).
@@ -183,6 +194,13 @@
     for part in '.#checks-no-vm' '.#checks-vm' '.#checks.x86_64-linux.kani'; do
       if [ "$(rg -c -F "build: $part" ${./.github/workflows/checks.yml})" != 1 ]; then
         echo "ci-jobs: .github/workflows/checks.yml should build $part once" >&2
+        exit 1
+      fi
+    done
+    # The golden rows (nix/golden-rows.py) need the history back to the pull request's base.
+    for line in 'fetch-depth: 0' 'nix/golden-rows.py --base'; do
+      if [ "$(rg -c -F "$line" ${./.github/workflows/checks.yml})" != 1 ]; then
+        echo "ci-jobs: .github/workflows/checks.yml should say '$line' once" >&2
         exit 1
       fi
     done
