@@ -85,7 +85,7 @@ must pass:
 
 | Tier | What | Needs | Must pass |
 |---|---|---|---|
-| T0 | `.#checks-no-vm`: the crane build and its software-token suites (SoftHSM, kryoptic, p11-kit, swtpm, the fault shim), clippy, rustdoc, formatting, `doc-references`, `test-count`, `ledger` | Linux, no hardware | before a merge to `main` |
+| T0 | `.#checks-no-vm`: the crane build and its software-token suites (SoftHSM, kryoptic, p11-kit, swtpm, the fault shim), clippy, rustdoc, formatting, `doc-references`, `test-count`, `ledger`, `fuzz-lock` and `kani-library-lock` (the second lockfiles still match: a drifted `fuzz/Cargo.lock` kept `vm` red from 38967ae to 61b7000) | Linux, no hardware | before a merge to `main` |
 | T1 | `.#checks-vm`: the NixOS VM tests and the fuzz smoke run | Linux with KVM | before a merge, or within a day of it; red is fixed forward first |
 | T2 | the YubiKey, AMD fTPM, Cloud KMS and CloudHSM suites and probes (`nix run .#coverage-full`, `scripts/cloud/*.sh`) | the device or a billed cloud account | on a schedule or before a release; recorded in the [ledger](CAPROBE.md#the-ledger) |
 
