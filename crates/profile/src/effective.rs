@@ -246,7 +246,7 @@ impl<'a> Effective<'a> {
         };
         if let Some(n) = bytes {
             return match decide_size(&rows, n, free) {
-                Size::Yes => Verdict::yes(&m.profile, None),
+                Size::Yes => Verdict::yes(&m.profile, m.provenance(&row(n)).map(str::to_owned).as_ref()),
                 Size::No => Verdict::no(&m.profile, m.evidence(&row(n), &format!("{kind} on {key_type} at {n} bytes"))),
                 Size::Unknown => unknown(),
             };

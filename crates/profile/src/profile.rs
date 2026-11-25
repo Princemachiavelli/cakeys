@@ -457,13 +457,34 @@ impl Profile {
         ))
     }
 
-    /// What shows the answer to `c`: why it is unknown, else its row's evidence, else the note an
-    /// older profile kept for it under `note` (the curve, or `"<key type> at <bits>"`).
+    /// What shows the answer to `c`: why it is unknown, else its row's evidence, with how far
+    /// it is shown ([`Self::provenance`]), else the note an older profile kept for it under
+    /// `note` (the curve, or `"<key type> at <bits>"`).
     #[must_use]
     pub fn evidence(&self, c: &Capability, note: &str) -> Option<String> {
+        let shown = self.provenance(c);
+        let with = |e: String| match shown {
+            Some(p) => format!("{e} ({p})"),
+            None => e,
+        };
         self.unknown(c)
-            .or_else(|| self.capabilities.get(c).and_then(|r| r.evidence.clone()))
-            .or_else(|| self.notes.get(note).cloned())
+            .or_else(|| self.capabilities.get(c).and_then(|r| r.evidence.clone()).map(with))
+            .or_else(|| self.notes.get(note).cloned().map(with))
+            .or_else(|| shown.map(str::to_owned))
+    }
+
+    /// How little `c`'s row shows, for a note beside its answer (phase1-design §2.4): a probed
+    /// row without `by` is legacy, a yes only the module vouches for is unverified. `None` for
+    /// a row the host checked or the module refused, a hand-written claim (`move.*`, a layer's
+    /// rows), and no row.
+    #[must_use]
+    pub fn provenance(&self, c: &Capability) -> Option<&'static str> {
+        let row = self.capabilities.get(c).filter(|_| c.probed() && self.mode == Mode::Observed)?;
+        match row.by {
+            None => Some("a legacy row: provenance unknown"),
+            Some(By::Unverified) => Some("unverified: only the module says so"),
+            Some(By::Host | By::Module) => None,
+        }
     }
 
     /// Set the row of `c`.
@@ -662,6 +683,33 @@ mod tests {
                 assert_eq!(p.generation(kt).is_some(), p.generation_key_types().contains(kt), "{} {kt}", p.profile);
             }
         }
+    }
+
+    /// What a note says of how far a row is shown (phase1-design §2.4): a probed row without
+    /// `by` is legacy, an unverified yes says so, and a row the host or the module showed, a
+    /// hand-written claim and a layer's row say nothing more.
+    #[test]
+    fn a_note_says_how_far_its_row_is_shown() {
+        let p = profile(
+            "\"generate.CKK_RSA.1024\" = { answer = \"no\", evidence = \"CKR_KEY_SIZE_RANGE\" }\n\
+             \"generate.CKK_RSA.2048\" = { answer = \"no\", by = \"module\", evidence = \"CKR_KEY_SIZE_RANGE\" }\n\
+             \"commit.cmac.CKK_AES.32\" = { answer = \"yes\", by = \"unverified\" }\n\
+             \"commit.cmac.CKK_AES.16\" = { answer = \"yes\", by = \"host\" }\n\
+             \"move.secret-unwrap\" = { answer = \"no\" }\n",
+        );
+        let rsa = |bits| Capability::Generate { key_type: KeyKind::Rsa, on: On::Bits(bits) };
+        let cmac = |bytes| Capability::Commit { kind: "cmac".into(), key_type: KeyKind::Aes, bytes };
+        assert_eq!(
+            p.evidence(&rsa(1024), "").as_deref(),
+            Some("CKR_KEY_SIZE_RANGE (a legacy row: provenance unknown)")
+        );
+        assert_eq!(p.evidence(&rsa(2048), "").as_deref(), Some("CKR_KEY_SIZE_RANGE"));
+        assert_eq!(p.provenance(&cmac(32)), Some("unverified: only the module says so"));
+        assert_eq!(p.provenance(&cmac(16)), None);
+        assert_eq!(p.provenance(&Capability::Move(Move::SecretUnwrap)), None);
+        let mut layer = p.clone();
+        layer.mode = Mode::Delta;
+        assert_eq!(layer.evidence(&rsa(1024), "").as_deref(), Some("CKR_KEY_SIZE_RANGE"));
     }
 
     /// A row's `by` holds only with the answers it can show: the module's is a no and never a
