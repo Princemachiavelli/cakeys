@@ -673,6 +673,14 @@ module and what real builds may reach.
   destroyed, a dry run too (`delete-refused`, 15); after every destroy cakeys looks under the
   locator again, and an object still there is `delete-kept` (16), the lock keeping the
   realisation.
+- **A provider adjusts templates and repairs reads only where it may** (review 2026-11-24
+  B-3). A template comes back from `Provider::template` with its security attributes as cakeys
+  built them or tightened (a restriction set true, a permission false); any other change to
+  `CKA_TOKEN`, `CKA_PRIVATE`, `CKA_SENSITIVE`, `CKA_EXTRACTABLE`, `CKA_WRAP_WITH_TRUSTED`,
+  `CKA_TRUSTED`, `CKA_ID`, `CKA_LABEL`, `CKA_MODIFIABLE`, `CKA_COPYABLE` or `CKA_DESTROYABLE`
+  is refused (17) before anything is made. A policy flag is repaired only for the
+  (attribute, private key type) pairs the provider declares (`Provider::repairs`; ykcs11:
+  `CKA_DERIVE` of EC and X25519 keys).
 - **Token paths reach only builds that require the token's feature.**
 
 ### 8.2 Not enforced / known gaps

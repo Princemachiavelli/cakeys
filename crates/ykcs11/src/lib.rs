@@ -132,6 +132,11 @@ impl Provider for Ykcs11 {
         Ok(())
     }
 
+    /// `CKA_DERIVE` of EC and X25519 private keys ([`Self::policy_flag`]).
+    fn repairs(&self) -> &'static [(AttributeType, KeyType)] {
+        &[(AttributeType::Derive, KeyType::EC), (AttributeType::Derive, KeyType::EC_MONTGOMERY)]
+    }
+
     /// ykcs11 reports `CKA_DERIVE` false on every private key, from a fixed per-slot table
     /// (`pvtkey_objects`, ykcs11/objects.c) \[src\], while its `C_DeriveKey` derives with any EC
     /// or X25519 key in any slot \[src\]\[run\]. A spec-compliant module reports what the key does.

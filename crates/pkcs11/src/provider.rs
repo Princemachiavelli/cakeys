@@ -151,10 +151,18 @@ pub trait Provider: Send + Sync {
         reported
     }
 
-    /// A boolean policy attribute `attr` (`CKA_SIGN`, `CKA_DERIVE`, ...) as `reported`;
-    /// `private_key_type` reads the object's key type when it is a private key. ykcs11's fixed
-    /// table says `CKA_DERIVE` false on keys its `C_DeriveKey` derives with (the profile keeps
-    /// the raw observation, `derive.key-attribute`).
+    /// The (attribute, private key type) pairs [`Self::policy_flag`] repairs: asked of no other
+    /// read, so a repair cannot widen a permission it does not declare (review 2026-11-24 B-3).
+    /// The default repairs none.
+    fn repairs(&self) -> &'static [(AttributeType, KeyType)] {
+        &[]
+    }
+
+    /// A boolean policy attribute `attr` (`CKA_SIGN`, `CKA_DERIVE`, ...) of a private key of
+    /// type `private_key_type`, as `reported`; asked only of the pairs [`Self::repairs`]
+    /// declares, and the closure always reads that type. ykcs11's fixed table says `CKA_DERIVE`
+    /// false on keys its `C_DeriveKey` derives with (the profile keeps the raw observation,
+    /// `derive.key-attribute`).
     fn policy_flag(&self, attr: AttributeType, reported: bool, private_key_type: &dyn Fn() -> Option<KeyType>) -> bool {
         let _ = (attr, private_key_type);
         reported
@@ -172,7 +180,10 @@ pub trait Provider: Send + Sync {
     // ── Templates ────────────────────────────────────────────────────────────────────────
 
     /// Adjust `attrs`, cakeys' template for the call `req` names, to one this module takes:
-    /// a vendor attribute set, a default it refuses removed. Every template the verbs build for
+    /// a vendor attribute set, a default it refuses removed. A security attribute ([`SECURITY`]:
+    /// where the object lives, who sees it, whether it leaves, its locator, what may change it)
+    /// is checked on return: changed, added or removed, the template is refused (17), unless the
+    /// change tightens it (review 2026-11-24 B-3). Every template the verbs build for
     /// `C_GenerateKey(Pair)`, `C_CreateObject`, `C_UnwrapKey` and `C_DeriveKey` passes through
     /// here, and the probe's generations, imports, creations and sealed round trips ask it with
     /// the same purposes (its own templates still differ in places); `C_FindObjects` search
@@ -347,17 +358,62 @@ impl dyn Provider + '_ {
         }
     }
 
-    /// `template`, cakeys' template for `req`, as the provider adjusts it ([`Provider::template`]).
+    /// `template`, cakeys' template for `req`, as the provider adjusts it ([`Provider::template`]),
+    /// its security attributes ([`SECURITY`]) as cakeys built them or tightened (review
+    /// 2026-11-24 B-3: a provider could make a sealed session key extractable, or move a key off
+    /// its locator, and nothing read it back).
     ///
     /// # Errors
     ///
-    /// The provider's refusal.
+    /// The provider's refusal; `Validation` (17) when it changed, added or removed a security
+    /// attribute other than to tighten it.
     pub fn adjusted(&self, req: &Template<'_>, template: Vec<Attribute>) -> Result<Vec<Attribute>> {
+        let built = template.clone();
         let mut attrs = Attributes(template);
         self.template(req, &mut attrs)?;
+        for (t, name, tightened) in SECURITY {
+            let (before, after) = (built.iter().find(|a| a.attribute_type() == t), attrs.get(t));
+            if before == after || tightened.is_some_and(|(made, v)| after == Some(&made(v))) {
+                continue;
+            }
+            let show = |a: Option<&Attribute>| a.map_or_else(|| "absent".to_owned(), |a| format!("{a:?}"));
+            return Err(KmError::Validation(
+                format!(
+                    "provider '{}' changed {name} in cakeys' template for {}, from {} to {}: a provider adjusts \
+                     no security attribute but to tighten it",
+                    self.name(),
+                    req.purpose(),
+                    show(before),
+                    show(after)
+                )
+                .into(),
+            ));
+        }
         Ok(attrs.0)
     }
 }
+
+/// The value that tightens a security attribute ([`SECURITY`]), as its constructor and the
+/// value: `None` where no change does.
+pub type Tightening = Option<(fn(bool) -> Attribute, bool)>;
+
+/// The attributes a provider's template hook may not change ([`Provider::template`]), each with
+/// the value that tightens it where one does: a restriction set true, a permission set false
+/// (phase1-design.md §3.2.2). The others (where the object lives, its locator, what may change,
+/// copy or destroy it) are kept as built.
+pub const SECURITY: [(AttributeType, &str, Tightening); 11] = [
+    (AttributeType::Token, "CKA_TOKEN", None),
+    (AttributeType::Private, "CKA_PRIVATE", Some((Attribute::Private, true))),
+    (AttributeType::Sensitive, "CKA_SENSITIVE", Some((Attribute::Sensitive, true))),
+    (AttributeType::Extractable, "CKA_EXTRACTABLE", Some((Attribute::Extractable, false))),
+    (AttributeType::WrapWithTrusted, "CKA_WRAP_WITH_TRUSTED", Some((Attribute::WrapWithTrusted, true))),
+    (AttributeType::Trusted, "CKA_TRUSTED", Some((Attribute::Trusted, false))),
+    (AttributeType::Id, "CKA_ID", None),
+    (AttributeType::Label, "CKA_LABEL", None),
+    (AttributeType::Modifiable, "CKA_MODIFIABLE", None),
+    (AttributeType::Copyable, "CKA_COPYABLE", None),
+    (AttributeType::Destroyable, "CKA_DESTROYABLE", None),
+];
 
 /// What a template cakeys builds is for ([`Provider::template`]).
 pub enum Template<'a> {
@@ -375,6 +431,21 @@ pub enum Template<'a> {
     TrustedCopy,
     /// A session object cakeys makes for one step and destroys after it.
     Session(SessionKey),
+}
+
+impl Template<'_> {
+    /// What the template is for, as a refusal names it.
+    #[must_use]
+    pub fn purpose(&self) -> String {
+        match self {
+            Template::Generate(on, half) => format!("generating {half:?} under {}", on.locator),
+            Template::Import(on, via) => format!("importing ({via:?}) under {}", on.locator),
+            Template::PublicHalf(on) => format!("the public half under {}", on.locator),
+            Template::Object(on) => format!("the object under {}", on.locator),
+            Template::TrustedCopy => "a transport key's trusted copy".to_owned(),
+            Template::Session(key) => format!("the session key {key:?}"),
+        }
+    }
 }
 
 /// The object a template makes: `object` as `spec` declares it, under `locator`.
@@ -713,23 +784,139 @@ mod tests {
             fn matches(&self, _: &ModuleInfo) -> bool {
                 false
             }
+            // No security attribute changed ([`SECURITY`]): a vendor's own, a use and a subject.
             fn template(&self, _: &Template<'_>, attrs: &mut Attributes) -> Result<()> {
-                attrs.set(Attribute::Sensitive(false));
-                attrs.set(Attribute::Label(b"v".to_vec()));
-                assert_eq!(attrs.remove(AttributeType::Token), Some(Attribute::Token(false)));
-                assert_eq!(attrs.remove(AttributeType::Token), None);
-                assert_eq!(attrs.get(AttributeType::Sensitive), Some(&Attribute::Sensitive(false)));
+                attrs.set(Attribute::Wrap(false));
+                attrs.set(Attribute::Subject(b"v".to_vec()));
+                assert_eq!(attrs.remove(AttributeType::Unwrap), Some(Attribute::Unwrap(true)));
+                assert_eq!(attrs.remove(AttributeType::Unwrap), None);
+                assert_eq!(attrs.get(AttributeType::Wrap), Some(&Attribute::Wrap(false)));
                 Ok(())
             }
         }
         let p: &dyn Provider = &Vendor;
-        let t = vec![Attribute::Token(false), Attribute::Sensitive(true), Attribute::Wrap(true)];
+        let t = vec![Attribute::Token(false), Attribute::Wrap(true), Attribute::Unwrap(true)];
         let req = Template::Session(SessionKey::RebindKek);
         assert_eq!(
             p.adjusted(&req, t.clone()).unwrap(),
-            [Attribute::Sensitive(false), Attribute::Wrap(true), Attribute::Label(b"v".to_vec())]
+            [Attribute::Token(false), Attribute::Wrap(false), Attribute::Subject(b"v".to_vec())]
         );
         let generic: &dyn Provider = &Generic;
         assert_eq!(generic.adjusted(&req, t.clone()).unwrap(), t, "the default changes nothing");
+    }
+
+    /// A provider sets `0` on every template it is asked.
+    struct Sets(Attribute);
+
+    impl Provider for Sets {
+        fn name(&self) -> &'static str {
+            "sets"
+        }
+        fn matches(&self, _: &ModuleInfo) -> bool {
+            false
+        }
+        fn template(&self, _: &Template<'_>, attrs: &mut Attributes) -> Result<()> {
+            attrs.set(self.0.clone());
+            Ok(())
+        }
+    }
+
+    /// A provider removes `0` from every template it is asked.
+    struct Removes(AttributeType);
+
+    impl Provider for Removes {
+        fn name(&self) -> &'static str {
+            "removes"
+        }
+        fn matches(&self, _: &ModuleInfo) -> bool {
+            false
+        }
+        fn template(&self, _: &Template<'_>, attrs: &mut Attributes) -> Result<()> {
+            attrs.remove(self.0);
+            Ok(())
+        }
+    }
+
+    /// Every session template cakeys builds (`templates::session`).
+    fn session_keys() -> [SessionKey; 9] {
+        let proof = |sealed| SessionKey::ProofSecret { binding: Binding::PopEcdh, sealed };
+        [
+            proof(true),
+            proof(false),
+            SessionKey::RebindKek,
+            SessionKey::RebindCopy,
+            SessionKey::KwInput,
+            SessionKey::HostKek,
+            SessionKey::TransportKey,
+            SessionKey::ExportKek,
+            SessionKey::ImportKek,
+        ]
+    }
+
+    /// What a provider's template hook may do (review 2026-11-24 B-3, phase1-design.md §3.2.2):
+    /// on every session template, a security attribute set to a value it does not have, or
+    /// removed, is refused (17) naming it, unless the change tightens it (a restriction set
+    /// true, a permission false); any other attribute is the provider's. Each template keeps
+    /// the security attributes it was built with.
+    #[test]
+    fn a_provider_changes_no_security_attribute_but_to_tighten_it() {
+        // The design's list, written out here so the test does not read the table it checks.
+        let names = [
+            (AttributeType::Token, "CKA_TOKEN"),
+            (AttributeType::Private, "CKA_PRIVATE"),
+            (AttributeType::Sensitive, "CKA_SENSITIVE"),
+            (AttributeType::Extractable, "CKA_EXTRACTABLE"),
+            (AttributeType::WrapWithTrusted, "CKA_WRAP_WITH_TRUSTED"),
+            (AttributeType::Trusted, "CKA_TRUSTED"),
+            (AttributeType::Id, "CKA_ID"),
+            (AttributeType::Label, "CKA_LABEL"),
+            (AttributeType::Modifiable, "CKA_MODIFIABLE"),
+            (AttributeType::Copyable, "CKA_COPYABLE"),
+            (AttributeType::Destroyable, "CKA_DESTROYABLE"),
+        ];
+        let name = |t: AttributeType| names.iter().find(|n| n.0 == t).map(|n| n.1);
+        let loosened = [
+            Attribute::Token(true),
+            Attribute::Private(false),
+            Attribute::Sensitive(false),
+            Attribute::Extractable(true),
+            Attribute::WrapWithTrusted(false),
+            Attribute::Trusted(true),
+            Attribute::Id(b"x".to_vec()),
+            Attribute::Label(b"x".to_vec()),
+            Attribute::Modifiable(true),
+            Attribute::Copyable(true),
+            Attribute::Destroyable(false),
+        ];
+        let tightened = [
+            Attribute::Private(true),
+            Attribute::Sensitive(true),
+            Attribute::Extractable(false),
+            Attribute::WrapWithTrusted(true),
+            Attribute::Trusted(false),
+        ];
+        for key in session_keys() {
+            let t = crate::templates::session(key);
+            let req = Template::Session(key);
+            let adjusted = |p: &dyn Provider| p.adjusted(&req, t.clone());
+            for a in &loosened {
+                let got = adjusted(&Sets(a.clone()));
+                if t.contains(a) {
+                    assert_eq!(got.unwrap(), t, "{key:?}: {a:?} is what it was built with");
+                } else {
+                    let e = got.unwrap_err();
+                    assert_eq!(e.exit_code(), 17, "{key:?}: {a:?}: {e}");
+                    assert!(e.to_string().contains(name(a.attribute_type()).unwrap()), "{e}");
+                }
+            }
+            for a in &tightened {
+                assert!(adjusted(&Sets(a.clone())).is_ok(), "{key:?}: tightening {a:?}");
+            }
+            for present in t.iter().map(Attribute::attribute_type) {
+                let security = name(present).is_some();
+                assert_eq!(adjusted(&Removes(present)).is_err(), security, "{key:?}: removing {present:?}");
+            }
+            assert!(adjusted(&Sets(Attribute::Subject(b"s".to_vec()))).is_ok(), "{key:?}: not a security attribute");
+        }
     }
 }

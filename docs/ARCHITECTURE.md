@@ -128,7 +128,9 @@ behaviour or reach outside PKCS#11:
 - **Seams** (the `Provider` trait; review 2026-11-15 §4 named the first two): three kinds, and
   nothing else. *Repairs* make a module's answer what a spec-compliant module's would be:
   one typed hook per attribute read (`ec_point`: tpm2-pkcs11's P-521, aws-cloudhsm's Ed25519
-  SPKI; `key_type`: aws-cloudhsm's Ed25519 as `CKK_EC`; `policy_flag`: ykcs11's `CKA_DERIVE`), and `stand_in`, one for a mechanism (a standard mechanism the module does not
+  SPKI; `key_type`: aws-cloudhsm's Ed25519 as `CKK_EC`; `policy_flag`: ykcs11's `CKA_DERIVE`, asked
+  only of the (attribute, private key type) pairs its `repairs` declares, so no repair widens a
+  permission it does not name; review 2026-11-24 B-3), and `stand_in`, one for a mechanism (a standard mechanism the module does not
   list but runs its own way, used through `Token::runnable` and relied on only where a profile's
   `add` row says the probe found it working: aws-cloudhsm's Ed25519). *Templates* make cakeys'
   own template for a call one the module takes: `template`, one hook every template cakeys
@@ -136,7 +138,12 @@ behaviour or reach outside PKCS#11:
   through (`provider::Template` names what it is for: a generation's half, an import by
   `C_CreateObject` or `C_UnwrapKey`, an imported key's public half, a public object, the trusted
   transport copy, or a session key of a proof, a commitment or a move), adjusting it or refusing
-  it. Every template is built in one place (`cakeys_pkcs11::templates`) and asked about before
+  it. What comes back is checked (`adjusted`): a security attribute (`provider::SECURITY`:
+  `CKA_TOKEN`, `CKA_PRIVATE`, `CKA_SENSITIVE`, `CKA_EXTRACTABLE`, `CKA_WRAP_WITH_TRUSTED`,
+  `CKA_TRUSTED`, `CKA_ID`, `CKA_LABEL`, `CKA_MODIFIABLE`, `CKA_COPYABLE`, `CKA_DESTROYABLE`)
+  changed, added or removed is refused (17) unless the change tightens it, a restriction set
+  true or a permission false (review 2026-11-24 B-3: a session key's sealing was the provider's
+  to undo, and session keys are never read back). Every template is built in one place (`cakeys_pkcs11::templates`) and asked about before
   anything is created: the proof's and the commitments' session keys, which run once the object
   exists, by the capability check before it (`ops::check_templates`, and `ops::check_import`
   before camigrate's imports). A plan asks the same templates without a token (`gate::check`,

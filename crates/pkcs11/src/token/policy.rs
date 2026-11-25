@@ -232,23 +232,24 @@ impl Token {
         self.repaired(h, t, self.attr_if_readable(h, t)?.as_ref())
     }
 
+    /// `read` as the provider repairs it: only where it declares a repair of `t` for the
+    /// private key type `h` has (`Provider::repairs`), so no repair widens a permission it does
+    /// not declare (review 2026-11-24 B-3). The key's type is read only for an attribute some
+    /// repair names, and a failed device, token or session is the read's error, not "no type".
     fn repaired(&self, h: ObjectHandle, t: AttributeType, read: Option<&Attribute>) -> Result<Option<bool>> {
         let Some(reported) = read.and_then(attr_bool) else { return Ok(None) };
-        // The key's type, for a provider whose repair needs it: read only then, and a failed
-        // device, token or session is the read's error, not "no type".
-        let failed = std::cell::Cell::new(None);
-        let private_key_type = || {
-            let read = || match self.attr_if_readable(h, AttributeType::Class)? {
-                Some(Attribute::Class(ObjectClass::PRIVATE_KEY)) => self.key_type_if_readable(h),
-                _ => Ok(None),
-            };
-            read().unwrap_or_else(|e| {
-                failed.set(Some(e));
-                None
-            })
+        let repairs = self.provider.repairs();
+        if !repairs.iter().any(|(a, _)| *a == t) {
+            return Ok(Some(reported));
+        }
+        let key_type = match self.attr_if_readable(h, AttributeType::Class)? {
+            Some(Attribute::Class(ObjectClass::PRIVATE_KEY)) => self.key_type_if_readable(h)?,
+            _ => None,
         };
-        let flag = self.provider.policy_flag(t, reported, &private_key_type);
-        failed.into_inner().map_or(Ok(Some(flag)), Err)
+        Ok(Some(match key_type {
+            Some(kt) if repairs.contains(&(t, kt)) => self.provider.policy_flag(t, reported, &|| Some(kt)),
+            _ => reported,
+        }))
     }
 
     /// `publicAttributes`, checked on the public key object of the pair: `h` itself when adopting
