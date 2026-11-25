@@ -21,18 +21,16 @@ attributes = { CKA_SIGN = true }
 tokens.ref = { locator = { CKA_LABEL = "occupied" }, origin = "create" }
 "#,
     );
-    // Like a PIV slot holding a certificate: generating there would replace its key.
-    assert_eq!(e.code(&["create", "--spec", "k", "--token", "ref", "--no-update-lock"]), 13);
-    let keys =
-        s.find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"occupied".to_vec())]).unwrap();
-    assert_eq!(keys, []);
+    // Like a PIV slot holding a certificate: generating there would replace its key. The token
+    // is as it was: no key made beside the certificate.
+    e.refused(&["create", "--spec", "k", "--token", "ref", "--no-update-lock"], 13, "locator-free");
 }
 
 /// What `create` refuses once its token is open, `create --dry-run` refuses too, with the same
-/// exit and naming the rule, and changes nothing: another class under the locator
-/// (`locator-free`, 13), a key there the lock does not pin (`unpinned-exists`, 19), a pinned key
-/// the token lost (`pinned-lost`, 14), a token without login (`needs-login`, 16). The dry run
-/// once planned without the token and passed, 0, each time (review 2026-11-24 C-4).
+/// exit and naming the rule, and neither changes the lock or the token: another class under the
+/// locator (`locator-free`, 13), a key there the lock does not pin (`unpinned-exists`, 19), a
+/// pinned key the token lost (`pinned-lost`, 14), a token without login (`needs-login`, 16).
+/// The dry run once planned without the token and passed, 0, each time (review 2026-11-24 C-4).
 #[test]
 fn a_dry_run_refuses_what_the_run_refuses_on_the_token() {
     let Some(e) = env("create-twins") else { return };
@@ -52,7 +50,6 @@ fn a_dry_run_refuses_what_the_run_refuses_on_the_token() {
     for h in s.labelled("twin-lost") {
         s.destroy_object(h).unwrap();
     }
-    let lock = e.dir.join("keys.lock");
     for (spec, token, exit, rule) in [
         ("occupied", "ref", 13, "locator-free"),
         ("exists", "ref", 19, "unpinned-exists"),
@@ -60,22 +57,16 @@ fn a_dry_run_refuses_what_the_run_refuses_on_the_token() {
         ("anon", "ref-anon", 16, "needs-login"),
     ] {
         let args = ["create", "--spec", spec, "--token", token];
-        let (before, there) = (std::fs::read(&lock).unwrap(), s.labelled(&format!("twin-{spec}")).len());
-        let dry = e.km(&[&args[..], &["--dry-run"]].concat());
-        assert_eq!(code(&dry), exit, "{spec}, dry: {}", stderr(&dry));
-        let plan: serde_json::Value = serde_json::from_str(&stdout(&dry)).unwrap_or_default();
-        assert_eq!(plan[0]["refusals"][0]["rule"].as_str(), Some(rule), "{spec}: {plan}");
-        assert_eq!(plan[0]["action"].as_str(), Some("refuse"), "{spec}: {plan}");
-        assert_eq!(std::fs::read(&lock).unwrap(), before, "{spec}: the dry run wrote the lock");
-        assert_eq!(s.labelled(&format!("twin-{spec}")).len(), there, "{spec}: the dry run changed the token");
-        let real = e.km(&args);
-        assert_eq!(code(&real), exit, "{spec}, the run: {}", stderr(&real));
+        let plan = e.refused(&[&args[..], &["--dry-run"]].concat(), exit, rule);
+        assert_eq!(plan[0].more["action"].as_str(), Some("refuse"), "{spec}: {plan:?}");
+        e.refused(&args, exit, rule);
     }
 }
 
 /// A session without login cannot see a private key: `create` on a pair whose key the lock pins,
-/// through a token with no PIN configured, says to configure one (16). It once said the key was
-/// gone and creating it would make other material (14, D1), for a key that was there.
+/// through a token with no PIN configured, is refused for the login (`needs-login`, 16). It once
+/// said the key was gone and creating it would make other material (14, D1), for a key that was
+/// there.
 #[test]
 fn create_without_login_asks_for_a_pin() {
     let Some(e) = env("create-no-login") else { return };
@@ -89,10 +80,7 @@ fn create_without_login_asks_for_a_pin() {
     e.config(&spec("ref"));
     assert_eq!(e.code(&["create", "--spec", "nl", "--token", "ref"]), 22);
     e.config(&spec("ref-anon"));
-    let o = e.km(&["create", "--spec", "nl", "--token", "ref-anon", "--no-update-lock"]);
-    let err = stderr(&o);
-    assert_eq!(code(&o), 16, "{err}");
-    assert!(err.contains("configure pinFile or pinEnv") && !err.contains("generate different material"), "{err}");
+    e.refused(&["create", "--spec", "nl", "--token", "ref-anon", "--no-update-lock"], 16, "needs-login");
 }
 
 /// D1: when the lock already pins an object's material, `create` is refused before anything is
@@ -118,13 +106,10 @@ fn create_never_fights_a_locked_identity() {
         &["create", "--spec", "second-slot", "--token", "ref", "--no-update-lock"][..],
         &["create", "--spec", "second-slot", "--token", "ref"][..],
     ] {
-        let o = e.km(args);
-        assert_eq!(code(&o), 14, "{args:?}");
-        let err = stderr(&o);
-        assert!(err.contains("creating it would generate") && err.contains("rfc7093m4"), "{err}");
+        let rows = e.refused(args, 14, "pinned-lost");
+        assert!(rows[0].error.as_deref().is_some_and(|e| e.contains("rfc7093m4")), "{rows:?}");
     }
-    let s = e.session(); // opened after the runs, so it sees anything they could have created
-    assert!(s.labelled("d1-second").is_empty(), "nothing was created");
+    let s = e.session();
 
     // The same material under the locator still realises (like `two_specs_same_material`): the
     // second spec's `lock` records a second realisation of the one object. `create` never makes
@@ -240,18 +225,15 @@ fn create_makes_keys_and_nothing_else_does() {
     // Made, and not recorded: a first use (18).
     assert_eq!(e.code(&["create", "--spec", "loose", "--token", "ref", "--no-update-lock"]), 18);
     for args in [&["create", "--token", "ref"][..], &["create", "--spec", "loose", "--token", "ref"]] {
-        let o = e.km(args);
-        assert_eq!(code(&o), 19, "{args:?}: {}", stderr(&o));
-        assert!(stderr(&o).contains("`cakeys lock` records a key that is there"), "{}", stderr(&o));
+        e.refused(args, 19, "unpinned-exists");
     }
-    assert_eq!(s.labelled("create-loose").len(), 2, "no second pair");
     s.clear(&["create-loose"]);
     e.config(body);
 
     // A pinned key the token lost is refused, never regenerated (14), named or not.
     s.clear(&["create-ec"]);
-    assert_eq!(e.code(&["create", "--spec", "ec", "--token", "ref"]), 14);
-    assert_eq!(e.code(&["create", "--token", "ref"]), 14);
+    e.refused(&["create", "--spec", "ec", "--token", "ref"], 14, "pinned-lost");
+    e.refused(&["create", "--token", "ref"], 14, "pinned-lost");
     // Named, a pair whose origin is not `create` is still not created (17).
     let o = e.km(&["create", "--spec", "cert", "--token", "ref"]);
     assert_eq!(code(&o), 17, "{}", stderr(&o));
@@ -285,15 +267,12 @@ fn create_checks_the_profiles_before_it_makes_anything() {
     let nothing_made =
         || !made("gate-p256") && !made("gate-k1") && std::fs::read_to_string(&lock).unwrap() == EMPTY_LOCK;
 
-    let o = e.km(&["create", "--dry-run"]);
-    assert_eq!(code(&o), 15, "{}", stderr(&o));
-    let plan: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
-    let action = |spec: &str| plan.as_array().unwrap().iter().find(|p| p["spec"] == spec).unwrap()["action"].clone();
-    assert_eq!((action("p256"), action("k1")), ("create".into(), "refuse".into()), "{plan}");
-    // Which pair, and the profile that decided, not the sentence around them (review create.rs F3).
-    let refusal = stderr(&o);
-    let k1 = refusal.lines().find(|l| l.contains("'k1' (spec 'k1') on token 'ref'")).unwrap_or_default();
-    assert!(k1.contains("kryoptic/1.5"), "{refusal}");
+    let plan = e.refused(&["create", "--dry-run"], 15, "capability");
+    let row = |spec: &str| plan.iter().find(|p| p.spec == spec).unwrap();
+    let action = |spec: &str| row(spec).more["action"].as_str().unwrap_or_default().to_owned();
+    assert_eq!((action("p256"), action("k1")), ("create".into(), "refuse".into()), "{plan:?}");
+    // The profile that decided, not the sentence around it (review create.rs F3).
+    assert!(row("k1").error.as_deref().is_some_and(|e| e.contains("kryoptic/1.5")), "{plan:?}");
     assert_eq!(e.code(&["create", "--dry-run", "--skip-unsupported"]), 0);
     assert!(nothing_made(), "a dry run makes nothing");
 
@@ -349,12 +328,12 @@ fn a_tokens_own_answers_decide_before_its_profile() {
         .unwrap()
         .insert("prove.pop-ecdh.CKK_EC.secp256r1".into(), no.into());
     std::fs::write(&path, toml::to_string(&lock).unwrap()).unwrap();
-    for args in [&["validate"][..], &["create", "derive", "--dry-run"]] {
-        let o = e.km(args);
-        assert_eq!(code(&o), 15, "{args:?}: {}", stderr(&o));
-        assert!(stderr(&o).contains("cannot prove possession by prove.pop-ecdh.CKK_EC.secp256r1"), "{}", stderr(&o));
-        assert!(stderr(&o).contains("as recorded"), "{}", stderr(&o));
-    }
+    let o = e.km(&["validate"]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    assert!(stderr(&o).contains("cannot prove possession by prove.pop-ecdh.CKK_EC.secp256r1"), "{}", stderr(&o));
+    assert!(stderr(&o).contains("as recorded"), "{}", stderr(&o));
+    // `create`'s gate too: the profile passed it (`validate` was 0), so the answer refused it.
+    e.refused(&["create", "derive", "--dry-run"], 15, "capability");
     assert_eq!(e.code(&["check", "sign"]), 0, "check never reads the answers");
     assert!(e.session().labelled("answers-derive").is_empty(), "nothing was made");
 }

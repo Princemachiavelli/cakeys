@@ -1,0 +1,34 @@
+# The most prose assertion sites each integration test file may have (nix/oracle-count.py,
+# checks.oracle-count; docs/DEVELOPMENT.md, "Testing"): an assert whose subject is `.contains(…)`
+# on what a tool said, standing in for the rule a refusal names (review 2026-11-24 C-9). A file
+# with more fails the check, and a file not named here may have none. `--write` lowers each
+# number to the source's and never raises one: a raise is a hand edit, and its commit says why.
+
+"crates/camigrate/tests/dry_run.rs" = 60
+"crates/camigrate/tests/fault.rs" = 4
+"crates/camigrate/tests/from_files.rs" = 8
+"crates/caprobe/tests/fault.rs" = 1
+"crates/caprobe/tests/reference.rs" = 6
+"crates/caprobe/tests/supports.rs" = 6
+"crates/caprobe/tests/yubikey.rs" = 2
+"crates/cli/tests/common/xref.rs" = 1
+"crates/cli/tests/fault.rs" = 19
+"crates/cli/tests/ftpm.rs" = 1
+"crates/cli/tests/offline.rs" = 1
+"crates/cli/tests/p11kit.rs" = 2
+"crates/cli/tests/reference/adoption.rs" = 5
+"crates/cli/tests/reference/check.rs" = 10
+"crates/cli/tests/reference/create.rs" = 13
+"crates/cli/tests/reference/delete.rs" = 5
+"crates/cli/tests/reference/drift.rs" = 9
+"crates/cli/tests/reference/identity.rs" = 9
+"crates/cli/tests/reference/lockfile.rs" = 15
+"crates/cli/tests/reference/mod.rs" = 1
+"crates/cli/tests/reference/proofs.rs" = 12
+"crates/cli/tests/reference/tokens.rs" = 8
+"crates/cli/tests/reference/validate.rs" = 6
+"crates/cli/tests/references.rs" = 2
+"crates/cli/tests/tpm2.rs" = 27
+"crates/cli/tests/validate.rs" = 18
+"crates/cli/tests/yubikey.rs" = 2
+"crates/pkcs11/tests/library.rs" = 1

@@ -152,6 +152,28 @@
       python3 -I ${src}/nix/test-count-tests.py
       python3 -I ${src}/nix/test-count.py ${src} | tee $out
     '';
+  # No integration test file asserts on what a tool said more often than nix/oracle-count.toml
+  # allows, a number that only goes down (nix/oracle-count.py, its fixture tests first): a
+  # refusal's oracle is its exit, the rule its row names and the state it left, not its prose
+  # (review 2026-11-24 C-9).
+  oracle-count =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./crates
+          ./nix/test-count.py
+          ./nix/oracle-count.py
+          ./nix/oracle-count-tests.py
+          ./nix/oracle-count.toml
+        ];
+      };
+    in
+    pkgs.runCommand "cakeys-oracle-count" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      set -o pipefail
+      python3 -I ${src}/nix/oracle-count-tests.py
+      python3 -I ${src}/nix/oracle-count.py ${src} | tee $out
+    '';
   # CI builds the three parts flake.nix splits the checks into, each once
   # (.github/workflows/checks.yml): a part the workflow stops naming is never built there.
   ci-jobs = pkgs.runCommand "cakeys-ci-jobs" { nativeBuildInputs = [ pkgs.ripgrep ]; } ''
