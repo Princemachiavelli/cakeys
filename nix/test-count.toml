@@ -6,7 +6,7 @@
 
 cakeys-aws-cloudhsm = 4
 cakeys-cli-common = 4
-cakeys-core = 93
+cakeys-core = 101
 "cakeys-core::config_doc" = 1
 "cakeys-core::exit_codes" = 2
 "cakeys-core::fuzzing_surface" = 2
@@ -42,7 +42,7 @@ camigrate = 48
 "camigrate::from_files" = 4
 "camigrate::surface" = 1
 "camigrate::yubikey" = 1
-caprobe = 43
+caprobe = 44
 "caprobe::fault" = 7
 "caprobe::ftpm" = 1
 "caprobe::reference" = 7
