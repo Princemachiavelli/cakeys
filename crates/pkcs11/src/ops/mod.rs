@@ -546,13 +546,15 @@ pub fn delete(
         let (scheme, expected) = match if_match {
             Some(want) => (primary, want.to_owned()),
             None => computed.iter().find_map(|s| Some((*s, locked?.get(s.name())?.clone()))).ok_or_else(|| {
-                KmError::PreconditionFailed(format!("no expected {primary} for {t}; pass --if-match").into())
+                let e = KmError::PreconditionFailed(format!("no expected {primary} for {t}; pass --if-match").into());
+                KmError::from(Refusal::new(Rule::IfMatch, e))
             })?,
         };
         if got.get(scheme.name()) != Some(&expected) {
-            return Err(KmError::PreconditionFailed(
+            let e = KmError::PreconditionFailed(
                 format!("{} holds {:?}, expected {expected}; not deleting", t, got.get(scheme.name())).into(),
-            ));
+            );
+            return Err(Refusal::new(Rule::IfMatch, e).into());
         }
         if dry_run {
             notes.say(format!("{t} holds {expected}: a delete would destroy it"));

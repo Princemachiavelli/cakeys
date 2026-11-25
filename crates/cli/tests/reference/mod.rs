@@ -4,7 +4,7 @@
 //!
 //! A verb's own tests are in its file (`check`, `create`, `delete` with `gc`, `validate`); what
 //! `lock` and `check` share is by concern (`identity`, `proofs`, `adoption`, `drift`,
-//! `lockfile`, `tokens`). This file holds the harness and the fixtures several of them use.
+//! `lockfile`, `tokens`); the rows every per-object verb prints, in `rows`. This file holds the harness and the fixtures several of them use.
 
 #![expect(clippy::type_complexity, reason = "table-driven cases")]
 
@@ -27,6 +27,7 @@ mod drift;
 mod identity;
 mod lockfile;
 mod proofs;
+mod rows;
 mod tokens;
 mod validate;
 

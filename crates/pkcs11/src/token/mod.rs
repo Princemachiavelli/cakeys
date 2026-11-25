@@ -52,7 +52,7 @@ pub use possession::{
     template_refusal,
 };
 pub use public::{public_key_attrs, public_object_attrs};
-pub use rv::{SO_LOGIN, read_attribute, rv_is, rv_name, rv_of, rv_value, rv_value_name};
+pub use rv::{SO_LOGIN, device_failed_rv, read_attribute, rv_is, rv_name, rv_of, rv_value, rv_value_name};
 use rv::{ck, if_readable};
 use types::managed_class;
 pub use types::{class_of, hmac_key_gen, key_type_of, secret_key_gen};

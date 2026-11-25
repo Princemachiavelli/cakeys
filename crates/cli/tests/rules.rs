@@ -259,3 +259,76 @@ fn a_profile_row_that_says_the_module_keeps_keys_refuses_the_delete() {
     assert_eq!(tok.find_any(&t.on_token.locator).unwrap().len(), 2, "the key pair is there");
     open(&cfg, "plain", &Registry::new()).destroy(&t.object, &t.on_token.locator).unwrap();
 }
+
+/// Where each rule is held on the entry paths that meet it (docs/archive/REVIEW-2026-11-24/
+/// phase1-design.md §1.4, T-4), as `<file> <test>`: a `match` with no wildcard, so a rule added
+/// without its tests fails to compile here. Each test refuses with the rule's exit code and
+/// name, or defers it by name, on its paths; camigrate's paths are Phase 2's, in a rules suite
+/// of its own.
+fn held(rule: Rule) -> &'static [&'static str] {
+    match rule {
+        Rule::Placement => &["rules.rs placement_holds_on_every_path"],
+        Rule::AttestationCover => &["validate.rs the_gate_refuses_what_it_can_decide_and_says_what_it_cannot"],
+        Rule::ImportedAttestation => &["dry_run.rs landing_checks_follow_the_spec_named"],
+        Rule::OwnGeneration => &[
+            "gate.rs a_provider_this_build_lacks_is_said",
+            "lib.rs what_could_not_be_proven_or_shown_is_refused_before_creating",
+        ],
+        Rule::Templates => &[
+            "gate.rs the_gate_asks_the_provider_about_a_generation",
+            "templates.rs a_refused_proof_template_creates_nothing",
+        ],
+        Rule::Capability => &[
+            "validate.rs a_profile_no_refuses_and_names_its_profile",
+            "create.rs create_checks_the_profiles_before_it_makes_anything",
+        ],
+        Rule::LocatorFree | Rule::UnpinnedExists | Rule::PinnedLost => &[
+            "create.rs a_dry_run_refuses_what_the_run_refuses_on_the_token",
+            "rows.rs every_pair_has_a_row_of_one_shape",
+        ],
+        Rule::NeedsLogin => &[
+            "create.rs a_dry_run_refuses_what_the_run_refuses_on_the_token",
+            "identity.rs private_data_objects_are_identified_when_declared",
+            "p11kit.rs p11kit_login_is_per_client",
+        ],
+        Rule::IfMatch => &["rows.rs every_pair_has_a_row_of_one_shape"],
+        Rule::DeleteRefused => &[
+            "rules.rs a_profile_row_that_says_the_module_keeps_keys_refuses_the_delete",
+            "tpm2.rs tpm2_delete_is_refused_where_the_module_keeps_keys",
+        ],
+        Rule::DeleteKept => &[
+            "rules.rs a_delete_the_module_did_not_do_keeps_the_lock",
+            "fault.rs a_delete_the_module_does_not_do_keeps_the_lock",
+        ],
+        Rule::LockWritable => &["lockfile.rs lock_is_written_by_default_and_refused_where_it_cannot_be"],
+    }
+}
+
+/// Every rule names tests that hold it ([`held`]), and each of them is in the tree, in a file of
+/// that name.
+#[test]
+fn every_rule_names_the_tests_that_hold_it() {
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    sources(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".."), &mut files);
+    for rule in Rule::ALL {
+        assert!(!held(*rule).is_empty(), "{rule} names no test");
+        for named in held(*rule) {
+            let (file, test) = named.split_once(' ').unwrap();
+            let there = files
+                .iter()
+                .filter(|p| p.file_name().is_some_and(|f| f == file))
+                .any(|p| std::fs::read_to_string(p).unwrap().contains(&format!("fn {test}()")));
+            assert!(there, "{rule}: no `fn {test}()` in any {file}");
+        }
+    }
+}

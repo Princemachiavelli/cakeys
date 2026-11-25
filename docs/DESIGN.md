@@ -189,6 +189,11 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   review is the `keys.lock` diff, and a run that wrote the lock exits 22, never 0, so a caller
   handles that review on purpose. A lock that is not there is refused (17) unless `--new-lock`:
   a mistyped `--lock` never starts a second lock (review 2026-11-23, C-4).
+- **Every pair a verb reaches has a row, of one shape** (`Outcome`, cli-common; review
+  2026-11-24 C-1): its outcome, its exit code, the rule that refused it and whether the device
+  failed, so a caller, and the dry-run twin, read what happened to each from the rows alone. The
+  run's exit follows from them: 0 (22 when the lock was written), the one failure's code, or 20
+  for a plan refused more than once.
 - **A write that replaces a realisation says what it accepted,** one line each (`re-recorded
   …`): what keys.toml changed (locator, object, `publicOnly`, spec digest) and policy
   attributes the lock did not record are notes; a policy attribute or immutable that changed

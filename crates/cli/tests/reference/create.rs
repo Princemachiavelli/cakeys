@@ -192,11 +192,21 @@ fn create_makes_keys_and_nothing_else_does() {
     assert_eq!(e.code(&["check", "--spec", "ec", "--token", "ref"]), 0);
 
     // Again: both are pinned now, so each is verified as `check` verifies it, and nothing is
-    // created twice; named, the same.
-    for args in [&["create", "--token", "ref"][..], &["create", "--spec", "ec", "--token", "ref"]] {
+    // created twice; named, the same. Each verified pair has its row (review 2026-11-24 C-1:
+    // none had).
+    for (args, specs) in [
+        (&["create", "--token", "ref"][..], &["ec", "aes"][..]),
+        (&["create", "--spec", "ec", "--token", "ref"], &["ec"]),
+    ] {
         let o = e.km(args);
         assert_eq!(code(&o), 0, "{args:?}: {}", stderr(&o));
-        assert_eq!(stdout(&o), "[]");
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&stdout(&o)).unwrap();
+        let mut verified: Vec<(&str, &str)> =
+            rows.iter().map(|r| (r["spec"].as_str().unwrap(), r["outcome"].as_str().unwrap())).collect();
+        verified.sort_unstable();
+        let mut want: Vec<(&str, &str)> = specs.iter().map(|s| (*s, "verified")).collect();
+        want.sort_unstable();
+        assert_eq!(verified, want, "{args:?}");
         assert!(stderr(&o).contains("already pins object 'ec'"), "{}", stderr(&o));
         assert!(stderr(&o).contains("'ec' (spec 'ec') on token 'ref' is already there and matches the lock"));
         assert_eq!(s.labelled("create-ec").len(), 2, "no second pair");

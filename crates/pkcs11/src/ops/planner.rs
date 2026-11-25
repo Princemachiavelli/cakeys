@@ -262,19 +262,38 @@ pub fn plan_on_tokens(
 }
 
 /// What [`create_selected`] did.
-pub struct Created {
-    /// The realised objects, in the order they were created.
-    pub created: Vec<Resolved>,
+pub struct Created<'a> {
+    /// Each pair the run reached, in order: the last is the one whose failure ended it, if any.
+    pub reached: Vec<Reached<'a>>,
     /// Whether the lock changed and `persist` saved it.
     pub changed: bool,
-    /// The failure that ended the run, if any.
+}
+
+/// One pair [`create_selected`] reached, and what became of it: made or verified; made, and its
+/// record not saved; or failed before anything was made.
+pub struct Reached<'a> {
+    /// The spec.
+    pub spec: &'a str,
+    /// The token.
+    pub token: &'a str,
+    /// What it made or verified.
+    pub made: Option<Made>,
+    /// The failure that ended the run at this pair.
     pub failed: Option<KmError>,
+}
+
+impl Created<'_> {
+    /// The failure that ended the run, if one did.
+    #[must_use]
+    pub fn failed(&self) -> Option<&KmError> {
+        self.reached.last().and_then(|r| r.failed.as_ref())
+    }
 }
 
 /// The `create` verb: [`create`] over each of `ready` (what [`plan_create`] decided to create or
 /// verify, no rule refusing it), in order; [`create`] asks the token's rules again before it
 /// writes. Every step of a pair, opening its token included, ends the run there,
-/// reported in [`Created::failed`] beside what was created before; a verified key is said in a
+/// reported in that pair's [`Reached::failed`] beside what was created before; a verified key is said in a
 /// note. Each pair that changed `lock` is `persist`ed before the next pair is touched, so a run
 /// killed or failing later never leaves a key on a token the lock file does not record; a
 /// failed save ends the run as a pair's failure does.
@@ -284,16 +303,16 @@ pub struct Created {
 /// # Errors
 ///
 /// None of its own: a pair's failure, or its record's, is [`Created::failed`].
-pub fn create_selected(
+pub fn create_selected<'a>(
     cfg: &Config,
-    ready: &[Ready<'_, '_>],
+    ready: &[Ready<'_, 'a>],
     open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
     lock: &mut Lock,
     write: LockWrite,
     persist: &mut dyn FnMut(&Lock) -> Result<()>,
     notes: &mut Notes,
-) -> Created {
-    let mut out = Created { created: Vec::new(), changed: false, failed: None };
+) -> Created<'a> {
+    let mut out = Created { reached: Vec::new(), changed: false };
     let mut current: Option<Token> = None;
     for (spec_name, token_name) in ready.iter().map(|r| (r.spec(), r.token())) {
         let mut pair = || -> Result<Made> {
@@ -305,24 +324,24 @@ pub fn create_selected(
             };
             create(&t, tok, lock, write, notes)
         };
-        match pair() {
+        let (made, failed) = match pair() {
             Ok(Made::Created(r, c)) => {
                 let saved = if c { persist(lock) } else { Ok(()) };
-                out.created.push(r);
-                if let Err(e) = saved {
+                if saved.is_err() {
                     notes.say(format!(
                         "'{spec_name}' on token '{token_name}' was created, but the lock could not record it"
                     ));
-                    out.failed = Some(e);
-                    break;
                 }
-                out.changed |= c;
+                out.changed |= c && saved.is_ok();
+                (Some(Made::Created(r, c)), saved.err())
             }
-            Ok(Made::Verified(_)) => {}
-            Err(e) => {
-                out.failed = Some(e);
-                break;
-            }
+            Ok(verified) => (Some(verified), None),
+            Err(e) => (None, Some(e)),
+        };
+        let stop = failed.is_some();
+        out.reached.push(Reached { spec: spec_name, token: token_name, made, failed });
+        if stop {
+            break;
         }
     }
     out
