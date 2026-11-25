@@ -314,20 +314,14 @@ fn an_oaep_hash_counts_only_when_a_host_made_blob_decodes() {
     // CKM_RSA_PKCS_OAEP (9) with CKM_SHA_1 (0x220).
     let sha1_unwrap = |c: &serde_json::Value| c["fn"] == "C_UnwrapKey" && c["mechanism"] == 9 && c["hash"] == 0x220;
     let sha1_wrap = |c: &serde_json::Value| c["fn"] == "C_WrapKey" && c["mechanism"] == 9 && c["hash"] == 0x220;
-    let host = wraps
-        .windows(3)
-        .find(|w| sha1_wrap(w[0]) && sha1_unwrap(w[1]) && sha1_unwrap(w[2]))
-        .map(|w| w[2]);
+    let host = wraps.windows(3).find(|w| sha1_wrap(w[0]) && sha1_unwrap(w[1]) && sha1_unwrap(w[2])).map(|w| w[2]);
     let host = host.unwrap_or_else(|| panic!("no host-made blob's unwrap in the trace: {wraps:?}"));
     let plan = rule(&format!("fn = \"C_UnwrapKey\"\ncall = {}\nuse_label = \"decoy-rsa\"", host["n"]));
     let (exit, profile, said, fired) = probed(&w, "blob", &plan, &[]);
     assert_eq!(exit, 0, "{said}");
     assert_fired("blob", &plan, &fired, &said);
-    let unwraps: String = std::fs::read_to_string(w.dir.join("blob.jsonl"))
-        .unwrap()
-        .lines()
-        .collect::<Vec<_>>()
-        .join("\n");
+    let unwraps: String =
+        std::fs::read_to_string(w.dir.join("blob.jsonl")).unwrap().lines().collect::<Vec<_>>().join("\n");
     assert!(
         profile.contains("\"wrap.rsa-oaep.SHA-1\" = { answer = \"no\" }"),
         "{plan}\nfired {fired:?}\nunwraps in the blob run:\n{unwraps}\n{said}\n{profile}"

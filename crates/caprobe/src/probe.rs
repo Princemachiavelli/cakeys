@@ -44,10 +44,10 @@ mod secrets;
 mod wraps;
 
 pub(crate) use asymmetric::RSA_SIZES;
-use asymmetric::{operate, MONTGOMERY, probe_curves, probe_rsa};
+use asymmetric::{MONTGOMERY, operate, probe_curves, probe_rsa};
 use bound::probe_bound;
 use scratch::{Scratch, write_probes};
-use wraps::{rsa_aes_key_wrap, probe_wrapping, probe_key_wraps};
+use wraps::{probe_key_wraps, probe_wrapping, rsa_aes_key_wrap};
 
 /// The text of a module-supplied string with its C padding removed: PKCS#11's fixed-width
 /// fields are C strings, and a module may NUL-pad them (tpm2-pkcs11's token model comes from

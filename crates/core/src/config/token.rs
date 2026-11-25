@@ -1,7 +1,7 @@
 //! Token declarations: `[tokens.<name>]` in keys.toml, the probe and Nix settings, and the
 //! module options each provider reads (docs/CONFIG.md).
 
-use super::{Deserialize, PathBuf, Result, env_ref, secret_path, KmError};
+use super::{Deserialize, KmError, PathBuf, Result, env_ref, secret_path};
 
 /// One token (`[tokens.<name>]`): the module that reaches it, its label and credentials, and what
 /// its provider needs.

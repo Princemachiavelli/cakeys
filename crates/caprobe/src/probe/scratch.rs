@@ -1,7 +1,11 @@
 //! The scratch slot: the write probes' objects, their cleanup and the stale check
 //! (docs/CAPROBE.md).
 
-use super::{Target, ObjectHandle, Session, Attribute, ckr, BoundKey, AttributeType, Made, Draft, Result, extras, probe_bound, probe_curves, probe_rsa, probe_secrets, probe_wrapping, probe_key_wraps, moves, secrets, Capability, Answer, BTreeMap};
+use super::{
+    Answer, Attribute, AttributeType, BTreeMap, BoundKey, Capability, Draft, Made, ObjectHandle, Result, Session,
+    Target, ckr, extras, moves, probe_bound, probe_curves, probe_key_wraps, probe_rsa, probe_secrets, probe_wrapping,
+    secrets,
+};
 
 /// The objects the write probes make on their target: where they may write ([`Target`]), what
 /// they made and under which labels, for the cleanup and the leftover check.
