@@ -15,6 +15,7 @@ mod sealed;
 mod side;
 mod tokens;
 mod transport;
+mod trust;
 
 use anyhow::Context as _;
 use bundle::Bundle;
@@ -31,13 +32,14 @@ use cakeys_pkcs11::{Registry, Token};
 use clap::{Parser, Subcommand};
 use file_verbs::FileImport;
 use landing::{
-    FROM_FILE, KEY_FILE, MOVE, import_checks, import_target, in_bundle, locked_spki, realised_target, source_target,
-    spec_for, specs_import, specs_select, transport_choice, transport_target,
+    FROM_FILE, KEY_FILE, MOVE, import_checks, import_target, in_bundle, source_target, spec_for, specs_import,
+    specs_select,
 };
 use plan::FileFormat;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use trust::{BoundBundle, BoundTransport};
 use zeroize::Zeroizing;
 
 pub use cakeys_cli_common::default_registry;
@@ -57,13 +59,14 @@ pub mod fuzzing {
     /// When either does not hold.
     pub fn bundle_round_trips(text: &str) {
         let path = std::path::Path::new("bundle.toml");
-        let bundle = match crate::bundle::Bundle::parse(text, path) {
+        let claimed = match crate::bundle::Bundle::parse(text, path) {
             Ok(b) => b,
             Err(e) => return assert_eq!(e.exit_code(), 17, "{e}"),
         };
+        let bundle = claimed.unverified();
         let written = bundle.to_toml().expect("a bundle that reads serializes");
         let again = crate::bundle::Bundle::parse(&written, path).unwrap_or_else(|e| panic!("{e}\n{written}"));
-        assert_eq!(again, bundle, "the bundle read back differs:\n{written}");
+        assert_eq!(again.unverified(), bundle, "the bundle read back differs:\n{written}");
     }
 
     /// A key file's bytes as each kind of object reads them, with the fixtures' passphrase: read
@@ -142,11 +145,11 @@ struct Cli {
 enum Cmd {
     /// Export objects realised on --from, shaped for where they go: a bundle for `import` on
     /// --to (the keys sealed to its transport key, the public objects as they are), the same
-    /// sealed to the key of a transport file, or one key in a passphrase-protected key file.
+    /// sealed to the key of --to's transport file, or one key in a passphrase-protected key file.
     /// With --dry-run, per object the method, how exposed the material is on the way, and why
     /// not when it cannot move. Named objects are all or nothing: one that cannot move fails
     /// the export and nothing is written.
-    #[command(group(clap::ArgGroup::new("destination").args(["to", "to_transport_file", "to_key_file"]).required(true)))]
+    #[command(group(clap::ArgGroup::new("destination").args(["to", "to_key_file"]).required(true)))]
     Export {
         /// The objects to export; default: every object realised on --from that can move (the
         /// others warned about, except a spec's `noExport` and a token's transport key).
@@ -155,11 +158,12 @@ enum Cmd {
         #[arg(long)]
         from: String,
         /// The token in keys.toml the bundle is for: its capabilities are read from the open
-        /// token, else from what the lock recorded there.
+        /// token, else from what the lock recorded there, else from its transport file.
         #[arg(long)]
         to: Option<String>,
-        /// The transport file (`camigrate transport`) of a token this host cannot reach.
-        #[arg(long, value_name = "FILE")]
+        /// The transport file (`camigrate transport`) of --to, a token this host cannot reach:
+        /// it must be that token's, naming the transport key the lock pins there.
+        #[arg(long, value_name = "FILE", requires = "to")]
         to_transport_file: Option<PathBuf>,
         /// One key, to a passphrase-protected key file (needs --out and --passphrase-file).
         #[arg(long, value_enum)]
@@ -201,6 +205,10 @@ enum Cmd {
         /// A bundle, or a key file (told apart by what the file holds).
         #[arg(long = "in", value_name = "FILE")]
         input: Option<PathBuf>,
+        /// A bundle's transport key, by its spec on --to, as its export named it; default: --to's
+        /// `transportWith`. A bundle sealed to any other key is refused.
+        #[arg(long, value_name = "SPEC", requires = "input")]
+        transport_spec: Option<String>,
         /// The passphrase of an encrypted key file, read from this file; without --in, of every
         /// encrypted file, over keys.toml's.
         #[arg(long, value_name = "FILE")]
@@ -329,35 +337,32 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let mut run = Run { opener, lock, lock_path };
     match &cli.cmd {
         Cmd::Export { .. } => run.export_verb(&cli.cmd, cli.json, notes),
-        Cmd::Import { objects, to, spec, input: None, dry_run, passphrase_file, allow_host_plaintext } => {
+        Cmd::Import { objects, to, spec, input: None, dry_run, passphrase_file, allow_host_plaintext, .. } => {
             let how =
                 FileImport { pass: passphrase_file.as_deref(), plaintext: *allow_host_plaintext, dry_run: *dry_run };
             run.import_files(to, objects, spec, &how, notes)
         }
-        Cmd::Import { to, spec, input: Some(input), dry_run, passphrase_file, allow_host_plaintext, .. }
-            if key_file.is_some() =>
-        {
-            if !allow_host_plaintext {
-                return Err(KmError::Unsupported(
-                    format!(
-                        "{} is a key file: its key passes through this process's memory as plaintext; pass \
-                         --allow-host-plaintext (docs/CAMIGRATE.md D2, file)",
-                        input.display()
-                    )
-                    .into(),
-                )
-                .into());
-            }
+        Cmd::Import {
+            to,
+            spec,
+            input: Some(input),
+            dry_run,
+            passphrase_file,
+            allow_host_plaintext,
+            transport_spec,
+            ..
+        } if key_file.is_some() => {
+            key_file_flags(input, *allow_host_plaintext, transport_spec.as_deref())?;
             run.import_file(to, spec, input, passphrase_file.as_deref(), *dry_run, notes)
         }
-        Cmd::Import { to, spec, input: Some(input), dry_run, passphrase_file, .. } => {
+        Cmd::Import { to, spec, input: Some(input), dry_run, passphrase_file, transport_spec, .. } => {
             if passphrase_file.is_some() {
                 return Err(KmError::Validation(
                     format!("{} is a bundle, which takes no passphrase: its keys are sealed", input.display()).into(),
                 )
                 .into());
             }
-            run.import(to, spec, input, *dry_run, notes)
+            run.import(to, spec, input, transport_spec.as_deref(), *dry_run, notes)
         }
         Cmd::Migrate { objects, from, to, spec, how } if how.dry_run => {
             specs_import(&run.opener.cfg, spec, to, MOVE)?;
@@ -374,10 +379,13 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             run.trust(&spec, token, source, notes)
         }
         Cmd::Transport { object, spec, token, out, trust_on: None } => {
-            let spec = transport_named(&run.opener.cfg, object.as_deref(), spec.as_deref(), token)?;
-            let t = Target::new(&run.opener.cfg, &spec, token)?;
+            let cfg = &run.opener.cfg;
+            let spec = transport_named(cfg, object.as_deref(), spec.as_deref(), token)?;
+            let bound = BoundTransport::from_lock(cfg, &run.lock, token, Some(&spec))?;
             let tok = run.opener.open(token, Access::Read, notes)?;
-            let text = tokens::transport(&t, &tok, &run.lock, notes)?.to_toml()?;
+            let bound = bound.read(cfg, &tok, &run.lock, notes)?;
+            bound.warn_decrypting(&run.lock, notes);
+            let text = bound.transport_file(&tok)?.to_toml()?;
             match out {
                 Some(path) => {
                     write_whole(path, text.as_bytes(), 0o644)?;
@@ -411,9 +419,9 @@ impl Run<'_> {
         let dest = match (to, to_transport_file, to_key_file) {
             (_, _, Some(FileArg::Pkcs8)) => tokens::Dest::File(FileFormat::Pkcs8),
             (_, _, Some(FileArg::Pkcs12)) => tokens::Dest::File(FileFormat::Pkcs12),
-            (_, Some(path), None) => tokens::Dest::transport(path)?,
-            (Some(t), None, None) => tokens::Dest::Bundle(t),
-            (None, None, None) => unreachable!("clap requires one of --to, --to-transport-file, --to-key-file"),
+            (Some(to), Some(path), None) => tokens::Dest::transport(path, to)?,
+            (Some(to), None, None) => tokens::Dest::Bundle(to),
+            (None, _, None) => unreachable!("clap requires --to or --to-key-file, and --to with --to-transport-file"),
         };
         let how = MoveArgs {
             dry_run: *dry_run,
@@ -486,6 +494,32 @@ fn transport_named(cfg: &Config, object: Option<&str>, spec: Option<&str>, token
             .into(),
         )
     })
+}
+
+/// What `import --in` of a key file needs of its flags: `--allow-host-plaintext`, since its key
+/// passes through this process's memory, and no `--transport-spec`, since nothing in it is sealed.
+///
+/// # Errors
+///
+/// `Unsupported` (15) without the flag; `Validation` (17) with a transport key named.
+fn key_file_flags(input: &Path, allow_host_plaintext: bool, transport_spec: Option<&str>) -> cakeys_core::Result<()> {
+    if transport_spec.is_some() {
+        return Err(KmError::Validation(
+            format!("{} is a key file, which takes no --transport-spec: nothing in it is sealed", input.display())
+                .into(),
+        ));
+    }
+    if !allow_host_plaintext {
+        return Err(KmError::Unsupported(
+            format!(
+                "{} is a key file: its key passes through this process's memory as plaintext; pass \
+                 --allow-host-plaintext (docs/CAMIGRATE.md D2, file)",
+                input.display()
+            )
+            .into(),
+        ));
+    }
+    Ok(())
 }
 
 /// What a verb works with once the arguments are parsed: keys.toml, the lock, and how tokens
@@ -645,41 +679,47 @@ impl Run<'_> {
         }
         let source = self.source(from, source, notes)?;
         let wraps = items.iter().any(|i| i.method != Method::Public);
+        // The transport key bound to the target named, as the plan bound it; sealing binds it
+        // again, so nothing wraps to a key the lock does not bind there, whatever the plan let
+        // through (review 2026-11-24 D-1).
+        let spec = how.transport_spec.as_deref();
         let transport = match dest {
             _ if !wraps => None,
             tokens::Dest::Bundle(to) => {
-                let tr = transport_target(cfg, &self.lock, to, transport_choice(cfg, to, how))?;
-                Some(if let Some(key) = tokens::locked_transport(&tr, &self.lock, notes)? {
-                    key
+                let bound = BoundTransport::from_lock(cfg, &self.lock, to, spec)?;
+                Some(if bound.spki().is_some() {
+                    bound
                 } else {
                     let target = match planned_target {
                         Some(t) => t,
                         None => opener.open(to, Access::Read, notes)?,
                     };
                     notes.note(format_args!(
-                        "{tr}: the lock records no public key for it yet; lock it again to export without '{to}'"
+                        "transport key '{}' of '{to}': the lock records no public key for it yet; lock it again to \
+                         export without '{to}'",
+                        bound.object()
                     ));
-                    tokens::transport(&tr, &target, &self.lock, notes)?.key()?
+                    bound.read(cfg, &target, &self.lock, notes)?
                 })
             }
-            // The plan checked this same parsed file against the lock; sealing checks it again,
-            // so nothing wraps to a key the lock does not pin, whatever the plan let through.
-            tokens::Dest::Transport(path, t) => {
-                tokens::pinned(&self.lock, t, transport_choice(cfg, &t.token, how))
-                    .map_err(|why| KmError::PreconditionFailed(format!("{}: {why}", path.display()).into()))?;
-                Some(t.key()?)
+            tokens::Dest::Transport(path, to, t) => {
+                Some(BoundTransport::from_file(t, path, cfg, &self.lock, to, spec)?)
             }
             tokens::Dest::Token(_) | tokens::Dest::File(_) => {
                 unreachable!("an export makes a bundle or a key file, and a file plan is never sealed")
             }
         };
-        let bundle = sealed::export(&items, &source, &self.lock, transport.as_ref(), notes)?;
+        if let Some(bound) = &transport {
+            bound.warn_decrypting(&self.lock, notes);
+        }
+        let Some(to) = dest.to() else { unreachable!("a bundle is for the token --to names") };
+        let bundle = sealed::export(&items, &source, &self.lock, to, transport.as_ref(), notes)?;
         let text = bundle.to_toml()?;
         let what = bundle.keys.iter().map(|k| format!("{} by {}", k.object, k.method)).collect::<Vec<_>>().join(", ");
         match out {
             Some(path) => {
                 write_whole(path, text.as_bytes(), 0o644)?;
-                notes.say(format!("wrote {} ({what})", path.display()));
+                notes.say(format!("wrote {} for '{to}' ({what})", path.display()));
             }
             None => print!("{text}"),
         }
@@ -695,18 +735,18 @@ impl Run<'_> {
         token: &str,
         specs: &[String],
         input: &Path,
+        transport_spec: Option<&str>,
         dry_run: bool,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
         let text = std::fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
-        let bundle = Bundle::parse(&text, input)?;
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
-        bundle.check_source(cfg)?;
+        // Made for `token`, from a source keys.toml names, sealed to `token`'s transport key as
+        // the lock binds it: never to whichever key the file names (review 2026-11-24 D-8).
+        let bound = BoundBundle::from_file(Bundle::parse(&text, input)?, cfg, &self.lock, token, transport_spec, notes)
+            .map_err(|e| e.prefixed(input.display()))?;
+        let bundle = bound.bundle();
         specs_select(cfg, specs, bundle.keys.iter().map(|e| e.object.as_str()), token, MOVE)?;
-        let tr = match &bundle.transport {
-            Some(t) => Some(realised_target(cfg, &self.lock, &t.object, token, "the bundle's transport key")?),
-            None => None,
-        };
         let access = if dry_run { Access::Read } else { Access::Write };
         let target = opener.open(token, access, notes)?;
         let mut tally = Tally::default();
@@ -732,9 +772,9 @@ impl Run<'_> {
                 }
                 sealed::check_carried(e, &dst)?;
                 if !dry_run {
-                    return sealed::import(&bundle, e, &dst, &target, tr.as_ref(), lock, notes).map(Some);
+                    return sealed::import(&bound, e, &dst, &target, lock, notes).map(Some);
                 }
-                sealed::preflight(&bundle, e, &dst, &target, tr.as_ref(), lock, notes)?;
+                sealed::preflight(&bound, e, &dst, &target, lock, notes)?;
                 let method = e.method().map_err(|e| KmError::Validation(e.into()))?;
                 import_checks(&dst, &target, &method, opener.registry, notes).map(|()| None)
             });
@@ -804,10 +844,10 @@ impl Run<'_> {
             Ok(())
         };
         let mut tally = Tally::default();
-        // The transport key every sealed move wraps to, checked on the target once
-        // (`tokens::transport` verifies it, its proof included); after a failure, the next
-        // sealed move asks again and fails on its own.
-        let mut sealing: Option<(Target, sealed::TransportKey)> = None;
+        // The transport key every sealed move wraps to, bound to `to` and checked on the target
+        // once (`BoundTransport::read` verifies it, its proof included); after a failure, the
+        // next sealed move asks again and fails on its own.
+        let mut sealing: Option<BoundTransport> = None;
         for p in &moves.plans {
             let pair = source_target(cfg, &self.lock, &p.object, from)
                 .and_then(|src| Ok((src, import_target(cfg, &p.object, to, spec_for(cfg, specs, &p.object), MOVE)?)));
@@ -827,15 +867,17 @@ impl Run<'_> {
                 match &p.method {
                     Some(method @ (Method::RsaOaepAesKwp(_) | Method::RsaOaep(_))) => {
                         if sealing.is_none() {
-                            let tr = transport_target(cfg, lock, to, transport_choice(cfg, to, how))?;
-                            let key = tokens::transport(&tr, target, lock, notes)?.key()?;
-                            *sealing = Some((tr, key));
+                            let bound = BoundTransport::from_lock(cfg, lock, to, how.transport_spec.as_deref())?;
+                            let bound = bound.read(cfg, target, lock, notes)?;
+                            bound.warn_decrypting(lock, notes);
+                            *sealing = Some(bound);
                         }
-                        let Some((tr, key)) = sealing.as_ref() else { unreachable!("set just above") };
+                        let Some(bound) = sealing.as_ref() else { unreachable!("set just above") };
                         let exposure = p.exposure.unwrap_or(Exposure::Sealed);
                         let item = sealed::Item { src, method: method.clone(), exposure };
-                        let bundle = sealed::export(&[item], &source, lock, Some(key), notes)?;
-                        sealed::import(&bundle, &bundle.keys[0], &dst, target, Some(tr), lock, notes)
+                        let bundle = sealed::export(&[item], &source, lock, to, Some(bound), notes)?;
+                        let bundle = BoundBundle::made(bundle, bound, cfg)?;
+                        sealed::import(&bundle, &bundle.bundle().keys[0], &dst, target, lock, notes)
                     }
                     Some(method @ (Method::HostPkcs8 | Method::HostRaw | Method::PivImport)) => {
                         host::import(&src, &source, &dst, target, lock, method, notes)
@@ -867,23 +909,24 @@ impl Run<'_> {
     fn trusted_transport(
         &self,
         dest: &tokens::Dest<'_>,
-        transport_key: Option<&str>,
+        transport_spec: Option<&str>,
         source: &cakeys_core::Result<Token>,
     ) -> anyhow::Result<bool> {
-        let spki = match dest {
-            // No transport key named is the plan's own reason (`plan_moves`); a recorded one that
-            // does not decode is an error.
+        let (cfg, lock) = (&self.opener.cfg, &self.lock);
+        // No transport key bound is the plan's own reason (`plan_moves`); a malformed one (a
+        // recorded key that does not decode, or is too small) is an error.
+        let bound = match dest {
             tokens::Dest::Token(name) | tokens::Dest::Bundle(name) => {
-                match tokens::transport_spec(&self.lock, name, transport_key) {
-                    Ok(spec) => locked_spki(&self.lock, spec, name)?,
-                    Err(_) => None,
-                }
+                trust::planned(BoundTransport::from_lock(cfg, lock, name, transport_spec))?.ok()
             }
-            tokens::Dest::Transport(_, t) => t.spki().ok(),
+            tokens::Dest::Transport(path, to, t) => {
+                trust::planned(BoundTransport::from_file(t, path, cfg, lock, to, transport_spec))?.ok()
+            }
             tokens::Dest::File(_) => None,
         };
+        let spki = bound.as_ref().and_then(BoundTransport::spki);
         Ok(match (spki, source) {
-            (Some(spki), Ok(tok)) => tok.trusted(&spki)?.0.is_some(),
+            (Some(spki), Ok(tok)) => tok.trusted(spki)?.0.is_some(),
             _ => false,
         })
     }
@@ -903,24 +946,22 @@ impl Run<'_> {
     ) -> anyhow::Result<(tokens::Moves, Option<Token>, Option<Token>)> {
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let open = |name: &str, notes: &mut Notes| opener.open(name, target, notes);
-        // A transport file is held to its token's transport key, as a target token is (review
-        // 2026-11-23 C-1): the one --transport-spec or keys.toml's transportWith names.
-        let transport_key = match ctx.dest {
-            tokens::Dest::Token(name) | tokens::Dest::Bundle(name) => transport_choice(cfg, name, ctx.how),
-            tokens::Dest::Transport(_, t) => transport_choice(cfg, &t.token, ctx.how),
-            tokens::Dest::File(_) => ctx.how.transport_spec.as_deref(),
-        };
-        let trusted_transport = self.trusted_transport(ctx.dest, transport_key, &source)?;
+        // The transport key is the one the lock binds to the token the operator named (`--to`),
+        // a transport file's included (review 2026-11-24 D-1): --transport-spec, else that
+        // token's transportWith.
+        let transport_spec = ctx.how.transport_spec.as_deref();
+        let trusted_transport = self.trusted_transport(ctx.dest, transport_spec, &source)?;
         let req = tokens::Request {
             objects: ctx.objects,
             from: ctx.from,
             dest: ctx.dest,
             host_plaintext: ctx.how.allow_host_plaintext,
-            transport_key,
+            cfg,
+            transport_spec,
             trusted_transport,
         };
         let (mut moves, source, target) = tokens::plan_moves(&self.lock, opener.registry, &req, source, &open, notes)?;
-        landing::block(self, ctx, transport_key, &mut moves);
+        landing::block(self, ctx, &mut moves);
         match show {
             Show::No => {}
             Show::Stdout => show_plans(ctx.from, &moves, ctx.how.json)?,
@@ -994,26 +1035,19 @@ fn plan_lines(from: &str, moves: &tokens::Moves) -> Vec<String> {
 impl Run<'_> {
     /// `transport --trust-on`: the source's SO makes a `CKA_TRUSTED` copy of the transport key
     /// realised as `spec` on `token`, from the public key the lock records (so the lock vouches
-    /// for it, never a file). Nothing to do when the source already trusts it; any other trusted
-    /// object there is warned about, since `enforced` is only as narrow as the trusted set.
+    /// for it, never a file), held to the transport key's rule as every other path is
+    /// (`BoundTransport`; review 2026-11-24 D-10). Nothing to do when the source already trusts
+    /// it; any other trusted object there is warned about, since `enforced` is only as narrow as
+    /// the trusted set.
     fn trust(&self, spec: &str, token: &str, source: &str, notes: &mut Notes) -> anyhow::Result<()> {
-        let spec =
-            tokens::transport_spec(&self.lock, token, Some(spec)).map_err(|e| KmError::PreconditionFailed(e.into()))?;
-        let spki = locked_spki(&self.lock, spec, token)?.ok_or_else(|| {
-            KmError::PreconditionFailed(
-                format!(
-                    "the lock records no public key for transport key '{spec}' on '{token}': lock it there with \
-                 migrate.transportWith naming it"
-                )
-                .into(),
-            )
-        })?;
+        let bound = BoundTransport::from_lock(&self.opener.cfg, &self.lock, token, Some(spec))?;
+        let spki = bound.spki().ok_or_else(|| bound.no_public_key())?;
         let tok = self.opener.open(source, Access::Write, notes)?;
-        let (copy, others) = tok.trusted(&spki)?;
+        let (copy, others) = tok.trusted(spki)?;
         if copy.is_some() {
             notes.note(format_args!("'{source}' already trusts transport key '{spec}' of '{token}'"));
         } else {
-            let (n, e) = sealed::rsa_parts(&spki)?;
+            let (n, e) = sealed::rsa_parts(spki)?;
             tok.create_trusted_copy(n, e, &format!("cakeys-transport-{token}-{spec}"))?;
             notes.say(format!("'{source}' trusts transport key '{spec}' of '{token}' (CKA_TRUSTED, by its SO)"));
         }

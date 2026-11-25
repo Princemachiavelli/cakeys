@@ -15,12 +15,12 @@ module's source, **[todo]** still to verify.
 ```console
 $ camigrate transport [<object>] [--spec <s>] --token <target> [--out <file>]  # the transport key's public half, for offline exports
 $ camigrate transport [<object>] [--spec <s>] --token <target> --trust-on <source>  # the source's SO trusts it (enforced)
-$ camigrate export [<object> ...] --from <source> (--to <t> | --to-transport-file <file>) \
+$ camigrate export [<object> ...] --from <source> --to <t> [--to-transport-file <file>] \
     [--transport-spec <spec>] [--out <bundle>] [--dry-run] [--allow-host-plaintext]
 $ camigrate export <object> --from <source> --to-key-file pkcs8|pkcs12 --out <file> \
     --passphrase-file <file> --allow-host-plaintext
 $ camigrate import [<object> ...] --to <target> --in <bundle|file> [--spec <s> ...] [--dry-run] \
-    [--passphrase-file <file> --allow-host-plaintext]          # a bundle or a key file, told apart by content
+    [--transport-spec <spec>] [--passphrase-file <file> --allow-host-plaintext]  # a bundle or a key file, told apart by content
 $ camigrate import [<object> ...] --to <target> [--spec <s> ...] [--dry-run] \
     [--allow-host-plaintext] [--passphrase-file <file>]       # objects born in files (FILE.md)
 $ camigrate migrate [<object> ...] --from <a> --to <b> [--spec <s> ...] [--transport-spec <spec>] \
@@ -46,6 +46,9 @@ array, whatever `--json` says; a run that wrote the lock exits 22 (CAKEYS.md, "E
   by `--spec`; left out, the token's `migrate.transportWith`. A name keys.toml lacks, or a token
   naming no transport key, is 17.
 - A bundle of public objects alone needs no transport key and names none.
+- `--to-transport-file` is the transport file of `--to`, a token this host cannot reach: a file
+  of another token is refused (17). A bundle names the token it is for (`target`), as the
+  export's `wrote` line does, and `import` refuses it on another token (14).
 - A key file holds one key, and a PKCS#12 the certificate the lock pairs with it on the source:
   a plan of several keys for a file, or of a PKCS#12 with no paired certificate, is blocked.
 - A refused move says why for each blocked object, as its `--dry-run` would.
@@ -58,7 +61,8 @@ Exit codes (the table: [CAKEYS.md](CAKEYS.md#exit-codes)): 0 done; 10 the materi
 differs from the lock; 11 a token, object or key not found; 12 an ambiguous name; 13 the
 target refused (a bundle whose blobs it finds invalid, tampered or wrapped to another key; a
 failed proof of possession; an occupied locator or PIV slot); 14 the lock pins no IDs for the
-object; 15 an object cannot move as invoked, or the target lacks a capability (an unwrap
+object, or a bundle is for another target or sealed to another key than the target's transport
+key; 15 an object cannot move as invoked, or the target lacks a capability (an unwrap
 mechanism or template it refuses included); 16 the module or device failed (an unwrap failed so is
 said as what may be a damaged bundle: kryoptic reports a tampered blob as `CKR_DEVICE_ERROR`); 17 invalid input (keys.toml,
 a transport file, a bundle, another key's IDs, a key file that does not open under the
@@ -96,9 +100,16 @@ the admin credential `soCredentialFile`/`soCredentialEnv`, read only by SO steps
 target token's `migrate.transportWith`. Nothing is picked by what a key can do; `--transport-spec`
 overrides it per run. Its `rfc7093m4` is in the reviewed lock, and the source wraps only to a
 public key that hashes to it: the lock is the authenticated channel. A transport file is held to
-the same: its object must be the transport key `transportWith` (or `--transport-spec`) names for
-the file's token, realised there, not merely some key the lock pins, which whoever swapped the
-file may hold (`a_transport_file_of_another_pinned_key_is_refused`).
+the same. It must be the file of the token `--to` names (17 otherwise): another target's genuine
+file binds its own token's key just as well (`transport_files_are_bound_to_the_target_named`).
+Its object must be the transport key `transportWith` (or `--transport-spec`) names for that
+token, realised there, not merely some key the lock pins, which whoever swapped the file may hold
+(`a_transport_file_of_another_pinned_key_is_refused`). An import holds a bundle's transport key to
+the same key (14 otherwise; `bundles_are_bound_to_the_targets_transport_key`), and `transport
+--trust-on` holds the lock's key to the same rule, its size included
+(`locked_transport_keys_are_held_to_one_rule`). The lock must record the key as allowed to unwrap
+and as not extractable: a realisation that records no `CKA_EXTRACTABLE` is no transport key (14,
+or a blocked plan).
 
 - **The lock records its public key** (`objects.<name>.publicKey`, base64 SPKI) when it is
   realised as a `migrate.transportWith` key, held to its `rfc7093m4` on load. Any host can then plan and
@@ -106,8 +117,8 @@ file may hold (`a_transport_file_of_another_pinned_key_is_refused`).
   blocked.
 - **It proves possession by unwrapping** (`binding = "pop-unwrap"`), so it needs no
   `CKA_DECRYPT`. SoftHSM and kryoptic do it [run]; tpm2-pkcs11 and ykcs11 never unwrap, so it is
-  refused there (15) before anything is generated [run]. A transport key that also decrypts is
-  warned about: the target's PIN holder could `C_Decrypt` a bundle's key-encryption key. (That
+  refused there (15) before anything is generated [run]. A transport key that also decrypts, or
+  whose `CKA_DECRYPT` the lock does not record, is warned about: the target's PIN holder could `C_Decrypt` a bundle's key-encryption key. (That
   PIN holder can extract an extractable moved key anyway; sealed protects the material on the
   way, not from the target.)
 - A transport file (`transport --out`) is used only when the source's lock pins its key; one that
@@ -151,6 +162,10 @@ without names, export takes what can move and warns about the rest (a spec's `mi
 keeps its object home and silences the warning, and a token's transport key is kept home so by
 default). Import takes each entry on its own, reports
 every failure, and exits with the first.
+The bundle names the token it is for (`target`, version 2), and `import` refuses it on another
+(14). Its keys unwrap only under the target's transport key (its `transportWith`, or
+`--transport-spec` as the export named it), never under whichever key the bundle names (14). A version-1 bundle names no target: it is still read, held to the
+target's transport key alone, with a warning.
 
 **D6. Import is a `lock` that creates from a bundle.**
 
@@ -210,8 +225,9 @@ The export bundle (D5):
 
 ```toml
 format = "cakeys-export"
-version = 1
+version = 2                             # 2 names its target; version 1, which does not, is read with a warning
 kek = "..."                             # the AES KEK under RSA-OAEP, shared by the sealed keys; absent if none
+target = "kryoptic"                     # the token it is for, as the export named it (--to); import refuses it elsewhere
 [source]                                # provenance, as in the source realisation
 token = "softhsm"
 provider = "softhsm"
@@ -301,7 +317,8 @@ tss-esapi), and phase 7, vendor methods, which wait for hardware. Both are in [O
   target with its proof of possession; a blocked one is 15 with nothing changed.
 - **Refusals**, each with its pinned exit code: non-extractable keys, a source that never
   exports, a target missing a curve or mechanism, host paths without the flag, an occupied
-  locator, a transport key the lock does not pin, tampered or swapped blobs, another key's IDs,
+  locator, a transport key the lock does not pin, a transport file or bundle of another target,
+  tampered or swapped blobs, another key's IDs,
   `attestation = true` on a YubiKey import, a wrong passphrase.
 - **Cleanup**: a failed import leaves nothing behind.
 - **Formats**: unit, property and fuzz tests for the bundle parser; round trips of both key file

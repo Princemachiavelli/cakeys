@@ -11,13 +11,13 @@ use cakeys_pkcs11::Registry;
 use cakeys_pkcs11::ops::{Notes, Target};
 
 use crate::plan::{self, FileFormat};
-use crate::{MoveArgs, MoveCtx, Run, tokens};
+use crate::{MoveCtx, Run, tokens};
 
 /// Block each plan the run would refuse, said in the plan, in the order the run meets it: what
 /// never leaves `from` (said first), a target with no import pair, the landing pair's own
-/// checks — or, with nothing landing on a token, the source's export — a transport key whose
-/// spec is gone, and what the destination carries. `transport_key` is the one the plan sealed to.
-pub(crate) fn block(run: &Run, ctx: &MoveCtx, transport_key: Option<&str>, moves: &mut tokens::Moves) {
+/// checks — or, with nothing landing on a token, the source's export — and what the destination
+/// carries. The transport key a sealed move wraps to is the plan's (`tokens::plan_moves`).
+pub(crate) fn block(run: &Run, ctx: &MoveCtx, moves: &mut tokens::Moves) {
     let (cfg, registry) = (&run.opener.cfg, run.opener.registry);
     let MoveCtx { objects, from, dest, specs, .. } = *ctx;
     let (bundle, target_token) = (dest.bundle(), dest.token());
@@ -55,17 +55,6 @@ pub(crate) fn block(run: &Run, ctx: &MoveCtx, transport_key: Option<&str>, moves
                     }
                 }
             }
-        }
-    }
-    // A sealed move wraps under the transport key's spec in keys.toml: one the lock still
-    // names and keys.toml no longer has is said here, where the move itself would stop.
-    if let Some(to) = target_token
-        && let Ok(spec) = tokens::transport_spec(&run.lock, to, transport_key)
-        && !cfg.specs.contains_key(spec)
-    {
-        let sealed = |p: &plan::Plan| matches!(p.method, Some(Method::RsaOaepAesKwp(_) | Method::RsaOaep(_)));
-        for p in moves.plans.iter_mut().filter(|p| p.ready && sealed(p)) {
-            p.block(format!("the transport key's spec '{spec}' is gone from keys.toml"));
         }
     }
     match dest {
@@ -353,42 +342,6 @@ pub(crate) fn no_export(cfg: &Config, object: &str, from: &str) -> Option<String
     })
 }
 
-/// The public key `lock` records for the transport key realised as `spec` on `token`, if any.
-///
-/// # Errors
-///
-/// `Validation` (17) for a recorded public key that is not base64: never read as none.
-pub(crate) fn locked_spki(lock: &Lock, spec: &str, token: &str) -> cakeys_core::Result<Option<Vec<u8>>> {
-    use base64::Engine as _;
-    let Some(key) =
-        lock.realisation(spec, token).and_then(|r| lock.objects.get(&r.object)).and_then(|o| o.public_key.as_ref())
-    else {
-        return Ok(None);
-    };
-    base64::engine::general_purpose::STANDARD.decode(key).map(Some).map_err(|e| {
-        KmError::Validation(format!("the lock's publicKey of transport key '{spec}' on '{token}': {e}").into())
-    })
-}
-
-/// The transport key to seal to on `to`: `--transport-spec`, else the token's `transportWith`.
-pub(crate) fn transport_choice<'a>(cfg: &'a Config, to: &str, how: &'a MoveArgs) -> Option<&'a str> {
-    how.transport_spec.as_deref().or_else(|| cfg.tokens.get(to).and_then(|t| t.migrate.transport_with.as_deref()))
-}
-
-/// The target `token`'s transport key, as a target: the spec `tokens::transport_spec` finds.
-pub(crate) fn transport_target<'a>(
-    cfg: &'a Config,
-    lock: &Lock,
-    token: &'a str,
-    chosen: Option<&str>,
-) -> cakeys_core::Result<Target<'a>> {
-    let spec = tokens::transport_spec(lock, token, chosen).map_err(|e| KmError::PreconditionFailed(e.into()))?;
-    let spec = cfg.specs.get_key_value(spec).map(|(name, _)| name.as_str()).ok_or_else(|| {
-        KmError::PreconditionFailed(format!("the transport key's spec '{spec}' is gone from keys.toml").into())
-    })?;
-    Target::new(cfg, spec, token)
-}
-
 /// The realisation of `object` on `token` the lock records, as a target; `what` names the
 /// object in the refusal (a bundle's transport key names its object).
 pub(crate) fn realised_target<'a>(
@@ -425,24 +378,5 @@ fn limit_file_plans(run: &Run, plans: &mut [plan::Plan], format: FileFormat, fro
                 p.object
             ));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    /// The transport key's recorded public key: none where the lock records none, the bytes
-    /// where it does, and 17 for one that does not decode, never "none" (review lib.rs F10).
-    #[test]
-    fn a_locked_public_key_that_does_not_decode_is_invalid() {
-        use cakeys_core::config::{Lock, LockObject};
-        let text = "version = 1\n[objects.t]\npublicKey = \"AAEC\"\n\
-                    [realisations.tr.tok]\nobject = \"t\"\nspecDigest = \"sha256-x\"\nmode = \"direct\"\n\
-                    schemes = []\nlocator = { CKA_LABEL = \"t\" }\npolicy = {}\n";
-        let mut lock: Lock = toml::from_str(text).unwrap();
-        assert_eq!(super::locked_spki(&lock, "tr", "tok").unwrap(), Some(vec![0, 1, 2]));
-        assert_eq!(super::locked_spki(&lock, "tr", "other").unwrap(), None);
-        lock.objects.insert("t".into(), LockObject { public_key: Some("!".into()), ..LockObject::default() });
-        let e = super::locked_spki(&lock, "tr", "tok").unwrap_err();
-        assert!(e.exit_code() == 17 && e.to_string().contains("publicKey"), "{e}");
     }
 }

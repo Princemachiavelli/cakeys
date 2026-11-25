@@ -4,6 +4,8 @@
 use cakeys_core::{KmError, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::trust::Claimed;
+
 /// The transport file (`camigrate transport`, docs/CAMIGRATE.md D3): what a source needs to wrap to a
 /// target's transport key without reaching the target: the public key, its locked identity,
 /// and the target's provider and mechanisms for planning.
@@ -53,13 +55,14 @@ impl Transport {
     }
 
     /// Read a transport file, checking that its identity is the hash of its public key: a file
-    /// edited to wrap to another key fails here, and against the lock (`tokens::pinned`).
+    /// edited to wrap to another key fails here. What it names is claimed until it is bound to
+    /// the target the operator names and to the lock (`trust::BoundTransport::from_file`).
     ///
     /// # Errors
     ///
     /// `Validation` for another format or version, malformed base64, a key smaller than a
     /// transport key may be, or an identity that is not the public key's.
-    pub(crate) fn parse(text: &str, path: &std::path::Path) -> Result<Transport> {
+    pub(crate) fn parse(text: &str, path: &std::path::Path) -> Result<Claimed<Transport>> {
         let t: Transport =
             toml::from_str(text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display()).into()))?;
         if t.format != TRANSPORT_FORMAT || t.version != TRANSPORT_VERSION {
@@ -82,7 +85,7 @@ impl Transport {
                 .into(),
             ));
         }
-        Ok(t)
+        Ok(Claimed::new(t))
     }
 
     /// The file's text.
@@ -106,17 +109,6 @@ impl Transport {
             .map_err(|e| KmError::Validation(format!("transport key: {e}").into()))?;
         cakeys_core::id::spki_canonical(&der)
     }
-
-    /// The key to seal to, as an export takes it.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::spki`].
-    pub(crate) fn key(&self) -> Result<crate::sealed::TransportKey> {
-        let spki = self.spki()?;
-        crate::sealed::check_transport_size(&spki)?;
-        Ok(crate::sealed::TransportKey { object: self.object.clone(), rfc7093m4: self.rfc7093m4.clone(), spki })
-    }
 }
 
 /// The text of an error's message, without its class.
@@ -138,7 +130,7 @@ mod tests {
         let t = Transport::new("kryoptic", "kryoptic", "import-kek", &spki, &["CKM_RSA_PKCS_OAEP".into()]).unwrap();
         let text = t.to_toml().unwrap();
         let path = std::path::Path::new("t.toml");
-        assert_eq!(Transport::parse(&text, path).unwrap(), t);
+        assert_eq!(*Transport::parse(&text, path).unwrap().unverified(), t);
         let other = text.replace(&t.rfc7093m4, &cakeys_core::id::sri(b"another key"));
         assert!(Transport::parse(&other, path).unwrap_err().to_string().contains("is not the identity"));
         let old = text.replace("version = 1", "version = 2");

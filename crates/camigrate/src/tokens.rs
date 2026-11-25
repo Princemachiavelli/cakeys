@@ -7,7 +7,8 @@
 use crate::plan::{Allow, FileFormat, Material, Plan, To, plan};
 use crate::side::{Accept, PlaintextImport, Probed, ProbedWays, Side};
 use crate::transport::Transport;
-use cakeys_core::config::{AttrValue, Lock, Observation, TokenCfg, TokenObservation};
+use crate::trust::{self, BoundTransport, Claimed};
+use cakeys_core::config::{Config, Lock, Observation, TokenCfg, TokenObservation};
 use cakeys_core::migrate::{Method, OaepHash};
 use cakeys_core::types::{KeyType, ObjectClass};
 use cakeys_core::{KmError, Result};
@@ -15,7 +16,7 @@ use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::resolution::{self, Resolved, moduleless_info};
 use cakeys_pkcs11::{Registry, Token};
 use cakeys_profile::{Capability, KeyKind, Move, On, PlaintextKind, Profile, Way};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::str::FromStr;
 
 /// A token's capabilities, from the open token: its resolved capability profile over its
@@ -442,35 +443,6 @@ pub(crate) fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Re
     Ok(out)
 }
 
-/// The transport key's public half (`camigrate transport`, docs/CAMIGRATE.md D3). The spec must name an
-/// RSA private key that may unwrap and never leaves the token, and its realisation must verify
-/// against the lock: the locked identity is what makes the public key trustworthy to a source.
-///
-/// # Errors
-///
-/// `Validation` for anything but an RSA private key; `PreconditionFailed` when the realisation
-/// does not allow `CKA_UNWRAP` or is extractable; whatever `verify` refuses.
-pub(crate) fn transport(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Transport> {
-    if t.object.class != ObjectClass::PrivateKey || t.object.key_type != Some(KeyType::Rsa) {
-        return Err(KmError::Validation(
-            format!("{t}: a transport key is an RSA private key (docs/CAMIGRATE.md D3), not a {}", t.object.class)
-                .into(),
-        ));
-    }
-    ops::verify(t, tok, lock, notes)?;
-    let none = BTreeMap::new();
-    let policy = lock.realisation(t.spec_name, t.token_name).map_or(&none, |r| &r.policy);
-    if let Some(why) = transport_fault(true, policy) {
-        return Err(KmError::PreconditionFailed(format!("{t}: a transport key {why}").into()));
-    }
-    warn_decrypting(t, lock, notes);
-    let h = tok
-        .find_key(&t.object, &t.on_token.locator, false)?
-        .ok_or_else(|| KmError::NotFound(format!("{t}: the transport key").into()))?;
-    let spki = tok.spki(h, &t.on_token.locator)?;
-    Transport::new(&tok.name, tok.provider.name(), t.object_name, &spki, &tok.mechanism_names())
-}
-
 /// Where `export` or `migrate` sends the material: the one destination of the run, its plan
 /// and its checks (review 2026-11-23 C-23: lib.rs had a second enum, converted to this one).
 pub(crate) enum Dest<'a> {
@@ -480,17 +452,34 @@ pub(crate) enum Dest<'a> {
     /// token; it lands later, under the pair its import picks.
     Bundle(&'a str),
     /// A target this host cannot reach, by its transport file (`export --to-transport-file`),
-    /// read once: the plan checks against the lock the very key the export seals to.
-    Transport(&'a std::path::Path, Transport),
+    /// read once, and the token the operator named for it (`--to`): the plan binds to that
+    /// token's transport key, as the lock pins it, the very key the export seals to.
+    Transport(&'a std::path::Path, &'a str, Claimed<Transport>),
     /// A key file, by `export --to-key-file`.
     File(FileFormat),
 }
 
 impl<'a> Dest<'a> {
-    /// `--to-transport-file <path>`: the file read and parsed, once for the run.
-    pub(crate) fn transport(path: &'a std::path::Path) -> Result<Dest<'a>> {
+    /// `--to <to> --to-transport-file <path>`: the file read and parsed, once for the run, and
+    /// refused unless it is `to`'s (review 2026-11-24 D-1).
+    ///
+    /// # Errors
+    ///
+    /// `Io` for a file that does not read; `Validation` (17) for one that does not parse, or
+    /// is another token's.
+    pub(crate) fn transport(path: &'a std::path::Path, to: &'a str) -> Result<Dest<'a>> {
         let text = std::fs::read_to_string(path).map_err(KmError::io(format_args!("reading {}", path.display())))?;
-        Ok(Dest::Transport(path, Transport::parse(&text, path)?))
+        let file = Transport::parse(&text, path)?;
+        file.check_target(path, to)?;
+        Ok(Dest::Transport(path, to, file))
+    }
+
+    /// The token the operator named: a move's or a bundle's target. A key file has none.
+    pub(crate) fn to(&self) -> Option<&'a str> {
+        match self {
+            Dest::Token(name) | Dest::Bundle(name) | Dest::Transport(_, name, _) => Some(name),
+            Dest::File(_) => None,
+        }
     }
 
     /// The token the plan is made against: the target of a move, or a bundle's.
@@ -516,8 +505,11 @@ pub(crate) struct Request<'a> {
     pub dest: &'a Dest<'a>,
     /// Allow the `host` and `file` paths: plaintext in this process's memory (docs/CAMIGRATE.md D2).
     pub host_plaintext: bool,
-    /// The target's transport key, by its spec, when several are realised there (docs/CAMIGRATE.md D3).
-    pub transport_key: Option<&'a str>,
+    /// keys.toml, which names each target's transport key (`transportWith`).
+    pub cfg: &'a Config,
+    /// The target's transport key, by its spec, over its `transportWith` (`--transport-spec`,
+    /// docs/CAMIGRATE.md D3).
+    pub transport_spec: Option<&'a str>,
     /// The source holds a copy of that transport key its SO marked `CKA_TRUSTED` (docs/CAMIGRATE.md D2,
     /// `enforced`).
     pub trusted_transport: bool,
@@ -617,8 +609,11 @@ pub(crate) fn plan_moves(
             target_token = token;
             (Some(side), from, (*name).to_owned())
         }
-        Dest::Transport(path, t) => {
+        Dest::Transport(path, to, t) => {
             let shown = path.display();
+            // What the file says of its target plans it; the import there checks it again.
+            let t = t.unverified();
+            debug_assert_eq!(t.token, *to, "Dest::transport checked it");
             let side = side_from_transport(t, registry)
                 .ok_or_else(|| {
                     KmError::Unsupported(format!("{shown}: provider '{}' is not in this build", t.provider).into())
@@ -634,26 +629,23 @@ pub(crate) fn plan_moves(
         (None, _) => unreachable!("only a file has no side"),
     };
     let mut plans: Vec<Plan> = materials.iter().map(|m| plan(m, &source, &to, allow)).collect();
-    // A sealed move needs the transport key it wraps to: realised on a target token, or pinned by
-    // this lock when it comes as a file (D3: the lock is the authenticated channel).
+    // A sealed move needs the transport key it wraps to: the one the lock binds to the target
+    // named, realised there, or pinned by this lock when it comes as a file (D3: the lock is the
+    // authenticated channel; `trust::BoundTransport`).
     let sealed = |p: &Plan| matches!(p.method, Some(Method::RsaOaepAesKwp(_) | Method::RsaOaep(_)));
     let missing = match req.dest {
-        Dest::Token(name) | Dest::Bundle(name) => match transport_spec(lock, name, req.transport_key) {
-            Err(why) => Some(why),
-            // Not open here: the export seals to the public key the lock recorded, or cannot.
-            Ok(spec) if target_from == Known::Lock => {
-                let object = lock.realisation(spec, name).map(|r| r.object.as_str());
-                object.and_then(|o| lock.objects.get(o)).and_then(|o| o.public_key.as_ref()).is_none().then(|| {
-                    format!(
-                        "'{name}' is not open, and the lock records no public key for its transport key '{spec}': \
-                         lock it there again with migrate.transportWith naming it"
-                    )
-                })
+        Dest::Token(name) | Dest::Bundle(name) => {
+            match trust::planned(BoundTransport::from_lock(req.cfg, lock, name, req.transport_spec))? {
+                Err(why) => Some(why),
+                // Not open here: the export seals to the public key the lock recorded, or cannot.
+                Ok(bound) if target_from == Known::Lock && bound.spki().is_none() => {
+                    Some(format!("'{name}' is not open, and {}", trust::reason(bound.no_public_key())))
+                }
+                Ok(_) => None,
             }
-            Ok(_) => None,
-        },
-        Dest::Transport(path, t) => {
-            pinned(lock, t, req.transport_key).err().map(|e| format!("{}: {e}", path.display()))
+        }
+        Dest::Transport(path, to, t) => {
+            trust::planned(BoundTransport::from_file(t, path, req.cfg, lock, to, req.transport_spec))?.err()
         }
         Dest::File(_) => None,
     };
@@ -699,124 +691,6 @@ fn side_or_lock(
             Ok((side?, Known::Lock, None))
         }
         None => Err(e),
-    }
-}
-
-/// The spec of the transport key realised on `token` (docs/CAMIGRATE.md D3): the one `chosen` names —
-/// `--transport-spec`, else the token's `transportWith` — never one picked by what it can do. The
-/// lock must record it there as an RSA private key that may unwrap and never leaves the token.
-///
-/// # Errors
-///
-/// Why there is no such key.
-pub(crate) fn transport_spec<'a>(
-    lock: &'a Lock,
-    token: &str,
-    chosen: Option<&str>,
-) -> std::result::Result<&'a str, String> {
-    let Some(chosen) = chosen else {
-        return Err(format!(
-            "no transport key is named for '{token}' (docs/CAMIGRATE.md D3): set transportWith in [tokens.{token}.migrate] to the \
-             spec of an RSA key there that may unwrap and never leaves the token, lock it, or pass --transport-spec"
-        ));
-    };
-    let Some((spec, r)) =
-        lock.realisations.get_key_value(chosen).and_then(|(spec, by_token)| Some((spec, by_token.get(token)?)))
-    else {
-        return Err(format!("transport key '{chosen}' is not realised on '{token}' in the lock: lock it there first"));
-    };
-    let rsa = lock
-        .objects
-        .get(&r.object)
-        .and_then(|o| o.object_type.as_ref())
-        .is_some_and(|t| t.class == ObjectClass::PrivateKey && t.key_type == Some(KeyType::Rsa));
-    match transport_fault(rsa, &r.policy) {
-        Some(why) => {
-            Err(format!("'{chosen}' on '{token}' is no transport key: a transport key {why}, as the lock records it"))
-        }
-        None => Ok(spec.as_str()),
-    }
-}
-
-/// Why a key the lock records (`rsa`: an RSA private key; its realisation's `policy`) is no
-/// transport key (docs/CAMIGRATE.md D3): one rule for [`transport`] and [`transport_spec`]
-/// (review D8). keys.toml's own check (`check_transport_keys`) holds the declarations instead.
-fn transport_fault(rsa: bool, policy: &BTreeMap<String, AttrValue>) -> Option<&'static str> {
-    let is_true = |n: &str| policy.get(n) == Some(&AttrValue::Bool(true));
-    if !rsa {
-        Some("must be an RSA private key")
-    } else if !is_true("CKA_UNWRAP") {
-        Some("must allow CKA_UNWRAP")
-    } else if is_true("CKA_EXTRACTABLE") {
-        Some("must never leave the token (CKA_EXTRACTABLE = false)")
-    } else {
-        None
-    }
-}
-
-/// The public key to seal to for the transport key `t`, from the lock alone (`publicKey`, held
-/// to the locked identity on load): no target needs to be open. `None` when the lock has none
-/// yet (realised before `transportWith` named it). A transport key that may also decrypt is
-/// warned about: whoever holds the target's PIN could decrypt what is sealed to it.
-///
-/// # Errors
-///
-/// `Validation` when the recorded key is no SPKI.
-pub(crate) fn locked_transport(
-    t: &Target,
-    lock: &Lock,
-    notes: &mut Notes,
-) -> Result<Option<crate::sealed::TransportKey>> {
-    use base64::Engine as _;
-    warn_decrypting(t, lock, notes);
-    let Some(o) = lock.objects.get(t.object_name) else { return Ok(None) };
-    let (Some(k), Some(id)) = (&o.public_key, o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name())) else {
-        return Ok(None);
-    };
-    let spki = base64::engine::general_purpose::STANDARD
-        .decode(k)
-        .map_err(|e| KmError::Validation(format!("{t}: the lock's publicKey: {e}").into()))?;
-    crate::sealed::check_transport_size(&spki)?;
-    Ok(Some(crate::sealed::TransportKey { object: t.object_name.to_owned(), rfc7093m4: id.clone(), spki }))
-}
-
-/// A transport key whose recorded policy also decrypts: the target's PIN holder could
-/// `C_Decrypt` a bundle's wrapped key-encryption key out of the token.
-fn warn_decrypting(t: &Target, lock: &Lock, notes: &mut Notes) {
-    let policy = lock.realisation(t.spec_name, t.token_name).map(|r| &r.policy);
-    if policy.and_then(|p| p.get("CKA_DECRYPT")) == Some(&AttrValue::Bool(true)) {
-        notes.warn(format_args!(
-            "{t} also decrypts (CKA_DECRYPT): whoever holds the target's PIN can decrypt what is sealed to it \
-             out of the token; a transport key that only unwraps proves possession with binding = \"pop-unwrap\""
-        ));
-    }
-}
-
-/// A transport file's key is its token's transport key as the lock pins it (docs/CAMIGRATE.md D3:
-/// the lock is the authenticated channel): the spec `chosen` names (`--transport-spec`, else the
-/// file's token's `transportWith`) is realised on the file's token as a transport key
-/// ([`transport_spec`]), on the file's object, whose locked identity is the file's key. Any
-/// other key the lock pins (another token's transport key, a certificate's subject key) is
-/// refused, since whoever swapped the file may hold it (review 2026-11-23 C-1).
-///
-/// # Errors
-///
-/// Why it is not.
-pub(crate) fn pinned(lock: &Lock, t: &Transport, chosen: Option<&str>) -> std::result::Result<(), String> {
-    let spec = transport_spec(lock, &t.token, chosen)?;
-    let realised = lock.realisation(spec, &t.token).map(|r| r.object.as_str());
-    if realised != Some(t.object.as_str()) {
-        return Err(format!(
-            "its object '{}' is not the transport key of '{}': the lock realises '{spec}' there as '{}'",
-            t.object,
-            t.token,
-            realised.unwrap_or("nothing")
-        ));
-    }
-    match lock.objects.get(&t.object).and_then(|o| o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name())) {
-        Some(id) if *id == t.rfc7093m4 => Ok(()),
-        Some(id) => Err(format!("its key {} is not the {id} the lock pins for '{}'", t.rfc7093m4, t.object)),
-        None => Err(format!("the lock pins no key for its object '{}', so nothing vouches for it", t.object)),
     }
 }
 
