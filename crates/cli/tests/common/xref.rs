@@ -2,10 +2,11 @@
 //! reference token whose suite variables are set, one keys.toml naming them all, and runs of
 //! either binary against it.
 
+use super::state::{TokenView, assert_unchanged, database, snapshot};
 use super::{BIN, REQUIRE_ALL, Run, required_var, sibling, skip};
 use std::fmt::Write;
-use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::path::{Path, PathBuf};
+use std::process::Output;
 
 /// How a reference gets the material.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -29,6 +30,19 @@ pub struct Ref {
     pub plant: Plant,
     /// `CKM_EDDSA` is usable: not through p11-kit, whose RPC drops it.
     pub eddsa: bool,
+}
+
+impl Ref {
+    /// Its token, as a snapshot sees it ([`super::state::objects`]).
+    pub fn view(&self) -> TokenView<'_> {
+        TokenView {
+            name: self.name,
+            module: &self.module,
+            label: self.token_label,
+            env: self.env,
+            db: database(&self.module),
+        }
+    }
 }
 
 pub struct Env {
@@ -179,25 +193,13 @@ impl Env {
         }
         let value = |flag: &str| args.iter().position(|a| *a == flag).and_then(|i| args.get(i + 1)).copied();
         let lock = value("--lock").map_or_else(|| self.dir.join("keys.lock"), PathBuf::from);
-        let files = [Some(lock), value("--out").map(PathBuf::from)];
-        let named = self.compared(args);
+        let out = value("--out").map(PathBuf::from);
+        let files: Vec<&Path> = [Some(&lock), out.as_ref()].into_iter().flatten().map(PathBuf::as_path).collect();
+        let tokens: Vec<TokenView> = self.compared(args).into_iter().map(Ref::view).collect();
         // What must not change, each with its name: the files' bytes and each token's objects.
-        let state = || -> Vec<(String, String)> {
-            let file = |f: &PathBuf| (f.display().to_string(), format!("{:?}", std::fs::read(f).ok()));
-            files
-                .iter()
-                .flatten()
-                .map(file)
-                .chain(named.iter().map(|t| (format!("token {}", t.name), objects(t))))
-                .collect()
-        };
-        let before = state();
+        let before = snapshot(&files, &tokens);
         let dry = self.run_once(bin, r, &[args, &["--dry-run"]].concat());
-        for ((what, was), (_, now)) in before.iter().zip(state()) {
-            let changed: Vec<&str> =
-                was.lines().filter(|l| !now.contains(l)).chain(now.lines().filter(|l| !was.contains(l))).collect();
-            assert!(*was == now, "camigrate {} --dry-run changed {what}:\n{}", args.join(" "), changed.join("\n"));
-        }
+        assert_unchanged(&before, &snapshot(&files, &tokens), &format!("camigrate {} --dry-run", args.join(" ")));
         dry.status.code()
     }
 
@@ -224,40 +226,4 @@ impl Env {
         }
         s + "\n"
     }
-}
-
-/// What a dry run must leave as it was on `r`'s token: every object as `pkcs11-tool` lists it,
-/// logged in — a process of its own, so no module is initialized twice in the test's. kryoptic's
-/// login alone takes over a second (its PIN's key derivation \[run\]), which made the twin cost
-/// ten times the suite: its token is its one database file, compared by content instead.
-fn objects(r: &Ref) -> String {
-    if r.name.starts_with("kryoptic")
-        && let Some(db) = kryoptic_db()
-    {
-        let bytes = std::fs::read(&db).unwrap_or_default();
-        let sum =
-            bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
-        return format!("{}: {} bytes, fnv1a {sum:016x}", db.display(), bytes.len());
-    }
-    let out = Command::new("pkcs11-tool")
-        .envs(r.env.iter().copied())
-        .args(["--module", &r.module, "--token-label", r.token_label, "--login", "--pin", "1234", "--list-objects"])
-        .output()
-        .expect("pkcs11-tool (opensc) lists a reference token's objects for the dry-run twin");
-    assert!(out.status.success(), "pkcs11-tool on {}: {}", r.name, String::from_utf8_lossy(&out.stderr));
-    // Sorted by line: a module may list its objects in another order each time (kryoptic [run]).
-    // A data object's line carries its handle, which SoftHSM numbers afresh in each process (the
-    // same objects listed twice came out as "Data object 6" and "Data object 8" [run]): left out.
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut lines: Vec<&str> =
-        text.lines().map(|l| if l.starts_with("Data object ") { "Data object" } else { l }).collect();
-    lines.sort_unstable();
-    lines.join("\n")
-}
-
-/// kryoptic's token database: the `dbargs` of `$KRYOPTIC_CONF` (nix/package-common.nix).
-fn kryoptic_db() -> Option<PathBuf> {
-    let conf = std::fs::read_to_string(std::env::var_os("KRYOPTIC_CONF")?).ok()?;
-    let args = conf.lines().find_map(|l| l.trim().strip_prefix("dbargs"))?;
-    Some(PathBuf::from(args.trim_start_matches([' ', '=']).trim().trim_matches('"')))
 }
