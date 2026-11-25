@@ -1143,9 +1143,9 @@ mod tests {
         assert_eq!(curve(fixture!("adopt-cert-ed25519.der")), Some(Curve::Ed25519));
     }
 
-    /// The SPKI forms the second dispatcher read and `KeyAlg::of_spki` does not (review D6): each
-    /// is refused alike by `spki_curve` and by `spki_canonical`, which every SPKI a caller passes
-    /// came through, so one dispatcher decides both.
+    /// The SPKI forms the second dispatcher read and `KeyAlg::of_spki` does not (review D6, which
+    /// removed it): each is refused by `KeyAlg::of_spki` and by `spki_canonical`, which every SPKI
+    /// a caller passes came through, so one dispatcher decides both.
     #[test]
     fn spki_curve_reads_what_canonical_spkis_hold() {
         let tlv = |tag: u8, body: &[&[u8]]| {

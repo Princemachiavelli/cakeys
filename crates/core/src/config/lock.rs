@@ -402,7 +402,7 @@ pub struct LockRealisation {
 
 /// Offline-verifiable attestation evidence pinned per realisation (§3.7 of docs/DESIGN.md).
 /// `kind` names the attestation (`yubico-piv`, `tpm-certify` — one per scheme, see
-/// `id::ATTESTATION_KINDS`), `root` is the SRI digest of the trust anchor the chain was verified
+/// `Scheme::attestation_kind`), `root` is the SRI digest of the trust anchor the chain was verified
 /// to: the pinned Yubico root's SPKI for PIV (never the device's own overwritable slot f9), or
 /// the Attestation Key's SPKI for TPM. `id` is the attestation commitment of this device.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

@@ -79,8 +79,8 @@ pub struct ProbeCfg {
     /// creates only as Security Officer into fixed device slots named by `CKA_ID` (ykcs11): such
     /// a token holds real keys beside the scratch slot, so `scratch` cannot mark all of it. Each
     /// probe generation replaces the slot's key, and what the last one generated stays (PIV
-    /// cannot erase a key). The probe still refuses a slot holding anything but its provider's
-    /// own placeholder (`Provider::scratch_occupant`).
+    /// cannot erase a key). The probe refuses a slot holding anything but its own certificate
+    /// (`CN=cakeys-probe`, which each run leaves there) or nothing (review 2026-11-23 D-1).
     pub scratch_id: Option<String>,
 }
 

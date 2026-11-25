@@ -10,6 +10,8 @@ use super::{Deserialize, KeyType, KmError, ObjectClass, Result, Serialize};
 pub struct ObjectMigrateCfg {
     /// The file: a path, or `$NAME`/`${NAME}` read from the environment when camigrate reads it
     /// ([`Config::object_file`]), so hosts that only check load keys.toml without it.
+    ///
+    /// [`Config::object_file`]: super::Config::object_file
     pub file: Option<String>,
     /// A file holding the passphrase of an encrypted key file (`$NAME` as for `file`).
     pub passphrase_file: Option<String>,

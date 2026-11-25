@@ -10,6 +10,8 @@ use super::{
 /// one key per binding, generated from the provider's exact template (no public template), and
 /// probed with only the mechanisms its binding serves. The curves and sizes no binding covers
 /// are tried without one ([`probe_unbound`]), so their `cannot` rows are observations too.
+///
+/// [`BoundKey`]: super::BoundKey
 pub(super) fn probe_bound(made: &mut Made, profile: &mut Draft) {
     let session = made.session;
     profile.note(

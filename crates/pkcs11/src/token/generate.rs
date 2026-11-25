@@ -46,6 +46,7 @@ impl Token {
     /// As [`Self::create`].
     ///
     /// [`Provider::create`]: crate::Provider::create
+    /// [`Provider::generation`]: crate::Provider::generation
     pub fn create_declared(&self, req: &Create<'_>) -> Result<Option<CreateNote>> {
         let own = self.provider.generation(req.object, req.spec, req.locator, req.binding)?;
         self.managing("generating a key", || match &own {

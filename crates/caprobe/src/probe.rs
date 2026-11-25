@@ -119,8 +119,8 @@ enum Target {
 ///
 /// `Validation` (17) when `write` is set but the token is not marked scratch, has no PIN, or
 /// its provider creates only as Security Officer and no `scratchId` (with an admin credential)
-/// names a slot holding nothing but the provider's own placeholder; the scratch guard is the
-/// one thing the probe refuses rather than records. `Unavailable` when an SO login fails.
+/// names a slot that is empty or holds the probe's own certificate ([`check_slot`]); the scratch
+/// guard is the one thing the probe refuses rather than records. `Unavailable` when an SO login fails.
 pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<Probed> {
     let advertised = tok.advertised();
     let profile = Profile {
@@ -264,8 +264,8 @@ fn check_slot(tok: &Token, id: &[u8]) -> Result<()> {
     }
     let mut certs = Vec::new();
     for h in find(&[Attribute::Class(ObjectClass::CERTIFICATE), Attribute::Id(id.to_vec())])? {
-        // A certificate that cannot be read counts as one that is not the placeholder (its empty
-        // value parses as no certificate): what the probe cannot see is never presumed scratch.
+        // A certificate that cannot be read counts as neither the probe's mark nor a companion
+        // (its empty value is no certificate): what the probe cannot see is never presumed scratch.
         let der = match s.get_attributes(h, &[AttributeType::Value]).map(|v| v.into_iter().next()) {
             Ok(Some(Attribute::Value(der))) => der,
             _ => Vec::new(),
@@ -630,6 +630,8 @@ impl Made<'_> {
     }
 
     /// [`Self::record`] for a signature ([`sign`]'s outcome: whether the host verified it).
+    ///
+    /// [`sign`]: asymmetric::sign
     fn record_signed(&mut self, m: MechanismType, on: &str, outcome: std::result::Result<bool, Msg>) {
         if !self.tok.lists(m) {
             self.ops.unlisted.insert(m.to_string());
