@@ -203,9 +203,14 @@
     expect 15 --profile softhsm/2.7 --layer cryptoki-sim --profiles $sim CKK_SHA512_HMAC
     # The static gate (phase 4): `validate` against the profiles, no token opened. kryoptic
     # generating secp256k1 and a `kw` commitment through p11-kit are refused (15); the fixture
-    # with a recorded SoftHSM lock passes.
+    # with a recorded SoftHSM lock passes. Each config is read with the lock beside it, as
+    # tests/validate.rs reads it: without one, every verb is refused (17) unless --new-lock
+    # (review 2026-11-23 C-16), which a store copy of the config alone shows.
     q() { "${cakeys}/bin/cakeys" --config "$@" validate; }
-    expect 15 ${./crates/cli/tests/fixtures/gate.toml}
+    expect 17 ${./crates/cli/tests/fixtures/gate.toml}
+    cp ${./crates/cli/tests/fixtures/gate.toml} gate.toml
+    cp ${./crates/cli/tests/fixtures/gate.lock} gate.lock
+    expect 15 gate.toml
     cp ${./crates/cli/tests/fixtures/keys.toml} keys.toml
     cp ${./crates/cli/tests/fixtures/keys.lock} keys.lock
     expect 0 keys.toml
