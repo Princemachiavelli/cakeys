@@ -13,7 +13,7 @@
 //! The chain walk itself (signatures, `basicConstraints`, validity) is generic and lives in
 //! `cakeys_core::chain`; what is PIV here is the pool, the roots and what the chain asserts.
 
-use cakeys_core::chain::{Cert, Start, chain_to_anchor, verify_signed_by};
+use cakeys_core::chain::{Cert, Start, chain_to_anchor, link};
 use cakeys_core::id;
 use cakeys_core::{KmError, Result};
 use x509_cert::der::asn1::ObjectIdentifier;
@@ -60,13 +60,13 @@ pub(crate) fn verify_piv_attestation(
     // signed by that same device attestation key. Real chains are one link (f9 ← classic root)
     // or three (f9 ← PIV intermediate ← attestation intermediate ← root, firmware 5.7.4+): a
     // longer one is no PIV attestation chain.
+    // The slot link keeps every rule of the walk's links (review 2026-11-24 A-7): the device
+    // may issue (CA, keyCertSign), neither has a critical extension cakeys does not process,
+    // both are valid at `at`, and the device's key signed the slot's certificate.
     let anchor = chain_to_anchor(&device, Start::Intermediate, anchors, pool, at, 3)?;
-    if let Some(at) = at {
-        slot.valid_at(at)?;
-    }
-    verify_signed_by(&slot, &device).map_err(|e| {
+    link(&slot, Start::EndEntity, &device, at).map_err(|e| {
         KmError::Conflict(
-            format!("the slot attestation certificate is not signed by the device attestation key: {e}").into(),
+            format!("the slot attestation certificate does not link to the device attestation certificate: {e}").into(),
         )
     })?;
     // The attested key is the certificate's subject: it must be the material the identity is
@@ -225,6 +225,36 @@ mod tests {
             verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &[], &[], &spki_of("slotpub.pem"), None)
                 .unwrap_err();
         assert!(err.to_string().contains("signed by no pinned root"), "{err}");
+    }
+
+    /// The slot link is held to the chain's rules (review 2026-11-24 A-7): a device certificate
+    /// whose keyUsage lacks keyCertSign signs no slot certificate, and a slot certificate with a
+    /// critical extension cakeys does not process is refused, as each is anywhere in the walk.
+    /// Core's chain-rules fixtures, each `piv-` chain differing from `piv-slot`'s in its one rule
+    /// (openssl refuses both).
+    #[test]
+    fn the_slot_link_keeps_the_chain_rules() {
+        let rule = |name: &str| {
+            let pem = std::fs::read_to_string(format!(
+                "{}/../core/tests/fixtures/chain-rules/{name}.pem",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap();
+            pem_certs(&pem).unwrap().remove(0)
+        };
+        let anchors = [rule("piv-root")];
+        let verify = |slot: &str, device: &str| {
+            let slot = rule(slot);
+            verify_piv_attestation(slot.der(), rule(device).der(), &anchors, &[], &slot.spki().unwrap(), None)
+        };
+        verify("piv-slot", "piv-device").unwrap();
+        let e = verify("piv-slot-no-certsign", "piv-device-no-certsign").unwrap_err();
+        assert!(e.to_string().contains("its keyUsage lacks keyCertSign"), "{e}");
+        let e = verify("piv-slot-critical", "piv-device").unwrap_err();
+        assert!(e.to_string().contains("the critical extension 1.2.3.4"), "{e}");
+        // A slot certificate another key signed (review 2026-11-24 B-11's instance).
+        let e = verify("piv-slot-no-certsign", "piv-device").unwrap_err();
+        assert!(e.to_string().contains("signature does not verify"), "{e}");
     }
 
     /// The fuzz target's input format reaches the whole chain: the fixture chain, length-prefixed

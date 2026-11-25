@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Test chains for the walk's certificate rules (crates/core/src/chain.rs, review 2026-11-23 A-3):
-# each differs from the valid `ok` chain in the one rule its test names. No secret: the keys are
-# thrown away. From the repository root:
+# each differs from the valid `ok` chain in the one rule its test names. The `piv-` chains are a
+# PIV attestation's shape, root -> device -> slot, for the one link checked outside a walk
+# (`chain::link`, review 2026-11-24 A-7): `piv-slot` is valid, the others differ from it in one
+# rule. No secret: the keys are thrown away, so a run makes new keys for every chain; copy only
+# the chains you add, each whole. From the repository root:
 # `crates/core/tests/fixtures/chain-rules/make.sh crates/core/tests/fixtures/chain-rules`.
 set -euo pipefail
 mkdir -p "$1"
@@ -37,6 +40,10 @@ extendedKeyUsage = 2.23.133.8.1
 basicConstraints = CA:FALSE
 keyUsage = critical, keyEncipherment
 extendedKeyUsage = serverAuth
+[leaf_critical]
+basicConstraints = CA:FALSE
+keyUsage = critical, keyEncipherment
+1.2.3.4 = critical, ASN1:NULL
 EOF
 
 # The key of `name`, and its own request config naming it (LibreSSL takes the config's
@@ -68,7 +75,14 @@ root constrained-root ca_name_constraints
 leaf constrained-leaf constrained-root leaf
 leaf ek-leaf ok-root leaf_ek
 leaf server-leaf ok-root leaf_server
+root piv-root ca
+leaf piv-device piv-root ca
+leaf piv-device-no-certsign piv-root ca_no_certsign
+leaf piv-slot piv-device leaf
+leaf piv-slot-critical piv-device leaf_critical
+leaf piv-slot-no-certsign piv-device-no-certsign leaf
 
-for f in ok-root ok-leaf no-certsign-root no-certsign-leaf constrained-root constrained-leaf ek-leaf server-leaf; do
+for f in ok-root ok-leaf no-certsign-root no-certsign-leaf constrained-root constrained-leaf ek-leaf server-leaf \
+  piv-root piv-device piv-device-no-certsign piv-slot piv-slot-critical piv-slot-no-certsign; do
   cp "$f.pem" "$out/$f.pem"
 done
