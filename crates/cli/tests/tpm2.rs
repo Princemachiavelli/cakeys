@@ -197,6 +197,34 @@ fn tpm2_identity_failure_after_create_leaves_nothing() {
     assert_eq!(labelled(&e.session(), "orphan-p256"), 0, "what the failed create made is still there");
 }
 
+/// tpm2-pkcs11's `C_DestroyObject` leaves private keys behind (the swtpm profile measured it:
+/// `delete.CKO_PRIVATE_KEY = no`): `delete` refuses before it calls it (`delete-refused`, 15),
+/// naming the row, and the key and the lock stay, where it once claimed the key deleted (review
+/// 2026-11-24 B-13). A dry run says the same.
+#[test]
+fn tpm2_delete_is_refused_where_the_module_keeps_keys() {
+    let Some(e) = env("delete-refused") else { return };
+    e.config(
+        "[objects.p]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.p]\nobject = \"p\"\nattributes = { CKA_SIGN = true }\n\
+         tokens.tpm = { locator = { CKA_LABEL = \"kept-p256\" }, origin = \"create\" }\n",
+    );
+    assert_eq!(e.code(&["create", "--spec", "p", "--token", "tpm"]), 22);
+    let before = std::fs::read(e.dir.join("keys.lock")).unwrap();
+    for dry in [true, false] {
+        let args = if dry {
+            vec!["delete", "--spec", "p", "--token", "tpm", "--dry-run"]
+        } else {
+            vec!["delete", "--spec", "p", "--token", "tpm"]
+        };
+        let o = e.km(&args);
+        assert_eq!(code(&o), 15, "{}", stderr(&o));
+        assert!(stderr(&o).contains("delete.CKO_PRIVATE_KEY"), "{}", stderr(&o));
+    }
+    assert_eq!(std::fs::read(e.dir.join("keys.lock")).unwrap(), before, "the lock is kept");
+    assert!(labelled(&e.session(), "kept-p256") > 0, "the key is there");
+}
+
 /// `pop-ecdh` on tpm2-pkcs11: it derives, but cannot MAC with a sealed derived secret (its
 /// `C_SignInit` wants a `CKA_ALLOWED_MECHANISMS` the derived object lacks), so the committed
 /// profile says `derive.sealed = false` and the proof compares an extractable derived secret

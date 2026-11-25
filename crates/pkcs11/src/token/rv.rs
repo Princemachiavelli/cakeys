@@ -99,22 +99,32 @@ pub(super) fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
 /// Whether `e` says the device, the token or the session failed, rather than anything of the
 /// object or attribute asked for. Matched on cryptoki's error, the variant it has.
 pub(super) fn device_failed(e: &CkError) -> bool {
+    matches!(e, CkError::Pkcs11(rv, _) if device_error(*rv))
+}
+
+/// Whether the return value `rv`, as an error carries it ([`KmError::rv`]), is one of
+/// [`device_failed`]'s: what a row's `device` says (review 2026-11-24 C-1), a failure no dry
+/// run can foresee.
+#[must_use]
+pub fn device_failed_rv(rv: u64) -> bool {
+    matches!(Rv::from(rv), Rv::Error(e) if device_error(e))
+}
+
+/// [`device_failed`]'s return values.
+fn device_error(rv: RvError) -> bool {
     matches!(
-        e,
-        CkError::Pkcs11(
-            RvError::DeviceError
-                | RvError::DeviceMemory
-                | RvError::DeviceRemoved
-                | RvError::HostMemory
-                | RvError::GeneralError
-                | RvError::TokenNotPresent
-                | RvError::TokenNotRecognized
-                | RvError::SessionClosed
-                | RvError::SessionHandleInvalid
-                | RvError::CryptokiNotInitialized
-                | RvError::FunctionCanceled,
-            _
-        )
+        rv,
+        RvError::DeviceError
+            | RvError::DeviceMemory
+            | RvError::DeviceRemoved
+            | RvError::HostMemory
+            | RvError::GeneralError
+            | RvError::TokenNotPresent
+            | RvError::TokenNotRecognized
+            | RvError::SessionClosed
+            | RvError::SessionHandleInvalid
+            | RvError::CryptokiNotInitialized
+            | RvError::FunctionCanceled
     )
 }
 

@@ -111,9 +111,8 @@ pub(crate) fn export(
     };
     // The transport public key and the shared KEK are session objects on the source: both go
     // when this returns, however it does.
-    let mut tpub_template = templates::session(SessionKey::TransportKey);
-    tpub_template.extend(rsa_public(transport)?);
-    let tpub_template = from.provider.adjusted(&Template::Session(SessionKey::TransportKey), tpub_template)?;
+    let tpub_template = templates::session(SessionKey::TransportKey).with_material(rsa_public(transport)?)?;
+    let tpub_template = from.provider.adjusted_session(tpub_template)?;
     let tpub = session.create_object(&tpub_template).map_err(|e| refused("loading the transport key", e))?;
     let tpub = SessionObject::new(session, tpub);
     let under_kek =

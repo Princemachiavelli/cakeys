@@ -1,8 +1,9 @@
 //! The static gate (docs/CAPROBE.md): what each spec needs of its token, checked
 //! against the token's capability profiles with no token attached — `validate`'s second half,
 //! and what `create` checks before it opens any token. The needs are [`ops::needs`], the same
-//! the live check refuses by before anything is created; here a profile's *no* refuses (15,
-//! naming the profile that decided it) and its *unknown* is a note, never a failure. The
+//! the live check refuses by before anything is created, and the provider's static rules are the
+//! same function's ([`ops::static_rules`]); here a profile's *no* refuses (15, naming the profile
+//! that decided it) and its *unknown* is deferred to the open token, never a failure. The
 //! generation is asked only of a pair `create` makes (`origin = "create"`, not yet pinned).
 //!
 //! A token's profiles resolve statically from what is known without opening it: the module and
@@ -12,9 +13,9 @@
 use crate::ops::{self, Target};
 use crate::registry::Registry;
 use crate::resolution::{self, Resolved};
-use cakeys_core::config::{Binding, KeyOrigin, Lock, Mode, ObjectCfg, TokenCfg, TokenObservation};
+use cakeys_core::config::{Lock, Mode, TokenCfg, TokenObservation};
 use cakeys_core::{KmError, Result};
-use cakeys_profile::{Capability, Effective, On, Set, Verdict};
+use cakeys_profile::Set;
 
 /// A token's profile stack as known without opening it.
 pub struct Stack {
@@ -82,202 +83,39 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
     })
 }
 
-/// The capability of proving `t`'s private key the way its spec binds it
-/// (`plan::expected_binding`), when that is a proof.
-fn proof(t: &Target) -> Option<Capability> {
-    proof_capability(&t.object, cakeys_core::plan::expected_binding(t)?)
-}
-
-/// What a capability row of `object` is on: its curve, or its modulus size.
-fn on(object: &ObjectCfg) -> Option<On> {
-    match (&object.curve, object.modulus_bits) {
-        (Some(c), _) => Some(On::Item(c.clone())),
-        (None, Some(bits)) => Some(On::Bits(u32::try_from(bits).ok()?)),
-        (None, None) => None,
-    }
-}
-
-/// The capability a proof of possession of `object`'s private key by `binding` is
-/// (`prove.<proof>.<key type>.<curve or size>`); `None` for `token-asserted`, or a key with
-/// neither a curve nor a size.
-pub(crate) fn proof_capability(object: &ObjectCfg, binding: Binding) -> Option<Capability> {
-    Some(Capability::Prove {
-        binding: binding.proof_name()?.into(),
-        key_type: object.key_type?.name().into(),
-        on: on(object)?,
-    })
-}
-
-/// The capability generating `object` is (`generate.<key type>.<curve or size>`).
-pub(crate) fn generate_capability(object: &ObjectCfg) -> Option<Capability> {
-    Some(Capability::Generate { key_type: object.key_type?.name().into(), on: on(object)? })
-}
-
-/// What the gate found for one target: refusals (each a line) and notes.
-#[derive(Default)]
-pub struct Verdicts {
-    /// Why the target cannot be realised on this token, one line each (15).
-    pub refusals: Vec<String>,
-    /// What the gate could not decide (a profile's *unknown*), one line each.
-    pub notes: Vec<String>,
-}
-
-/// Check `t` in `mode` against `stack`: every mechanism group [`ops::needs`] lists, an
-/// attestation the provider must produce, and when `creates` (`create` makes the object,
-/// [`ops::creates`]) its generation: the mechanism, and the type, curve and size.
+/// Check `t` in `mode`, for the write `verb` ([`ops::Verb::of`]), against `stack` ([`stack`]'s
+/// answer for its token): the static rules ([`ops::static_rules`]) with the provider `stack`
+/// names and its profiles: placement, an attestation the provider must produce, every mechanism
+/// group [`ops::needs`] lists, and when `create` generates the key its generation, the
+/// mechanism and the type, curve and size. A stack that does not resolve, or a provider this
+/// build lacks, defers by name what only the open token could decide (review 2026-11-24 B-1).
 ///
 /// # Errors
 ///
 /// `Validation` (17) when no profile set is active ([`Registry::named`]).
-pub fn check(t: &Target, mode: Mode, stack: &Stack, registry: &Registry, creates: bool) -> Result<Verdicts> {
-    let mut out = Verdicts::default();
+pub fn check(
+    t: &Target,
+    mode: Mode,
+    stack: &std::result::Result<Stack, String>,
+    registry: &Registry,
+    verb: ops::Verb,
+) -> Result<ops::Verdicts> {
+    let stack = match stack {
+        Ok(stack) => stack,
+        Err(why) => return ops::static_rules(t, mode, ops::Seat::Unresolved(why.clone()), verb, None),
+    };
     let provider = registry.named(&stack.provider)?;
-    if provider.is_none() {
-        // A provider this build lacks and no profile names (a downstream one, as in the
-        // custom-provider example): what it attests and how it adjusts templates is known only
-        // when the token opens with it.
-        out.notes.push(format!(
-            "{t}: provider '{}' is not in this build: its attestation and templates are checked only when the \
-             token opens",
+    // A provider this build lacks and no profile names (a downstream one, as in the
+    // custom-provider example): what it places, attests and adjusts is known only when the
+    // token opens with it.
+    let seat = match &provider {
+        Some(p) => ops::Seat::Resolved(p.as_ref()),
+        None => ops::Seat::Unresolved(format!(
+            "provider '{}' is not in this build: what it decides is checked only when the token opens",
             stack.provider
-        ));
-    }
-    // A key the pair makes on the token (created, imported, or from its file) goes where the
-    // module can place it: ykcs11's PIV slots by CKA_ID alone (review 2026-11-23 B-3).
-    if let Some(p) = &provider
-        && t.object.class.is_key()
-        && t.on_token.key_origin() != KeyOrigin::Adopt
-        && let Err(e) = p.placement(&t.on_token.locator)
-    {
-        out.refusals.push(format!("{t}: provider '{}': {e}", p.name()));
-        return Ok(out);
-    }
-    // A module that generates from its own template refuses what it cannot make (kmsp11).
-    let own = match provider.as_ref().filter(|_| creates).map(|p| ops::own_generation(t, p.as_ref())) {
-        Some(Err(e)) => {
-            out.refusals.push(e.to_string());
-            return Ok(out);
-        }
-        Some(Ok(own)) => Some(own),
-        None => creates.then_some(false),
+        )),
     };
-    let needs = match ops::needs(t, mode, own) {
-        Ok(n) => n,
-        Err(e) => {
-            out.refusals.push(e.to_string());
-            return Ok(out);
-        }
-    };
-    if let Some(p) = &provider
-        && let Err(m) = ops::check_attestation(t, p.as_ref())
-    {
-        out.refusals.push(m);
-    }
-    // The proof the spec's key will be bound by: a profile's or this token's recorded no
-    // refuses (a key made could not then be identified); unknown means try.
-    if let Some(cap) = proof(t)
-        && let Some(m) = stack.resolved.module.as_ref()
-        && m.answer(&cap) == Some(false)
-    {
-        let why = m.evidence(&cap, "").map_or_else(String::new, |e| format!(": {e}"));
-        out.refusals
-            .push(format!("{t}: token '{}' cannot prove possession by {cap} ({}{why})", t.token_name, m.profile));
-    }
-    let set = Set::active().map_err(|e| KmError::Validation(e.into()))?;
-    let baseline = set.baseline().map_err(|e| KmError::Validation(e.into()))?;
-    let layers: Vec<&cakeys_profile::Profile> = stack.resolved.layers.iter().collect();
-    let eff = Effective::new(baseline, stack.resolved.module.as_ref(), &layers);
-    let token = t.token_name;
-    // The templates the verb will send, as the provider adjusts them: what it refuses, the run
-    // refuses before anything is created (`ops::plan_templates`). Unknown means not asked.
-    if let Some(p) = &provider {
-        let has = |m: cryptoki::mechanism::MechanismType| match eff.mechanism(&m.to_string()) {
-            Verdict::Yes { .. } => Some(true),
-            Verdict::No { .. } => Some(false),
-            Verdict::Unknown { .. } => None,
-        };
-        let derive_sealed = stack.resolved.module.as_ref().and_then(|m| m.answer(&Capability::DeriveSealed));
-        let seals = ops::ecdh_seals(derive_sealed, has(cryptoki::mechanism::MechanismType::SHA256_HMAC));
-        match ops::plan_templates(t, mode, own == Some(false), p.as_ref(), &has, seals) {
-            Ok(None) => {}
-            Ok(Some(why)) => out.notes.push(why),
-            Err(e) => out.refusals.push(format!("{t}: provider '{}': {e}", p.name())),
-        }
-    }
-    let generation = needs.generation.map(|m| vec![m]);
-    for group in needs.groups.iter().chain(&generation) {
-        let verdicts: Vec<(String, Verdict)> =
-            group.iter().map(|m| (m.to_string(), eff.mechanism(&m.to_string()))).collect();
-        if verdicts.iter().any(|(_, v)| matches!(v, Verdict::Yes { .. })) {
-            continue;
-        }
-        let lines: Vec<String> = verdicts.iter().map(|(m, v)| format!("{m}: {v}")).collect();
-        if verdicts.iter().all(|(_, v)| matches!(v, Verdict::No { .. })) {
-            out.refusals
-                .push(format!("{t}: token '{token}' cannot do what mode '{mode}' needs ({})", lines.join("; ")));
-        } else {
-            out.notes.push(format!("{t}: the profiles do not decide ({})", lines.join("; ")));
-        }
-    }
-    // The generation's type, curve and size; then a secret key's commitments: refused only when
-    // the profile measured every one the spec declares and the module cannot compute any (an
-    // unmeasured one is the advertised list's); a note when none is a yes and some are
-    // undecided, as for a generation.
-    let generated = needs.generation.and_then(|_| generating(t, &eff, token));
-    for said in generated.into_iter().chain(commitments(t, &eff, token)) {
-        match said {
-            Ok(refusal) => out.refusals.push(refusal),
-            Err(undecided) => out.notes.push(undecided),
-        }
-    }
-    Ok(out)
-}
-
-/// What the profiles say of generating `t`'s key, its type, curve and size: `Ok`, the refusal;
-/// `Err`, a note, when undecided; `None` when it is a yes or `t` names no key type.
-fn generating(t: &Target, eff: &Effective, token: &str) -> Option<std::result::Result<String, String>> {
-    let kt = t.object.key_type?;
-    let verdict = if kt.is_asymmetric() {
-        let bits = t.object.modulus_bits.and_then(|b| u32::try_from(b).ok());
-        eff.generate(kt.name(), t.object.curve.as_deref(), bits)
-    } else {
-        // A secret key's length: keys.toml's `valueLen`, or what its type fixes.
-        let bytes = t.object.value_len.or_else(|| kt.fixed_value_len());
-        eff.generate_secret(kt.name(), bytes.and_then(|b| u32::try_from(b).ok()))
-    };
-    match verdict {
-        Verdict::Yes { .. } => None,
-        v @ Verdict::No { .. } => Some(Ok(format!("{t}: token '{token}' cannot generate it: {v}"))),
-        v @ Verdict::Unknown { .. } => Some(Err(format!("{t}: generation not decided: {v}"))),
-    }
-}
-
-/// What the profiles say of `t`'s declared commitments when it is a secret key: `Ok`, the
-/// refusal, when the profile measured every one as one the module cannot compute; `Err`, a
-/// note, when none is a yes and one the profile measured is not decided at this length (review
-/// 2026-11-23 A-1); `None` when one is a yes, there are none, or the undecided ones were never
-/// measured (the advertised list's).
-fn commitments(t: &Target, eff: &Effective, token: &str) -> Option<std::result::Result<String, String>> {
-    let kt = t.object.key_type.filter(|_| t.object.class == cakeys_core::types::ObjectClass::SecretKey)?;
-    let bytes = t.object.value_len.or_else(|| kt.fixed_value_len()).and_then(|b| u32::try_from(b).ok());
-    let verdicts: Vec<(&str, Verdict)> = cakeys_core::plan::declared_commits(t)
-        .iter()
-        .map(|c| {
-            let kind = c.profile_kind();
-            (kind, eff.commit(kind, kt.name(), bytes))
-        })
-        .collect();
-    if verdicts.is_empty() || verdicts.iter().any(|(_, v)| matches!(v, Verdict::Yes { .. })) {
-        return None;
-    }
-    let lines: Vec<String> = verdicts.iter().map(|(k, v)| format!("{k}: {v}")).collect();
-    if verdicts.iter().all(|(_, v)| matches!(v, Verdict::No { .. })) {
-        return Some(Ok(format!("{t}: token '{token}' computes none of its commitments ({})", lines.join("; "))));
-    }
-    verdicts
-        .iter()
-        .any(|(k, v)| matches!(v, Verdict::Unknown { .. }) && eff.measured_commit(k, kt.name()))
-        .then(|| Err(format!("{t}: commitments not decided ({})", lines.join("; "))))
+    ops::static_rules(t, mode, seat, verb, Some(&stack.resolved))
 }
 
 #[cfg(test)]
@@ -323,23 +161,39 @@ mod tests {
         .unwrap()
     }
 
-    /// A provider this build does not have, and no profile family: the checks only it could make
-    /// are not made, and the gate says so (gate.rs F1), never passes in silence.
+    /// A provider this build does not have, and no profile family: the rules only it could
+    /// decide are deferred, each named (gate.rs F1), never passed in silence.
     #[test]
     fn a_provider_this_build_lacks_is_said() {
         cakeys_profile::Set::activate_embedded().unwrap();
         let cfg = create_config();
         let t = Target::new(&cfg, "s", "t").unwrap();
-        let stack = Stack { resolved: Resolved::default(), provider: "custom".into(), source: "test" };
-        let v = check(&t, ops::plan_mode(&t).unwrap(), &stack, &Registry::new(), true).unwrap();
+        let stack =
+            |provider: &str| Ok(Stack { resolved: Resolved::default(), provider: provider.into(), source: "test" });
+        let v = check(&t, ops::plan_mode(&t).unwrap(), &stack("custom"), &Registry::new(), ops::Verb::Create).unwrap();
+        let deferred: Vec<ops::Rule> = v.deferred.iter().map(|d| d.rule).collect();
+        for rule in [ops::Rule::Placement, ops::Rule::OwnGeneration, ops::Rule::Templates] {
+            assert!(deferred.contains(&rule), "{rule}: {:?}", v.deferred);
+        }
         assert!(
-            v.notes.iter().any(|n| n.contains("provider 'custom' is not in this build") && n.contains("token opens")),
+            v.deferred
+                .iter()
+                .all(|d| d.why.contains("provider 'custom' is not in this build") && d.why.contains("token opens")
+                    || d.rule == ops::Rule::Capability),
             "{:?}",
-            v.notes
+            v.deferred
         );
-        let known = Stack { provider: "softhsm".into(), ..stack };
-        let v = check(&t, ops::plan_mode(&t).unwrap(), &known, &Registry::new(), true).unwrap();
-        assert!(!v.notes.iter().any(|n| n.contains("is not in this build")), "{:?}", v.notes);
+        let v = check(&t, ops::plan_mode(&t).unwrap(), &stack("softhsm"), &Registry::new(), ops::Verb::Create).unwrap();
+        assert!(!v.deferred.iter().any(|d| d.why.contains("is not in this build")), "{:?}", v.deferred);
+
+        // A token whose stack does not resolve: every rule a resolved one would ask is deferred,
+        // saying why (review 2026-11-24 B-1).
+        let unresolved = Err("token 't': no provider named".to_owned());
+        let v = check(&t, ops::plan_mode(&t).unwrap(), &unresolved, &Registry::new(), ops::Verb::Create).unwrap();
+        let rules: Vec<ops::Rule> = v.deferred.iter().map(|d| d.rule).collect();
+        let all = [ops::Rule::Placement, ops::Rule::OwnGeneration, ops::Rule::Templates, ops::Rule::Capability];
+        assert_eq!((rules.as_slice(), v.refusals.len()), (all.as_slice(), 0));
+        assert!(v.deferred.iter().all(|d| d.why.ends_with("token 't': no provider named")), "{:?}", v.deferred);
     }
 
     /// A lock observation that recorded answers but no module or token (an older lock): the
@@ -396,16 +250,23 @@ mod tests {
         cakeys_profile::Set::activate_embedded().unwrap();
         let cfg = create_config();
         let t = Target::new(&cfg, "s", "t").unwrap();
-        let stack = Stack { resolved: Resolved::default(), provider: "asked".into(), source: "test" };
+        let stack = Ok(Stack { resolved: Resolved::default(), provider: "asked".into(), source: "test" });
         let run = |refuses: bool, creates: bool| {
             let asked = Arc::new(Mutex::new(Vec::new()));
             let registry = Registry::new().with(Asked(Arc::clone(&asked), refuses));
-            let v = check(&t, ops::plan_mode(&t).unwrap(), &stack, &registry, creates).unwrap();
-            (v.refusals, asked.lock().unwrap().clone())
+            let verb = if creates { ops::Verb::Create } else { ops::Verb::Lock };
+            let v = check(&t, ops::plan_mode(&t).unwrap(), &stack, &registry, verb).unwrap();
+            let refusals: Vec<(ops::Rule, String)> = v.refusals.iter().map(|r| (r.rule, r.to_string())).collect();
+            (refusals, asked.lock().unwrap().clone())
         };
         assert_eq!(run(false, true), (vec![], vec!["Key".to_owned(), "Public".to_owned()]));
         let (refusals, _) = run(true, true);
-        assert!(refusals.iter().any(|r| r.contains("provider 'asked'") && r.contains("asked refuses")), "{refusals:?}");
+        assert!(
+            refusals.iter().any(|(rule, r)| *rule == ops::Rule::Templates
+                && r.contains("provider 'asked'")
+                && r.contains("asked refuses")),
+            "{refusals:?}"
+        );
         assert_eq!(run(true, false), (vec![], vec![]));
     }
 }

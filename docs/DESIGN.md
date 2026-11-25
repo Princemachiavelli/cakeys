@@ -182,11 +182,18 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   `lock` is the lock verb: it never creates, and `create` is the one verb that writes keys
   (2026-11-15). Like `nix build` with `flake.lock`: what the lock lacks is recorded (first use included), but a
   locked ID, anchor, binding, type or immutable is never overwritten — those changes fail even
-  when the lock is written. `lock --dry-run` and `delete --dry-run` compare only, and
-  `create --no-update-lock` creates without recording. First use is trust on first use, so the
+  when the lock is written. `lock --dry-run`, `delete --dry-run` and `create --dry-run` open
+  the token read-only and ask what the run asks before it writes (review 2026-11-24 C-4: the
+  create dry run once planned without the token and passed where the run refused), and write
+  nothing; `create --no-update-lock` creates without recording. First use is trust on first use, so the
   review is the `keys.lock` diff, and a run that wrote the lock exits 22, never 0, so a caller
   handles that review on purpose. A lock that is not there is refused (17) unless `--new-lock`:
   a mistyped `--lock` never starts a second lock (review 2026-11-23, C-4).
+- **Every pair a verb reaches has a row, of one shape** (`Outcome`, cli-common; review
+  2026-11-24 C-1): its outcome, its exit code, the rule that refused it and whether the device
+  failed, so a caller, and the dry-run twin, read what happened to each from the rows alone. The
+  run's exit follows from them: 0 (22 when the lock was written), the one failure's code, or 20
+  for a plan refused more than once.
 - **A write that replaces a realisation says what it accepted,** one line each (`re-recorded
   …`): what keys.toml changed (locator, object, `publicOnly`, spec digest) and policy
   attributes the lock did not record are notes; a policy attribute or immutable that changed
@@ -321,6 +328,11 @@ Outcomes:
   `CKF_USER_PIN_FINAL_TRY`, and the context-specific login reuses the PIN that already logged in,
   so it cannot be wrong (a successful login resets PIV's counter). `CKF_USER_PIN_COUNT_LOW` is a
   warning. A slot's PIV *touch* policy is invisible in PKCS#11 and not handled (OPEN.md).
+- **A login is what the session shows.** After every `C_Login` the module accepts (the user's
+  at open, the SO step's, the user's again after it), `C_GetSessionInfo` must show the login: a
+  session left public hides every private object, so a search would read a key as absent and
+  `delete` would drop its realisation. It is unavailable (16) instead (review 2026-11-24,
+  found through the Phase 2 design; `a_login_the_session_does_not_show_is_unavailable`).
 - **`pop-sign-pin` is recorded, never configured:** `binding = "pop-sign-pin"` in keys.toml is
   invalid (17); `pop-sign` (the default) becomes it on an always-authenticate key.
 
@@ -341,7 +353,7 @@ content-addressed identity — one per token type that can produce it:
 
 | Scheme | Token | Evidence | Anchor pinned in the lock |
 |---|---|---|---|
-| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen` whose `keyUsage`, when present, has `keyCertSign`, and no certificate of the chain with a critical extension cakeys does not process (RFC 5280 §4.2; the same walk holds an EK certificate, which must also name `tcg-kp-EKCertificate` when it names purposes); under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while every other verb only warns about a chain out of its dates. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
+| `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen` whose `keyUsage`, when present, has `keyCertSign`, and no certificate of the chain with a critical extension cakeys does not process — the device certificate as the slot's issuer and the slot certificate included, one `chain::link` for every link (review 2026-11-24 A-7: the slot link checked the signature alone) (RFC 5280 §4.2; the same walk holds an EK certificate, which must also name `tcg-kp-EKCertificate` when it names purposes); under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while every other verb only warns about a chain out of its dates. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
 | `tpm-certify` | tpm2-pkcs11 tokens | a `TPM2_Certify` over the object's Name with a fresh random nonce, host-verified. A module with the vendor mechanism `CKM_TPM2_CERTIFY` (upstream/tpm2-pkcs11/) runs it itself (`C_Sign` on the object; the signer is a persistent AK by handle, or with `options.akLabel` a token object through `CKM_TPM2_CERTIFY_OBJECT`, which needs no TCTI or store); the object's public area is its `CKA_TPM2_PUB_BLOB`, whose Name the statement must carry. Any other module is attested natively (tss-esapi) as follows: the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. A secret key has no public key to cross-check, so the loaded object computes the key's HMAC commitment again (`TPM2_HMAC` over the commitment's input), which must be the commitment the module computed: a store row or a module pointing at another TPM object is refused (13), not attested (review 2026-11-23 B-1, `tpm2_a_secret_keys_attestation_is_bound_to_its_material`). A secret key without an HMAC commitment (AES, Triple DES), a SHA-224 HMAC key (the TPM defines no SHA-224) and any secret key through the module's own certify, which never lets cakeys load the object, are refused (15). Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the EK certificate's root, when one verifies and the AK activates a credential with that EK (§3.7); else the Attestation Key's SPKI |
 
 - **The commitment hashes asserted content, never signed bytes.** A PIV certificate is minted
@@ -655,6 +667,28 @@ module and what real builds may reach.
 - **Refused operations leave nothing behind:** checks before creating, and cleanup after a failed
   identity — except a key on a module that cannot delete keys (ykcs11), which stays and is
   reported.
+- **A provider's operation runs after core's rules, never instead of them** (review 2026-11-24
+  B-2). `Token::create` and `Token::destroy` ask `placement` or `deletion` and enter the SO
+  session `manages_as_so` asks for, then call the provider's `create` or `destroy` with a
+  `Checked` request no other crate can build, so an override cannot skip either; the gate, the
+  live checks and the capability check ask the same named rules (`ops::Rule`).
+- **A destroy is verified, never taken on the module's word** (review 2026-11-24 B-13). A
+  provider or a module profile that says the module keeps what it is asked to remove
+  (`Provider::deletion`, `delete.<class> = no`) refuses the delete before anything is
+  destroyed, a dry run too (`delete-refused`, 15); after every destroy cakeys looks under the
+  locator again, and an object still there is `delete-kept` (16), the lock keeping the
+  realisation.
+- **A provider adjusts templates and repairs reads only where it may** (review 2026-11-24
+  B-3). A template comes back from `Provider::template` with its security attributes as cakeys
+  built them or tightened (a restriction set true, a permission false); any other change to
+  `CKA_TOKEN`, `CKA_PRIVATE`, `CKA_SENSITIVE`, `CKA_EXTRACTABLE`, `CKA_WRAP_WITH_TRUSTED`,
+  `CKA_TRUSTED`, `CKA_ID`, `CKA_LABEL`, `CKA_MODIFIABLE`, `CKA_COPYABLE` or `CKA_DESTROYABLE`
+  is refused (17) before anything is made. A policy flag is repaired only for the
+  (attribute, private key type) pairs the provider declares (`Provider::repairs`; ykcs11:
+  `CKA_DERIVE` of EC and X25519 keys). A session key's template is a type,
+  `templates::SessionTemplate`, built only by `templates::session` and `rebind_copy` and asked of
+  the provider as the key it was built for (`adjusted_session`); each key's `CKA_TOKEN`,
+  `CKA_SENSITIVE` and `CKA_EXTRACTABLE` are pinned by a test (review 2026-11-24 B-8).
 - **Token paths reach only builds that require the token's feature.**
 
 ### 8.2 Not enforced / known gaps

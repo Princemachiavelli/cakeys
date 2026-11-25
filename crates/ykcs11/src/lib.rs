@@ -16,10 +16,7 @@ use cakeys_core::config::Locator;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
-use cakeys_pkcs11::Token;
-use cakeys_pkcs11::provider::{
-    AttestCtx, AttestationCap, Attested, Create, Destroy, PlaintextKind, PlaintextVia, Provider,
-};
+use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, PlaintextKind, PlaintextVia, Provider};
 use cakeys_pkcs11::token::{ModuleInfo, read_attribute};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass};
 use std::sync::LazyLock;
@@ -126,21 +123,18 @@ impl Provider for Ykcs11 {
         Self::check_create(loc)
     }
 
-    /// A key goes where its locator says (by `CKA_ID` alone, a PIV slot), as SO.
-    fn create(&self, tok: &Token, req: &Create<'_>) -> Result<Option<cakeys_pkcs11::token::CreateNote>> {
-        self.placement(req.locator)?;
-        tok.create_declared(req)
+    /// A key is never claimed deleted (ykcs11 keeps it; the advice names `ykman`); anything else
+    /// is. Asked before any SO login (review 2026-11-24 B-2).
+    fn deletion(&self, class: Class, loc: &Locator) -> Result<()> {
+        if class.is_key() {
+            return Err(KmError::Unsupported(Self::keeps_destroyed_keys(loc).into()));
+        }
+        Ok(())
     }
 
-    /// A key is never claimed deleted (ykcs11 keeps it; the advice names `ykman`); anything else is, as SO.
-    fn destroy(&self, tok: &Token, req: &Destroy<'_>) -> Result<usize> {
-        if req.object.class.is_key() {
-            let advice = Self::keeps_destroyed_keys(req.locator);
-            return Err(KmError::Unsupported(
-                format!("deleting {} on '{}': {advice}", req.object.class, tok.name).into(),
-            ));
-        }
-        tok.destroy_plain(req)
+    /// `CKA_DERIVE` of EC and X25519 private keys ([`Self::policy_flag`]).
+    fn repairs(&self) -> &'static [(AttributeType, KeyType)] {
+        &[(AttributeType::Derive, KeyType::EC), (AttributeType::Derive, KeyType::EC_MONTGOMERY)]
     }
 
     /// ykcs11 reports `CKA_DERIVE` false on every private key, from a fixed per-slot table

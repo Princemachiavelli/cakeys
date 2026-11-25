@@ -6,20 +6,23 @@
 )]
 use super::rv::device_failed;
 use super::{
-    Attribute, Binding, CkError, Create, Declared, Destroy, Generation, Half, KeyType, KmError, Locator, Mechanism,
-    Msg, Object, ObjectCfg, ObjectClass, ObjectHandle, Result, RvError, SpecCfg, Template, Token, Topic, ck, class_of,
-    key_type_of, keygen_mechanism, rv_name, rv_of, secret_key_gen, templates,
+    Attribute, Binding, Checked, CkError, Create, Declared, Destroy, Generation, Half, KeyType, KmError, Locator,
+    Mechanism, Msg, Object, ObjectCfg, ObjectClass, ObjectHandle, Result, RvError, SpecCfg, Template, Token, Topic, ck,
+    class_of, key_type_of, keygen_mechanism, rv_name, rv_of, secret_key_gen, templates,
 };
 use cakeys_profile::{Capability, On};
 
 impl Token {
-    /// Create `object` on the token under `loc`, as `spec` declares it. The provider checks the
-    /// generation first, and a module that creates only in a Security Officer session runs it
-    /// that way (the admin credential of keys.toml, the user PIN restored afterwards).
+    /// Create `object` on the token under `loc`, as `spec` declares it. A key the provider
+    /// places nowhere under `loc` is refused first ([`Provider::placement`]); a module that
+    /// creates only in a Security Officer session runs the provider's creation that way (the
+    /// admin credential of keys.toml, the user PIN restored afterwards); then the provider
+    /// checks the generation.
     ///
     /// # Errors
     ///
-    /// `Validation` for a class cakeys adopts rather than creates, or a key type missing its
+    /// `Validation` (17) for a locator the provider places no key under, naming the rule
+    /// (`placement`); `Validation` for a class cakeys adopts rather than creates, or a key type missing its
     /// size (`modulusBits`, `valueLen`); a generation the module refuses is `Unsupported`,
     /// naming the token and the `C_*` failure. `Some(note)` says how the key was made other than
     /// asked (a public key the module made private). `binding` is how a private key will be
@@ -27,6 +30,7 @@ impl Token {
     /// here a key it could not prove.
     ///
     /// [`Provider::generation`]: crate::Provider::generation
+    /// [`Provider::placement`]: crate::Provider::placement
     pub fn create(
         &self,
         object: Object<'_>,
@@ -34,12 +38,16 @@ impl Token {
         loc: &Locator,
         binding: Option<Binding>,
     ) -> Result<Option<CreateNote>> {
-        self.provider.create(self, &Create { object, spec, locator: loc, binding })
+        // Core's order, which no override can skip (review 2026-11-24 B-2): where the key may go,
+        // then the session the module writes in, then the provider.
+        crate::ops::placement(self.provider.as_ref(), object.class, loc)?;
+        let req = Checked::new(Create { object, spec, locator: loc, binding });
+        self.managing("generating a key", || self.provider.create(self, &req))
     }
 
     /// [`Provider::create`]'s default, for an override to wrap: the module's own template where
-    /// [`Provider::generation`] chooses one, else cakeys' templates, in an SO session where the
-    /// module needs one ([`Self::managing`]).
+    /// [`Provider::generation`] chooses one, else cakeys' templates. [`Self::create`] has asked
+    /// placement and entered the session the module writes in.
     ///
     /// # Errors
     ///
@@ -47,12 +55,11 @@ impl Token {
     ///
     /// [`Provider::create`]: crate::Provider::create
     /// [`Provider::generation`]: crate::Provider::generation
-    pub fn create_declared(&self, req: &Create<'_>) -> Result<Option<CreateNote>> {
-        let own = self.provider.generation(req.object, req.spec, req.locator, req.binding)?;
-        self.managing("generating a key", || match &own {
-            Some(g) => self.generate_own(g),
+    pub fn create_declared(&self, req: &Checked<Create<'_>>) -> Result<Option<CreateNote>> {
+        match self.provider.generation(req.object, req.spec, req.locator, req.binding)? {
+            Some(g) => self.generate_own(&g),
             None => self.generate(req.object, req.spec, req.locator),
-        })
+        }
     }
 
     /// Run `step`, which creates or destroys token objects, in a Security Officer session where
@@ -227,42 +234,62 @@ impl Token {
         Ok((self.destroy_handles(object, loc, &handles)?, left))
     }
 
-    /// Destroy exactly `handles` (what a failed import created), as `object` under `loc` would be.
+    /// Destroy exactly `handles` (what a failed import created), as `object` under `loc` would be:
+    /// the provider's [`Provider::deletion`], the session it writes in, its `destroy`, then a look
+    /// under `loc` for any of `handles` left (`delete-kept`).
     ///
     /// # Errors
     ///
-    /// As [`Self::destroy`].
+    /// As [`Self::destroy`]; `Unavailable` (16, `delete-kept`) when any of `handles` is still
+    /// under `loc` after the provider reported them destroyed.
     pub fn destroy_handles(&self, object: &ObjectCfg, loc: &Locator, handles: &[ObjectHandle]) -> Result<usize> {
         if handles.is_empty() {
             return Ok(0);
         }
-        self.provider.destroy(self, &Destroy { object, locator: loc, handles })
+        // Core's order, as for a creation: whether the module removes it, then the session it
+        // writes in, then the provider.
+        crate::ops::deletion(self.provider.as_ref(), object.class, loc)
+            .map_err(|e| e.prefixed(format_args!("deleting {} on '{}'", object.class, self.name)))?;
+        let req = Checked::new(Destroy { object, locator: loc, handles });
+        let n = self.managing("deleting", || self.provider.destroy(self, &req))?;
+        // The count is the provider's claim (review 2026-11-24 B-13): a handle still found under
+        // the locator is an object the module kept.
+        let kept = self.find_any(loc)?.into_iter().filter(|h| handles.contains(h)).count();
+        if kept > 0 {
+            let why = format!(
+                "{kept} of the {} object(s) of {} deleted on '{}' are still under its locator {loc}: the module \
+                 said it destroyed them",
+                handles.len(),
+                object.class,
+                self.name
+            );
+            return Err(crate::ops::Refusal::new(crate::ops::Rule::DeleteKept, KmError::Unavailable(why.into())).into());
+        }
+        Ok(n)
     }
 
     /// [`Provider::destroy`]'s default, for an override to wrap: `C_DestroyObject` on each of
-    /// `req.handles`, in an SO session where the module needs one ([`Self::managing`]).
+    /// `req.handles`, in the session the token's destroys entered for the module.
     ///
     /// # Errors
     ///
     /// A failure to destroy is `Unavailable`, naming the token.
     ///
     /// [`Provider::destroy`]: crate::Provider::destroy
-    pub fn destroy_plain(&self, req: &Destroy<'_>) -> Result<usize> {
+    pub fn destroy_plain(&self, req: &Checked<Destroy<'_>>) -> Result<usize> {
         let handles = req.handles;
-        self.managing("deleting", || {
-            for (i, h) in handles.iter().enumerate() {
-                match self.session.destroy_object(*h) {
-                    Ok(()) => {}
-                    // Gone with an object destroyed before it in this call: deleting what is
-                    // already gone is success, on any module (libkmsp11 removes a key's public
-                    // half with its private one, one Cloud KMS version [run]). The first handle
-                    // was just identified, so its refusal is never taken for gone.
-                    Err(CkError::Pkcs11(RvError::ObjectHandleInvalid, _)) if i > 0 => {}
-                    Err(e) => return Err(ck("C_DestroyObject")(e)),
-                }
+        for (i, h) in handles.iter().enumerate() {
+            match self.session.destroy_object(*h) {
+                Ok(()) => {}
+                // Gone with an object destroyed before it in this call: deleting what is
+                // already gone is success, on any module (libkmsp11 removes a key's public
+                // half with its private one, one Cloud KMS version [run]). The first handle
+                // was just identified, so its refusal is never taken for gone.
+                Err(CkError::Pkcs11(RvError::ObjectHandleInvalid, _)) if i > 0 => {}
+                Err(e) => return Err(ck("C_DestroyObject")(e)),
             }
-            Ok(handles.len())
-        })
+        }
+        Ok(handles.len())
     }
 }
 

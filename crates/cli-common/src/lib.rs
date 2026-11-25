@@ -15,6 +15,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::ExitCode;
 
+pub mod outcome;
+pub use outcome::{DeferredRow, Outcome, refused};
+
 /// The providers this build links, in detection order. Built through the same public API a
 /// third party uses; `tpm2` and `ykcs11` are cargo features (both on by default). kmsp11 and
 /// aws-cloudhsm link nothing native, so they are always in. Modules with no code (softhsm,
@@ -273,16 +276,21 @@ pub fn read_lock(
         .into());
     }
     if writes && let Some(why) = lock_unwritable(path) {
-        return Err(KmError::LockUnwritable(
-            format!("cannot write the lock {}: {why}; {instead}", path.display()).into(),
-        )
-        .into());
+        let e = KmError::LockUnwritable(format!("cannot write the lock {}: {why}; {instead}", path.display()).into());
+        return Err(lock_rule(e).into());
     }
     // Said before it blocks: a run waiting on another updater says what it waits for.
     let waiting =
         |sidecar: &Path| eprintln!("note: waiting for {}: another run is updating the lock", sidecar.display());
     let guard = if writes { Some(lock_for_update(path, waiting)?) } else { None };
     Ok((load_lock(path)?, guard))
+}
+
+/// `e`, naming the rule a lock that cannot be written breaks (`lock-writable`) where it is one
+/// (21), so a row says which rule ended the pair ([`Outcome::rule`]).
+#[must_use]
+pub fn lock_rule(e: KmError) -> KmError {
+    if e.exit_code() == 21 { e.with_rule(cakeys_pkcs11::ops::Rule::LockWritable.name()) } else { e }
 }
 
 /// Save `lock` to `path` if the verb `changed` it, and say so ([`Notes::lock_written`]: the
@@ -293,7 +301,7 @@ pub fn read_lock(
 /// Whatever [`save_lock`] refuses.
 pub fn save_changed(path: &Path, lock: &Lock, changed: bool, notes: &mut Notes) -> anyhow::Result<()> {
     if changed {
-        save_lock(path, lock)?;
+        save_lock(path, lock).map_err(lock_rule)?;
         notes.lock_written(path);
     }
     Ok(())

@@ -3,6 +3,7 @@
 use super::{AttrValue, Config, Locator, ObjectCfg, Observation, Observed, Provenance, TokenObservation};
 use crate::error::{KmError, Result};
 use crate::id::Scheme;
+use crate::known::{Known, Why};
 use crate::types::ObjectClass;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -398,6 +399,20 @@ pub struct LockRealisation {
     /// The object's history on this token; never compared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) provenance: Option<Provenance>,
+}
+
+impl LockRealisation {
+    /// A boolean attribute as the token reported it when this was recorded, or that the lock
+    /// has no record of it.
+    pub fn observed(&self, name: &str) -> Known<bool> {
+        Known::or(
+            match self.policy.get(name) {
+                Some(AttrValue::Bool(b)) => Some(*b),
+                _ => None,
+            },
+            Why::Unrecorded,
+        )
+    }
 }
 
 /// Offline-verifiable attestation evidence pinned per realisation (§3.7 of docs/DESIGN.md).

@@ -2,8 +2,8 @@
 //! Module-specific behaviour goes through the selected [`Provider`].
 
 use crate::provider::{
-    AttestCtx, AttestationCap, Attested, Create, Declared, Destroy, Generation, Half, Provider, SessionKey, Template,
-    Topic, keygen_mechanism,
+    AttestCtx, AttestationCap, Attested, Checked, Create, Declared, Destroy, Generation, Half, Provider, SessionKey,
+    Template, Topic, keygen_mechanism,
 };
 use crate::registry::Registry;
 use crate::templates;
@@ -52,7 +52,7 @@ pub use possession::{
     template_refusal,
 };
 pub use public::{public_key_attrs, public_object_attrs};
-pub use rv::{SO_LOGIN, read_attribute, rv_is, rv_name, rv_of, rv_value, rv_value_name};
+pub use rv::{SO_LOGIN, device_failed_rv, read_attribute, rv_is, rv_name, rv_of, rv_value, rv_value_name};
 use rv::{ck, if_readable};
 use types::managed_class;
 pub use types::{class_of, hmac_key_gen, key_type_of, secret_key_gen};
@@ -114,6 +114,8 @@ pub struct Token {
     /// An SO login of this token was refused: the counters read at open no longer say what is
     /// left, so the credential is not tried again (review 2026-11-23 B-11).
     so_refused: std::sync::atomic::AtomicBool,
+    /// A step runs in the SO session now ([`Token::as_so`]): a nested one runs as it is.
+    in_so: std::sync::atomic::AtomicBool,
     /// The user credential, already read for login, kept for what needs it again: the
     /// context-specific login of a `CKA_ALWAYS_AUTHENTICATE` proof, the TPM attestation path
     /// (it unseals the token's wrapping key with it) and logging the user back in after an SO
@@ -280,6 +282,7 @@ impl Token {
             cfg: cfg.clone(),
             pins,
             so_refused: std::sync::atomic::AtomicBool::new(false),
+            in_so: std::sync::atomic::AtomicBool::new(false),
             pin,
             provider,
             chain_time,
@@ -294,13 +297,7 @@ impl Token {
 
     /// [`Self::unsupported`], with the provider's advice on `about` if it has any.
     pub fn unsupported_for(&self, about: Topic, msg: impl Into<Msg>) -> KmError {
-        let msg = msg.into();
-        let rv = msg.rv();
-        match self.provider.hint(about) {
-            Some(h) => KmError::Unsupported(format!("{msg} (hint for {}: {h})", self.provider.name()).into()),
-            None => KmError::Unsupported(msg),
-        }
-        .with_rv(rv)
+        self.provider.hinted(about, KmError::Unsupported(msg.into()))
     }
 
     /// A warning for the run when the user PIN counters at open reported a failed login
@@ -361,7 +358,7 @@ impl Token {
     ///
     /// The provider's refusal.
     pub fn session_template(&self, key: SessionKey) -> Result<Vec<Attribute>> {
-        self.provider.adjusted(&Template::Session(key), templates::session(key))
+        self.provider.adjusted_session(templates::session(key))
     }
 
     /// The key type of `h` as a spec-compliant module would report it: `CKA_KEY_TYPE`, repaired

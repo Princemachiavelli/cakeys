@@ -64,8 +64,11 @@ fn validate_prints_the_modes_only_when_it_passes() {
         })
         .collect();
     assert_eq!(as_lines, lines);
+    // Several refusals: 20, each listed with its own code (review 2026-11-24 §1.4: the one
+    // refusal's code, or 20; it was 15 whatever the codes).
     let refused = run("gate.toml");
-    assert_eq!(code(&refused), 15, "{}", stderr(&refused));
+    assert_eq!(code(&refused), 20, "{}", stderr(&refused));
+    assert!(stderr(&refused).lines().any(|l| l.starts_with("exit 15: ")), "{}", stderr(&refused));
     assert_eq!(stdout_lines(&refused), Vec::<String>::new());
 }
 

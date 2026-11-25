@@ -191,8 +191,12 @@ fn p11kit_login_is_per_client() {
     assert_eq!(e.code(&["create", "--spec", "k", "--token", "fwd"]), 22);
     // Another client of the same server holds a logged-in session meanwhile...
     let held = session(&e.module);
-    // ...yet a client without the PIN still cannot see the private key; the public half works.
-    assert_eq!(e.code(&["lock", "--spec", "k", "--token", "fwd-anon", "--dry-run"]), 11);
+    // ...yet a client without the PIN still cannot see the private key, and says so (16,
+    // `needs-login`; it once called it not found, 11: review 2026-11-24 B-4); the public half
+    // works.
+    let o = e.km(&["lock", "--spec", "k", "--token", "fwd-anon", "--dry-run"]);
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
+    assert!(stderr(&o).contains("a session without login cannot see private objects"), "{}", stderr(&o));
     assert_eq!(e.code(&["lock", "--spec", "k-pub", "--token", "fwd-anon"]), 22);
     drop(held);
 }

@@ -16,8 +16,8 @@ pub mod token;
 
 pub use chain_time::ChainTime;
 pub use provider::{
-    Attributes, BoundKey, Create, Declared, Destroy, Generation, Generic, Half, Provider, SessionKey, Template, Topic,
-    Via, keygen_mechanism,
+    Attributes, BoundKey, Checked, Create, Declared, Destroy, Generation, Generic, Half, Provider, SessionKey,
+    Template, Topic, Via, keygen_mechanism,
 };
 pub use registry::Registry;
 pub use resolution::Resolved;

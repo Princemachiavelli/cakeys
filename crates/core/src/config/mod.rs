@@ -330,14 +330,16 @@ impl Config {
         Ok(Some(path))
     }
 
-    /// Whether `object`'s material is secret at rest: a private or secret key, or a data object a
-    /// spec declares `CKA_PRIVATE = true`.
+    /// Whether `object`'s material is secret at rest: a private or secret key, or a data object
+    /// unless every spec of it declares `CKA_PRIVATE = false` (undeclared is private: review
+    /// 2026-11-24 §9.2, D-7; an object no spec names is too).
     #[must_use]
     pub fn secret_material(&self, object: &str) -> bool {
         match self.objects.get(object).map(|o| o.class) {
             Some(ObjectClass::PrivateKey | ObjectClass::SecretKey) => true,
             Some(ObjectClass::Data) => {
-                self.specs.values().any(|s| s.object == object && s.flag("CKA_PRIVATE") == Some(true))
+                let mut specs = self.specs.values().filter(|s| s.object == object).peekable();
+                specs.peek().is_none() || specs.any(|s| s.restricted(crate::known::Restriction::Private))
             }
             _ => false,
         }
@@ -359,5 +361,38 @@ mod tests {
             let err = load_config(&p).unwrap_err();
             assert!(matches!(err, KmError::Validation(_)), "{err}");
         }
+    }
+
+    /// A data object's material is secret at rest unless every spec of it says `CKA_PRIVATE =
+    /// false`: one no spec declares is private (review 2026-11-24 §9.2, D-7), as is one any spec
+    /// declares private.
+    #[test]
+    fn a_data_object_is_secret_unless_every_spec_says_public() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("keys.toml");
+        let object = |name: &str| format!("[objects.{name}]\nclass = \"CKO_DATA\"\n\n");
+        let spec = |name: &str, object: &str, private: Option<bool>| {
+            let attrs = private.map_or_else(String::new, |p| format!("attributes = {{ CKA_PRIVATE = {p} }}\n"));
+            format!("[specs.{name}]\nobject = \"{object}\"\n{attrs}tokens = {{}}\n\n")
+        };
+        let text = [
+            object("unsaid"),
+            spec("unsaid", "unsaid", None),
+            object("public"),
+            spec("public", "public", Some(false)),
+            object("mixed"),
+            spec("mixed-public", "mixed", Some(false)),
+            spec("mixed-unsaid", "mixed", None),
+            object("private"),
+            spec("private", "private", Some(true)),
+            object("specless"),
+        ]
+        .concat();
+        std::fs::write(&p, text).unwrap();
+        let cfg = load_config(&p).unwrap();
+        let secret: Vec<(&str, bool)> =
+            ["unsaid", "public", "mixed", "private", "specless"].map(|o| (o, cfg.secret_material(o))).to_vec();
+        let want = [("unsaid", true), ("public", false), ("mixed", true), ("private", true), ("specless", true)];
+        assert_eq!(secret, want);
     }
 }

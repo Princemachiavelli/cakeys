@@ -55,7 +55,7 @@ pub fn session_templates(
     mode: Mode,
     has: &dyn Fn(MechanismType) -> Option<bool>,
     ecdh_seals: Option<bool>,
-) -> Result<Vec<(crate::SessionKey, Vec<cryptoki::object::Attribute>)>> {
+) -> Result<Vec<crate::templates::SessionTemplate>> {
     use crate::SessionKey;
     use crate::templates::{rebind_copy, session};
     let mut out = Vec::new();
@@ -66,7 +66,7 @@ pub fn session_templates(
     };
     if let Some((binding, sealed)) = proof {
         let key = SessionKey::ProofSecret { binding, sealed };
-        out.push((key, session(key)));
+        out.push(session(key));
     }
     // The commitments the token implements, as `commits` picks them; none when that is not known.
     let usable: Option<Vec<Commit>> = wanted_commits(t, mode)
@@ -76,11 +76,11 @@ pub fn session_templates(
         .map(|cs| cs.into_iter().flatten().collect());
     let Some(commits) = usable.filter(|cs| !cs.is_empty()) else { return Ok(out) };
     if mode == Mode::WrapRebind {
-        out.push((SessionKey::RebindKek, session(SessionKey::RebindKek)));
-        out.push((SessionKey::RebindCopy, rebind_copy(t.object, &commits)?));
+        out.push(session(SessionKey::RebindKek));
+        out.push(rebind_copy(t.object, &commits)?);
     }
     if commits.contains(&Commit::Kw) {
-        out.push((SessionKey::KwInput, session(SessionKey::KwInput)));
+        out.push(session(SessionKey::KwInput));
     }
     Ok(out)
 }
@@ -100,8 +100,8 @@ fn check_templates(t: &Target, tok: &Token, mode: Mode, generating: bool) -> Res
         tok.generation_key(on)?;
         tok.generation_public(on, None)?;
     }
-    for (key, template) in session_templates(t, mode, &|m| Some(tok.has(m)), Some(tok.ecdh_seals()))? {
-        tok.provider.adjusted(&crate::Template::Session(key), template)?;
+    for template in session_templates(t, mode, &|m| Some(tok.has(m)), Some(tok.ecdh_seals()))? {
+        tok.provider.adjusted_session(template)?;
     }
     Ok(())
 }
@@ -141,8 +141,8 @@ pub fn plan_templates(
             provider.adjusted(&Template::Generate(on, Half::Public), public)?;
         }
     }
-    for (key, template) in session_templates(t, mode, has, ecdh_seals)? {
-        provider.adjusted(&Template::Session(key), template)?;
+    for template in session_templates(t, mode, has, ecdh_seals)? {
+        provider.adjusted_session(template)?;
     }
     Ok(None)
 }
@@ -156,13 +156,10 @@ pub fn plan_templates(
 /// What `lock`'s capability check refuses, the provider's templates included; `Validation` (17)
 /// for a key the module cannot place under its locator (`Provider::placement`).
 pub fn check_import(t: &Target, tok: &Token) -> Result<()> {
-    // Where the module can place it (ykcs11: a PIV slot by CKA_ID, never f9's attestation key),
-    // before the write: a PIV slot's imported key cannot be erased (review 2026-11-23 B-3).
-    if t.object.class.is_key() {
-        tok.provider.placement(&t.on_token.locator)?;
-    }
-    check_imported_attestation(t, tok.provider.as_ref()).map_err(|m| tok.unsupported(m))?;
-    check_capabilities(t, tok, plan_mode(t)?, Verb::Lock)
+    // The static rules first (`static_rules`): where the module can place it (ykcs11: a PIV slot
+    // by CKA_ID, never f9's attestation key), before the write, since a PIV slot's imported key
+    // cannot be erased (review 2026-11-23 B-3); an attestation of an imported key.
+    check_capabilities(t, tok, plan_mode(t)?, Verb::Import)
 }
 
 /// An attestation asked of a key about to be imported, which the provider attests only when the
@@ -255,17 +252,18 @@ pub(crate) fn check_attestation(
     }
 }
 
-/// Token capabilities the mode needs, and when `creating` the generation, checked before
-/// anything is created.
+/// What `t` in `mode` needs of the open token `tok` before the write `verb`, checked before
+/// anything is created: the static rules with the token's provider ([`static_rules`]: placement,
+/// the attestation, the module's own generation), then what the token itself can do, the
+/// mechanisms, the generation, the proof and the templates it sends.
+///
+/// # Errors
+///
+/// The first refusal, naming its rule ([`KmError::rule`]).
 pub(super) fn check_capabilities(t: &Target, tok: &Token, mode: Mode, verb: Verb) -> Result<()> {
-    let creating = verb == Verb::Create;
-    let to_token = |e| match e {
-        KmError::Unsupported(m) => tok.unsupported_for(Topic::Generate, m),
-        e => e,
-    };
-    let own = if creating { Some(own_generation(t, tok.provider.as_ref()).map_err(to_token)?) } else { None };
-    let needs = needs(t, mode, own).map_err(to_token)?;
-    check_attestation(t, tok.provider.as_ref()).map_err(|m| tok.unsupported(m))?;
+    let own = static_rules(t, mode, Seat::Resolved(tok.provider.as_ref()), verb, None)?.first()?.own;
+    let capability = |e: KmError| e.with_rule(Rule::Capability.name());
+    let needs = needs(t, mode, own).map_err(|e| capability(tok.provider.hinted(Topic::Generate, e)))?;
     let generation = needs.generation.map(|m| vec![m]);
     if let Some(g) = needs.groups.iter().chain(&generation).find(|g| !g.iter().any(|m| tok.has(*m))) {
         let about = if generation.as_ref().is_some_and(|own| std::ptr::eq(own, g)) {
@@ -273,11 +271,11 @@ pub(super) fn check_capabilities(t: &Target, tok: &Token, mode: Mode, verb: Verb
         } else {
             Topic::Mechanism
         };
-        return Err(tok.unsupported_for(about, lacking(&tok.name, g, mode, t)));
+        return Err(capability(tok.unsupported_for(about, lacking(&tok.name, g, mode, t))));
     }
     // The proof the realisation will make, as the spec says it (camigrate's plan asks the same).
     if let Some(b) = cakeys_core::plan::expected_binding(t) {
-        tok.check_proof(t.object, b)?;
+        tok.check_proof(t.object, b).map_err(capability)?;
     }
-    check_templates(t, tok, mode, own == Some(false))
+    check_templates(t, tok, mode, own == Some(false)).map_err(|e| e.with_rule(Rule::Templates.name()))
 }

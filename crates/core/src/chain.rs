@@ -154,9 +154,10 @@ impl Cert {
     }
 
     /// The name link of the chain: whether this certificate's subject is `cert`'s issuer,
-    /// compared as decoded Names (nothing is re-encoded, so nothing can fail to encode).
+    /// compared as decoded Names (nothing is re-encoded, so nothing can fail to encode). A name,
+    /// not a link: crate-private, as [`verify_signed_by`] is ([`link`]; review 2026-11-24 A-7).
     #[must_use]
-    pub fn issued(&self, cert: &Cert) -> bool {
+    pub(crate) fn issued(&self, cert: &Cert) -> bool {
         self.parsed.tbs_certificate().subject() == cert.parsed.tbs_certificate().issuer()
     }
 
@@ -320,11 +321,7 @@ pub fn chain_to_anchor<'a>(
         cert.valid_at(at)?;
     }
     cert.no_unknown_critical()?;
-    let below = match start {
-        Start::EndEntity => 0,
-        Start::Intermediate => 1,
-    };
-    issuer_chain(cert, Walk { links: 1, below }, anchors, pool, at, max_links)
+    issuer_chain(cert, Walk { links: 1, below: below(start) }, anchors, pool, at, max_links)
 }
 
 /// What [`chain_to_anchor`] walks from, which decides whether it counts against its issuers'
@@ -361,12 +358,7 @@ fn issuer_chain<'a>(
     if walk.links > u16::from(max_links) {
         return Err(bad(format!("longer than {max_links} links")));
     }
-    let link = |issuer: &Cert| -> Result<()> {
-        issuer.no_unknown_critical()?;
-        issuer.may_issue(walk.below)?;
-        verify_signed_by(current, issuer)?;
-        at.map_or(Ok(()), |at| issuer.valid_at(at))
-    };
+    let link = |issuer: &Cert| issued_by(current, issuer, walk.below, at);
     let mut first_error = None;
     for issuer in pool.iter().filter(|c| c.issued(current)) {
         let above = Walk { links: walk.links + 1, below: walk.below + 1 };
@@ -393,6 +385,46 @@ fn issuer_chain<'a>(
     }))
 }
 
+/// Whether `issuer` issued `cert`, by every rule a link of [`chain_to_anchor`]'s walk keeps:
+/// `cert` has no critical extension cakeys does not process and is valid at `at`; `issuer` may
+/// issue it (a CA within its `pathLen`, `keyCertSign` when it has a `keyUsage`), has no such
+/// critical extension, is valid at `at`, and its key made `cert`'s signature. `start` says what
+/// `cert` is, as for the walk. The one link a caller checks outside a walk (the PIV slot
+/// certificate, signed by the device's) is checked here, never by the signature alone (review
+/// 2026-11-24 A-7: the slot link skipped the issuer's CA flag and keyUsage and the slot's
+/// critical extensions).
+///
+/// # Errors
+///
+/// `Conflict` for a rule `cert` or `issuer` breaks, or a signature that does not verify;
+/// `Unsupported` for a signature algorithm other than ECDSA or RSA PKCS#1 v1.5 with SHA-2.
+pub fn link(cert: &Cert, start: Start, issuer: &Cert, at: Option<u64>) -> Result<()> {
+    if let Some(at) = at {
+        cert.valid_at(at)?;
+    }
+    cert.no_unknown_critical()?;
+    issued_by(cert, issuer, below(start), at)
+}
+
+/// The CA certificates `start` puts below its issuer.
+fn below(start: Start) -> u16 {
+    match start {
+        Start::EndEntity => 0,
+        Start::Intermediate => 1,
+    }
+}
+
+/// The issuer's half of a link ([`link`]): `issuer` may issue a chain with `below` CA
+/// certificates under it, has no critical extension cakeys does not process, is valid at `at`,
+/// and signed `current`. `current`'s own rules are its walk's (checked once, where it starts or
+/// as an issuer).
+fn issued_by(current: &Cert, issuer: &Cert, below: u16, at: Option<u64>) -> Result<()> {
+    issuer.no_unknown_critical()?;
+    issuer.may_issue(below)?;
+    verify_signed_by(current, issuer)?;
+    at.map_or(Ok(()), |at| issuer.valid_at(at))
+}
+
 /// Verify that `cert`'s signature (over its original `tbsCertificate` bytes) was made by
 /// `signer`'s key, with the signature algorithm the certificate names: ECDSA (DER) with the
 /// hash the algorithm names, whatever the curve, or RSA PKCS#1 v1.5 ([`crate::sig`]). The
@@ -403,7 +435,10 @@ fn issuer_chain<'a>(
 ///
 /// `Conflict` when the two algorithms differ, the signature does not verify, or `signer` holds
 /// no key of the algorithm's kind; `Unsupported` for another signature algorithm.
-pub fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
+///
+/// The signature alone, not a link: crate-private, so no caller outside the walk verifies a link
+/// by it ([`link`]; review 2026-11-24 A-7).
+pub(crate) fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
     use crate::sig::{self, Encoding, HashAlg};
     let (outer, inner) = (cert.parsed.signature_algorithm(), cert.parsed.tbs_certificate().signature());
     if outer != inner {
@@ -650,6 +685,32 @@ mod tests {
         assert!(rule("ok-leaf").serves(&TCG_KP_EK_CERTIFICATE).unwrap(), "names no purpose: any");
         assert!(rule("ek-leaf").serves(&TCG_KP_EK_CERTIFICATE).unwrap());
         assert!(!rule("server-leaf").serves(&TCG_KP_EK_CERTIFICATE).unwrap());
+    }
+
+    /// One link checked outside a walk keeps the walk's rules (review 2026-11-24 A-7), on the
+    /// `piv-` fixtures, each differing from `piv-slot` ← `piv-device` in its one rule: an issuer
+    /// that is no CA, or whose keyUsage lacks keyCertSign, issues nothing; a certificate with a
+    /// critical extension cakeys does not process is refused; a signature of another key does not
+    /// verify; the certificate must be valid at `at`, and an end entity counts against no
+    /// `pathLen` while an intermediate does.
+    #[test]
+    fn a_link_keeps_the_walks_rules() {
+        let (slot, device) = (rule("piv-slot"), rule("piv-device"));
+        link(&slot, Start::EndEntity, &device, None).unwrap();
+        link(&device, Start::Intermediate, &rule("piv-root"), None).unwrap();
+        let refused = |cert: &str, issuer: &str| link(&rule(cert), Start::EndEntity, &rule(issuer), None).unwrap_err();
+        let e = refused("piv-slot-no-certsign", "piv-device-no-certsign");
+        assert!(e.to_string().contains("may not sign certificates: its keyUsage lacks keyCertSign"), "{e}");
+        let e = refused("piv-slot-critical", "piv-device");
+        assert!(e.to_string().contains("has the critical extension 1.2.3.4"), "{e}");
+        let e = refused("piv-slot-no-certsign", "piv-device");
+        assert!(e.to_string().contains("signature does not verify"), "{e}");
+        let e = refused("piv-slot", "piv-slot");
+        assert!(e.to_string().contains("is not a CA"), "{e}");
+        let from = slot.parsed().tbs_certificate().validity().not_before.to_unix_duration().as_secs();
+        link(&slot, Start::EndEntity, &device, Some(from)).unwrap();
+        let e = link(&slot, Start::EndEntity, &device, Some(from - 1)).unwrap_err();
+        assert!(e.to_string().contains("piv-slot' is not valid at"), "{e}");
     }
 
     /// The chain's name links compare the decoded Names (attest.rs F4).

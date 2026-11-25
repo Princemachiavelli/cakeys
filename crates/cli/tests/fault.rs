@@ -104,6 +104,50 @@ fn tagged_copies_stack_and_a_shim_cannot_load_itself() {
     assert!(!ok && said.contains("is this shim itself"), "{said}");
 }
 
+/// A module whose `C_DestroyObject` returns `CKR_OK` and destroys nothing (the shim answers
+/// without forwarding): `delete` looks again, finds the key under its locator and says so
+/// (`delete-kept`, 16), and the lock keeps the realisation, where it once removed it and exited
+/// 22 (review 2026-11-24 B-13). The key is still there and still checks.
+#[test]
+fn a_delete_the_module_does_not_do_keeps_the_lock() {
+    let plan = "[[rule]]\nfn = \"C_DestroyObject\"\nrv = \"CKR_OK\"\n";
+    let Some((w, plan_path, trace)) = faulted("fault-destroy-kept", plan) else { return };
+    assert_eq!(w.code(&["create", "--spec", "k", "--token", "ref"]), 22, "no plan: transparent");
+    let lock = w.dir.join("keys.lock");
+    let before = std::fs::read(&lock).unwrap();
+    let o = w.km_env(
+        &["delete", "--spec", "k", "--token", "ref"],
+        &[("P11_FAULT_PLAN", &plan_path), ("P11_FAULT_TRACE", &trace)],
+    );
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
+    assert!(stderr(&o).contains("still under its locator"), "{}", stderr(&o));
+    assert!(fired(&trace).iter().any(|l| l["fn"].as_str() == Some("C_DestroyObject")), "the rule fired");
+    assert_eq!(std::fs::read(&lock).unwrap(), before, "the lock keeps the realisation");
+    assert_eq!(w.code(&["check", "--spec", "k", "--token", "ref"]), 0, "the key is there and checks");
+}
+
+/// A module whose `C_Login` returns `CKR_OK` and leaves the session public (the shim answers
+/// without forwarding) hides every private object: `delete` read the key as absent and dropped
+/// its realisation (22), `check` called it not found (11). The session's state is read after
+/// every login, and a login it does not show is unavailable (16), the lock unchanged (review
+/// 2026-11-24, lead-found through the Phase 2 design).
+#[test]
+fn a_login_the_session_does_not_show_is_unavailable() {
+    let plan = "[[rule]]\nfn = \"C_Login\"\nrv = \"CKR_OK\"\n";
+    let Some((w, plan_path, trace)) = faulted("fault-login-kept-public", plan) else { return };
+    assert_eq!(w.code(&["create", "--spec", "k", "--token", "ref"]), 22, "no plan: transparent");
+    let lock = w.dir.join("keys.lock");
+    let before = std::fs::read(&lock).unwrap();
+    for verb in [["delete", "--spec", "k", "--token", "ref"], ["check", "--spec", "k", "--token", "ref"]] {
+        let o = w.km_env(&verb, &[("P11_FAULT_PLAN", &plan_path), ("P11_FAULT_TRACE", &trace)]);
+        assert_eq!(code(&o), 16, "{verb:?}: {}", stderr(&o));
+        assert!(stderr(&o).contains("the session is not logged in"), "{verb:?}: {}", stderr(&o));
+    }
+    assert!(fired(&trace).iter().all(|l| l["fn"].as_str() == Some("C_Login")), "only the login lied");
+    assert_eq!(std::fs::read(&lock).unwrap(), before, "the lock keeps the realisation");
+    assert_eq!(w.code(&["check", "--spec", "k", "--token", "ref"]), 0, "the key is there and checks");
+}
+
 /// cakeys against a module that fails a call it should not: the failing call is named, the exit
 /// is unavailable (16), and nothing is recorded. A login refused after the module accepted it
 /// is the same. A proof's mechanism the module refuses for the key (`CKR_MECHANISM_INVALID`,

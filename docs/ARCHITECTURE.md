@@ -128,7 +128,9 @@ behaviour or reach outside PKCS#11:
 - **Seams** (the `Provider` trait; review 2026-11-15 §4 named the first two): three kinds, and
   nothing else. *Repairs* make a module's answer what a spec-compliant module's would be:
   one typed hook per attribute read (`ec_point`: tpm2-pkcs11's P-521, aws-cloudhsm's Ed25519
-  SPKI; `key_type`: aws-cloudhsm's Ed25519 as `CKK_EC`; `policy_flag`: ykcs11's `CKA_DERIVE`), and `stand_in`, one for a mechanism (a standard mechanism the module does not
+  SPKI; `key_type`: aws-cloudhsm's Ed25519 as `CKK_EC`; `policy_flag`: ykcs11's `CKA_DERIVE`, asked
+  only of the (attribute, private key type) pairs its `repairs` declares, so no repair widens a
+  permission it does not name; review 2026-11-24 B-3), and `stand_in`, one for a mechanism (a standard mechanism the module does not
   list but runs its own way, used through `Token::runnable` and relied on only where a profile's
   `add` row says the probe found it working: aws-cloudhsm's Ed25519). *Templates* make cakeys'
   own template for a call one the module takes: `template`, one hook every template cakeys
@@ -136,7 +138,14 @@ behaviour or reach outside PKCS#11:
   through (`provider::Template` names what it is for: a generation's half, an import by
   `C_CreateObject` or `C_UnwrapKey`, an imported key's public half, a public object, the trusted
   transport copy, or a session key of a proof, a commitment or a move), adjusting it or refusing
-  it. Every template is built in one place (`cakeys_pkcs11::templates`) and asked about before
+  it. What comes back is checked (`adjusted`): a security attribute (`provider::SECURITY`:
+  `CKA_TOKEN`, `CKA_PRIVATE`, `CKA_SENSITIVE`, `CKA_EXTRACTABLE`, `CKA_WRAP_WITH_TRUSTED`,
+  `CKA_TRUSTED`, `CKA_ID`, `CKA_LABEL`, `CKA_MODIFIABLE`, `CKA_COPYABLE`, `CKA_DESTROYABLE`)
+  changed, added or removed is refused (17) unless the change tightens it, a restriction set
+  true or a permission false (review 2026-11-24 B-3: a session key's sealing was the provider's
+  to undo, and session keys are never read back). A session key's template is typed
+  (`templates::SessionTemplate`), so its sealing is the builder's and material is added beside
+  it (`with_material`), never over it. Every template is built in one place (`cakeys_pkcs11::templates`) and asked about before
   anything is created: the proof's and the commitments' session keys, which run once the object
   exists, by the capability check before it (`ops::check_templates`, and `ops::check_import`
   before camigrate's imports). A plan asks the same templates without a token (`gate::check`,
@@ -156,8 +165,10 @@ behaviour or reach outside PKCS#11:
   in-tree provider overrides it yet.
   *Operations* a provider may replace
   whole, each default plain PKCS#11 through a public `Token` method an override wraps:
-  `create` (`Token::create_declared`; ykcs11 refuses a locator that is not a PIV slot first),
-  `destroy` (`Token::destroy_plain`; ykcs11 refuses a key it would not erase), `plaintext_import`
+  `create` (`Token::create_declared`) and `destroy` (`Token::destroy_plain`), each called only
+  by the token, which asks `placement` (a creation) or `deletion` (a destroy) and enters the SO
+  session `manages_as_so` asks for first, and hands the override a `Checked` request no other
+  crate can build (review 2026-11-24 B-2: an override cannot skip either), `plaintext_import`
   (its kind, with tpm2-pkcs11's `tpm2_ptool` import as the tool) and `attestation` (its
   capability, with the computation; DESIGN §3.7).
 - **Fallbacks every module gets** (not one module's quirk, so in the defaults): a public key the
@@ -168,8 +179,11 @@ behaviour or reach outside PKCS#11:
   token's `[tokens.<t>.options]`; the default refuses any), and three facts read before acting:
   `manages_as_so` (create and destroy only in an SO session, ykcs11; `Token::managing` runs a
   step that way, camigrate's imports too), `placement` (where a key may be made, generated or
-  imported: ykcs11's PIV slots by `CKA_ID` alone; asked by the capability gate for every pair
-  keys.toml makes on the token and by `ops::check_import` before every import's write) and
+  imported: ykcs11's PIV slots by `CKA_ID` alone; asked by `ops::static_rules` for every pair
+  a write puts on the token, as the capability gate, `create` and `ops::check_import` ask them,
+  and by `Token::create` before every creation), `deletion` (whether the module removes an
+  object of a class when asked: ykcs11 keeps a PIV slot's key; asked by `delete`'s plan and
+  every destroy, before any SO session) and
   `generation` (create's static half, read by the
   capability gate before any token opens: a module's own template chosen from the spec, refused
   before creating what could not be proven, kmsp11). The probe alone reads `bound_keys` (what it

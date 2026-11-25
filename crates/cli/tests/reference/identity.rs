@@ -694,14 +694,18 @@ fn data_objects_are_identified_by_their_public_value() {
 /// A private data object (`CKA_PRIVATE = true`: an API token, a wrapped blob, an application
 /// secret), identified like a public one by `valuehash` once its spec declares `CKA_PRIVATE =
 /// true`: the author's statement that the value is not guessable (DESIGN §3.1). Read under the
-/// user login; without one the token shows no such object (11). The undeclared case stays
-/// refused (`data_objects_are_identified_by_their_public_value`).
+/// user login; a session without one cannot see it, so it never reports it absent (16, review
+/// 2026-11-24 B-4): not `check`, and not `delete`, which keeps the lock. A data object whose
+/// spec does not say counts as private, unless the lock recorded it public. The undeclared case
+/// stays refused (`data_objects_are_identified_by_their_public_value`).
 #[test]
 fn private_data_objects_are_identified_when_declared() {
     let Some(e) = env("private_data") else { return };
     let value = b"0f4c1e9a7b3d52c86e1f0a9b4d7c3e25 an unguessable application secret".to_vec();
     let s = e.session();
-    for (label, private) in [("data-secret", true), ("data-open", false)] {
+    // Each its own value: one material under two objects is a conflict of its own.
+    let open = b"a public value".to_vec();
+    for (label, private, value) in [("data-secret", true, &value), ("data-open", false, &open)] {
         s.create_object(&[
             Attribute::Class(ObjectClass::DATA),
             Attribute::Token(true),
@@ -719,7 +723,13 @@ fn private_data_objects_are_identified_when_declared() {
          tokens.ref-anon = { locator = { CKA_LABEL = \"data-secret\" }, origin = \"adopt\" }\n\n\
          [objects.open]\nclass = \"CKO_DATA\"\n\n\
          [specs.open-as-private]\nobject = \"open\"\nattributes = { CKA_PRIVATE = true }\n\
-         tokens.ref = { locator = { CKA_LABEL = \"data-open\" }, origin = \"adopt\" }\n",
+         tokens.ref = { locator = { CKA_LABEL = \"data-open\" }, origin = \"adopt\" }\n\n\
+         [objects.unsaid]\nclass = \"CKO_DATA\"\n\n\
+         [specs.unsaid]\nobject = \"unsaid\"\n\
+         tokens.ref-anon = { locator = { CKA_LABEL = \"data-secret\" }, origin = \"adopt\" }\n\n\
+         [objects.public]\nclass = \"CKO_DATA\"\n\n\
+         [specs.public]\nobject = \"public\"\n\
+         tokens.ref-anon = { locator = { CKA_LABEL = \"data-open\" }, origin = \"adopt\" }\n",
     );
     let o = e.km(&["lock", "--spec", "secret", "--token", "ref"]);
     assert_eq!(code(&o), 22, "{}", stderr(&o));
@@ -729,10 +739,29 @@ fn private_data_objects_are_identified_when_declared() {
     assert_eq!(e.lock()["realisations"]["secret"]["ref"]["policy"]["CKA_PRIVATE"].as_bool(), Some(true));
     assert!(stdout(&e.km(&["check", "--spec", "secret", "--token", "ref"])).ends_with("object=data-secret;type=data"));
     assert_eq!(e.code(&["check", "secret.id.valuehash", "--token", "ref"]), 0);
-    // Without a login the token shows no private object: absent.
-    assert_eq!(e.code(&["check", "--spec", "secret", "--token", "ref-anon"]), 11);
     // Declaring it private does not make a public object one: the declared policy is checked (13).
     let o = e.km(&["lock", "--spec", "open-as-private", "--token", "ref", "--dry-run"]);
     assert_eq!(code(&o), 13);
     assert!(stderr(&o).contains("CKA_PRIVATE is false"), "{}", stderr(&o));
+    // Without a login the token shows no private object, so it is never reported absent (16).
+    assert_eq!(e.code(&["check", "--spec", "secret", "--token", "ref-anon"]), 16);
+    // Nor deleted as absent: the realisation stays in the lock.
+    let mut lock = e.lock();
+    let realisation = lock["realisations"]["secret"]["ref"].clone();
+    lock["realisations"]["secret"].as_table_mut().unwrap().insert("ref-anon".into(), realisation);
+    e.write_lock(&lock);
+    let before = std::fs::read(e.dir.join("keys.lock")).unwrap();
+    assert_eq!(e.code(&["delete", "--spec", "secret", "--token", "ref-anon"]), 16);
+    assert_eq!(e.code(&["delete", "--spec", "secret", "--token", "ref-anon", "--dry-run"]), 16);
+    assert_eq!(std::fs::read(e.dir.join("keys.lock")).unwrap(), before, "the lock is kept");
+    // A data object whose spec does not say counts as private (review 2026-11-24 §9.2).
+    assert_eq!(e.code(&["check", "--spec", "unsaid", "--token", "ref-anon"]), 16);
+    // The escape: lock it once where it shows, and the lock's recorded CKA_PRIVATE = false says
+    // a session without login would see it, so once gone it is absent (11).
+    assert_eq!(e.code(&["lock", "--spec", "public", "--token", "ref-anon"]), 22);
+    assert_eq!(e.lock()["realisations"]["public"]["ref-anon"]["policy"]["CKA_PRIVATE"].as_bool(), Some(false));
+    for h in s.find_objects(&[Attribute::Label(b"data-open".to_vec())]).unwrap() {
+        s.destroy_object(h).unwrap();
+    }
+    assert_eq!(e.code(&["check", "--spec", "public", "--token", "ref-anon"]), 11);
 }

@@ -215,7 +215,7 @@ pub(crate) fn source_refusal(
     use crate::sealed::{shares_kek, side_rfc5649};
     use cakeys_pkcs11::templates::session;
     use cakeys_pkcs11::{SessionKey, Template};
-    let session_key = |key| ask(source, registry, &Template::Session(key), session(key));
+    let session_key = |key| ask(source, registry, &Template::Session(key), session(key).into());
     match method {
         Method::HostPkcs8
         | Method::HostRaw
@@ -273,7 +273,7 @@ pub(crate) fn target_refusal(
             };
             ask(Template::Import(on, Via::Unwrap), import_key(on, unwrapped))?;
             if matches!(method, Method::RsaOaepAesKwp(_)) && side_rfc5649(target) {
-                ask(Template::Session(SessionKey::ImportKek), Ok(session(SessionKey::ImportKek)))?;
+                ask(Template::Session(SessionKey::ImportKek), Ok(session(SessionKey::ImportKek).into()))?;
             }
             if private {
                 ask(Template::PublicHalf(on), public_half(on, public_policy, None))?;
@@ -295,8 +295,8 @@ pub(crate) fn target_refusal(
     let mode = ops::plan_mode(dst).map_err(|e| format!("{dst}: {e}"))?;
     let has = |m: cryptoki::mechanism::MechanismType| Some(target.has(&m.to_string()));
     let seals = ops::ecdh_seals(target.derive_sealed, Some(target.has("CKM_SHA256_HMAC")));
-    for (key, t) in ops::session_templates(dst, mode, &has, seals).map_err(|e| format!("{dst}: {e}"))? {
-        ask(Template::Session(key), Ok(t))?;
+    for t in ops::session_templates(dst, mode, &has, seals).map_err(|e| format!("{dst}: {e}"))? {
+        ask(Template::Session(t.key()), Ok(t.into()))?;
     }
     Ok(None)
 }

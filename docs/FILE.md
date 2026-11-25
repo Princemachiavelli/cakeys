@@ -91,13 +91,14 @@ Load rules (17):
 - An object with `migrate.file` has no `create` pair.
 - `publicOnly` pairs are never `file`, as they are never `import`.
 - A private or secret key's `migrate.file` may not be under `/nix/store`, which is
-  world-readable; nor may any other file holding a secret (`migrate.passphraseFile`, a token's
+  world-readable, nor a data object's unless every spec of it declares `CKA_PRIVATE = false`
+  (undeclared is private: review 2026-11-24 §9.2); nor may any other file holding a secret (`migrate.passphraseFile`, a token's
   `pinFile` and `soCredentialFile`). The path is resolved first (symlinks and `..`), so a link
   into the store is refused and a sibling such as `/nix/store-keys` is not. A literal path is
   checked at load (17). A `$NAME` path is checked when camigrate resolves it, and every secret
   file again when it is read, with the same exit code. The Nix library must pass the path as a
   string, never as a Nix path, which it would copy into the store. A certificate, public key
-  or public data object from the store is fine. `CAKEYS_ALLOW_NIX_STORE_KEYS=1` lifts the
+  or data object every spec declares public from the store is fine. `CAKEYS_ALLOW_NIX_STORE_KEYS=1` lifts the
   rule for throwaway keys a Nix build makes and uses (a test, a VM image), never a
   deployment's; it also makes no run count as inside a Nix build sandbox, so the sandbox
   refusals (a lock write, camigrate's admin operations, D8) are lifted with it.

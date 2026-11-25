@@ -2,7 +2,7 @@
 //! library so a downstream binary can link extra provider crates:
 //! `cakeys::main(&cakeys::default_registry().with(MyProvider))`.
 
-use cakeys_cli_common::{Opener, print, read_lock, save_changed, token_cfg};
+use cakeys_cli_common::{DeferredRow, Opener, Outcome, print, read_lock, refused, save_changed, token_cfg};
 use cakeys_core::KmError;
 use cakeys_core::config::{Config, Lock, gc, save_lock};
 use cakeys_core::types::ObjectClass;
@@ -338,7 +338,8 @@ impl Run<'_> {
                     // wrap-rebind copy or a proof makes), read-only on a write-protected one.
                     let tok = opener.open(t.token_name, Access::Scratch, notes)?;
                     let (r, changed) = ops::lock(t, &tok, lock, write, notes)?;
-                    Ok((serde_json::to_value(r)?, changed))
+                    let word = if *dry_run { "compared" } else { "locked" };
+                    Ok((Outcome::passed(t.object_name, t.spec_name, t.token_name, word).with(&r)?, changed))
                 });
                 print(&locked)?;
                 result
@@ -362,10 +363,7 @@ impl Run<'_> {
                 let result = self.each(at, &mut deleted, notes, |opener, lock, t, notes| {
                     let tok = opener.open(t.token_name, access, notes)?;
                     let (outcome, changed) = ops::delete(t, &tok, lock, if_match.as_deref(), *dry_run, notes)?;
-                    let row = serde_json::json!({
-                        "object": t.object_name, "spec": t.spec_name, "token": t.token_name, "outcome": outcome.name(),
-                    });
-                    Ok((row, changed))
+                    Ok((Outcome::passed(t.object_name, t.spec_name, t.token_name, outcome.name()), changed))
                 });
                 print(&deleted)?;
                 result
@@ -489,16 +487,17 @@ impl Run<'_> {
         save_changed(&self.lock_path, &self.lock, changed, notes)
     }
 
-    /// `verb` on each pair `at` names, in order, its result pushed to `out` and the lock saved
+    /// `verb` on each pair `at` names, in order, its row pushed to `out` and the lock saved
     /// when it changed it, before the next pair; the first failure ends the run, after what was
-    /// done before it, and is pushed too (its object, spec, token, exit code and message), so the
-    /// caller prints every pair's outcome whatever ended the run (review 2026-11-23 C-7).
+    /// done before it, and its row is pushed too ([`Outcome::failed`]), so the caller prints every
+    /// pair's outcome, in one shape, whatever ended the run (review 2026-11-23 C-7, 2026-11-24
+    /// C-1).
     fn each(
         &mut self,
         at: &Addresses,
-        out: &mut Vec<serde_json::Value>,
+        out: &mut Vec<Outcome>,
         notes: &mut Notes,
-        mut verb: impl FnMut(&Opener<'_>, &mut Lock, &Target, &mut Notes) -> anyhow::Result<(serde_json::Value, bool)>,
+        mut verb: impl FnMut(&Opener<'_>, &mut Lock, &Target, &mut Notes) -> anyhow::Result<(Outcome, bool)>,
     ) -> anyhow::Result<()> {
         let Run { opener, lock, lock_path, .. } = self;
         for (spec, token) in at.pairs(&opener.cfg)? {
@@ -510,11 +509,7 @@ impl Run<'_> {
             match done {
                 Ok(v) => out.push(v),
                 Err(e) => {
-                    let code = e.downcast_ref::<KmError>().map_or(1, KmError::exit_code);
-                    out.push(serde_json::json!({
-                        "object": t.object_name, "spec": spec, "token": token, "outcome": "failed",
-                        "exit": code, "error": format!("{e:#}"),
-                    }));
+                    out.push(Outcome::failed(t.object_name, &spec, &token, &e));
                     return Err(e);
                 }
             }
@@ -542,14 +537,11 @@ impl Run<'_> {
             })?;
             provider.check_options(name, &t.options)?;
         }
+        // A token whose stack does not resolve is gated too: each pair on it defers its rules by
+        // name, saying why (review 2026-11-24 B-1).
         let mut stacks = BTreeMap::new();
         for (name, t) in &self.opener.cfg.tokens {
-            match cakeys_pkcs11::gate::stack(name, t, &self.lock)? {
-                Ok(stack) => {
-                    stacks.insert(name.as_str(), stack);
-                }
-                Err(why) => notes.note(format_args!("validate: {why}")),
-            }
+            stacks.insert(name.as_str(), cakeys_pkcs11::gate::stack(name, t, &self.lock)?);
         }
         let (mut refusals, mut modes) = (Vec::new(), Vec::new());
         for (spec_name, spec) in &self.opener.cfg.specs {
@@ -557,17 +549,15 @@ impl Run<'_> {
                 let t = Target::new(&self.opener.cfg, spec_name, token)?;
                 let mode = ops::plan_mode(&t)?;
                 modes.push((spec_name, token, mode.to_string()));
-                if let Some(stack) = stacks.get(token.as_str()) {
-                    let creates = ops::creates(&t, &self.lock);
-                    let v = cakeys_pkcs11::gate::check(&t, mode, stack, self.opener.registry, creates)?;
-                    for n in &v.notes {
-                        notes.note(format_args!("validate: {n}"));
-                    }
-                    refusals.extend(v.refusals);
+                let verb = ops::Verb::of(&t, &self.lock);
+                let v = cakeys_pkcs11::gate::check(&t, mode, &stacks[token.as_str()], self.opener.registry, verb)?;
+                for d in ops::deferred_lines(&v.deferred) {
+                    notes.note(format_args!("validate: {d}"));
                 }
+                refusals.extend(v.refusals.into_iter().map(KmError::from));
             }
         }
-        for (name, stack) in &stacks {
+        for (name, stack) in stacks.iter().filter_map(|(name, s)| Some((name, s.as_ref().ok()?))) {
             for n in &stack.resolved.notes {
                 notes.note(format_args!("validate: token '{name}' ({}): {n}", stack.source));
             }
@@ -586,20 +576,8 @@ impl Run<'_> {
             }
             return Ok(());
         }
-        for r in &refusals {
-            eprintln!("{r}");
-        }
-        let one = refusals.len() == 1;
-        Err(KmError::Unsupported(
-            format!(
-                "{} target{} need{} what the capability profiles say the token cannot do",
-                refusals.len(),
-                if one { "" } else { "s" },
-                if one { "s" } else { "" }
-            )
-            .into(),
-        )
-        .into())
+        // The one refusal's own exit, or 20 for several, each listed with its code.
+        Err(refused(refusals, "refusals by the static gate").map_or_else(|| anyhow::anyhow!("no refusal"), Into::into))
     }
 
     /// `create`: what each selected pair gets is decided before any token is opened
@@ -617,9 +595,10 @@ impl Run<'_> {
                 }
             }
         }
-        let refused: Vec<&ops::Planned> = planned.iter().filter(|p| p.action == ops::Action::Refuse).collect();
+        let refusing = planned.iter().filter(|p| p.action == ops::Action::Refuse).count();
+        let stopped = refusing > 0 && !how.skip_unsupported;
         for p in &planned {
-            for r in &p.reasons {
+            for r in &p.reasons() {
                 match p.action {
                     ops::Action::Skip => notes.note(format_args!(
                         "create: skipped '{}' (spec '{}') on token '{}': {r}",
@@ -629,52 +608,92 @@ impl Run<'_> {
                     ops::Action::Refuse if how.skip_unsupported => {
                         notes.warn(format!("create: skipped, unsupported: {r}"));
                     }
-                    ops::Action::Refuse => eprintln!("{r}"),
+                    // Said once, as the run's error or each with its code ([`refused`]).
+                    ops::Action::Refuse => {}
                 }
             }
         }
         if how.dry_run {
-            let rows: Vec<serde_json::Value> = planned
-                .iter()
-                .map(|p| {
-                    serde_json::json!({
-                        "spec": p.spec, "token": p.token, "object": p.object,
-                        "action": p.action.name(), "reasons": p.reasons,
-                    })
-                })
-                .collect();
+            // What the run refuses once a token opens: each pair it would make or verify, on
+            // its token opened read-only, asked as the write asks it (review 2026-11-24 C-4). A
+            // run the profiles stop opens none, and neither does its dry run. A token that does
+            // not open ends it as it ends the run (16), its rows printed first.
+            let on_tokens = if stopped {
+                Ok(())
+            } else {
+                let open = |name: &str, notes: &mut Notes| opener.open(name, Access::Read, notes);
+                ops::plan_on_tokens(cfg, &mut planned, &open, &self.lock, notes)
+            };
+            let rows: Vec<Outcome> = planned.iter().map(dry_row).collect::<anyhow::Result<_>>()?;
             print(&rows)?;
+            on_tokens?;
         }
-        if !refused.is_empty() && !how.skip_unsupported {
-            let one = refused.len() == 1;
-            return Err(KmError::Unsupported(
-                format!(
-                    "{} pair{} cannot be created, as the capability profiles say{}; pass --skip-unsupported to create \
-                 the others",
-                    refused.len(),
-                    if one { "" } else { "s" },
-                    if how.dry_run { "" } else { ": nothing was created" }
-                )
-                .into(),
-            )
-            .into());
+        if stopped {
+            let one = refusing == 1;
+            notes.note(format_args!(
+                "create: {refusing} pair{} cannot be created, as the capability profiles say{}; pass \
+                 --skip-unsupported to create the others",
+                if one { "" } else { "s" },
+                if how.dry_run { "" } else { ": nothing was created" }
+            ));
+            let errors = planned.into_iter().flat_map(|p| p.refusals).map(KmError::from).collect();
+            return Err(refused(errors, "refusals").map_or_else(|| anyhow::anyhow!("no refusal"), Into::into));
         }
         if how.dry_run {
-            return Ok(());
+            // The first the run would meet ends it, with its own exit; the others are said.
+            let mut on_token = planned.into_iter().filter(|p| p.on_token).flat_map(|p| p.refusals);
+            let first = on_token.next();
+            for r in on_token {
+                eprintln!("{r}");
+            }
+            return first.map_or(Ok(()), |r| Err(KmError::from(r).into()));
         }
-        let pairs: Vec<(&str, &str)> = planned.iter().filter(|p| p.action.runs()).map(|p| (p.spec, p.token)).collect();
+        let ready: Vec<ops::Ready> = planned.iter().filter_map(ops::Planned::ready).collect();
         let open = |name: &str, notes: &mut Notes| opener.open(name, Access::Write, notes);
         // Each created key is recorded before the next pair is touched; what was created is
         // printed whatever ended the run, the only machine-readable record of it.
         let lock_path = &self.lock_path;
-        let mut persist = |lock: &Lock| save_lock(lock_path, lock);
-        let done = ops::create_selected(cfg, &pairs, &open, &mut self.lock, how.write, &mut persist, notes);
-        print(&done.created)?;
+        let mut persist = |lock: &Lock| save_lock(lock_path, lock).map_err(cakeys_cli_common::lock_rule);
+        let done = ops::create_selected(cfg, &ready, &open, &mut self.lock, how.write, &mut persist, notes);
         if done.changed {
             notes.lock_written(lock_path);
         }
-        done.failed.map_or(Ok(()), |e| Err(e.into()))
+        // A row for each pair reached, the failure's too (review 2026-11-24 C-1).
+        let (mut rows, mut failure) = (Vec::new(), None);
+        for r in done.reached {
+            let object = Target::new(cfg, r.spec, r.token)?.object_name;
+            let mut row = match &r.made {
+                Some(ops::Made::Created(res, _)) => Outcome::passed(object, r.spec, r.token, "created").with(res)?,
+                Some(ops::Made::Verified(res)) => Outcome::passed(object, r.spec, r.token, "verified").with(res)?,
+                None => Outcome::passed(object, r.spec, r.token, "failed"),
+            };
+            if let Some(e) = r.failed {
+                let e = anyhow::Error::from(e);
+                row = Outcome { more: row.more, ..Outcome::failed(object, r.spec, r.token, &e) };
+                failure = Some(e);
+            }
+            rows.push(row);
+        }
+        print(&rows)?;
+        failure.map_or(Ok(()), Err)
     }
+}
+
+/// A `create --dry-run` row: what the run would do with the pair, the first refusal's exit,
+/// rule and message where one refuses it, and what only the run decides.
+fn dry_row(p: &ops::Planned<'_>) -> anyhow::Result<Outcome> {
+    let mut row = Outcome::passed(p.object, p.spec, p.token, p.action.name());
+    if let Some(r) = p.refusals.first() {
+        row = Outcome { error: Some(r.error.to_string()), ..row.refused_by(Some(&r.error)) };
+    }
+    row.deferred =
+        p.deferred.iter().map(|d| DeferredRow { rule: d.rule.name().to_owned(), why: d.why.clone() }).collect();
+    let refusals: Vec<serde_json::Value> = p
+        .refusals
+        .iter()
+        .map(|r| serde_json::json!({"rule": r.rule.name(), "exit": r.error.exit_code(), "error": r.error.to_string()}))
+        .collect();
+    row.with(&serde_json::json!({"action": p.action.name(), "reasons": p.reasons(), "refusals": refusals}))
 }
 
 /// How `create` runs: its flags.

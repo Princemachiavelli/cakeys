@@ -62,3 +62,42 @@ tests = [
   "a_move_the_module_fails_is_refused_and_undone",
   "tpm2_identity_failure_after_create_leaves_nothing",
 ]
+
+# Phase 1 P1 (review 2026-11-24 B-4, B-13, C-1, and the login lie): each claim it added is held
+# by the tests that were run red before its fix.
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "A destroy is verified, never taken on the module's word"
+kind = "enforced"
+tests = ["a_delete_the_module_did_not_do_keeps_the_lock", "a_delete_the_module_does_not_do_keeps_the_lock"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "a dry run too (`delete-refused`, 15)"
+kind = "enforced"
+tests = [
+  "a_profile_row_that_says_the_module_keeps_keys_refuses_the_delete",
+  "tpm2_delete_is_refused_where_the_module_keeps_keys",
+]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "session left public hides every private object"
+kind = "enforced"
+tests = ["a_login_the_session_does_not_show_is_unavailable"]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "so it never reports one absent"
+kind = "enforced"
+tests = [
+  "a_data_object_is_secret_unless_every_spec_says_public",
+  "needs_login_asks_the_lock_then_the_spec_then_the_class",
+]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "`every_pair_has_a_row_of_one_shape`)"
+kind = "enforced"
+tests = ["every_pair_has_a_row_of_one_shape", "a_failure_row_says_its_code_rule_and_device"]

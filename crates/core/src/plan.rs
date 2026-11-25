@@ -5,6 +5,7 @@
 use crate::attrs;
 use crate::config::{AsymmetricKey, AttrValue, Binding, Config, Mode, Object, ObjectKind, SpecCfg, SpecTokenCfg};
 use crate::id::{BlockCipher, Commit, Curve, HmacHash, Scheme};
+use crate::known::{Known, Permission, Restriction, Why};
 use crate::types::{KeyType as Kt, ObjectClass as Class};
 use crate::{KmError, Result};
 use std::collections::BTreeMap;
@@ -70,6 +71,28 @@ impl<'a> Target<'a> {
                 (Some(_), d) => d.iter().map(|c| c.scheme()).collect(),
                 (None, _) => vec![Scheme::Commitment],
             },
+        }
+    }
+}
+
+impl Target<'_> {
+    /// Whether the object is seen only after a login (review 2026-11-24 B-4): the one answer
+    /// every verb that looks for it asks before it says the object is not there. The lock's
+    /// record of what the token reported (`CKA_PRIVATE` of this realisation) first, then what
+    /// the spec declares, then the class: a public key or certificate is public, anything else
+    /// private, a data object included (§9.2: unknown restricts). A `publicOnly` adoption is
+    /// looked for through its public key.
+    #[must_use]
+    pub fn needs_login(&self, lock: &crate::config::Lock) -> bool {
+        if self.on_token.public_only {
+            return false;
+        }
+        let recorded = lock
+            .realisation(self.spec_name, self.token_name)
+            .map_or(Known::Unknown(Why::Unrecorded), |r| r.observed(Restriction::Private.attr()));
+        match recorded.or_else(|| self.spec.known(Restriction::Private.attr())) {
+            Known::Is(private) => private,
+            Known::Unknown(_) => !matches!(self.object.class, Class::PublicKey | Class::Certificate),
         }
     }
 }
@@ -184,7 +207,7 @@ fn check_binding(t: &Target, kind: ObjectKind) -> Result<()> {
                  \"token-asserted\""
             ))
         }
-        (Some(Binding::PopSign), _) if t.spec.flag("CKA_SIGN") != Some(true) => invalid(
+        (Some(Binding::PopSign), _) if !t.spec.permitted(Permission::Sign) => invalid(
             "proving possession of the private key needs CKA_SIGN = true in the spec attributes; \
              or opt in with binding = \"token-asserted\" on this token"
                 .into(),
@@ -196,7 +219,7 @@ fn check_binding(t: &Target, kind: ObjectKind) -> Result<()> {
             "binding = \"pop-ecdh\" derives with CKM_ECDH1_DERIVE: it applies to Weierstrass EC keys, not Edwards"
                 .into(),
         ),
-        (Some(Binding::PopEcdh), _) if t.spec.flag("CKA_DERIVE") != Some(true) => invalid(
+        (Some(Binding::PopEcdh), _) if !t.spec.permitted(Permission::Derive) => invalid(
             "proving possession by deriving needs CKA_DERIVE = true in the spec attributes; \
              or opt in with binding = \"token-asserted\" on this token"
                 .into(),
@@ -204,7 +227,7 @@ fn check_binding(t: &Target, kind: ObjectKind) -> Result<()> {
         (Some(Binding::PopDecrypt), _) if t.object.key_type != Some(Kt::Rsa) => invalid(
             "binding = \"pop-decrypt\" proves possession by decrypting: it applies to RSA private keys only".into(),
         ),
-        (Some(Binding::PopDecrypt), _) if t.spec.flag("CKA_DECRYPT") != Some(true) => invalid(
+        (Some(Binding::PopDecrypt), _) if !t.spec.permitted(Permission::Decrypt) => invalid(
             "proving possession by decrypting needs CKA_DECRYPT = true in the spec attributes; \
              or opt in with binding = \"token-asserted\" on this token"
                 .into(),
@@ -212,7 +235,7 @@ fn check_binding(t: &Target, kind: ObjectKind) -> Result<()> {
         (Some(Binding::PopUnwrap), _) if t.object.key_type != Some(Kt::Rsa) => invalid(
             "binding = \"pop-unwrap\" proves possession by unwrapping: it applies to RSA private keys only".into(),
         ),
-        (Some(Binding::PopUnwrap), _) if t.spec.flag("CKA_UNWRAP") != Some(true) => invalid(
+        (Some(Binding::PopUnwrap), _) if !t.spec.permitted(Permission::Unwrap) => invalid(
             "proving possession by unwrapping needs CKA_UNWRAP = true in the spec attributes; \
              or opt in with binding = \"token-asserted\" on this token"
                 .into(),
@@ -463,6 +486,52 @@ mod tests {
         .unwrap();
         let e = Target::new(&cfg, "s", "t").err().unwrap();
         assert!(matches!(&e, KmError::Validation(m) if m.contains("unknown object 'gone'")), "{e}");
+    }
+
+    /// Whether an object is seen only after a login (review 2026-11-24 B-4): the lock's record
+    /// first, then the spec's declaration, then the class, a data object no one says anything of
+    /// being private (§9.2); a `publicOnly` adoption is looked for by its public key.
+    #[test]
+    fn needs_login_asks_the_lock_then_the_spec_then_the_class() {
+        let needs = |class: &str, attrs: &str, on: &str, recorded: Option<bool>| {
+            let ty = match class {
+                "CKO_DATA" => "",
+                "CKO_CERTIFICATE" => "certificateType = \"CKC_X_509\"\n",
+                "CKO_SECRET_KEY" => "keyType = \"CKK_AES\"\nvalueLen = 32\n",
+                _ => "keyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n",
+            };
+            let cfg: Config = toml::from_str(&format!(
+                "[tokens.t]\ntokenLabel = \"t\"\n\n[objects.k]\nclass = \"{class}\"\n{ty}\n\
+                 [specs.s]\nobject = \"k\"\nattributes = {{ {attrs} }}\n\
+                 tokens.t = {{ locator = {{ CKA_LABEL = \"x\" }}, origin = \"adopt\"{on} }}\n"
+            ))
+            .unwrap();
+            let policy = recorded.map_or_else(String::new, |p| format!("CKA_PRIVATE = {p}"));
+            let lock: crate::config::Lock = toml::from_str(&format!(
+                "version = 1\n[realisations.s.t]\nobject = \"k\"\nlocator = {{ CKA_LABEL = \"x\" }}\n\
+                 specDigest = \"sha256-x\"\nmode = \"direct\"\nschemes = []\npolicy = {{ {policy} }}\n"
+            ))
+            .unwrap();
+            Target::new(&cfg, "s", "t").unwrap().needs_login(&lock)
+        };
+        let data = |attrs, recorded| needs("CKO_DATA", attrs, "", recorded);
+        assert_eq!(
+            [data("", None), data("CKA_PRIVATE = false", None), data("CKA_PRIVATE = true", None)],
+            [true, false, true],
+            "a data object: the spec, else private"
+        );
+        assert_eq!(
+            [data("CKA_PRIVATE = true", Some(false)), data("", Some(false)), data("CKA_PRIVATE = false", Some(true))],
+            [false, false, true],
+            "what the token reported first"
+        );
+        let key = |class| needs(class, "", "", None);
+        assert_eq!(
+            ["CKO_PRIVATE_KEY", "CKO_SECRET_KEY", "CKO_PUBLIC_KEY", "CKO_CERTIFICATE"].map(key),
+            [true, true, false, false],
+            "by class"
+        );
+        assert!(!needs("CKO_PRIVATE_KEY", "", ", publicOnly = true", None), "publicOnly");
     }
 
     /// The target `s` on token `t` of an object of type `ty`, with `on` added to its token entry

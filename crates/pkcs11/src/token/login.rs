@@ -57,7 +57,9 @@ impl Token {
     /// Run `step` in a Security Officer session (`soCredentialFile`/`soCredentialEnv`), for modules that
     /// create and destroy objects only as SO, then return to the user session. Login state is
     /// per token, so the user is logged out first. The admin credential is read here, never at
-    /// open, and zeroized when the step ends.
+    /// open, and zeroized when the step ends. A step already in the SO session runs as it is:
+    /// `Token::create` and the destroys enter it before the provider's override, which may ask
+    /// again ([`Token::managing`]).
     ///
     /// # Errors
     ///
@@ -65,6 +67,10 @@ impl Token {
     /// the logout or the return to the user session fails, or the PIN counters refuse a login;
     /// else whatever `step` returns.
     pub fn as_so<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
+        use std::sync::atomic::Ordering;
+        if self.in_so.load(Ordering::Relaxed) {
+            return step();
+        }
         let so = read_so_credential(&self.name, &self.cfg)?.ok_or_else(|| {
             self.unsupported(format!(
                 "{what} on '{}' needs a Security Officer session: set tokens.{}.soCredentialFile or soCredentialEnv",
@@ -72,7 +78,7 @@ impl Token {
             ))
         })?;
         self.pins.so.guard(&self.name, "SO")?;
-        if self.so_refused.load(std::sync::atomic::Ordering::Relaxed) {
+        if self.so_refused.load(Ordering::Relaxed) {
             return Err(KmError::Unavailable(
                 format!(
                     "token '{}': the SO credential was refused earlier in this run; it is not tried again, \
@@ -87,12 +93,14 @@ impl Token {
         }
         let out = match self.session.login(UserType::So, Some(&AuthPin::new(so.as_str().to_owned().into()))) {
             Ok(()) => {
-                let out = step();
+                self.in_so.store(true, Ordering::Relaxed);
+                let out = logged_in_as(&self.session, UserType::So, &self.name).and_then(|()| step());
+                self.in_so.store(false, Ordering::Relaxed);
                 let logout = self.session.logout().map_err(ck("C_Logout (SO)"));
                 so_outcome(what, &self.name, out, logout)
             }
             Err(e) => Err({
-                self.so_refused.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.so_refused.store(true, Ordering::Relaxed);
                 KmError::Unavailable(
                     format!(
                         "{SO_LOGIN} with soCredentialFile/soCredentialEnv: {rv}; it must hold the module's admin \
@@ -112,13 +120,42 @@ impl Token {
         let back = match self.pin.as_deref() {
             None => Err(KmError::Unavailable("no user PIN to log back in with".into())),
             Some(pin) => match self.session.login(UserType::User, Some(&AuthPin::new(pin.to_owned().into()))) {
-                Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => Ok(()),
+                Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {
+                    logged_in_as(&self.session, UserType::User, &self.name)
+                }
                 Err(e) => Err(KmError::Unavailable(format!("C_Login (back to the user): {}", rv_name(&e)).into())
                     .with_rv(rv_of(&e))),
             },
         };
         so_outcome(what, &self.name, out, back)
     }
+}
+
+/// Whether `session` shows the login `who` the module just accepted: a module that answers
+/// `CKR_OK` to `C_Login` and leaves the session public hides every private object, so a search
+/// would read a key it cannot see as absent (review 2026-11-24, lead-found through the Phase 2
+/// design). `C_GetSessionInfo` says which it is.
+///
+/// # Errors
+///
+/// `Unavailable` (16) when the session is not in `who`'s state, or the state cannot be read.
+pub(super) fn logged_in_as(session: &Session, who: UserType, token: &str) -> Result<()> {
+    use cryptoki::session::SessionState;
+    let state = session.get_session_info().map_err(ck("C_GetSessionInfo"))?.session_state();
+    let shown = match who {
+        UserType::So => state == SessionState::RwSecurityOfficer,
+        _ => matches!(state, SessionState::RoUser | SessionState::RwUser),
+    };
+    if shown {
+        return Ok(());
+    }
+    Err(KmError::Unavailable(
+        format!(
+            "token '{token}': C_Login ({who:?}) succeeded, but the session is not logged in (C_GetSessionInfo: \
+             {state:?}): the module would hide every private object, so nothing it finds or misses is trusted"
+        )
+        .into(),
+    ))
 }
 
 /// What [`Token::as_so`] answers once the session is put back (`after`: the SO logout, then the
@@ -194,6 +231,7 @@ pub(super) fn session(
             }
             Err(e) => return Err(KmError::Unavailable(format!("C_Login: {}", rv_name(&e)).into()).with_rv(rv_of(&e))),
         }
+        logged_in_as(&session, UserType::User, name)?;
     }
     Ok((session, pin))
 }

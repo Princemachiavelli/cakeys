@@ -16,16 +16,18 @@ fn validate(config: &str) -> Output {
 
 /// docs/CAPROBE.md's two static-gate cases, each refused (15) naming the profile that decided
 /// it: kryoptic asked to generate secp256k1 (`origin = "create"`), and a `kw` commitment through
-/// p11-kit. A token nothing is known about is skipped with a note.
+/// p11-kit. Two refusals end the run with 20, each listed with its own code (review 2026-11-24
+/// §1.4; it was 15). A token nothing is known about is skipped with a note.
 #[test]
 fn a_profile_no_refuses_and_names_its_profile() {
     let out = validate("gate.toml");
     let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(code(&out), 15, "{err}");
+    assert_eq!(code(&out), 20, "{err}");
     // Who refused and which profile decided, not the sentence around them (review validate.rs F2).
     let line = |start: &str| err.lines().find(|l| l.contains(start)).unwrap_or_else(|| panic!("{start}: {err}"));
-    assert!(line("'k1' (spec 'k1-kry') on token 'kry': token 'kry' cannot").contains("kryoptic/1.5"), "{err}");
-    assert!(err.contains("2 targets need what the capability profiles say"), "{err}");
+    let k1 = line("'k1' (spec 'k1-kry') on token 'kry': token 'kry' cannot");
+    assert!(k1.starts_with("exit 15: ") && k1.contains("kryoptic/1.5"), "{err}");
+    assert!(err.contains("2 refusals by the static gate, each listed above with its exit code"), "{err}");
     let kw = line("'aes' (spec 'aes-kw')");
     assert!(kw.contains("CKM_AES_KEY_WRAP") && kw.contains("p11-kit/0.26"), "{err}");
     assert!(err.contains("token 'unknown': no provider named"), "{err}");
@@ -167,7 +169,12 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
     w.write_config(&text);
     let out = w.km(&["validate"]);
     let err = stderr(&out);
-    assert_eq!(code(&out), 15, "{err}");
+    // Refusals of 15 and 17: 20, each led by its own code (it was 15 whatever the codes).
+    assert_eq!(code(&out), 20, "{err}");
+    assert!(
+        err.lines().any(|l| l.starts_with("exit 17: ")) && err.lines().any(|l| l.starts_with("exit 15: ")),
+        "{err}"
+    );
     let hmac = if cakeys_pkcs11::binding::patched() {
         "'mac' (spec 'mac-soft') on token 'soft': token 'soft' cannot do what mode 'commitment' needs \
          (CKM_SHA384_KEY_GEN: no — softhsm/2.7: not advertised)"
@@ -187,4 +194,36 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
         let refused = err.lines().find(|l| l.contains(pair)).unwrap_or_else(|| panic!("{pair}: {err}"));
         assert!(refused.contains("ykcs11 ignores CKA_LABEL when generating"), "{refused}");
     }
+}
+
+/// A token whose provider is known only when it opens (no `provider`, nothing in the lock: a
+/// ykcs11 module, say) still has its provider's rules asked: `validate` and `create --dry-run`
+/// defer each by name — where a key may go, the module's own generation, the templates, what the
+/// token can do — and never pass them in silence (review 2026-11-24 B-1). The run that opens the
+/// token decides them; a pair it would refuse (ykcs11: a key under a label, 17) differs from the
+/// dry run only by a rule the dry run named. `create --dry-run` opens the token too (review
+/// 2026-11-24 C-4): one that does not open is unavailable (16), as for the run, its rows printed.
+#[test]
+fn a_provider_known_only_at_open_defers_its_rules_by_name() {
+    let w = Workdir::new("validate-unresolved-provider");
+    w.write_config(
+        "[tokens.yk]\nmodule = \"/nonexistent/libykcs11.so\"\ntokenLabel = \"YubiKey PIV\"\n\n\
+         [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+         [specs.s]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
+         tokens.yk = { locator = { CKA_LABEL = \"under-a-label\" }, origin = \"create\" }\n",
+    );
+    let deferred = "(deferred: placement, own-generation, templates, capability)";
+    let out = w.km(&["validate"]);
+    let err = stderr(&out);
+    assert_eq!(code(&out), 0, "{err}");
+    let line = err.lines().find(|l| l.contains("'k' (spec 's') on token 'yk'")).unwrap_or_else(|| panic!("{err}"));
+    assert!(line.ends_with(deferred), "{line}");
+
+    let out = w.km(&["create", "--dry-run"]);
+    assert_eq!(code(&out), 16, "{}", stderr(&out));
+    assert_eq!(code(&w.km(&["create"])), 16, "the run, the same");
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rules: Vec<&str> =
+        rows[0]["deferred"].as_array().unwrap().iter().map(|d| d["rule"].as_str().unwrap()).collect();
+    assert_eq!(rules, ["placement", "own-generation", "templates", "capability"], "{rows}");
 }
