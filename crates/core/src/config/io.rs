@@ -382,8 +382,11 @@ mod tests {
         assert_eq!(unwritable(&path, false), None);
         let mode = |p: &Path, m: u32| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
         mode(&path, 0o444);
-        // access(2) grants root every write: the permission cases mean nothing as root.
+        // access(2) grants root every write: the permission cases mean nothing as root, and a run
+        // that requires everything is not one (it returned here silently).
         if rustix::fs::access(&path, rustix::fs::Access::WRITE_OK).is_ok() {
+            let why = "the permission cases: this user writes a mode-444 file";
+            crate::test_skip::skip("an_unwritable_lock_says_why", crate::test_skip::REQUIRE_ALL, why);
             return;
         }
         assert_eq!(unwritable(&path, false), Some(format!("{} is not writable", real.join("keys.lock").display())));

@@ -1,7 +1,10 @@
 //! One module, named two ways, is one library (token/mod.rs F3): a token naming it by its bare
 //! file name (the loader's search) and one naming it by path open side by side, the second
 //! sharing the library the first initialized; a second `C_Initialize` would be refused
-//! (`CKR_CRYPTOKI_ALREADY_INITIALIZED`). Skipped without `CAKEYS_TEST_MODULE`.
+//! (`CKR_CRYPTOKI_ALREADY_INITIALIZED`). Skipped without `CAKEYS_TEST_MODULE` ([`test_skip::skip`]).
+
+#[path = "../../test-skip.rs"]
+mod test_skip;
 
 use cakeys_core::config::TokenCfg;
 use cakeys_pkcs11::token::Access;
@@ -18,9 +21,8 @@ fn token(module: &str, pin: &std::path::Path) -> TokenCfg {
 #[test]
 fn a_bare_name_and_a_path_share_one_library() {
     let Ok(module) = std::env::var("CAKEYS_TEST_MODULE") else {
-        // As every token suite: required where the harness says so.
-        assert!(std::env::var("CAKEYS_TEST_REQUIRE").is_err(), "CAKEYS_TEST_MODULE is required");
-        eprintln!("skipping library: CAKEYS_TEST_MODULE is not set");
+        // As every token suite: required where the run says so.
+        test_skip::skip("library", "CAKEYS_TEST_REQUIRE", "CAKEYS_TEST_MODULE is not set");
         return;
     };
     let path = std::path::Path::new(&module);

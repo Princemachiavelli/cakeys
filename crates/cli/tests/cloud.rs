@@ -1,7 +1,8 @@
 //! Opt-in end-to-end tests against the cloud HSMs `scripts/cloud/` keeps (`docs/CLOUD_HSM.md`):
 //! cakeys and camigrate driven through `aws.sh cakeys|camigrate` and `gcp.sh cakeys`, exactly as
 //! by hand. They never create or destroy infrastructure — bring it up first, park or destroy it
-//! after — and are skipped unless asked for, and always inside a Nix build:
+//! after — and are skipped ([`test_skip::skip`]) unless asked for, and always inside a Nix build;
+//! `CAKEYS_CLOUD_REQUIRE` makes a skip fail:
 //!
 //! - `CAKEYS_TEST_AWS`: `FIPS`, `NON_FIPS` or `FIPS,NON_FIPS`, the clusters to test, each up
 //!   and activated (`CAKEYS_AWS_MODE=<mode> scripts/cloud/aws.sh create`, then `activate`); the
@@ -19,8 +20,15 @@
 //! `CAKEYS_GCP_LOCK`), so it never meets another run's keys or the hand-kept lock, and deletes
 //! everything it created, also when an assertion fails.
 
+#[path = "../../test-skip.rs"]
+mod test_skip;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+/// What makes a skip here fail (crates/test-skip.rs: a cloud suite, never required by a run that
+/// requires everything else).
+const REQUIRE: &str = "CAKEYS_CLOUD_REQUIRE";
 
 /// Unsupported: what cakeys refuses before creating anything (docs/CAKEYS.md, exit codes).
 const UNSUPPORTED: i32 = 15;
@@ -61,15 +69,17 @@ fn run_id() -> String {
     format!("ct{secs}")
 }
 
-/// What was asked of a test run: `None` (skip) unless the variable is set, never in a Nix build.
+/// What was asked of a test run: `None` (skipped) unless the variable is set, never in a Nix
+/// build, which reaches no cloud (review 2026-11-24 C-7: it returned there without a word).
 fn asked(var: &str) -> Option<String> {
     // A Nix build sets NIX_BUILD_TOP; `nix develop` does too, with IN_NIX_SHELL.
     if std::env::var_os("NIX_BUILD_TOP").is_some() && std::env::var_os("IN_NIX_SHELL").is_none() {
+        test_skip::skip(var, REQUIRE, "inside a Nix build, which reaches no cloud");
         return None;
     }
     let v = std::env::var(var).ok().filter(|v| !v.is_empty());
     if v.is_none() {
-        eprintln!("skipping: {var} not set (crates/cli/tests/cloud.rs)");
+        test_skip::skip(var, REQUIRE, &format!("{var} not set (crates/cli/tests/cloud.rs)"));
     }
     v
 }

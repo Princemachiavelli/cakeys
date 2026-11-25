@@ -43,6 +43,10 @@ kryoptic_init() {
 # 2026-11-23 C-19); the TPM modules only where the caller has them.
 test_env() {
   local dir=$1
+  # Every software suite is required, whatever the per-test runner routes where: a skip fails
+  # unless a hardware or cloud suite's (crates/test-skip.rs; review 2026-11-24 C-11). The fault
+  # suites' own require variable is here too, apart from the routing that sets their module.
+  export CAKEYS_REQUIRE_ALL=1 CAKEYS_FAULT_REQUIRE=1
   softhsm_conf "$dir"
   softhsm_init kmtest
   export CAKEYS_TEST_MODULE=$2 CAKEYS_TEST_REQUIRE=1

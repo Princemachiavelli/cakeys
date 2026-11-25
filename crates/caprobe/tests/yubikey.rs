@@ -59,7 +59,7 @@ fn the_write_probe_conforms_and_regenerates_the_committed_profile() {
 #[test]
 fn the_read_only_probe_conforms() {
     let Ok(module) = std::env::var("CAKEYS_TEST_YUBIKEY_MODULE") else {
-        eprintln!("skipping the_read_only_probe_conforms: CAKEYS_TEST_YUBIKEY_MODULE not set");
+        skip("the_read_only_probe_conforms", YUBIKEY_OPT_IN.require, "CAKEYS_TEST_YUBIKEY_MODULE not set");
         return;
     };
     let w = Workdir::new("yubikey-probe");

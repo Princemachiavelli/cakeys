@@ -45,7 +45,8 @@ The OS is NixOS: there is no system `cargo`, `python3` or `perl`.
   the quickest way to test a change to token behaviour. It builds against the patched cryptoki
   (the patches `nix/package-common.nix` lists, applied under `target/local-tests/`, in a copy of
   the tree so `Cargo.lock` stays as it is), refuses to run when cryptoki does not resolve to
-  that copy, and requires every reference token, so nothing skips. A Nix check still decides.
+  that copy, and requires every reference token, so nothing skips but the hardware and cloud
+  suites (`CAKEYS_REQUIRE_ALL`, below). A Nix check still decides.
 - `nix flake check` sees only files git knows: `git add` new files first.
 - `packages.cakeys-crane` is the crane build the checks use, its test suites included;
   `packages.cakeys` is the same build without its check phase, what users and the NixOS module
@@ -117,7 +118,7 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 | `tests/softhsm.rs`, `tests/kryoptic.rs` | package build | one shared suite (`tests/reference/`) against each software reference: lifecycle, every type and scheme against independent oracles (hand-written DER encoder, openssl-hashed fixtures, RustCrypto `hmac`/`cmac`/`aes`/`aes-kw`/`des`); the same verdicts on both, with each token's facts in its `Reference` descriptor (`tests/common/`) |
 | `tests/tpm2.rs` | package build, `nix/tpm2-test-env.sh` | swtpm + tpm2-abrmd + tpm2-pkcs11; the native `tpm-certify` attestation (AK provisioning and validation, reads that never provision, a lost attestation as a downgrade, cross-checks), one material attested on two tokens with an attestation each, and the travel of attested material to SoftHSM through the shared portable scheme; also with `CAKEYS_TPM_VENDOR_MODULE` (nixpkgs' module plus `upstream/tpm2-pkcs11/`'s vendor-mechanism patches, `nix/tpm2-pkcs11-vendor.nix`, built from upstream master): the same attestation ID and root through the module's `CKM_TPM2_CERTIFY` as through the store, and an Attestation Key that is a token object (`akLabel`) attesting with no TCTI and no store |
 | `tests/p11kit.rs` | package build, `nix/p11kit-test-env.sh` | SoftHSM behind `p11-kit server`, compared with direct access |
-| `tests/fault.rs` | package build | `crates/p11-fault` (docs/FAULT_SHIM.md): the reference suite again, through the shim in front of SoftHSM with no plan (it must pass as directly); `pkcs11-tool` through the shim; cakeys meeting a module whose calls fail (16, the call named) or that lies (a table: flags, a public key dropped, malformed or another's, a policy bit, a second object, another key used for each proof), each rule shown fired in the trace |
+| `tests/fault.rs` | package build | `crates/p11-fault` (docs/FAULT_SHIM.md): the reference suite again, through the shim in front of SoftHSM with no plan (it must pass as directly), but the object matrix, which would be SoftHSM's table again; `pkcs11-tool` through the shim; cakeys meeting a module whose calls fail (16, the call named) or that lies (a table: flags, a public key dropped, malformed or another's, a policy bit, a second object, another key used for each proof), each rule shown fired in the trace |
 | `crates/camigrate/tests/fault.rs`, `crates/caprobe/tests/fault.rs` | package build | the shim in front of a move's source or target (each failing step refused, the target left clean, the lock unchanged) and of the write probes (what a refusing or lying module does becomes the profile's row and note, or is said undetermined) |
 | `tests/references.rs` | package build | cross-reference: the same material (the P-256 and RSA fixtures, P-384/P-521/Ed25519/Ed448 exported from one reference, AES, generic secret and HMAC values, a certificate, a data object) planted on SoftHSM, kryoptic (raw and DER Edwards points), SoftHSM behind p11-kit and — what `tpm2_ptool` imports — tpm2-pkcs11, realised into one lock: one identity per scheme everywhere; and the same verdict for the same scenario (absent 11, two objects 12, another type 13, a swapped private key 13) |
 | `crates/camigrate/tests/dry_run.rs` | package build | the dry-run property: for every source and target reference and the types each takes, the plan's verdict is the outcome, a ready move is recorded with its `origin` and verified by `cakeys`; the bundle, key files, `enforced` and host paths, and each refusal's exit code |
@@ -144,15 +145,21 @@ opt-in, as is the real-TPM attestation test (`CAKEYS_FTPM_ATTEST=1`, through
 `nix/ftpm-test-env.sh`). `packages.test-nspawn` needs the `uid-range` feature, so it is outside
 `checks`.
 
-A suite whose token is missing skips, unless its `*_REQUIRE` variable is set: then it fails.
-The software tokens' are `CAKEYS_TEST_REQUIRE` (SoftHSM), `CAKEYS_KRYOPTIC_REQUIRE`,
-`CAKEYS_P11KIT_REQUIRE`, `CAKEYS_TPM_REQUIRE` (swtpm) and `CAKEYS_FAULT_REQUIRE`; the Nix builds
-and `scripts/local-tests.sh` set them all. The hardware suites' are `CAKEYS_YUBIKEY_REQUIRE`
-(with `CAKEYS_TEST_YUBIKEY_PIN` and `_MGM`) and `CAKEYS_FTPM_REQUIRE` (with
-`CAKEYS_FTPM_MODULE` and `CAKEYS_FTPM_PROFILE`): a suite's opt-in variables are set all
-together or not at all, and its require variable without them fails rather than passing having
-run nothing. `scripts/coverage-full.sh` sets each beside the suite's variables, and only for that
-suite's pass.
+A test that cannot run here skips through one helper, `crates/test-skip.rs`'s `skip`, which
+fails instead when its `*_REQUIRE` variable is set, or `CAKEYS_REQUIRE_ALL` and the variable is
+not a hardware or cloud suite's (its `HARDWARE` list; the swtpm's too in a build without tpm2).
+cakeys' harness test fails on a skip written any other way. The software tokens' variables are
+`CAKEYS_TEST_REQUIRE` (SoftHSM), `CAKEYS_KRYOPTIC_REQUIRE`, `CAKEYS_P11KIT_REQUIRE`,
+`CAKEYS_TPM_REQUIRE` (swtpm) and `CAKEYS_FAULT_REQUIRE`; `test_env` (`nix/token-env.sh`) sets
+them all and `CAKEYS_REQUIRE_ALL`, for the Nix builds and `scripts/local-tests.sh`, once for the
+run and apart from `nix/test-tokens.sh`'s routing, so a suite the routing misses fails. The
+hardware suites' are `CAKEYS_YUBIKEY_REQUIRE`
+(with `CAKEYS_TEST_YUBIKEY_PIN` and `_MGM`), `CAKEYS_FTPM_REQUIRE` (with
+`CAKEYS_FTPM_MODULE` and `CAKEYS_FTPM_PROFILE`) and `CAKEYS_FTPM_ATTEST_REQUIRE` (with
+`CAKEYS_FTPM_ATTEST=1`), and the cloud suite's is `CAKEYS_CLOUD_REQUIRE`: a suite's opt-in
+variables are set all together or not at all, and its require variable without them fails rather
+than passing having run nothing. `scripts/coverage-full.sh` sets each beside the suite's
+variables, and only for that suite's pass.
 
 **No test goes unnoticed.** `checks.test-count` counts each test binary's tests in the source
 (`nix/test-count.py`: every `#[test]` its root reaches through `mod` and `#[path]`, whatever its

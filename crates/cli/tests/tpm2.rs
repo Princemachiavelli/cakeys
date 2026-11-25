@@ -374,8 +374,7 @@ fn tpm2_private_data_object_is_identified_by_its_value() {
 #[test]
 fn tpm2_keys_attest_their_tpm_residence() {
     let Some(e) = env("attest") else { return };
-    if !on_swtpm() {
-        eprintln!("skipping attest: it makes persistent TPM objects, on the suite's swtpm only");
+    if !swtpm_or_skip("attest", "it makes persistent TPM objects, on the suite's swtpm only") {
         return;
     }
     // A generated EC key (9a slot style): attested on the TPM, once the AK is provisioned.
@@ -484,8 +483,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
 #[test]
 fn tpm2_attestation_activates_a_credential_to_the_certified_ek() {
     let Some(e) = env("activate") else { return };
-    if !on_swtpm() {
-        eprintln!("skipping activate: it makes persistent TPM objects, on the suite's swtpm only");
+    if !swtpm_or_skip("activate", "it makes persistent TPM objects, on the suite's swtpm only") {
         return;
     }
     let path = |name: &str| e.dir.join(name).to_str().unwrap().to_owned();
@@ -559,8 +557,7 @@ fn tpm2_attestation_activates_a_credential_to_the_certified_ek() {
 #[test]
 fn tpm2_the_salted_session_keeps_the_token_secrets_off_the_wire() {
     let Some(e) = env("salted") else { return };
-    if !on_swtpm() {
-        eprintln!("skipping salted: it reads the suite's swtpm log, and makes the AK");
+    if !swtpm_or_skip("salted", "it reads the suite's swtpm log, and makes the AK") {
         return;
     }
     test_ek_certificates(&e.dir);
@@ -983,7 +980,9 @@ fn tpm2_attestation_refuses_a_store_that_disagrees() {
 #[test]
 fn tpm2_a_secret_keys_attestation_is_bound_to_its_material() {
     let Some(e) = env("attest-bound") else { return };
-    if !hmac_types_fixed("CAKEYS_TPM_REQUIRE") || !on_swtpm() {
+    if !hmac_types_fixed("CAKEYS_TPM_REQUIRE")
+        || !swtpm_or_skip("attest-bound", "it makes persistent TPM objects, on the suite's swtpm only")
+    {
         return;
     }
     for (label, value) in [("bound-a", &HMAC_VALUE[..]), ("bound-b", &b"another key-management hmac key!"[..])] {
@@ -1259,8 +1258,7 @@ fn tpm2_attestation_finds_its_store_and_tpm_as_configured() {
 #[test]
 fn tpm2_object_matrix_is_the_committed_one() {
     let Some(e) = env("object-matrix") else { return };
-    if !on_swtpm() {
-        eprintln!("skipping: the object matrix runs on the suite's swtpm only");
+    if !swtpm_or_skip("object-matrix", "the object matrix runs on the suite's swtpm only") {
         return;
     }
     object_matrix::check(&object_matrix::Target {
@@ -1293,6 +1291,16 @@ fn on_swtpm() -> bool {
         software || std::env::var_os("CAKEYS_TPM_REQUIRE").is_none(),
         "CAKEYS_TPM_REQUIRE is set, but this is not the suite's swtpm (nix/tpm2-test-env.sh sets CAKEYS_TPM_SWTPM)"
     );
+    software
+}
+
+/// [`on_swtpm`], or a skip ([`skip`], required with the suite, `CAKEYS_TPM_REQUIRE`) of test
+/// `test`'s steps that only the suite's swtpm may take, for `why`.
+fn swtpm_or_skip(test: &str, why: &str) -> bool {
+    let software = on_swtpm();
+    if !software {
+        skip(test, "CAKEYS_TPM_REQUIRE", why);
+    }
     software
 }
 
@@ -1368,8 +1376,7 @@ fn tpm2_attestation_says_what_it_lacks() {
     let o = withheld("CKA_LABEL");
     assert_eq!(code(&o), 18, "{}", stderr(&o));
 
-    if !on_swtpm() {
-        eprintln!("skipping the Attestation Key cases: they change the TPM, and this is not the suite's swtpm");
+    if !swtpm_or_skip("attest-lacks", "the Attestation Key cases change the TPM, and this is not the suite's swtpm") {
         return;
     }
     // An RSA storage key where the Attestation Key is looked for.

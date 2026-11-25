@@ -38,8 +38,7 @@ const IMPORT: &str = ", origin = \"import\"";
 #[test]
 fn the_dry_run_twin_compares_every_token_a_move_names() {
     let Some(e) = env("twin-tokens") else { return };
-    if !e.refs.iter().any(|r| r.name == "kryoptic-der") {
-        eprintln!("skipping twin-tokens: needs the kryoptic references");
+    if e.needs("twin-tokens", ["kryoptic-der"]).is_none() {
         return;
     }
     let names = |args: &[&str]| e.compared(args).iter().map(|r| r.name).collect::<Vec<_>>();
@@ -1523,10 +1522,7 @@ fn exports_to_a_token_need_only_the_lock() {
 #[test]
 fn sealed_moves_wrap_with_oaep_sha256_between_kryoptic_tokens() {
     let Some(mut e) = env("oaep-sha256") else { return };
-    let Some(kry) = e.refs.iter().find(|r| r.name == "kryoptic") else {
-        eprintln!("skipping oaep-sha256: needs the kryoptic reference");
-        return;
-    };
+    let Some([kry]) = e.needs("oaep-sha256", ["kryoptic"]) else { return };
     let module = kry.module.clone();
     // Slot 2 before slot 1: the suites append to the last table, which stays the first token's.
     let conf = e.dir.join("kryoptic-two.conf");

@@ -26,13 +26,12 @@ mod delete;
 mod drift;
 mod identity;
 mod lockfile;
-mod matrix;
 mod proofs;
 mod tokens;
 mod validate;
 
 /// The reference's suite for test `name` (its tokens: [`reference_tokens`]), or `None` (skipped).
-fn env(name: &str) -> Option<Suite> {
+pub(crate) fn env(name: &str) -> Option<Suite> {
     let module = suite_var(REF.module_var, REF.require_var, name)?;
     // Through p11-fault, the variable names the module behind it, and the token loads the shim.
     let module = if REF.through_fault_shim { fault_shim() } else { module };

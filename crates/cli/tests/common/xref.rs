@@ -2,7 +2,7 @@
 //! reference token whose suite variables are set, one keys.toml naming them all, and runs of
 //! either binary against it.
 
-use super::{BIN, Run, required_var, sibling};
+use super::{BIN, REQUIRE_ALL, Run, required_var, sibling, skip};
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -71,7 +71,8 @@ pub fn env(name: &str) -> Option<Env> {
         refs.push(r("tpm2", m, "kmtest", &[], Plant::Ptool, false));
     }
     if refs.len() < 2 {
-        eprintln!("skipping {name}: fewer than two reference tokens set");
+        // Each reference left out was required by nothing; a run that requires everything has them.
+        skip(name, REQUIRE_ALL, "fewer than two reference tokens set");
         return None;
     }
     let dir = super::test_dir(&format!("xref-{name}"));
