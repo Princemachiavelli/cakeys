@@ -26,6 +26,10 @@
   inherit (cakeys) msrv;
   # cargo-deny offline (see `deny` in pkgs.nix): reproducible with the flake.lock.
   deny = deny.check;
+  # fuzz/Cargo.lock still holds what the fuzz crate needs, at Cargo.lock's versions (nix/fuzz.nix,
+  # `lock`): the fuzz run is Linux's and CI's vm job's, this resolution every system's and the
+  # light job's.
+  fuzz-lock = fuzz.lock;
   # Every test and function the docs name is a `fn`, and every docs/*.md cited exists
   # (nix/doc-references.py). Its own fileset, so a docs edit does not rebuild crane.
   doc-references =
