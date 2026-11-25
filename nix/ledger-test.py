@@ -17,6 +17,18 @@ MODULE = "profiles/modules/m/1.toml"
 SOFT = "profiles/modules/s/1.toml"
 CERT = "fixtures/cert.pem"
 PROBED, EDITED, CAPTURED = "as probed\n", "as probed, then edited\n", "as captured\n"
+# A Rust source with the comments, doc comments and literals the check must tell apart: comment
+# markers inside a string, a quote inside a character, a raw string, and a comment after both.
+RUST = """use a::b;
+use c::d;
+
+/// Signs.
+fn a(x: &str) -> bool {
+    // what it does
+    let q = '"'; // a quote, in a character
+    x == "a // b /* c */" && f(q, r#"q " q"#) // and after
+}
+"""
 
 
 def sha(text):
@@ -214,6 +226,56 @@ hash = "{captured}"
         code, out = self.run_with(regen="scripts/gone.sh probe")
         self.assertEqual(code, 1, out)
         self.assertIn(f"{MODULE}: its regen names scripts/gone.sh, which does not exist", out)
+
+    def code_changed(self, rel, before, after, code='["@src"]'):
+        """Whether the check reads `rel` going from `before` to `after` as a change of the code on
+        the path: the run is recorded with `before`, then the check runs on `after`."""
+        self.write(rel, before)
+        self.code = self.printed_code_hash(self.run_with(code=code, code_hash="sha256:none")[1])
+        self.write(rel, after)
+        status, out = self.run_with(code=code)
+        if status == 0:
+            self.assertIn(f"fresh  {MODULE}", out)
+            return False
+        self.assertIn("the code on its path changed since the run", out)
+        return True
+
+    # A Rust source counts as its tokens: the p0-gate merge renewed every acknowledgement for
+    # rustfmt and doc comments alone, which teaches acknowledging without reading.
+    def test_a_comment_or_rustfmt_edit_of_rust_is_no_change(self):
+        for after in (
+            RUST.replace("// what it does", "// what it does, said better"),
+            RUST.replace("/// Signs.", "/// Signs.\n/** And more. */\n//! Inside."),
+            RUST.replace("// a quote, in a character", "// a quote in a character, not a string"),
+            RUST.replace("fn a", "/* a /* nested */ comment, ended */ fn a"),
+            RUST.replace("    x == ", "x==").replace(" && f(", "\n        && f(\n            "),
+        ):
+            self.assertFalse(self.code_changed("code/a.rs", RUST, after), after)
+
+    def test_an_edit_inside_a_rust_literal_is_a_change(self):
+        for old, new in (
+            ("/* c */", "/* d */"),
+            ("a // b", "a //  b"),
+            ('q " q', 'q "  q'),
+            ("'\"'", "'#'"),
+        ):
+            self.assertTrue(self.code_changed("code/a.rs", RUST, RUST.replace(old, new)), new)
+
+    def test_a_code_edit_of_rust_is_a_change(self):
+        for old, new in (
+            ("x ==", "x !="),
+            # The same characters, other tokens: spacing that rustc reads is kept.
+            ("&& f(", "& &f("),
+            ("&str", "&'static str"),
+            ("fn a", "pub fn a"),
+            # rustc does not care, but the check does not parse Rust: a reorder is a change.
+            ("use a::b;\nuse c::d;", "use c::d;\nuse a::b;"),
+        ):
+            self.assertTrue(self.code_changed("code/a.rs", RUST, RUST.replace(old, new)), new)
+
+    def test_any_other_file_counts_byte_for_byte(self):
+        self.assertTrue(self.code_changed("code/x.sh", "run # why\n", "run # why not\n", code='["@src", "code/*.sh"]'))
+
 
 
 if __name__ == "__main__":

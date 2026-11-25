@@ -362,7 +362,10 @@ and the provider crate (`[groups] probe`), and for a cloud its script and module
 emitter: every build holds the committed text to it.
 
 `checks.ledger` (`nix/ledger.py`, in CI's light job; locally `nix develop -c python3 -I
-nix/ledger.py .`) hashes the tree, not git, and fails when:
+nix/ledger.py .`) hashes the tree, not git. In the code's hash, a Rust file counts as its
+tokens: a comment, a doc comment or rustfmt's spacing changes nothing, while a literal or any
+other token does, an import reorder included. Any other file counts byte for byte. The check
+fails when:
 
 - a file changed and its entry did not;
 - a file is not its run's output and no hand-edit row says so;

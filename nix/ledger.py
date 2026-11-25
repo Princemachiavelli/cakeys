@@ -21,7 +21,9 @@ since, and the file as it is now. This fails when:
   and an artifact's `regen` may name no other value and no file that is not there.
 
 The hashes are of the files in the tree, not git's: the Nix sandbox has no .git. A failure
-prints the hash to record.
+prints the hash to record. In the code's hash a Rust source counts as its tokens, so a comment,
+a doc comment or rustfmt's spacing changes nothing, and a literal or any other token does; every
+other file counts byte for byte.
 
 Usage: python3 -I ledger.py ROOT. Prints each artifact's state and every failure; exits 1 on a
 failure.
@@ -38,6 +40,19 @@ LEDGER = "profiles/LEDGER.toml"
 RSA_FLAG = re.compile(r"--rsa-max-bits[\"',\s]*(\d+)")
 # A repository path in a `regen` command.
 REPO_PATH = re.compile(r"\b(?:crates|examples|nix|profiles|scripts)/[\w.+/-]*\w")
+# A Rust token, as rustc splits one from the next. Strings, raw strings and block comments are
+# read on by `rust_tokens`; a punctuation run is read longest first, so `&&` and `& &` differ.
+RUST_TOKEN = re.compile(
+    r"""(?P<space>\s+)
+    | (?P<line>//[^\n]*)
+    | (?P<block>/\*)
+    | (?P<raw>[bc]?r(?P<hashes>\#*)")
+    | (?P<string>[bc]?")
+    | (?P<char>b?'(?:\\(?:u\{[0-9a-fA-F_]*\}|.)|[^\\'\n])')
+    | (?P<word>\w+)
+    | (?P<punct><<=|>>=|\.\.\.|\.\.=|::|->|=>|==|!=|<=|>=|&&|\|\||[-+*/%^&|]=|<<|>>|\.\.|.)""",
+    re.X | re.S,
+)
 
 # The keys each table may have: a near miss (`acknowledgement`) fails rather than being ignored.
 KEYS = {
@@ -52,6 +67,41 @@ KEYS = {
 
 def file_hash(path):
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def rust_tokens(text):
+    """`text`'s tokens without its comments (doc comments too) and the whitespace between them."""
+    tokens, i = [], 0
+    while i < len(text):
+        m = RUST_TOKEN.match(text, i)
+        start, i = i, m.end()
+        if m["line"] or m["space"]:
+            continue
+        if m["block"]:  # Rust's block comments nest
+            depth = 1
+            while depth and i < len(text):
+                step = text[i : i + 2]
+                depth += {"/*": 1, "*/": -1}.get(step, 0)
+                i += 2 if step in ("/*", "*/") else 1
+            continue
+        if m["raw"]:
+            end = text.find('"' + m["hashes"], i)
+            i = len(text) if end < 0 else end + 1 + len(m["hashes"])
+        elif m["string"]:
+            while i < len(text) and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+            i += 1
+        tokens.append(text[start:i])
+    return tokens
+
+
+def source_hash(path):
+    """A file's hash in the code's: a Rust source's tokens, any other file's bytes."""
+    if path.suffix != ".rs":
+        return file_hash(path)
+    text = path.read_bytes().decode("utf-8", "surrogateescape")
+    tokens = "".join(f"{len(t)}:{t}" for t in rust_tokens(text))
+    return "rust-tokens:sha256:" + hashlib.sha256(tokens.encode("utf-8", "surrogateescape")).hexdigest()
 
 
 def code_files(root, patterns, groups):
@@ -74,7 +124,7 @@ def code_hash(root, files):
     changes it."""
     h = hashlib.sha256()
     for f in files:
-        h.update(f"{f.relative_to(root).as_posix()}\0{file_hash(f)}\n".encode())
+        h.update(f"{f.relative_to(root).as_posix()}\0{source_hash(f)}\n".encode())
     return "sha256:" + h.hexdigest()
 
 

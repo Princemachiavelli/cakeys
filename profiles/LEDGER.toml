@@ -9,11 +9,16 @@
 #   [[artifact.hand-edits]] row. `code` lists the globs whose change can change the file; when
 #   their hash is no longer the run's, the check fails until [artifact.acknowledged] names the
 #   new hash, who, why and what still needs a run on the hardware.
+#   A comment or rustfmt edit of a Rust file changes no hash.
 # - After a run on the hardware: [artifact.probed] and `hash` take the hashes the check prints,
 #   and the hand edits and the acknowledgement go.
 #
 # Review 2026-11-24 E-7: every hardware and cloud profile is stale. The probe fixes of review
 # 2026-11-23 (fce5432, fcaa6aa, 61b7000) came after their probes, and edited them by hand.
+#
+# p0-follow (2026-11-25) recomputed every `code-hash` once the hash read Rust as tokens: the
+# run's at its commit's tree, the acknowledged at the merge's. No reason changed, so no `why`
+# did.
 
 # Every regeneration probes RSA up to this size (review 2026-11-24 E-8): caprobe's default runs
 # to 16384, which takes a software token over a minute per size. Each source passes it, and no
@@ -96,7 +101,7 @@ hash = "sha256:d3b4244fedc0a4ece72de0f7f608444d2a5ef1865978a35803c72d085be2da48"
 by = "798f58f"
 date = "2026-11-19"
 hash = "sha256:22db38335ae339816e6f6b5d67d97b807ac1dbdd20a0ca48c3088f947b79fa24"
-code-hash = "sha256:ed2f5d1da3a5aed211b2d976a131a839cfbf433ee64f127c616fb54d187e0f26"
+code-hash = "sha256:9abd87757dadb34c2109b34227343e8093bab343c28d8b4d343170b958ebbaeb"
 
 [[artifact.hand-edits]]
 by = "fcaa6aa"
@@ -115,7 +120,7 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:a421bd2188b3a550575f0f311564fe6ce001e6d538304d58eddcdad374fd6da8"
+code-hash = "sha256:6ff23d3c2732cd433feb9bbae87af84ee8ca7249c00b53403144a0f8fed95a33"
 by = "review 2026-11-24 E-7 (the ledger's first entry)"
 why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000) and the token operations changed after the probe; rows the old logic wrote stand unchecked: the add row CKM_ECDSA_SHA224, and the import rows refused with CKR_DEVICE_ERROR (review 2026-11-24 E-2) Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
 reprobe = "the whole profile, by the regen command"
@@ -131,7 +136,7 @@ hash = "sha256:ba982c118e483fd85a8a4914fe65fd0a093dadad58d8f384928aeab16520c6e3"
 by = "8aeaa8d"
 date = "2026-11-19"
 hash = "sha256:d58abd64fcf731f45d23df078bb2dc0666382dd0a8829aa475196b2705efd733"
-code-hash = "sha256:1f719f179a05a705ee24ae24a21baa6593b01732c392ded484ebfde21d3e848c"
+code-hash = "sha256:0d4fd2fb0c8bf335c959c3604c9cbb90b37d116bbbda81a0f8cd8deae5092e50"
 
 [[artifact.hand-edits]]
 by = "7785424"
@@ -154,7 +159,7 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:7808360ac6a95fa3f515c4248056e2207afaaea1c5b4ea680ff92b57512fe8af"
+code-hash = "sha256:39d7ec6b1c60e21d3a778a6bec7437515aba587edfe65958b188cfaf27608f07"
 by = "review 2026-11-24 E-7 (the ledger's first entry)"
 why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the tpm2-pkcs11 provider changed after the probe; rows the old logic wrote stand unchecked: the add rows CKM_SHA384_RSA_PKCS and CKM_SHA512_RSA_PKCS, and the no rows of review 2026-11-24 E-2 Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
 reprobe = "the whole profile, by the regen command"
@@ -176,7 +181,7 @@ hash = "sha256:82182b674b1fd54a763cc7fbc84ed833cad439678f03f2a0781e5d0353852d56"
 by = "7785424"
 date = "2026-11-19"
 hash = "sha256:cf5f92ae0135e4c713264235f115ba082784d06a48edbd8e2f7498dfe574312b"
-code-hash = "sha256:ca243c909e24d9a0ca111eb9585da5499bf8c75f3777fee968e666d118ced8c8"
+code-hash = "sha256:0f7c672a040dbfbb6eaff21b97532d28fe2926790f9a056f822a1654b1534d88"
 
 [[artifact.hand-edits]]
 by = "43e79fb"
@@ -199,7 +204,7 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:677e8a2c5d0a4e26679fedf43c84e4044528bec89b3b2946d4df258c6ae25820"
+code-hash = "sha256:09837d0ae9288f92aa3220d15a24b3513da2856c5fd06c36c108ad8476a6b756"
 by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
 why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the aws-cloudhsm provider changed after the probe; rows the old logic wrote stand unchecked: the add row CKM_SHA224_RSA_PKCS, wrap.rsa-oaep.SHA-1 and SHA-256 = yes from before the host-blob check, and the RsaAes export rows of review 2026-11-24 E-3; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
 reprobe = "the whole profile, by the regen command"
@@ -221,7 +226,7 @@ hash = "sha256:8c5c9a9569ef484ef42865069770fc08b2569a860727d7f842c911398f33566d"
 by = "7785424"
 date = "2026-11-19"
 hash = "sha256:f3d7534e0f6d580ed5570f00e7ca772ff336e68765c82bcce5a1883e58ddf572"
-code-hash = "sha256:ca243c909e24d9a0ca111eb9585da5499bf8c75f3777fee968e666d118ced8c8"
+code-hash = "sha256:0f7c672a040dbfbb6eaff21b97532d28fe2926790f9a056f822a1654b1534d88"
 
 [[artifact.hand-edits]]
 by = "43e79fb"
@@ -244,7 +249,7 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:677e8a2c5d0a4e26679fedf43c84e4044528bec89b3b2946d4df258c6ae25820"
+code-hash = "sha256:09837d0ae9288f92aa3220d15a24b3513da2856c5fd06c36c108ad8476a6b756"
 by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
 why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the aws-cloudhsm provider changed after the probe; rows the old logic wrote stand unchecked: the add rows, wrap.rsa-oaep from before the host-blob check, and the RsaAes export rows of review 2026-11-24 E-3; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
 reprobe = "the whole profile, by the regen command"
@@ -260,7 +265,7 @@ hash = "sha256:9c5867db23825464375d4e28ea7ed9c37c748a8201f4327fef9815cdd0551544"
 by = "7785424"
 date = "2026-11-19"
 hash = "sha256:07f92481be5c7ea54d02de4032bfc64896d05fe02bf18e7d4266380d1e59c99e"
-code-hash = "sha256:0cd1952c95b787f2d999549f4dce7db23bb15cc2cae3d63ccfbc8ab0521c7a74"
+code-hash = "sha256:a313e015a5cfe69657597b8a698391a002be4fe1b71e616fce32cbf60ef2b8f9"
 
 [[artifact.hand-edits]]
 by = "fcaa6aa"
@@ -279,7 +284,7 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:c929be7adb299e028b2496b6d26cbf96487a2275d8ba1edf16e5977122d7d275"
+code-hash = "sha256:2e8a0a31d0bab78c9f0121d8bd0e3277056a51c5d48b09345681e356b08b66a6"
 by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
 why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the kmsp11 provider changed after the probe; the cannot rows of review 2026-11-24 E-5 come from cakeys' own table; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
 reprobe = "the whole profile, by the regen command"
@@ -295,7 +300,7 @@ hash = "sha256:791b1b971c36abfa8048bbcaf399882d00b7d690d67b4c8f259e97b734190a71"
 by = "7785424"
 date = "2026-11-19"
 hash = "sha256:b062a619ad180f86f2600abc12a6950d0b33129f45bd67bcb789ed8bcf42da6b"
-code-hash = "sha256:0cd1952c95b787f2d999549f4dce7db23bb15cc2cae3d63ccfbc8ab0521c7a74"
+code-hash = "sha256:a313e015a5cfe69657597b8a698391a002be4fe1b71e616fce32cbf60ef2b8f9"
 
 [[artifact.hand-edits]]
 by = "fcaa6aa"
@@ -314,7 +319,7 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:c929be7adb299e028b2496b6d26cbf96487a2275d8ba1edf16e5977122d7d275"
+code-hash = "sha256:2e8a0a31d0bab78c9f0121d8bd0e3277056a51c5d48b09345681e356b08b66a6"
 by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
 why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the kmsp11 provider changed after the probe; the cannot rows of review 2026-11-24 E-5 come from cakeys' own table; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
 reprobe = "the whole profile, by the regen command"
@@ -394,14 +399,14 @@ hash = "sha256:0d6fd2beac70811db525971b03f68808fe75810356f6d111ae1e8111a1dba740"
 by = "83d4d21"
 date = "2026-11-12"
 hash = "sha256:d0448b633a894e0f714088774f73657b6b8c84c090d76f7f76d2bc83be6573ed"
-code-hash = "sha256:3cabffc339bda55cab944882b1a54e1e709dc9b84fac6aa0920e07d3b5e0aba5"
+code-hash = "sha256:03ee7461f86862a4db04a6752d23250308269a7d16851458be37f02acbd4cbb4"
 
 [[artifact.hand-edits]]
 by = "714ef3e"
 what = "converted to the observation table without a token (its message: a throwaway conversion checked lossless both ways)"
 
 [artifact.acknowledged]
-code-hash = "sha256:13384756752bf1e6840c357bd908625175fc3961070ed9f95dc6bc2632434f2e"
+code-hash = "sha256:14a2b08ce58dae160933779a29677e397551e2efd67cb78dc7cb2812abbfbfd4"
 by = "review 2026-11-24 E-7 (the ledger's first entry)"
 why = "recorded before the lock's observation table, the config split (8aaba2e) and every lock rule since; the lock round trip reads it on every build (cakeys_core::fuzzing), so only its values, not its form, wait on the device Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
 reprobe = "a read-only check against the YubiKey, by the user"
