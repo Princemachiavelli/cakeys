@@ -98,7 +98,8 @@ pub(super) fn ck(context: &str) -> impl FnOnce(CkError) -> KmError + '_ {
 
 /// Whether `e` says the device, the token or the session failed, rather than anything of the
 /// object or attribute asked for. Matched on cryptoki's error, the variant it has.
-pub(super) fn device_failed(e: &CkError) -> bool {
+#[must_use]
+pub fn device_failed(e: &CkError) -> bool {
     matches!(e, CkError::Pkcs11(rv, _) if device_error(*rv))
 }
 
@@ -110,22 +111,10 @@ pub fn device_failed_rv(rv: u64) -> bool {
     matches!(Rv::from(rv), Rv::Error(e) if device_error(e))
 }
 
-/// [`device_failed`]'s return values.
+/// [`device_failed`]'s return values: those `cakeys_profile::DEVICE_FAILED_RV` names, so a
+/// profile row citing one and the token's own error agree (phase1-design §2.5).
 fn device_error(rv: RvError) -> bool {
-    matches!(
-        rv,
-        RvError::DeviceError
-            | RvError::DeviceMemory
-            | RvError::DeviceRemoved
-            | RvError::HostMemory
-            | RvError::GeneralError
-            | RvError::TokenNotPresent
-            | RvError::TokenNotRecognized
-            | RvError::SessionClosed
-            | RvError::SessionHandleInvalid
-            | RvError::CryptokiNotInitialized
-            | RvError::FunctionCanceled
-    )
+    cakeys_profile::DEVICE_FAILED_RV.contains(&rv_error_name(rv).as_str())
 }
 
 /// An optional attribute read: `None` where the object lacks the attribute or the module
@@ -172,6 +161,36 @@ mod tests {
             assert_eq!(rv_value(rv), Some(v), "{rv:?} ({v:#x})");
             assert_eq!(rv_value_name(v), derived_name(rv), "{v:#x}");
         }
+    }
+
+    /// The device-failure names the profile loader reads (`DEVICE_FAILED_RV`) are each a real
+    /// `CKR_*` this build has a variant for, and are exactly what [`device_failed`] matches: the
+    /// eleven the token crate listed by variant before (phase1-design §2.5).
+    #[test]
+    fn the_device_failures_are_one_list() {
+        let pinned = [
+            RvError::DeviceError,
+            RvError::DeviceMemory,
+            RvError::DeviceRemoved,
+            RvError::HostMemory,
+            RvError::GeneralError,
+            RvError::TokenNotPresent,
+            RvError::TokenNotRecognized,
+            RvError::SessionClosed,
+            RvError::SessionHandleInvalid,
+            RvError::CryptokiNotInitialized,
+            RvError::FunctionCanceled,
+        ];
+        for name in cakeys_profile::DEVICE_FAILED_RV {
+            let v = p11_names::rv(name).unwrap_or_else(|| panic!("{name} is no CKR_*"));
+            let Rv::Error(rv) = Rv::from(v) else { panic!("{name}") };
+            assert!(pinned.contains(&rv), "{name}");
+            assert!(device_failed(&CkError::Pkcs11(rv, Function::Initialize)), "{name}");
+            assert!(device_failed_rv(v), "{name}");
+        }
+        assert_eq!(pinned.len(), cakeys_profile::DEVICE_FAILED_RV.len());
+        let refused = CkError::Pkcs11(RvError::MechanismInvalid, Function::GenerateKey);
+        assert!(!device_failed(&refused));
     }
 
     #[test]

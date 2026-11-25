@@ -536,12 +536,72 @@ impl Answer {
     }
 }
 
+/// The `CKR_*` return values that say the device, the token or the session failed, rather than
+/// anything of the operation asked (review 2026-11-24 E-2, phase1-design §2.5): a refusal citing
+/// one is no answer of the module's. The token crate's `rv::device_failed` matches by these
+/// names, so the probe, the loader and the token agree.
+// P4: this list moves to the leaf crate (`cakeys-names`) with the other restated tables.
+pub const DEVICE_FAILED_RV: [&str; 11] = [
+    "CKR_DEVICE_ERROR",
+    "CKR_DEVICE_MEMORY",
+    "CKR_DEVICE_REMOVED",
+    "CKR_HOST_MEMORY",
+    "CKR_GENERAL_ERROR",
+    "CKR_TOKEN_NOT_PRESENT",
+    "CKR_TOKEN_NOT_RECOGNIZED",
+    "CKR_SESSION_CLOSED",
+    "CKR_SESSION_HANDLE_INVALID",
+    "CKR_CRYPTOKI_NOT_INITIALIZED",
+    "CKR_FUNCTION_CANCELED",
+];
+
+/// The first of [`DEVICE_FAILED_RV`] that `text` names, as a whole name
+/// (`CKR_DEVICE_ERROR`, never a prefix of a longer `CKR_*`).
+#[must_use]
+pub fn names_device_failure(text: &str) -> Option<&'static str> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    DEVICE_FAILED_RV.into_iter().find(|name| {
+        text.match_indices(name).any(|(i, _)| !text[..i].ends_with(ident) && !text[i + name.len()..].starts_with(ident))
+    })
+}
+
+/// Who showed a row's answer (`by`, review 2026-11-24 E-2..E-4): what the row is worth. A row
+/// without one is legacy, written before provenance was recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum By {
+    /// The module refused with a `CKR_*` that is neither a device failure
+    /// ([`DEVICE_FAILED_RV`]) nor a busy session: a `no` only.
+    Module,
+    /// cakeys checked the result on the host: a signature verified, a key compared, a value
+    /// computed again. A `yes`, or a `no` for a result the host found wrong.
+    Host,
+    /// The module said `CKR_OK` and nothing outside it checked (a round trip on one module): a
+    /// `yes` only, which a cross-token plan cannot rest on.
+    Unverified,
+}
+
+impl By {
+    /// The word the row writes.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            By::Module => "module",
+            By::Host => "host",
+            By::Unverified => "unverified",
+        }
+    }
+}
+
 /// One answer, with what shows it and how the operation succeeded.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Row {
     /// Yes or no.
     pub answer: Answer,
+    /// Who showed it; `None`: legacy, provenance unknown.
+    #[serde(default)]
+    pub by: Option<By>,
     /// What shows it: the failure, the source, the run.
     #[serde(default)]
     pub evidence: Option<String>,
@@ -551,10 +611,33 @@ pub struct Row {
 }
 
 impl Row {
-    /// A bare answer.
+    /// A bare answer, of no recorded provenance.
     #[must_use]
     pub fn new(answer: Answer) -> Row {
-        Row { answer, evidence: None, via: None }
+        Row { answer, by: None, evidence: None, via: None }
+    }
+
+    /// The device failure a legacy `no` cites as its evidence: such a row is no answer of the
+    /// module's, and reads unknown, which refuses (phase1-design §2.4, §9.1).
+    #[must_use]
+    pub fn device_failed(&self) -> Option<&'static str> {
+        (self.by.is_none() && self.answer == Answer::No)
+            .then(|| self.evidence.as_deref().and_then(names_device_failure))?
+    }
+
+    /// What is wrong with the row's provenance: `module` answers only no, `unverified` only yes,
+    /// and the module's no never cites a device failure.
+    fn problem(&self) -> Option<String> {
+        match (self.by?, self.answer) {
+            (By::Module, Answer::Yes) => Some("by = \"module\" answers only no".into()),
+            (By::Unverified, Answer::No) => Some("by = \"unverified\" answers only yes".into()),
+            (By::Module, Answer::No) => {
+                self.evidence.as_deref().and_then(names_device_failure).map(|rv| {
+                    format!("by = \"module\" cites {rv}, a device failure, which is no answer of the module's")
+                })
+            }
+            _ => None,
+        }
     }
 }
 
@@ -568,6 +651,9 @@ pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Rows
     let mut rows = Rows::new();
     for (key, row) in raw {
         let c = Capability::parse(&key).map_err(serde::de::Error::custom)?;
+        if let Some(problem) = row.problem() {
+            return Err(serde::de::Error::custom(format!("capabilities: {key:?}: {problem}")));
+        }
         if rows.contains_key(&c) {
             return Err(serde::de::Error::custom(format!("capabilities: {key:?} names {c}, as another key does")));
         }

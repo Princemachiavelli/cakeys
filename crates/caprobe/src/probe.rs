@@ -23,8 +23,8 @@ use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Msg, Result};
 use cakeys_pkcs11::token::{self, Token, derive_any, is_policy_default, show, template_refusal};
 use cakeys_pkcs11::{BoundKey, Declared, Half, Template, keygen_mechanism};
-use cakeys_profile::capability::{DECRYPT_OAEP, UNWRAP_TEMPLATE, WRAP_OAEP};
-use cakeys_profile::{Answer, Capability, GenerateRow, KeyKind, MatchInfo, Mode, On, Profile, Untested, Why};
+use cakeys_profile::capability::{DECRYPT_OAEP, UNWRAP_TEMPLATE};
+use cakeys_profile::{Answer, By, Capability, GenerateRow, KeyKind, MatchInfo, Mode, On, Profile, Row, Untested, Why};
 use cryptoki::error::{Error as CkError, RvError};
 use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
 use cryptoki::mechanism::elliptic_curve::{EcKdf, Ecdh1DeriveParams};
@@ -312,6 +312,52 @@ pub(crate) struct Draft {
     /// Whether the probes wrote into one scratch slot (a device that makes keys only as
     /// Security Officer): what an untried mechanism is then put down to.
     slot: bool,
+    /// What the probes tried and could not decide ([`Refusal`]): an `[untested]` entry each
+    /// (`None`: a busy session, no entry), and never a row unless another try said yes.
+    undecided: BTreeMap<Capability, Option<Untested>>,
+    /// The `yes` the finished rows rest on the module alone for (`by = "unverified"`).
+    unverified: BTreeSet<Capability>,
+    /// The `no` the finished rows are the host's finding for (`by = "host"`).
+    host_no: BTreeSet<Capability>,
+    /// The listed mechanisms that worked only where the host could not check the result
+    /// (review 2026-11-24 E-4): `[untested]`, never yes.
+    unchecked: BTreeSet<String>,
+}
+
+/// What a failed step says of the capability it was for: the one classifier every site that
+/// writes a row from a failure goes through (review 2026-11-24 E-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Refusal {
+    /// The module refused with a `CKR_*` of its own: its no (`by = "module"`).
+    Module,
+    /// An earlier operation left the session busy (`CKR_OPERATION_ACTIVE`): nothing of this one.
+    Busy,
+    /// The device, token or session failed (`DEVICE_FAILED_RV`): no answer of the module's.
+    Device,
+    /// cakeys or its provider refused before the module was asked (no `CKR_*`).
+    Cakeys,
+}
+
+impl Refusal {
+    /// The class of a failure carrying the return value `rv` (`KmError::rv`, `Msg::rv`,
+    /// `token::rv_of`).
+    pub(super) fn of(rv: Option<u64>) -> Refusal {
+        match rv {
+            None => Refusal::Cakeys,
+            Some(_) if token::rv_is(rv, RvError::OperationActive) => Refusal::Busy,
+            Some(v) if token::device_failed_rv(v) => Refusal::Device,
+            Some(_) => Refusal::Module,
+        }
+    }
+}
+
+/// What checked a `yes` ([`Draft::yes`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Checked {
+    /// The host: a signature verified, a key compared, a value computed again.
+    Host,
+    /// Nothing outside the module: its own round trip (review 2026-11-24 E-3).
+    Unverified,
 }
 
 /// How ECDH derived: into a sealed secret, and in a read-only session. (A base key that
@@ -334,12 +380,87 @@ impl Draft {
             evidence: BTreeMap::new(),
             tried: None,
             slot: false,
+            undecided: BTreeMap::new(),
+            unverified: BTreeSet::new(),
+            host_no: BTreeSet::new(),
+            unchecked: BTreeSet::new(),
         }
     }
 
-    /// Set the answer to `c` ([`Profile::set`]).
-    fn set(&mut self, c: Capability, answer: Answer, evidence: Option<String>, via: Option<String>) {
-        self.out.set(c, answer, evidence, via);
+    /// `c` worked, as `checked` showed.
+    fn yes(&mut self, c: Capability, checked: Checked, via: Option<String>) {
+        let by = match checked {
+            Checked::Host => By::Host,
+            Checked::Unverified => By::Unverified,
+        };
+        self.out.set(c, Row { answer: Answer::Yes, by: Some(by), evidence: None, via });
+    }
+
+    /// The module answered, and the host found the answer wrong (another key, another value):
+    /// a no the host showed.
+    fn wrong(&mut self, c: Capability, why: String) {
+        self.out.set(c, Row { answer: Answer::No, by: Some(By::Host), evidence: Some(why), via: None });
+    }
+
+    /// `c`'s own input failed with the return value `rv`, `evidence` saying how: the module's no
+    /// only when the module refused ([`Refusal::Module`]); a device failure or a refusal before
+    /// the module was asked an `[untested]` entry; a busy session nothing. Each but the
+    /// module's no is also a line of the run's `undetermined` list. A refusal answers only for
+    /// the input it was produced for: a site never passes one capability's refusal for another
+    /// (review 2026-11-24 E-5).
+    fn refused(&mut self, undetermined: &mut Vec<String>, c: Capability, rv: Option<u64>, evidence: String) {
+        match Refusal::of(rv) {
+            Refusal::Module => {
+                self.out.set(c, Row { answer: Answer::No, by: Some(By::Module), evidence: Some(evidence), via: None });
+            }
+            class => {
+                undetermined.push(format!("no {c} row: {evidence}{}", undecided_why(class)));
+                self.undecide(c, class, evidence);
+            }
+        }
+    }
+
+    /// A row [`Self::finish`] writes from the fields is no by the host's finding.
+    fn found_wrong(&mut self, c: Capability) {
+        self.host_no.insert(c);
+    }
+
+    /// Record `c` as tried and undecided, of `class` (anything but the module's own refusal).
+    fn undecide(&mut self, c: Capability, class: Refusal, evidence: String) {
+        let why = match class {
+            Refusal::Device => Some(Why::Device),
+            Refusal::Cakeys => Some(Why::Cakeys),
+            Refusal::Busy | Refusal::Module => None,
+        };
+        let entry = why.map(|why| Untested { why, note: Some(evidence) });
+        self.undecided.entry(c).or_insert(entry);
+    }
+
+    /// A generation of `key_type` on `on` that failed with `rv`: the module's refusal is a
+    /// `cannot` of `row`; anything else as [`Self::refused`] says, never a `cannot`.
+    fn generation_refused(
+        &mut self,
+        undetermined: &mut Vec<String>,
+        row: &mut GenerateRow,
+        (key_type, on): (&KeyKind, On),
+        rv: Option<u64>,
+        evidence: String,
+    ) {
+        let c = Capability::Generate { key_type: key_type.clone(), on: on.clone() };
+        match Refusal::of(rv) {
+            Refusal::Module => {
+                match &on {
+                    On::Item(i) => row.cannot.push(i.clone()),
+                    On::Bits(b) if matches!(key_type, KeyKind::Rsa) => row.cannot_bits.push(*b),
+                    On::Bits(b) | On::Bytes(b) => row.cannot_bytes.push(*b),
+                }
+                self.evidence.insert(c, evidence);
+            }
+            class => {
+                undetermined.push(format!("no {c} row: {evidence}{}", undecided_why(class)));
+                self.undecide(c, class, evidence);
+            }
+        }
     }
 
     /// Note `text` under `key`, over any note there.
@@ -347,37 +468,52 @@ impl Draft {
         self.out.notes.insert(key, text);
     }
 
-    /// Record why generating `key_type` on `on` answers as it does.
-    fn generation_evidence(&mut self, key_type: &KeyKind, on: On, why: String) {
-        self.evidence.insert(Capability::Generate { key_type: key_type.clone(), on }, why);
-    }
-
     /// The profile with what the probes recorded as its rows: each OAEP hash tried, each
     /// template attribute tried, the ECDH answers, each curve and size generated or refused.
     fn finish(self) -> Profile {
         let mut p = self.out;
+        // A yes the host checked, unless the probe said it rests on the module alone; a no the
+        // module's own refusal: what failed otherwise is `undecided` and written no row below.
+        let (unverified, host_no) = (self.unverified, self.host_no);
+        let mut set = |c: Capability, yes: bool| {
+            let by = match (yes, unverified.contains(&c), host_no.contains(&c)) {
+                (true, true, _) => By::Unverified,
+                (true, false, _) | (false, _, true) => By::Host,
+                (false, _, false) => By::Module,
+            };
+            p.set(c, Row { answer: Answer::of(yes), by: Some(by), evidence: None, via: None });
+        };
         let mut oaep = |worked: Option<Vec<String>>, tried: &[&str], cap: fn(String) -> Capability| {
             for h in tried.iter().filter(|_| worked.is_some()) {
-                let yes = worked.iter().flatten().any(|w| w == h);
-                p.set(cap((*h).to_owned()), Answer::of(yes), None, None);
+                set(cap((*h).to_owned()), worked.iter().flatten().any(|w| w == h));
             }
         };
-        oaep(self.wrap_oaep, &WRAP_OAEP, Capability::WrapOaep);
+        // `wrap.rsa-oaep.*` rows are written where they are probed (`wraps::probe_wrapping`).
         oaep(self.decrypt_oaep, &DECRYPT_OAEP, Capability::DecryptOaep);
         if let Some(refused) = self.unwrap_refused {
             for a in UNWRAP_TEMPLATE {
-                let yes = !refused.iter().any(|r| r == a);
-                p.set(Capability::UnwrapTemplate(a.to_owned()), Answer::of(yes), None, None);
+                set(Capability::UnwrapTemplate(a.to_owned()), !refused.iter().any(|r| r == a));
             }
         }
         if let Some(b) = self.derive.sealed {
-            p.set(Capability::DeriveSealed, Answer::of(b), None, None);
+            set(Capability::DeriveSealed, b);
         }
         if let Some(b) = self.derive.read_only {
-            p.set(Capability::DeriveReadOnly, Answer::of(b), None, None);
+            set(Capability::DeriveReadOnly, b);
         }
         for (kt, row) in &self.generate {
             p.set_generation(kt.name(), row);
+        }
+        // What was tried and not decided: no row, unless another try said yes (a size that
+        // generated under one binding); an `[untested]` entry naming why.
+        for (c, entry) in self.undecided {
+            if p.capabilities.get(&c).is_some_and(|r| r.answer.yes()) {
+                continue;
+            }
+            p.capabilities.remove(&c);
+            if let Some(entry) = entry {
+                p.untested.insert(c.to_string(), entry);
+            }
         }
         for (c, why) in self.evidence {
             if let Some(row) = p.capabilities.get_mut(&c) {
@@ -406,8 +542,29 @@ impl Draft {
                 let (why, note) = untested_why(m, self.slot);
                 p.untested.insert(m.clone(), Untested { why, note: Some(note.into()) });
             }
+            // Tried, and it worked only where the host had no check: unknown, never yes (E-4).
+            for m in p.advertise.iter().filter(|m| self.unchecked.contains(*m) && !measured.contains(*m)) {
+                let note = "signs, but the host has no verifier for its signatures: only the module says it works";
+                p.untested.insert(m.clone(), Untested { why: Why::Unverified, note: Some(note.into()) });
+            }
         }
         p
+    }
+}
+
+/// Of several failures' return values, the one that classes them together: the first that is
+/// not the module's own refusal, else the first. The module's no needs every way refused by it.
+fn worst(rvs: &[Option<u64>]) -> Option<u64> {
+    rvs.iter().copied().find(|rv| Refusal::of(*rv) != Refusal::Module).or_else(|| rvs.first().copied()).flatten()
+}
+
+/// What the run's undetermined line adds for a failure of `class`.
+fn undecided_why(class: Refusal) -> &'static str {
+    match class {
+        Refusal::Device => " (the device failed: no answer of the module's)",
+        Refusal::Cakeys => " (never asked of the module)",
+        Refusal::Busy => " (an earlier operation left the session busy)",
+        Refusal::Module => "",
     }
 }
 
@@ -492,6 +649,10 @@ impl Ops {
             Err(e) if token::rv_is(e.rv(), RvError::OperationActive) => {
                 self.busy.push(format!("{mech} on {on}: an earlier operation left the session busy ({e})"));
             }
+            // A device failure says nothing of the mechanism: never a `subtract` (E-2).
+            Err(e) if Refusal::of(e.rv()) == Refusal::Device => {
+                self.busy.push(format!("{mech} on {on}: the device failed ({e}): no answer of the module's"));
+            }
             Err(e) => self.failed.entry(mech.to_string()).or_default().push(format!("{on}: {e}")),
         }
     }
@@ -507,6 +668,12 @@ impl Ops {
 
     /// The rows and notes of what was seen; returns what could not be decided.
     fn finish(self, profile: &mut Draft) -> Vec<String> {
+        // A listed mechanism that signed only unchecked is no yes (E-4).
+        for mech in self.worked.iter().filter(|m| self.unchecked.contains(*m) && !self.checked.contains(*m)) {
+            if !self.unlisted.contains(mech) {
+                profile.unchecked.insert(mech.clone());
+            }
+        }
         for mech in self.worked.iter().filter(|m| self.unlisted.contains(*m)) {
             // A signature only the module stands behind is not a mechanism the host saw work.
             if self.unchecked.contains(mech) && !self.checked.contains(mech) {
@@ -580,7 +747,8 @@ type Pair = std::result::Result<(ObjectHandle, ObjectHandle), CkError>;
 enum Created {
     /// The pair `(public, private)` under its locator, and `create`'s note.
     Made(ObjectHandle, ObjectHandle, Option<token::CreateNote>),
-    /// The module refused the generation (its `CKR_*`): a `cannot` row.
+    /// The module answered the generation with a `CKR_*`: a `cannot` row when it is the
+    /// module's refusal, else none ([`Draft::generation_refused`] classes it).
     Refused(KmError),
     /// The module said it generated, but the pair is not under its locator: neither a yes nor
     /// a no, so no row, and a note.
@@ -928,10 +1096,18 @@ fn probe_secrets(made: &mut Made, profile: &mut Draft) -> Result<Option<ObjectHa
                     }
                 }
                 Err(e) if e.rv().is_some() => {
-                    row.cannot_bytes.push(bytes);
                     let said = refused(made.tok, &e);
-                    first_refusal.get_or_insert_with(|| said.clone());
-                    profile.generation_evidence(&kind, On::Bytes(bytes), format!("valueLen = {bytes}: {said}"));
+                    if Refusal::of(e.rv()) == Refusal::Module {
+                        first_refusal.get_or_insert_with(|| said.clone());
+                    }
+                    let why = format!("valueLen = {bytes}: {said}");
+                    profile.generation_refused(
+                        &mut made.undetermined,
+                        &mut row,
+                        (&kind, On::Bytes(bytes)),
+                        e.rv(),
+                        why,
+                    );
                 }
                 // The probe could not ask: the provider's or this build's refusal, not the module's.
                 Err(e) => made
@@ -1226,6 +1402,94 @@ mod tests {
         assert_eq!(profile.out.add, ["CKM_ECDSA_SHA224", "CKM_SHA224_RSA_PKCS"]);
         assert!(profile.out.notes["CKM_SHA1_RSA_PKCS"].contains("cannot verify its signatures"));
         assert_eq!(profile.out.subtract.mechanisms, [] as [String; 0]);
+    }
+
+    /// One classifier decides every failure (review 2026-11-24 E-2): the module's no only for a
+    /// return value of its own refusal; each device failure, a busy session and a refusal before
+    /// the module was asked write no row, the first and last an `[untested]` entry naming why.
+    /// Over every writer that turns a failure into a row, and every device-failure value.
+    #[test]
+    fn only_the_modules_own_refusal_is_its_no() {
+        let module_rv = 0x70; // CKR_MECHANISM_INVALID
+        let busy = 0x90; // CKR_OPERATION_ACTIVE
+        let device: Vec<u64> = (0..0x1000)
+            .filter(|v| cakeys_profile::DEVICE_FAILED_RV.contains(&token::rv_value_name(*v).as_str()))
+            .collect();
+        assert_eq!(device.len(), cakeys_profile::DEVICE_FAILED_RV.len());
+        let cases = device
+            .iter()
+            .map(|v| (Some(*v), Some(Why::Device)))
+            .chain([(None, Some(Why::Cakeys)), (Some(busy), None)])
+            .collect::<Vec<_>>();
+        let cap = || Capability::WrapOaep("SHA-1".into());
+        let generate = || Capability::Generate { key_type: KeyKind::Rsa, on: On::Bits(1536) };
+        for (rv, why) in cases {
+            let mut draft = Draft::new(Profile::new("t/1".into(), Mode::Observed));
+            let mut undetermined = Vec::new();
+            draft.refused(&mut undetermined, cap(), rv, format!("refused: {rv:?}"));
+            let mut row = GenerateRow::default();
+            draft.generation_refused(&mut undetermined, &mut row, (&KeyKind::Rsa, On::Bits(1536)), rv, "g".into());
+            assert_eq!(row, GenerateRow::default(), "{rv:?}: a cannot from no refusal of the module's");
+            draft.generate.insert(KeyKind::Rsa, row);
+            let p = draft.finish();
+            for c in [cap(), generate()] {
+                assert!(!p.capabilities.contains_key(&c), "{rv:?}: {c} written as a row");
+                assert_eq!(p.untested.get(&c.to_string()).map(|u| u.why), why, "{rv:?}: {c}");
+            }
+            assert_eq!(undetermined.len(), 2, "{rv:?}: {undetermined:?}");
+            assert_eq!(p.untested_problems(), Vec::<String>::new());
+        }
+        // The module's own refusal is its no, by the module.
+        let mut draft = Draft::new(Profile::new("t/1".into(), Mode::Observed));
+        let mut undetermined = Vec::new();
+        draft.refused(&mut undetermined, cap(), Some(module_rv), "CKR_MECHANISM_INVALID".into());
+        let mut row = GenerateRow::default();
+        draft.generation_refused(
+            &mut undetermined,
+            &mut row,
+            (&KeyKind::Rsa, On::Bits(1536)),
+            Some(module_rv),
+            "g".into(),
+        );
+        draft.generate.insert(KeyKind::Rsa, row);
+        let p = draft.finish();
+        for c in [cap(), generate()] {
+            let r = &p.capabilities[&c];
+            assert_eq!((r.answer, r.by), (Answer::No, Some(By::Module)), "{c}");
+        }
+        assert!(undetermined.is_empty() && p.untested.is_empty());
+        // Of several ways' failures, one that is not the module's own keeps the no from it.
+        assert_eq!(worst(&[Some(module_rv), Some(device[0]), Some(module_rv)]), Some(device[0]));
+        assert_eq!(worst(&[Some(module_rv), None]), None);
+        assert_eq!(worst(&[Some(module_rv), Some(0x91)]), Some(module_rv));
+        // A yes another try saw stands over an undecided one (a size under two bindings).
+        let mut draft = Draft::new(Profile::new("t/1".into(), Mode::Observed));
+        draft.refused(&mut Vec::new(), cap(), Some(device[0]), "device".into());
+        draft.yes(cap(), Checked::Host, None);
+        let p = draft.finish();
+        assert!(p.capabilities[&cap()].answer.yes() && !p.untested.contains_key(&cap().to_string()));
+    }
+
+    /// A listed mechanism that worked only where the host has no verifier is `[untested]` as
+    /// unverified, never yes; one verified once is measured (review 2026-11-24 E-4).
+    #[test]
+    fn an_unchecked_signature_is_no_yes() {
+        let mut ops = Ops::default();
+        ops.record_signed(MechanismType::SHA1_RSA_PKCS, "RSA-2048", Ok(false));
+        ops.record_signed(MechanismType::SHA256_RSA_PKCS, "RSA-2048", Ok(true));
+        ops.record(MechanismType::ECDSA, "secp256r1", Err(Msg::from("CKR_DEVICE_ERROR").with_rv(Some(0x30))));
+        let mut out = Profile::new("t/1".into(), Mode::Observed);
+        out.advertise = ["CKM_SHA1_RSA_PKCS", "CKM_SHA256_RSA_PKCS", "CKM_ECDSA"].map(str::to_owned).into();
+        let mut draft = Draft::new(out);
+        draft.tried = Some(["CKM_SHA1_RSA_PKCS", "CKM_SHA256_RSA_PKCS", "CKM_ECDSA"].map(str::to_owned).into());
+        let busy = ops.finish(&mut draft);
+        // A device failure is no subtraction: an undetermined line.
+        assert!(busy.iter().any(|b| b.contains("the device failed")), "{busy:?}");
+        let p = draft.finish();
+        assert!(p.subtract.mechanisms.is_empty(), "{:?}", p.subtract.mechanisms);
+        assert_eq!(p.untested.get("CKM_SHA1_RSA_PKCS").map(|u| u.why), Some(Why::Unverified));
+        assert!(!p.untested.contains_key("CKM_SHA256_RSA_PKCS"));
+        assert_eq!(p.untested_problems(), Vec::<String>::new());
     }
 
     /// A provider's hint is never evidence, its own parentheses included; the text after it stays.

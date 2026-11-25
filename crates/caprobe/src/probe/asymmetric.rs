@@ -2,11 +2,11 @@
 //! operations and derivations each key's usage allows (docs/CAPROBE.md).
 
 use super::{
-    Answer, Attribute, AttributeType, Binding, Capability, CkError, Created, Curve, Digest, Draft, EcKdf,
-    Ecdh1DeriveParams, EddsaParams, EddsaSignatureScheme, Encoding, GenerateRow, HashAlg, KeyKind, KeyType, Kt, MSG,
-    Made, Mechanism, MechanismType, Msg, Object, ObjectCfg, ObjectClass, ObjectHandle, On, PkcsMgfType, PkcsPssParams,
-    Result, RsaPadding, RvError, Session, Sha224, Sha256, Sha384, Sha512, Target, ck_refusal, ck_said, ckr, derive_any,
-    evidence, extras, pop, refused, show, sig, spec, token,
+    Attribute, AttributeType, Binding, Capability, Checked, CkError, Created, Curve, Digest, Draft, EcKdf,
+    Ecdh1DeriveParams, EddsaParams, EddsaSignatureScheme, Encoding, GenerateRow, HashAlg, KeyKind, KeyType, KmError,
+    Kt, MSG, Made, Mechanism, MechanismType, Msg, Object, ObjectCfg, ObjectClass, ObjectHandle, On, PkcsMgfType,
+    PkcsPssParams, Refusal, Result, RsaPadding, Session, Sha224, Sha256, Sha384, Sha512, Target, ck_refusal, ck_said,
+    ckr, derive_any, evidence, extras, pop, refused, show, sig, spec, token,
 };
 
 /// The RSA key sizes the write probes generate, in bits, whatever the module reports (a claim,
@@ -102,14 +102,13 @@ pub(super) fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
                         }
                     }
                 }
-                Some((Err(e), ..)) => {
-                    row.cannot.push(curve.to_owned());
-                    profile.generation_evidence(
-                        &kt,
-                        On::Item(curve.to_owned()),
-                        format!("generation refused: {}", ckr(&e)),
-                    );
-                }
+                Some((Err(e), ..)) => profile.generation_refused(
+                    &mut made.undetermined,
+                    &mut row,
+                    (&kt, On::Item(curve.to_owned())),
+                    token::rv_of(&e),
+                    format!("generation refused: {}", ckr(&e)),
+                ),
                 None => {}
             }
         }
@@ -178,9 +177,14 @@ pub(super) fn create_curves(
                 }
             }
             (Created::Refused(e), _) => {
-                row.cannot.push((*curve).to_owned());
                 let why = format!("generation refused: {}", refused(made.tok, &e));
-                profile.generation_evidence(kt, On::Item((*curve).to_owned()), why);
+                profile.generation_refused(
+                    &mut made.undetermined,
+                    row,
+                    (kt, On::Item((*curve).to_owned())),
+                    e.rv(),
+                    why,
+                );
             }
             (Created::Lost(e), _) => {
                 made.undetermined.push(format!("no generate row for {kt} on {curve}: the module generated, but {e}"));
@@ -250,9 +254,14 @@ pub(super) fn probe_rsa(made: &mut Made, profile: &mut Draft) -> Result<Option<(
                 row.can_bits.push(bits);
             }
             (Created::Refused(e), _) => {
-                row.cannot_bits.push(bits);
                 let why = format!("modulusBits = {bits}: {}", refused(made.tok, &e));
-                profile.generation_evidence(&KeyKind::Rsa, On::Bits(bits), why);
+                profile.generation_refused(
+                    &mut made.undetermined,
+                    &mut row,
+                    (&KeyKind::Rsa, On::Bits(bits)),
+                    e.rv(),
+                    why,
+                );
             }
             (Created::Lost(e), _) => {
                 made.undetermined.push(format!("no generate row for {on}: the module generated, but {e}"));
@@ -414,13 +423,12 @@ pub(super) fn prove(made: &mut Made, profile: &mut Draft, kt: &KeyKind, on: &str
     for binding in bindings {
         let outcome = Object::new(&object).and_then(|o| made.tok.prove_binding(private, o, spki, *binding));
         let cap = Capability::Prove { binding: binding.name().into(), key_type: kt.clone(), on: on.clone() };
+        // The host verified the proof; a signature it refuses is its finding. Anything else
+        // (no verifier on the host, a device failure) is no answer of the module's (E-2).
         match outcome {
-            Err(e) if token::rv_is(e.rv(), RvError::OperationActive) => {
-                made.undetermined.push(format!("no {cap} row: {}", evidence(made.tok, &e)));
-            }
-            outcome => {
-                profile.set(cap, Answer::of(outcome.is_ok()), outcome.err().map(|e| evidence(made.tok, &e)), None);
-            }
+            Ok(()) => profile.yes(cap, Checked::Host, None),
+            Err(e @ KmError::Conflict(_)) => profile.wrong(cap, evidence(made.tok, &e)),
+            Err(e) => profile.refused(&mut made.undetermined, cap, e.rv(), evidence(made.tok, &e)),
         }
     }
 }
@@ -598,8 +606,15 @@ pub(super) fn try_extractable(
     destroy_derived(s, h, "extractable", d.on, profile);
     match value {
         Some(Attribute::Value(v)) if pop::ct_eq(&d.ch.secret, &v) => {
-            profile.derive.sealed = Some(false);
-            profile.note("derive.sealed".into(), why.into_text());
+            // The sealed path's failure is the module's no only when it refused it; derived but
+            // not sealed (no return value) is what it reports of the secret, its answer too.
+            match Refusal::of(why.rv()) {
+                Refusal::Module | Refusal::Cakeys => {
+                    profile.derive.sealed = Some(false);
+                    profile.note("derive.sealed".into(), why.into_text());
+                }
+                class => profile.undecide(Capability::DeriveSealed, class, why.into_text()),
+            }
             Ok(())
         }
         Some(Attribute::Value(_)) => Err(Msg::from("the derived secret is not the shared secret")),
@@ -646,8 +661,17 @@ pub(super) fn derived_once(
             profile.derive.read_only.get_or_insert(true);
         }
         Ok((Err(e), _)) => {
-            profile.derive.read_only = Some(false);
-            profile.note("derive.read-only".into(), format!("{on}: in a read-only session: {}", ckr(&e)));
+            let why = format!("{on}: in a read-only session: {}", ckr(&e));
+            match Refusal::of(token::rv_of(&e)) {
+                Refusal::Module => {
+                    profile.derive.read_only = Some(false);
+                    profile.note("derive.read-only".into(), why);
+                }
+                class => {
+                    made.undetermined.push(format!("no derive.read-only row: {why}"));
+                    profile.undecide(Capability::DeriveReadOnly, class, why);
+                }
+            }
         }
         Err(e) => made.undetermined.push(format!("no read-only ECDH probe on {on}: {e}")),
     }
@@ -738,8 +762,17 @@ pub(super) fn rsa_ops(made: &mut Made, profile: &mut Draft, private: ObjectHandl
         for padding in token::OAEP {
             let Some((params, name)) = token::oaep_params(padding) else { continue };
             let outcome = decrypts(made, &Mechanism::RsaPkcsOaep(params), padding);
-            if outcome.is_ok() {
-                works.push(name.to_owned());
+            let cap = Capability::DecryptOaep(name.to_owned());
+            match &outcome {
+                Ok(()) => works.push(name.to_owned()),
+                // The host's own finding (another plaintext), or its own failure to ask.
+                Err(e) if e.rv().is_none() => profile.found_wrong(cap),
+                Err(e) => {
+                    let class = Refusal::of(e.rv());
+                    if class != Refusal::Module {
+                        profile.undecide(cap, class, e.to_string());
+                    }
+                }
             }
             made.record(MechanismType::RSA_PKCS_OAEP, &format!("{on} decrypt {name}"), outcome);
         }

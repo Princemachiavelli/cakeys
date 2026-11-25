@@ -788,6 +788,7 @@ mod tests {
     /// tried length decides itself. Over generation in bits and bytes and the commitments.
     #[test]
     fn an_untried_size_is_unknown_whatever_the_tried_ones_said() {
+        type Ask<'a> = Box<dyn Fn(u32) -> Verdict + 'a>;
         let b = baseline();
         let m = profile(
             "profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n\
@@ -800,7 +801,7 @@ mod tests {
              \"generate.CKK_RSA.2048\" = { answer = \"no\" }\n",
         );
         let stack = eff(&b, Some(&m), &[]);
-        let asked: [(&str, Box<dyn Fn(u32) -> Verdict>); 3] = [
+        let asked: [(&str, Ask); 3] = [
             ("commit", Box::new(|n| stack.commit("hmac-sha256", "CKK_GENERIC_SECRET", Some(n)))),
             ("generate_secret", Box::new(|n| stack.generate_secret("CKK_GENERIC_SECRET", Some(n)))),
             ("generate", Box::new(|n| stack.generate("CKK_RSA", None, Some(n * 64)))),

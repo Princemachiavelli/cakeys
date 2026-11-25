@@ -2,9 +2,9 @@
 //! own blobs they must agree with (docs/CAPROBE.md).
 
 use super::{
-    Attribute, CkError, Draft, KeyType, KmError, Kt, Made, Mechanism, MechanismType, OaepHash, ObjectClass,
-    ObjectHandle, PkcsMgfType, PkcsOaepParams, PkcsOaepSource, RsaPadding, RvError, Session, ckr, evidence, moves, pop,
-    refused, secret_template, token,
+    Attribute, Capability, Checked, CkError, Draft, KeyType, KmError, Kt, Made, Mechanism, MechanismType, OaepHash,
+    ObjectClass, ObjectHandle, PkcsMgfType, PkcsOaepParams, PkcsOaepSource, RsaPadding, RvError, Session, ckr,
+    evidence, moves, pop, refused, secret_template, token,
 };
 
 /// The OAEP hashes the module actually implements — wrap the fresh AES key to the fresh RSA
@@ -26,13 +26,23 @@ pub(super) fn probe_wrapping(
     };
     let mut round_trips = Vec::new();
     let mut failures = Vec::new();
+    // Each hash's row is written here: yes by the host's blob (or, untold, the module's own round
+    // trip), no by the module's refusal or the host's finding; any other failure no row (E-2).
+    let mut failed = |made: &mut Made, profile: &mut Draft, name: &str, why: String, rv: Option<u64>| {
+        failures.push(format!("{name}: {why}"));
+        let cap = Capability::WrapOaep(name.to_owned());
+        match rv {
+            None => profile.wrong(cap, why),
+            rv => profile.refused(&mut made.undetermined, cap, rv, why),
+        }
+    };
     for hash in [OaepHash::Sha1, OaepHash::Sha256] {
         let (mech, name) = oaep_of(hash);
         // Wrapping is encryption: the public half wraps, the private half unwraps.
         let wrapped = match session.wrap_key(&mech, wraps, aes) {
             Ok(w) => w,
             Err(e) => {
-                failures.push(format!("{name}: wrapping fails: {}", ckr(&e)));
+                failed(made, profile, name, format!("wrapping fails: {}", ckr(&e)), token::rv_of(&e));
                 continue;
             }
         };
@@ -50,21 +60,26 @@ pub(super) fn probe_wrapping(
                 // unwraps with another hash than asked passes its own round trip: a blob the
                 // host made with this hash must decode too (review 2026-11-23 D-3).
                 if same_key(session, aes, h) == Some(false) {
-                    failures.push(format!("{name}: unwraps its own blob to another key"));
+                    failed(made, profile, name, "unwraps its own blob to another key".into(), None);
                     continue;
                 }
+                let cap = Capability::WrapOaep(name.to_owned());
                 match host_blob(made, &mech, wraps, unwraps, hash) {
-                    HostBlob::Decodes => round_trips.push((name, hash)),
-                    HostBlob::Refused(why) => failures.push(format!("{name}: {why}")),
+                    HostBlob::Decodes => {
+                        round_trips.push((name, hash));
+                        profile.yes(cap, Checked::Host, None);
+                    }
+                    HostBlob::Refused(why, rv) => failed(made, profile, name, why, rv),
                     HostBlob::Untold(why) => {
                         made.undetermined.push(format!(
                             "wrap.rsa-oaep.{name} rests on the module's own round trip, not a host-made blob: {why}"
                         ));
                         round_trips.push((name, hash));
+                        profile.yes(cap, Checked::Unverified, None);
                     }
                 }
             }
-            Err(e) => failures.push(format!("{name}: wraps but does not unwrap: {}", ckr(&e))),
+            Err(e) => failed(made, profile, name, format!("wraps but does not unwrap: {}", ckr(&e)), token::rv_of(&e)),
         }
     }
     // One note under "oaep": what `--oaep` verdicts cite.
@@ -259,7 +274,8 @@ pub(super) enum HostBlob {
     /// It unwrapped to the key the host wrapped.
     Decodes,
     /// It did not: the module does not decode OAEP with this hash, whatever its own round trip.
-    Refused(String),
+    /// The return value of its refusal; `None`: the host found another key.
+    Refused(String, Option<u64>),
     /// It could not be told: why.
     Untold(String),
 }
@@ -306,11 +322,14 @@ pub(super) fn host_blob(
                 _,
             ),
         ) => return HostBlob::Untold(format!("unwrapping a host-made blob, its template: {}", ckr(&e))),
-        Err(e) => return HostBlob::Refused(format!("unwraps its own blob but not one the host made: {}", ckr(&e))),
+        Err(e) => {
+            let why = format!("unwraps its own blob but not one the host made: {}", ckr(&e));
+            return HostBlob::Refused(why, token::rv_of(&e));
+        }
     };
     let verdict = match moves::same_aes(made, h, value) {
         Ok(()) => HostBlob::Decodes,
-        Err(KmError::Conflict(_)) => HostBlob::Refused("unwraps a host-made blob to another key".into()),
+        Err(KmError::Conflict(_)) => HostBlob::Refused("unwraps a host-made blob to another key".into(), None),
         Err(e) => HostBlob::Untold(evidence(made.tok, &e)),
     };
     let _ = made.session.destroy_object(h);

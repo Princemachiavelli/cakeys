@@ -21,7 +21,7 @@ pub mod names;
 pub mod profile;
 
 pub use baseline::Baseline;
-pub use capability::{Answer, Capability, Move, On, Row, Way};
+pub use capability::{Answer, By, Capability, DEVICE_FAILED_RV, Move, On, Row, Way, names_device_failure};
 pub use effective::{Effective, Verdict};
 pub use names::{KeyKind, Proof};
 pub use profile::{

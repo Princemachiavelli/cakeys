@@ -1085,13 +1085,13 @@
   CKK_DH: unknown — module profile kryoptic/1.5 records no CKK_DH generation
   CKK_DSA: unknown — module profile kryoptic/1.5 records no CKK_DSA generation
   CKK_EC: yes (kryoptic/1.5)
-  CKK_EC brainpoolP256r1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
-  CKK_EC brainpoolP384r1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  CKK_EC brainpoolP256r1: no — kryoptic/1.5: unknown, not the module's no: CKR_GENERAL_ERROR is the device failing (a legacy row: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
+  CKK_EC brainpoolP384r1: no — kryoptic/1.5: unknown, not the module's no: CKR_GENERAL_ERROR is the device failing (a legacy row: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
   CKK_EC curve25519: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
   CKK_EC curve448: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
   CKK_EC edwards25519: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
   CKK_EC edwards448: unknown — module profile kryoptic/1.5 records neither can nor cannot for it (partial)
-  CKK_EC secp256k1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  CKK_EC secp256k1: no — kryoptic/1.5: unknown, not the module's no: CKR_GENERAL_ERROR is the device failing (a legacy row: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
   CKK_EC secp256r1: yes (kryoptic/1.5)
   CKK_EC secp384r1: yes (kryoptic/1.5)
   CKK_EC secp521r1: yes (kryoptic/1.5)
@@ -1272,13 +1272,13 @@
   CKK_X9_42_DH: unknown — module profile kryoptic/1.5 records no CKK_X9_42_DH generation
   CKK_XMSS: unknown — module profile kryoptic/1.5 records no CKK_XMSS generation
   CKK_XMSSMT: unknown — module profile kryoptic/1.5 records no CKK_XMSSMT generation
-  curve brainpoolP256r1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
-  curve brainpoolP384r1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  curve brainpoolP256r1: no — kryoptic/1.5: unknown, not the module's no: CKR_GENERAL_ERROR is the device failing (a legacy row: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
+  curve brainpoolP384r1: no — kryoptic/1.5: unknown, not the module's no: CKR_GENERAL_ERROR is the device failing (a legacy row: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
   curve curve25519: yes (kryoptic/1.5)
   curve curve448: yes (kryoptic/1.5)
   curve edwards25519: yes (kryoptic/1.5)
   curve edwards448: yes (kryoptic/1.5)
-  curve secp256k1: no — kryoptic/1.5: generation refused: CKR_GENERAL_ERROR
+  curve secp256k1: no — kryoptic/1.5: unknown, not the module's no: CKR_GENERAL_ERROR is the device failing (a legacy row: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
   curve secp256r1: yes (kryoptic/1.5)
   curve secp384r1: yes (kryoptic/1.5)
   curve secp521r1: yes (kryoptic/1.5)
@@ -1812,7 +1812,7 @@
   CKK_EC secp256k1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
   CKK_EC secp256r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
   CKK_EC secp384r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  CKK_EC secp521r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_GENERAL_ERROR
+  CKK_EC secp521r1: no — tpm2-pkcs11/1.10+amd-ftpm: unknown, not the module's no: CKR_GENERAL_ERROR is the device failing (a legacy row: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
   CKK_EC 512: yes (tpm2-pkcs11/1.10+amd-ftpm)
   CKK_EC 1024: yes (tpm2-pkcs11/1.10+amd-ftpm)
   CKK_EC 2048: yes (tpm2-pkcs11/1.10+amd-ftpm)
@@ -1929,7 +1929,7 @@
   curve secp256k1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_CURVE_NOT_SUPPORTED
   curve secp256r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
   curve secp384r1: yes (tpm2-pkcs11/1.10+amd-ftpm)
-  curve secp521r1: no — tpm2-pkcs11/1.10+amd-ftpm: generation refused: CKR_GENERAL_ERROR
+  curve secp521r1: no — tpm2-pkcs11/1.10+amd-ftpm: unknown, not the module's no: CKR_GENERAL_ERROR is the device failing (a legacy row: generation refused: CKR_GENERAL_ERROR); re-probe it (T2, profiles/LEDGER.toml)
   oaep OAEP: unknown — module profile tpm2-pkcs11/1.10+amd-ftpm records no OAEP probe
 # tpm2-pkcs11/1.10+swtpm
   wrap.oaep None

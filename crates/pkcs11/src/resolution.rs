@@ -52,7 +52,10 @@ impl Resolved {
                     Said::No => Answer::No,
                     Said::Other(_) => return None,
                 };
-                Some((Capability::parse(k).ok()?, Row { answer, evidence: a.evidence.clone(), via: a.via.clone() }))
+                Some((
+                    Capability::parse(k).ok()?,
+                    Row { answer, by: None, evidence: a.evidence.clone(), via: a.via.clone() },
+                ))
             })
             .collect();
         if rows.is_empty() {
@@ -498,9 +501,10 @@ mod tests {
         };
         let after = |profile: Option<&str>, recorded: Answered| {
             let mut module = Profile::new("m".into(), Mode::Observed);
-            module
-                .capabilities
-                .insert(row.clone(), Row { answer: Answer::Yes, evidence: None, via: profile.map(Into::into) });
+            module.capabilities.insert(
+                row.clone(),
+                Row { answer: Answer::Yes, by: None, evidence: None, via: profile.map(Into::into) },
+            );
             let mut r = Resolved { module: Some(module), ..Resolved::default() };
             let mut observed = Observation::default();
             observed.capabilities.insert(row.to_string(), recorded);

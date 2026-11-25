@@ -4,10 +4,9 @@
 //! the module and token claim of themselves. Every key here is a session object the probe
 //! destroys itself; each row is the module's answer on the token, never the host's.
 
-use super::{Draft, Made, ck_said, ckr};
+use super::{Checked, Draft, Made, ck_said, ckr};
 use cakeys_pkcs11::token::{self, Token};
-use cakeys_profile::{Answer, Capability, KeyKind, MechanismInfo, On};
-use cryptoki::error::RvError;
+use cakeys_profile::{Capability, KeyKind, MechanismInfo, On};
 use cryptoki::mechanism::dsa::{HedgeType, SignAdditionalContext};
 use cryptoki::mechanism::elliptic_curve::{EcKdf, Ecdh1DeriveParams};
 use cryptoki::mechanism::{Mechanism, MechanismType};
@@ -120,14 +119,17 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
             AttributeType::Extractable,
         ],
     );
+    // A read that fails says nothing of any one attribute: each row is the classifier's.
+    let failed = read.as_ref().err().map(|e| (token::rv_of(e), format!("C_GetAttributeValue: {}", ckr(e))));
     let attrs = read.unwrap_or_default();
     let get = |t: AttributeType| attrs.iter().find(|a| a.attribute_type() == t);
-    let row = |attr: &str, answer: Option<(bool, String)>, profile: &mut Draft| {
+    let row = |attr: &str, answer: Option<(bool, String)>, profile: &mut Draft, undetermined: &mut Vec<String>| {
         let cap = Capability::Attr { read: true, attr: attr.into(), key_type: aes.clone() };
-        match answer {
-            Some((true, _)) => profile.set(cap, Answer::Yes, None, None),
-            Some((false, why)) => profile.set(cap, Answer::No, Some(why), None),
-            None => profile.set(cap, Answer::No, Some("the module does not return it".into()), None),
+        match (&failed, answer) {
+            (Some((rv, why)), _) => profile.refused(undetermined, cap, *rv, why.clone()),
+            (None, Some((true, _))) => profile.yes(cap, Checked::Host, None),
+            (None, Some((false, why))) => profile.wrong(cap, why),
+            (None, None) => profile.wrong(cap, "the module does not return it".into()),
         }
     };
     row(
@@ -135,12 +137,14 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
         get(AttributeType::Local)
             .map(|a| (matches!(a, Attribute::Local(true)), format!("a generated key reads {a:?}"))),
         profile,
+        &mut made.undetermined,
     );
     row(
         "CKA_ALWAYS_SENSITIVE",
         get(AttributeType::AlwaysSensitive)
             .map(|a| (matches!(a, Attribute::AlwaysSensitive(true)), format!("a key made sensitive reads {a:?}"))),
         profile,
+        &mut made.undetermined,
     );
     row(
         "CKA_NEVER_EXTRACTABLE",
@@ -153,6 +157,7 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
             )
         }),
         profile,
+        &mut made.undetermined,
     );
     row(
         "CKA_KEY_GEN_MECHANISM",
@@ -163,6 +168,7 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
             )
         }),
         profile,
+        &mut made.undetermined,
     );
     let _ = s.destroy_object(key);
     // `CKA_ALLOWED_MECHANISMS`: taken, read back, and kept to.
@@ -172,7 +178,7 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
         &Mechanism::AesKeyGen,
         &[&[Attribute::Token(false), Attribute::ValueLen(32.into())][..], &allowed].concat(),
     ) {
-        Err(e) => profile.set(cap, Answer::No, Some(ckr(&e)), None),
+        Err(e) => profile.refused(&mut made.undetermined, cap, token::rv_of(&e), ckr(&e)),
         Ok(h) => {
             let back = s.get_attributes(h, &[AttributeType::AllowedMechanisms]).ok().and_then(|v| v.into_iter().next());
             let kept = matches!(&back, Some(Attribute::AllowedMechanisms(m)) if m == &vec![MechanismType::AES_ECB]);
@@ -194,9 +200,12 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
                         None
                     }
                 };
-                profile.set(cap, Answer::Yes, None, via.map(Into::into));
+                // Kept to or not, the host saw it; untold, the module's word alone (review
+                // 2026-11-24 E-4).
+                let checked = if via.is_some() { Checked::Host } else { Checked::Unverified };
+                profile.yes(cap, checked, via.map(Into::into));
             } else {
-                profile.set(cap, Answer::No, Some(format!("it reads back {back:?}")), None);
+                profile.wrong(cap, format!("it reads back {back:?}"));
             }
             let _ = s.destroy_object(h);
         }
@@ -227,10 +236,13 @@ pub(super) fn probe_unmanaged_keys(made: &mut Made, profile: &mut Draft) {
                 row.can_bytes.push(bytes);
                 let _ = s.destroy_object(h);
             }
-            Err(e) => {
-                row.cannot_bytes.push(bytes);
-                profile.generation_evidence(&kind, On::Bytes(bytes), format!("valueLen = {bytes}: {}", ckr(&e)));
-            }
+            Err(e) => profile.generation_refused(
+                &mut made.undetermined,
+                &mut row,
+                (&kind, On::Bytes(bytes)),
+                token::rv_of(&e),
+                format!("valueLen = {bytes}: {}", ckr(&e)),
+            ),
         }
         profile.generate.insert(kind, row);
     }
@@ -303,13 +315,10 @@ pub(super) fn montgomery_ecdh(
     };
     if let (Some(a), Some(b)) = (point(public_a), point(public_b)) {
         match (secret(private_a, &b), secret(private_b, &a)) {
-            (Ok(x), Ok(y)) if x == y => profile.set(cap, Answer::Yes, None, None),
-            (Ok(_), Ok(_)) => profile.set(cap, Answer::No, Some("the two sides derive different secrets".into()), None),
-            (Err(e), _) | (_, Err(e)) if token::rv_is(e.rv(), RvError::OperationActive) => {
-                made.undetermined.push(format!("no {cap} row: an earlier operation left the session busy"));
-            }
-            (Err(e), _) | (_, Err(e)) if e.rv().is_some() => profile.set(cap, Answer::No, Some(e.to_string()), None),
-            (Err(e), _) | (_, Err(e)) => made.undetermined.push(format!("no {cap} row: {e}")),
+            // Both sides on this one module (review 2026-11-24 E-3).
+            (Ok(x), Ok(y)) if x == y => profile.yes(cap, Checked::Unverified, None),
+            (Ok(_), Ok(_)) => profile.wrong(cap, "the two sides derive different secrets".into()),
+            (Err(e), _) | (_, Err(e)) => profile.refused(&mut made.undetermined, cap, e.rv(), e.to_string()),
         }
     } else {
         made.undetermined.push(format!("no {cap} row: a {curve} public key's point is unreadable"));
@@ -440,14 +449,13 @@ pub(super) fn probe_pq(made: &mut Made, profile: &mut Draft) {
                         let _ = s.destroy_object(h);
                     }
                 }
-                Err(e) => {
-                    row.cannot.push(name.clone());
-                    profile.generation_evidence(
-                        &kind,
-                        On::Item(name.clone()),
-                        format!("generation refused: {}", ckr(&e)),
-                    );
-                }
+                Err(e) => profile.generation_refused(
+                    &mut made.undetermined,
+                    &mut row,
+                    (&kind, On::Item(name.clone())),
+                    token::rv_of(&e),
+                    format!("generation refused: {}", ckr(&e)),
+                ),
             }
         }
         profile.generate.insert(kind, row);
@@ -472,12 +480,16 @@ fn sign_rows(
         }
         let cap = Capability::Sign { mechanism: mt.to_string(), key_type: kind.clone(), on: On::Item(set.to_owned()) };
         match s.sign(&mech, private, MSG) {
-            Err(e) => profile.set(cap, Answer::No, Some(ckr(&e)), None),
+            Err(e) => profile.refused(&mut made.undetermined, cap, token::rv_of(&e), ckr(&e)),
+            // Signed and verified by the module: the host has no verifier (review 2026-11-24 E-3).
             Ok(sig) => match s.verify(&mech, public, MSG, &sig) {
-                Ok(()) => profile.set(cap, Answer::Yes, None, None),
-                Err(e) => {
-                    profile.set(cap, Answer::No, Some(format!("the signature does not verify: {}", ckr(&e))), None);
-                }
+                Ok(()) => profile.yes(cap, Checked::Unverified, None),
+                Err(e) => profile.refused(
+                    &mut made.undetermined,
+                    cap,
+                    token::rv_of(&e),
+                    format!("the signature does not verify: {}", ckr(&e)),
+                ),
             },
         }
     }
@@ -506,22 +518,24 @@ fn kem_row(made: &mut Made, profile: &mut Draft, set: &str, public: ObjectHandle
         Err(e) if !from_module(&e) => {
             made.undetermined.push(format!("no {cap} row: C_EncapsulateKey cannot be called: {e}"));
         }
-        Err(e) => profile.set(cap, Answer::No, Some(format!("C_EncapsulateKey: {}", ckr(&e))), None),
+        Err(e) => {
+            profile.refused(&mut made.undetermined, cap, token::rv_of(&e), format!("C_EncapsulateKey: {}", ckr(&e)))
+        }
         Ok((ciphertext, encapsulated)) => match s.decapsulate_key(&mech, private, &template, &ciphertext) {
             Err(e) if !from_module(&e) => {
                 made.undetermined.push(format!("no {cap} row: C_DecapsulateKey cannot be called: {e}"));
                 let _ = s.destroy_object(encapsulated);
             }
             Err(e) => {
-                profile.set(cap, Answer::No, Some(format!("C_DecapsulateKey: {}", ckr(&e))), None);
+                let why = format!("C_DecapsulateKey: {}", ckr(&e));
+                profile.refused(&mut made.undetermined, cap, token::rv_of(&e), why);
                 let _ = s.destroy_object(encapsulated);
             }
             Ok(decapsulated) => {
                 match (value(encapsulated), value(decapsulated)) {
-                    (Some(ours), Some(theirs)) if ours == theirs => profile.set(cap, Answer::Yes, None, None),
-                    (Some(_), Some(_)) => {
-                        profile.set(cap, Answer::No, Some("the two sides derive different secrets".into()), None);
-                    }
+                    // Both sides on this one module (review 2026-11-24 E-3).
+                    (Some(ours), Some(theirs)) if ours == theirs => profile.yes(cap, Checked::Unverified, None),
+                    (Some(_), Some(_)) => profile.wrong(cap, "the two sides derive different secrets".into()),
                     _ => made.undetermined.push(format!("no {cap} row: the shared secrets are unreadable")),
                 }
                 for h in [encapsulated, decapsulated] {

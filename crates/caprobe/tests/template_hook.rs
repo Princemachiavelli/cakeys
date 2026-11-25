@@ -60,6 +60,17 @@ impl Provider for RefusesSecrets {
             Template::Generate(d, Half::Key) if d.object.curve.as_deref() == Some("secp256k1") => {
                 Err(KmError::Unsupported("the test provider refuses secp256k1".into()))
             }
+            // Each move template, refused for one input (review 2026-11-24 E-2: these were
+            // written as the module's no).
+            Template::Import(d, Via::CreateObject) if d.object.curve.as_deref() == Some("secp384r1") => {
+                Err(KmError::Unsupported("the test provider refuses the secp384r1 import".into()))
+            }
+            Template::PublicHalf(d) if d.object.curve.as_deref() == Some("secp521r1") => {
+                Err(KmError::Unsupported("the test provider refuses the secp521r1 public half".into()))
+            }
+            Template::Object(d) if d.object.class == ObjectClass::Data => {
+                Err(KmError::Unsupported("the test provider refuses data objects".into()))
+            }
             _ => Ok(()),
         }
     }
@@ -81,13 +92,22 @@ fn the_write_probes_make_their_secret_keys_through_the_provider() {
     assert!(exit == ExitCode::SUCCESS, "{exit:?}");
     let profile = std::fs::read_to_string(&out).unwrap();
     // The probe ran its write probes: the RSA keys proved possession.
-    assert!(profile.contains("\"prove.pop-unwrap.CKK_RSA.1024\" = { answer = \"yes\" }"), "{profile}");
+    assert!(profile.contains("\"prove.pop-unwrap.CKK_RSA.1024\" = { answer = \"yes\", by = \"host\" }"), "{profile}");
     // But it made no AES key to wrap.
     assert!(!profile.contains("wrap.rsa-oaep."), "{profile}");
     // A pair the provider refused was never asked of the module: no row, neither yes nor the
     // module's no (review 2026-11-23 D-4: it was written as the module's refusal).
-    assert!(!profile.contains("\"generate.CKK_EC.secp256k1\""), "{profile}");
-    assert!(profile.contains("\"generate.CKK_EC.secp256r1\" = { answer = \"yes\" }"), "{profile}");
+    assert!(!profile.contains("\"generate.CKK_EC.secp256k1\" = {"), "{profile}");
+    assert!(profile.contains("\"generate.CKK_EC.secp256r1\" = { answer = \"yes\", by = \"host\" }"), "{profile}");
+    // Nor any move the provider refused: an `[untested]` entry of cakeys' each, never a no row,
+    // and the control below shows the module takes each.
+    for cap in ["import.CKK_EC.secp384r1", "create.CKO_PUBLIC_KEY.CKK_EC.secp521r1", "create.CKO_DATA"] {
+        assert!(!profile.contains(&format!("\"{cap}\" = {{ answer")), "{cap}: {profile}");
+        assert!(profile.contains(&format!("\"{cap}\" = {{ why = \"cakeys\"")), "{cap}: {profile}");
+    }
+    assert!(!profile.contains("answer = \"no\", by = \"module\", evidence = \"the test provider"), "{profile}");
+    let loaded = cakeys_profile::Profile::from_toml(&profile).unwrap();
+    assert_eq!(loaded.untested_problems(), Vec::<String>::new());
     // The move probes asked the provider too (review pkcs11 templates.rs F3: no test reached
     // these hooks with a provider of its own).
     let asked = ASKED.lock().unwrap().clone();
@@ -103,6 +123,9 @@ fn the_write_probes_make_their_secret_keys_through_the_provider() {
     let o = Run::new(BIN, &config).output(&[&args[3..], &more[..2], &["--out", control.to_str().unwrap()]].concat());
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let profile = std::fs::read_to_string(&control).unwrap();
-    assert!(profile.contains("\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\" }"), "{profile}");
-    assert!(profile.contains("\"generate.CKK_EC.secp256k1\" = { answer = \"yes\" }"), "{profile}");
+    assert!(profile.contains("\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\", by = \"host\" }"), "{profile}");
+    assert!(profile.contains("\"generate.CKK_EC.secp256k1\" = { answer = \"yes\", by = \"host\" }"), "{profile}");
+    for cap in ["import.CKK_EC.secp384r1", "create.CKO_PUBLIC_KEY.CKK_EC.secp521r1", "create.CKO_DATA"] {
+        assert!(profile.contains(&format!("\"{cap}\" = {{ answer = \"yes\"")), "{cap}: {profile}");
+    }
 }
