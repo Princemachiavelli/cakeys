@@ -21,7 +21,9 @@ C-9). A site is a line of source, not a test: a helper that asserts prose for it
 site.
 
     python3 -I nix/oracle-count.py ROOT [--manifest FILE]
-        Each file's counts; fails on a file with more prose sites than the manifest gives it.
+        Each file's counts; fails on a file with more prose sites than the manifest gives it,
+        and on a manifest that allows more than the files have: the number goes down in the diff
+        that removed the sites, so slack is never spent again.
     python3 -I nix/oracle-count.py ROOT --write
         Lowers each number to the file's count, and drops a file with none. It never raises a
         number or adds a file: that is a hand edit, which the diff shows and the commit explains.
@@ -228,7 +230,7 @@ def check(root, manifest_path):
     print(f"oracle-count: {prose} prose sites (at most {sum(most.values())}), {exits} exit sites, {len(found)} files")
     lower = sum(most.values()) - sum(min(found.get(f, (0, 0))[0], n) for f, n in most.items())
     if lower:
-        print(f"oracle-count: {lower} fewer than the manifest allows: lower it (--write)")
+        print(f"oracle-count: {lower} fewer than the manifest allows: lower it in this diff (--write)", file=sys.stderr)
     for f, prose, allowed in over:
         print(f"{f}: {prose} prose assertion sites, {manifest_path} allows {allowed}", file=sys.stderr)
     if over:
@@ -239,7 +241,7 @@ def check(root, manifest_path):
             file=sys.stderr,
         )
         return 1
-    return 0
+    return 1 if lower else 0
 
 
 def main():

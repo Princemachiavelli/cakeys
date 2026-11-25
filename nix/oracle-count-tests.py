@@ -136,12 +136,14 @@ class Ratchet(Case):
         self.assertEqual(got.returncode, 0, got.stderr)
         self.assertIn("5 exit sites", got.stdout)
 
-    def test_fewer_passes_and_says_to_lower(self):
+    def test_fewer_fails_until_lowered(self):
+        # Slack left in the manifest could be spent again by a later diff: the number goes down
+        # in the diff that removed the sites, as claims' max-unregistered does.
         write(self.root, {"crates/a/tests/t.rs": prose(1)})
         self.manifest({"crates/a/tests/t.rs": 3})
         got = run(self.root)
-        self.assertEqual(got.returncode, 0, got.stderr)
-        self.assertIn("2 fewer than the manifest allows", got.stdout)
+        self.assertEqual(got.returncode, 1, got.stdout)
+        self.assertIn("2 fewer than the manifest allows", got.stderr)
 
 
 class Write(Case):
