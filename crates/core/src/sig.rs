@@ -110,7 +110,7 @@ pub fn ecdsa_prehash(spki: &[u8], digest: &[u8], sig: &[u8], encoding: Encoding)
     ecdsa_over(spki, sig, encoding, |_| digest.to_vec())
 }
 
-/// [`ecdsa`] with the digest `digest` computes from the curve's own hash.
+/// [`ecdsa()`] with the digest `digest` computes from the curve's own hash.
 fn ecdsa_over(spki: &[u8], sig: &[u8], encoding: Encoding, digest: impl FnOnce(HashAlg) -> Vec<u8>) -> Verdict {
     macro_rules! curve {
         ($curve:ty, $own:expr, $info:expr) => {{

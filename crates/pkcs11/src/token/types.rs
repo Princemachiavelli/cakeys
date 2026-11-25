@@ -28,7 +28,7 @@ pub(super) fn managed_class(class: ObjectClass) -> Option<Class> {
 /// # Errors
 ///
 /// `Unsupported` for an object that is no key (a certificate, a data object), and for an HMAC
-/// type the binding cannot name ([`hmac_key_type`]).
+/// type the binding cannot name (`hmac_key_type`).
 pub fn key_type_of(object: Object<'_>) -> Result<KeyType> {
     let kt =
         object.key_type().ok_or_else(|| KmError::Unsupported(format!("{} has no key type", object.class).into()))?;

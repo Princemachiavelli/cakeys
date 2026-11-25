@@ -29,7 +29,7 @@ pub(super) type Logins = std::sync::Mutex<BTreeMap<u64, Zeroizing<String>>>;
 
 impl Drop for Library {
     /// Finalized under the registry lock, its entry then removed: until it is, another thread's
-    /// [`library`] for the module waits ([`settled`]) rather than initializing it again before
+    /// [`library()`] for the module waits ([`settled`]) rather than initializing it again before
     /// this `C_Finalize` (refused, `CKR_CRYPTOKI_ALREADY_INITIALIZED`) or having it torn down
     /// by this one (token/mod.rs F5). No `Library` is dropped while the lock is held (`library`
     /// only upgrades, waits and inserts), so this cannot deadlock.

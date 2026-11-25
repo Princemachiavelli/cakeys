@@ -17,7 +17,7 @@ pub enum ChainTime {
     /// Valid at this time: seconds since the Unix epoch, UTC.
     At(u64),
     /// Judged at this time, but a chain whose only fault is its dates is accepted with a warning
-    /// ([`Attested::warning`]).
+    /// ([`warning`](crate::provider::Attested::warning)).
     Warn(u64),
     /// Asked for now, and the system clock reads before the Unix epoch: there is no time to judge
     /// the dates by. [`ChainTime::verify`] refuses, naming the clock, or with `warn` (a verb

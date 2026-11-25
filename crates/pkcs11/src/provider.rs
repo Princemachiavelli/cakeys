@@ -84,11 +84,11 @@ pub enum Topic {
 /// Beside them: how to recognise the module, its settings and advice, and the facts a caller
 /// must know before it acts ([`Self::manages_as_so`], [`Self::generation`]). Two hooks only the
 /// probe reads: [`Self::bound_keys`] lists what it generates on a module whose keys are bound to
-/// one purpose, and [`Self::scratch_occupant`] guards its scratch slot. A provider that seems to
+/// one purpose, and [`Self::scratch_companion`] guards its scratch slot. A provider that seems to
 /// need a new hook overrides an operation in its own crate instead.
 ///
 /// The in-tree providers are crates of this workspace (`cakeys-ykcs11`, `cakeys-tpm2-pkcs11`,
-/// `cakeys-kmsp11`, `cakeys-aws-cloudhsm`); a crate outside it adds its own to a [`Registry`]
+/// `cakeys-kmsp11`, `cakeys-aws-cloudhsm`); a crate outside it adds its own to a [`Registry`](crate::Registry)
 /// (the `custom-provider` example). A module with no fix-ups needs none: its capability
 /// profile names it ([`Data`]).
 pub trait Provider: Send + Sync {
