@@ -1,0 +1,1483 @@
+# cakeys' liar matrix (docs/archive/REVIEW-2026-11-24/phase2-3-design.md §1.4–1.6): the lies a
+# module can tell (p11-fault plans, docs/FAULT_SHIM.md), each told to the verbs and the objects
+# of its blocks, every (lie, verb, object) a cell. tests/liars.rs runs it, one test per lie class
+# (tests/common/liars.rs says what a cell asserts); tests/liar_lint.rs holds it to its rules with
+# no token.
+#
+# A cell's `expect`:
+#   exit      the run's exit, or a list it is one of;
+#   rule      the rule its refused row names (cakeys_pkcs11::ops::Rule); absent, it names none;
+#   device    whether that row says the device failed (default false);
+#   outcome   a passing row's outcome; deferred: a rule a passing dry run's row defers;
+#   fired     whether the lie fires (default true): one that does not proves the verb never
+#             makes the call it lies about;
+#   changed   what the run changes, of "lock" and "token", with `why`: everything else it leaves
+#             as it was, and every change listed is asserted to happen. A `check` changes nothing.
+#   red       a finding the cell waits on: the expectation is what cakeys should do, and the
+#             cell must still fail it (one that passes has its mark taken off).
+# `rule`, `device` and `outcome` are read from the row `lock`, `create` and `delete` print;
+# `check` prints none, and a refused one prints nothing at all.
+
+# ── Objects: each a spec of its name, its locator's CKA_LABEL the name too (common::liars::
+# Fixture::plant). Beside each the module holds a decoy of its kind, "<name>-other", which no spec
+# names. `adopted`: put there through the module and recorded by `lock`, never created; the rest
+# `cakeys create` makes. `made = false`: declared and not made, for `create` to make (on token
+# `mk`, so `check --token ref` meets only what is there).
+
+[objects.ec-sign]
+class = "private" # pop-sign
+
+[objects.ec-derive]
+class = "private" # pop-ecdh
+
+[objects.rsa-decrypt]
+class = "private" # pop-decrypt
+
+[objects.rsa-unwrap]
+class = "private" # pop-unwrap
+
+[objects.rsa-always-auth]
+class = "private" # pop-sign, with a per-use login
+
+[objects.aes]
+class = "secret" # commitments cmac and kcv-ecb
+
+[objects.hmac]
+class = "secret" # commitment hmac
+
+[objects.aes-wrap]
+class = "secret" # commitment kw
+
+[objects.rebind]
+class = "secret" # wrap-rebind
+
+[objects.cert]
+adopted = true
+class = "certificate"
+
+[objects.data]
+adopted = true
+class = "data" # CKA_PRIVATE = true
+
+[objects.data-public]
+adopted = true
+class = "data"
+
+[objects.pub]
+adopted = true
+class = "public"
+
+[objects.new]
+class = "private"
+token = "mk"
+made = false
+
+[objects.new-aes]
+class = "secret"
+token = "mk"
+made = false
+
+# ── Verbs: the entry paths, `{spec}` and `{token}` the object's. `rows`: it prints a row per
+# pair, which the oracle reads. `validate` opens no token, so no lie reaches it: it is here for
+# the grid to say so.
+
+[verbs.check]
+args = ["check", "--spec", "{spec}", "--token", "{token}"]
+
+[verbs."check --token"]
+args = ["check", "--token", "ref"]
+
+[verbs.lock]
+args = ["lock", "--spec", "{spec}", "--token", "{token}"]
+rows = true
+
+[verbs."lock --dry-run"]
+args = ["lock", "--spec", "{spec}", "--token", "{token}", "--dry-run"]
+rows = true
+
+[verbs.delete]
+args = ["delete", "--spec", "{spec}", "--token", "{token}"]
+rows = true
+
+[verbs."delete --dry-run"]
+args = ["delete", "--spec", "{spec}", "--token", "{token}", "--dry-run"]
+rows = true
+
+[verbs.create]
+args = ["create", "--spec", "{spec}", "--token", "{token}"]
+rows = true
+
+[verbs."create --dry-run"]
+args = ["create", "--spec", "{spec}", "--token", "{token}", "--dry-run"]
+rows = true
+
+[verbs.validate]
+args = ["validate"]
+
+# ── OK: a call answered CKR_OK, and nothing done.
+
+[lies."ok.destroy"]
+class = "OK"
+plan = '''
+[[rule]]
+fn = "C_DestroyObject"
+of_label = "{label}"
+rv = "CKR_OK"
+'''
+
+# The session stays public: every private object is hidden from it.
+[lies."ok.login"]
+class = "OK"
+plan = '''
+[[rule]]
+fn = "C_Login"
+rv = "CKR_OK"
+'''
+
+# B-13: a destroy the module did not do keeps the lock entry; the run finds the object again.
+[[block]]
+lies = ["ok.destroy"]
+verbs = ["delete"]
+objects = ["ec-sign", "rsa-decrypt", "aes", "hmac", "cert", "data", "data-public", "pub"]
+expect = { exit = 16, rule = "delete-kept" }
+
+# A dry run destroys nothing: the lie never fires.
+[[block]]
+lies = ["ok.destroy"]
+verbs = ["delete --dry-run"]
+objects = ["ec-sign", "cert"]
+expect = { exit = 0, outcome = "would-delete", fired = false }
+
+# A login the session does not show (B list 3): the run is unavailable, never a verdict on the object.
+[[block]]
+lies = ["ok.login"]
+verbs = ["check", "lock", "lock --dry-run", "delete", "delete --dry-run"]
+objects = ["ec-sign"]
+expect = { exit = 16 }
+
+[[block]]
+lies = ["ok.login"]
+verbs = ["check", "delete"]
+objects = ["data"]
+expect = { exit = 16 }
+
+[[block]]
+lies = ["ok.login"]
+verbs = ["check --token"]
+objects = ["ec-sign"]
+expect = { exit = 16 }
+
+[[block]]
+lies = ["ok.login"]
+verbs = ["create", "create --dry-run"]
+objects = ["new", "new-aes"]
+expect = { exit = 16 }
+
+[[block.override]]
+verbs = ["create --dry-run"]
+expect = { exit = 16, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
+
+# ── OTHER: another object than the one asked for.
+
+# A second object under the locator.
+[lies."other.find"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_FindObjects"
+add_label = "{other}"
+'''
+
+# Another object found in its place.
+[lies."other.replace"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_FindObjects"
+of_label = "{label}"
+replace_label = "{other}"
+'''
+
+# The object not found.
+[lies."other.hide"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_FindObjects"
+hide_label = "{label}"
+'''
+
+# It shows one key and uses another.
+[lies."other.key.sign"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_SignInit"
+of_label = "{label}"
+use_label = "{other}"
+'''
+
+[lies."other.key.derive"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_DeriveKey"
+of_label = "{label}"
+use_label = "{other}"
+'''
+
+[lies."other.key.decrypt"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_DecryptInit"
+of_label = "{label}"
+use_label = "{other}"
+'''
+
+[lies."other.key.unwrap"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_UnwrapKey"
+of_label = "{label}"
+use_label = "{other}"
+'''
+
+[lies."other.key.encrypt"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_EncryptInit"
+of_label = "{label}"
+use_label = "{other}"
+'''
+
+# The wrapping key used is another (a kw commitment's).
+[lies."other.key.wrap"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_WrapKey"
+of_label = "{label}"
+use_label = "{other}"
+'''
+
+# The key wrapped is another (wrap-rebind's session copy).
+[lies."other.wrap"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_WrapKey"
+of_label = "{label}"
+wrap_label = "{other}"
+'''
+
+# The material it shows is another's.
+[lies."other.point"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_EC_POINT"
+from_label = "{other}"
+'''
+
+[lies."other.spki"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_PUBLIC_KEY_INFO"
+from_label = "{other}"
+'''
+
+[lies."other.value"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_VALUE"
+from_label = "{other}"
+'''
+
+# C-6: a second object under the locator is ambiguous, and nothing is destroyed.
+[[block]]
+lies = ["other.find"]
+verbs = ["check", "delete"]
+objects = ["ec-sign", "aes", "cert", "data", "pub"]
+expect = { exit = 12 }
+
+[[block]]
+lies = ["other.find"]
+verbs = ["lock", "lock --dry-run", "create"]
+objects = ["ec-sign"]
+expect = { exit = 12 }
+
+[[block]]
+lies = ["other.find"]
+verbs = ["check --token"]
+objects = ["ec-sign"]
+expect = { exit = 20 }
+
+[[block]]
+lies = ["other.replace"]
+verbs = ["check"]
+objects = ["ec-sign", "aes", "cert", "data", "pub"]
+expect = { exit = 10 }
+
+# A delete is If-Match: an object that is not the lock's identity is never destroyed.
+[[block]]
+lies = ["other.replace"]
+verbs = ["delete", "delete --dry-run"]
+objects = ["ec-sign"]
+expect = { exit = 14, rule = "if-match" }
+
+[[block]]
+lies = ["other.replace"]
+verbs = ["delete"]
+objects = ["cert", "data"]
+expect = { exit = 14, rule = "if-match" }
+
+[[block]]
+lies = ["other.hide"]
+verbs = ["check"]
+objects = ["ec-sign", "cert"]
+expect = { exit = 11 }
+
+# Absent is a delete's success: the realisation goes, and the token keeps what it hid.
+[[block]]
+lies = ["other.hide"]
+verbs = ["delete"]
+objects = ["ec-sign", "data"]
+expect = { exit = 22, changed = ["lock"], why = "absent is success: the realisation goes, the object stays" }
+
+[[block]]
+lies = ["other.hide"]
+verbs = ["delete --dry-run"]
+objects = ["ec-sign"]
+expect = { exit = 0, outcome = "absent" }
+
+# A pinned object gone is never made again under its locator.
+[[block]]
+lies = ["other.hide"]
+verbs = ["create", "create --dry-run"]
+objects = ["ec-sign", "aes"]
+expect = { exit = 14, rule = "pinned-lost" }
+
+# C-6: the key that answers is not the key shown, for each binding and commitment.
+[[block]]
+lies = ["other.key.sign"]
+verbs = ["check"]
+objects = ["ec-sign", "rsa-always-auth"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["other.key.sign"]
+verbs = ["check", "lock --dry-run"]
+objects = ["aes", "hmac"]
+expect = { exit = 10 }
+
+[[block]]
+lies = ["other.key.sign"]
+verbs = ["create"]
+objects = ["ec-sign", "new"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["other.key.derive"]
+verbs = ["check"]
+objects = ["ec-derive"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["other.key.decrypt"]
+verbs = ["check"]
+objects = ["rsa-decrypt"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["other.key.unwrap"]
+verbs = ["check", "lock --dry-run"]
+objects = ["rsa-unwrap"]
+expect = { exit = 16 }
+
+[[block.override]]
+verbs = ["lock --dry-run"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["other.key.encrypt"]
+verbs = ["check"]
+objects = ["aes"]
+expect = { exit = 10 }
+
+[[block]]
+lies = ["other.key.wrap"]
+verbs = ["check"]
+objects = ["aes-wrap"]
+expect = { exit = 10 }
+
+[[block]]
+lies = ["other.wrap"]
+verbs = ["check"]
+objects = ["rebind"]
+expect = { exit = 10 }
+
+[[block]]
+lies = ["other.point"]
+verbs = ["check"]
+objects = ["ec-sign", "ec-derive"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["other.point"]
+verbs = ["lock"]
+objects = ["ec-sign"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["other.point"]
+verbs = ["check"]
+objects = ["pub"]
+expect = { exit = 10 }
+
+[[block]]
+lies = ["other.point"]
+verbs = ["create"]
+objects = ["new"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["other.spki"]
+verbs = ["check"]
+objects = ["rsa-decrypt"]
+expect = { exit = 13 }
+
+# C-6: another certificate's or data object's value.
+[[block]]
+lies = ["other.value"]
+verbs = ["check"]
+objects = ["cert", "data", "data-public"]
+expect = { exit = 10 }
+
+[[block]]
+lies = ["other.value"]
+verbs = ["delete"]
+objects = ["cert"]
+expect = { exit = 14, rule = "if-match" }
+
+# ── FLAG: what the token says of itself or of an object, hidden or flipped.
+
+[lies."flag.write-protected"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetTokenInfo"
+set_flags = ["CKF_WRITE_PROTECTED"]
+'''
+
+[lies."flag.pin-locked"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetTokenInfo"
+set_flags = ["CKF_USER_PIN_LOCKED"]
+'''
+
+[lies."flag.pin-final-try"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetTokenInfo"
+set_flags = ["CKF_USER_PIN_FINAL_TRY"]
+'''
+
+# The SO's counters: no run of cakeys on this token logs in as SO.
+[lies."flag.so-pin-locked"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetTokenInfo"
+set_flags = ["CKF_SO_PIN_LOCKED", "CKF_SO_PIN_FINAL_TRY"]
+'''
+
+[lies."flag.sign-false"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_SIGN"
+value = "00"
+'''
+
+[lies."flag.sensitive-false"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_SENSITIVE"
+value = "00"
+'''
+
+[lies."flag.extractable-true"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_EXTRACTABLE"
+value = "01"
+'''
+
+[lies."flag.private-false"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_PRIVATE"
+value = "00"
+'''
+
+[lies."flag.private-true"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_PRIVATE"
+value = "01"
+'''
+
+# The material hidden: no attribute, or its length unavailable.
+[lies."flag.point-dropped"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_EC_POINT"
+drop = true
+'''
+
+[lies."flag.point-unavailable"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_EC_POINT"
+length = "unavailable"
+'''
+
+[lies."flag.value-dropped"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_VALUE"
+drop = true
+'''
+
+# A mechanism no longer listed.
+[lies."flag.no-ecdh"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetMechanismList"
+hide_mechanisms = ["CKM_ECDH1_DERIVE"]
+'''
+
+[lies."flag.no-ec-generation"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetMechanismList"
+hide_mechanisms = ["CKM_EC_KEY_PAIR_GEN"]
+'''
+
+[lies."flag.no-aes-generation"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetMechanismList"
+hide_mechanisms = ["CKM_AES_KEY_GEN"]
+'''
+
+# A write-protected token: what writes is unsupported, its dry run too; what reads passes.
+[[block]]
+lies = ["flag.write-protected"]
+verbs = ["delete"]
+objects = ["ec-sign", "aes", "cert", "data", "pub"]
+expect = { exit = 15 }
+
+[[block]]
+lies = ["flag.write-protected"]
+verbs = ["delete --dry-run"]
+objects = ["ec-sign"]
+expect = { exit = 15, red = "L4a-3: a dry run opens its token to read, and does not refuse a write-protected token the run refuses (15)" }
+
+[[block]]
+lies = ["flag.write-protected"]
+verbs = ["create", "create --dry-run"]
+objects = ["new"]
+expect = { exit = 15 }
+
+[[block.override]]
+verbs = ["create --dry-run"]
+expect = { exit = 15, red = "L4a-3: a dry run opens its token to read, and does not refuse a write-protected token the run refuses (15)" }
+
+[[block]]
+lies = ["flag.write-protected"]
+verbs = ["create"]
+objects = ["new-aes"]
+expect = { exit = 15 }
+
+[[block]]
+lies = ["flag.write-protected"]
+verbs = ["check", "lock"]
+objects = ["ec-sign"]
+expect = { exit = 0 }
+
+# create opens its token to write, a pair it only verifies too.
+[[block]]
+lies = ["flag.write-protected"]
+verbs = ["create"]
+objects = ["ec-sign"]
+expect = { exit = 15 }
+
+# A run spends at most one failed PIN attempt, and never the last: a locked PIN or its last try is unavailable.
+[[block]]
+lies = ["flag.pin-locked", "flag.pin-final-try"]
+verbs = ["check", "delete", "check --token"]
+objects = ["ec-sign"]
+expect = { exit = 16 }
+
+[[block]]
+lies = ["flag.pin-locked", "flag.pin-final-try"]
+verbs = ["create"]
+objects = ["new"]
+expect = { exit = 16 }
+
+# The SO PIN is not the user's: its flags stop nothing.
+[[block]]
+lies = ["flag.so-pin-locked"]
+verbs = ["check", "lock --dry-run"]
+objects = ["ec-sign"]
+expect = { exit = 0 }
+
+# A key that says it cannot do what its binding needs is not the key the lock holds.
+[[block]]
+lies = ["flag.sign-false"]
+verbs = ["check"]
+objects = ["ec-sign", "aes", "hmac"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["flag.sign-false"]
+verbs = ["create"]
+objects = ["ec-sign"]
+expect = { exit = 13 }
+
+# A secret key that says it can leave the token.
+[[block]]
+lies = ["flag.sensitive-false", "flag.extractable-true"]
+verbs = ["check"]
+objects = ["aes", "aes-wrap"]
+expect = { exit = 13 }
+
+# A data object's CKA_PRIVATE is part of what was declared.
+[[block]]
+lies = ["flag.private-false"]
+verbs = ["check", "lock --dry-run"]
+objects = ["data"]
+expect = { exit = 13 }
+
+# A data object the token says is private is hashed only where the spec declares it so.
+[[block]]
+lies = ["flag.private-true"]
+verbs = ["check"]
+objects = ["data-public"]
+expect = { exit = 15 }
+
+[[block]]
+lies = ["flag.point-dropped", "flag.point-unavailable"]
+verbs = ["check"]
+objects = ["ec-sign", "pub"]
+expect = { exit = 11 }
+
+[[block]]
+lies = ["flag.value-dropped"]
+verbs = ["check"]
+objects = ["cert", "data-public"]
+expect = { exit = 15 }
+
+[[block]]
+lies = ["flag.no-ecdh"]
+verbs = ["check"]
+objects = ["ec-derive"]
+expect = { exit = 15 }
+
+# A mechanism the token does not list: refused by the plan, before any call.
+[[block]]
+lies = ["flag.no-ec-generation"]
+verbs = ["create", "create --dry-run"]
+objects = ["new"]
+expect = { exit = 15, rule = "capability" }
+
+[[block]]
+lies = ["flag.no-aes-generation"]
+verbs = ["create", "create --dry-run"]
+objects = ["new-aes"]
+expect = { exit = 15, rule = "capability" }
+
+# ── CHANGE: a value that changes between two reads of one run.
+
+# The public key the run reads after its proof began is another's.
+[lies."change.point"]
+class = "CHANGE"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+from_seq = {seq:C_SignInit}
+attribute = "CKA_EC_POINT"
+from_label = "{other}"
+'''
+
+# The token's PIN counters say the last try once the run has begun: the per-use login of an
+# always-authenticate key goes on, with the PIN that opened the session, which cannot be wrong
+# (token/possession.rs sign_with_pin). A run reads the counters before it spends a try.
+[lies."change.final-try"]
+class = "CHANGE"
+plan = '''
+[[rule]]
+fn = "C_GetTokenInfo"
+from = 2
+set_flags = ["CKF_USER_PIN_FINAL_TRY"]
+'''
+
+[[block]]
+lies = ["change.point"]
+verbs = ["check", "lock", "lock --dry-run", "create"]
+objects = ["ec-sign"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["change.point"]
+verbs = ["create"]
+objects = ["new"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["change.final-try"]
+verbs = ["check", "lock --dry-run"]
+objects = ["rsa-always-auth"]
+expect = { exit = 0 }
+
+# ── FORGE: an output the key did not make.
+
+# A byte of every signature (a MAC included) changed.
+[lies."forge.sign"]
+class = "FORGE"
+plan = '''
+[[rule]]
+fn = "C_Sign"
+corrupt = true
+'''
+
+[lies."forge.decrypt"]
+class = "FORGE"
+plan = '''
+[[rule]]
+fn = "C_Decrypt"
+corrupt = true
+'''
+
+[lies."forge.wrap"]
+class = "FORGE"
+plan = '''
+[[rule]]
+fn = "C_WrapKey"
+corrupt = true
+'''
+
+# The point cut short.
+[lies."forge.point"]
+class = "FORGE"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_EC_POINT"
+truncate = 10
+'''
+
+[lies."forge.value"]
+class = "FORGE"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_VALUE"
+truncate = 10
+'''
+
+# A proof whose signature or MAC is not the key's.
+[[block]]
+lies = ["forge.sign"]
+verbs = ["check"]
+objects = ["ec-sign", "rsa-always-auth", "ec-derive", "rsa-unwrap"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["forge.sign"]
+verbs = ["lock", "lock --dry-run", "create"]
+objects = ["ec-sign"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["forge.sign"]
+verbs = ["create"]
+objects = ["new"]
+expect = { exit = 13 }
+
+# A commitment that is not the lock's.
+[[block]]
+lies = ["forge.sign"]
+verbs = ["check", "lock", "create"]
+objects = ["aes", "hmac"]
+expect = { exit = 10 }
+
+[[block]]
+lies = ["forge.sign"]
+verbs = ["delete", "delete --dry-run"]
+objects = ["ec-sign"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["forge.sign"]
+verbs = ["delete", "delete --dry-run"]
+objects = ["aes"]
+expect = { exit = 14, rule = "if-match" }
+
+[[block]]
+lies = ["forge.decrypt"]
+verbs = ["check"]
+objects = ["rsa-decrypt"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["forge.wrap"]
+verbs = ["check"]
+objects = ["aes-wrap"]
+expect = { exit = 10 }
+
+[[block]]
+lies = ["forge.point"]
+verbs = ["check", "delete"]
+objects = ["ec-sign", "pub"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["forge.point"]
+verbs = ["lock"]
+objects = ["ec-sign"]
+expect = { exit = 13 }
+
+# A certificate cut short is no certificate; a data object's value cut short another value.
+[[block]]
+lies = ["forge.value"]
+verbs = ["check", "delete"]
+objects = ["cert"]
+expect = { exit = 13 }
+
+[[block]]
+lies = ["forge.value"]
+verbs = ["check"]
+objects = ["data", "data-public"]
+expect = { exit = 10 }
+
+[[block]]
+lies = ["forge.value"]
+verbs = ["delete"]
+objects = ["data"]
+expect = { exit = 14, rule = "if-match" }
+
+# ── BLOB: a blob the module round-trips that is not what it made.
+
+[lies."blob.transcode"]
+class = "BLOB"
+plan = '''
+[[rule]]
+fn = "C_WrapKey"
+transcode = true
+'''
+
+# A rebind unwraps under the same module, which reads its own blobs back.
+[[block]]
+lies = ["blob.transcode"]
+verbs = ["check"]
+objects = ["rebind"]
+expect = { exit = 0 }
+
+# A kw commitment is the wrap's bytes: a transcoded wrap is another commitment.
+[[block]]
+lies = ["blob.transcode"]
+verbs = ["check", "lock", "lock --dry-run", "create"]
+objects = ["aes-wrap"]
+expect = { exit = 10 }
+
+[[block]]
+lies = ["blob.transcode"]
+verbs = ["delete", "delete --dry-run"]
+objects = ["aes-wrap"]
+expect = { exit = 14, rule = "if-match" }
+
+# ── DEV: the same call failing as a device (16, `device`) and refused by the module.
+
+[lies."dev.sign"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_SignInit"
+of_label = "{label}"
+rv = "CKR_DEVICE_ERROR"
+'''
+
+[lies."refused.sign"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_SignInit"
+of_label = "{label}"
+rv = "CKR_KEY_FUNCTION_NOT_PERMITTED"
+'''
+
+[lies."dev.read"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+rv = "CKR_DEVICE_ERROR"
+'''
+
+[lies."dev.find"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_FindObjectsInit"
+rv = "CKR_DEVICE_ERROR"
+'''
+
+[lies."dev.destroy"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_DestroyObject"
+of_label = "{label}"
+rv = "CKR_DEVICE_ERROR"
+'''
+
+[lies."refused.destroy"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_DestroyObject"
+of_label = "{label}"
+rv = "CKR_ACTION_PROHIBITED"
+'''
+
+[lies."dev.generate"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_GenerateKeyPair"
+rv = "CKR_DEVICE_ERROR"
+
+[[rule]]
+fn = "C_GenerateKey"
+rv = "CKR_DEVICE_ERROR"
+'''
+
+[lies."refused.generate"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_GenerateKeyPair"
+rv = "CKR_TEMPLATE_INCONSISTENT"
+
+[[rule]]
+fn = "C_GenerateKey"
+rv = "CKR_TEMPLATE_INCONSISTENT"
+'''
+
+[lies."dev.derive"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_DeriveKey"
+rv = "CKR_DEVICE_ERROR"
+'''
+
+[lies."refused.derive"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_DeriveKey"
+rv = "CKR_KEY_FUNCTION_NOT_PERMITTED"
+'''
+
+[lies."dev.decrypt"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_DecryptInit"
+of_label = "{label}"
+rv = "CKR_DEVICE_ERROR"
+'''
+
+[lies."refused.decrypt"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_DecryptInit"
+of_label = "{label}"
+rv = "CKR_KEY_FUNCTION_NOT_PERMITTED"
+'''
+
+# The MAC with the derived or unwrapped secret, or the signature, fails.
+[lies."dev.mac"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_Sign"
+rv = "CKR_DEVICE_ERROR"
+'''
+
+# The PIN refused once the module took it, and the per-use login of an always-authenticate key.
+[lies."refused.login"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_Login"
+when = "after"
+rv = "CKR_PIN_INCORRECT"
+'''
+
+[lies."refused.login.per-use"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_Login"
+nth = 2
+rv = "CKR_PIN_INCORRECT"
+'''
+
+# A device failure is never a verdict: the row says device, and names no rule.
+[[block]]
+lies = ["dev.sign"]
+verbs = ["lock", "lock --dry-run", "create"]
+objects = ["ec-sign"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["dev.sign"]
+verbs = ["check"]
+objects = ["ec-sign", "aes"]
+expect = { exit = 16 }
+
+[[block.override]]
+objects = ["aes"]
+expect = { exit = 16, red = "L4a-1: a commitment's device failure is said unsupported (15), its row device: token/identity.rs commit maps every module error to Unsupported" }
+
+[[block]]
+lies = ["refused.sign"]
+verbs = ["check"]
+objects = ["ec-sign", "aes"]
+expect = { exit = 15 }
+
+[[block]]
+lies = ["refused.sign"]
+verbs = ["lock --dry-run"]
+objects = ["ec-sign"]
+expect = { exit = 15 }
+
+[[block]]
+lies = ["dev.read"]
+verbs = ["lock", "lock --dry-run", "delete", "delete --dry-run"]
+objects = ["ec-sign"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["dev.read"]
+verbs = ["check"]
+objects = ["ec-sign", "cert", "data", "pub"]
+expect = { exit = 16 }
+
+[[block]]
+lies = ["dev.find"]
+verbs = ["lock --dry-run", "create", "create --dry-run"]
+objects = ["ec-sign"]
+expect = { exit = 16, device = true }
+
+[[block.override]]
+verbs = ["create --dry-run"]
+expect = { exit = 16, device = true, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
+
+[[block]]
+lies = ["dev.find"]
+verbs = ["create --dry-run"]
+objects = ["new-aes"]
+expect = { exit = 16, device = true, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
+
+[[block]]
+lies = ["dev.find"]
+verbs = ["check"]
+objects = ["ec-sign"]
+expect = { exit = 16 }
+
+# Every object of the token fails its find (16): several failures, 20.
+[[block]]
+lies = ["dev.find"]
+verbs = ["check --token"]
+objects = ["ec-sign"]
+expect = { exit = 20 }
+
+[[block]]
+lies = ["dev.destroy"]
+verbs = ["delete"]
+objects = ["ec-sign", "aes", "cert", "data", "pub"]
+expect = { exit = 16, device = true }
+
+# A destroy the module refuses is unavailable (token/generate.rs destroy_plain), never a device failure.
+[[block]]
+lies = ["refused.destroy"]
+verbs = ["delete"]
+objects = ["ec-sign", "cert"]
+expect = { exit = 16 }
+
+[[block]]
+lies = ["dev.generate"]
+verbs = ["create"]
+objects = ["new", "new-aes"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["refused.generate"]
+verbs = ["create"]
+objects = ["new", "new-aes"]
+expect = { exit = 15 }
+
+[[block]]
+lies = ["dev.derive"]
+verbs = ["check", "lock --dry-run"]
+objects = ["ec-derive"]
+expect = { exit = 16 }
+
+[[block.override]]
+verbs = ["lock --dry-run"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["refused.derive"]
+verbs = ["check", "lock --dry-run"]
+objects = ["ec-derive"]
+expect = { exit = 15 }
+
+[[block]]
+lies = ["dev.decrypt"]
+verbs = ["check", "lock --dry-run"]
+objects = ["rsa-decrypt"]
+expect = { exit = 16 }
+
+[[block.override]]
+verbs = ["lock --dry-run"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["refused.decrypt"]
+verbs = ["check", "lock --dry-run"]
+objects = ["rsa-decrypt"]
+expect = { exit = 15 }
+
+# The host's MAC over what the key unwrapped (the unwrap proof) failing as a device.
+[[block]]
+lies = ["dev.mac"]
+verbs = ["check", "lock --dry-run"]
+objects = ["rsa-unwrap"]
+expect = { exit = 16 }
+
+[[block.override]]
+verbs = ["lock --dry-run"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["dev.mac"]
+verbs = ["check"]
+objects = ["ec-sign", "ec-derive"]
+expect = { exit = 16 }
+
+# A PIN the token refuses: one attempt spent, never retried.
+[[block]]
+lies = ["refused.login"]
+verbs = ["check", "lock", "delete", "create"]
+objects = ["ec-sign"]
+expect = { exit = 16 }
+
+[[block]]
+lies = ["refused.login.per-use"]
+verbs = ["check"]
+objects = ["rsa-always-auth"]
+expect = { exit = 16 }
+
+# ── LOSS: the device or the session gone from one call of a run on.
+
+[lies."loss.removed"]
+class = "LOSS"
+plan = '''
+[[rule]]
+fn = "*"
+from_seq = {seq:C_SignInit}
+rv = "CKR_DEVICE_REMOVED"
+'''
+
+[lies."loss.session"]
+class = "LOSS"
+plan = '''
+[[rule]]
+fn = "*"
+from_seq = {seq:C_SignInit}
+rv = "CKR_SESSION_HANDLE_INVALID"
+'''
+
+[lies."loss.destroy"]
+class = "LOSS"
+plan = '''
+[[rule]]
+fn = "*"
+from_seq = {seq:C_DestroyObject}
+rv = "CKR_DEVICE_REMOVED"
+'''
+
+[lies."loss.generate"]
+class = "LOSS"
+plan = '''
+[[rule]]
+fn = "*"
+from_seq = {seq:C_GenerateKeyPair}
+rv = "CKR_TOKEN_NOT_PRESENT"
+'''
+
+[lies."loss.find"]
+class = "LOSS"
+plan = '''
+[[rule]]
+fn = "*"
+from_seq = {seq:C_FindObjectsInit}
+rv = "CKR_DEVICE_REMOVED"
+'''
+
+# A device gone mid-run is unavailable, and the lock keeps what it held.
+[[block]]
+lies = ["loss.removed", "loss.session"]
+verbs = ["lock", "create"]
+objects = ["ec-sign"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["loss.removed"]
+verbs = ["lock --dry-run"]
+objects = ["ec-sign"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["loss.removed", "loss.session"]
+verbs = ["check"]
+objects = ["ec-sign"]
+expect = { exit = 16 }
+
+[[block]]
+lies = ["loss.removed"]
+verbs = ["check"]
+objects = ["aes"]
+expect = { exit = 16, red = "L4a-1: a commitment's device failure is said unsupported (15), its row device: token/identity.rs commit maps every module error to Unsupported" }
+
+[[block]]
+lies = ["loss.removed"]
+verbs = ["create"]
+objects = ["new", "new-aes"]
+expect = { exit = 16, device = true, changed = [
+  "token",
+], why = "the module is gone before the undo: what it made stays on the token, and the run says so" }
+
+[[block.override]]
+objects = ["new-aes"]
+expect = { exit = 16, device = true, changed = [
+  "token",
+], why = "the module is gone before the undo: what it made stays on the token, and the run says so", red = "L4a-1: a commitment's device failure is said unsupported (15), its row device: token/identity.rs commit maps every module error to Unsupported" }
+
+[[block]]
+lies = ["loss.destroy"]
+verbs = ["delete"]
+objects = ["ec-sign", "aes", "cert", "data", "pub"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["loss.generate"]
+verbs = ["create"]
+objects = ["new"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["loss.find"]
+verbs = ["delete --dry-run", "create --dry-run"]
+objects = ["ec-sign"]
+expect = { exit = 16, device = true }
+
+[[block.override]]
+verbs = ["create --dry-run"]
+expect = { exit = 16, device = true, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
+
+[[block]]
+lies = ["loss.find"]
+verbs = ["create --dry-run"]
+objects = ["new"]
+expect = { exit = 16, device = true, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
+
+# ── Grid points no cell covers, each decided.
+
+[[na]]
+classes = "*"
+verbs = ["validate"]
+objects = "*"
+why = "validate opens no token: no lie reaches it"
+
+# ── Rules of the plan no lie can fire here, each with the test of its own that does
+# (liar_lint.rs: the test exists, and names the rule).
+
+[[unit]]
+rule = "placement"
+test = "placement_holds_on_every_path"
+why = "where a provider places a key is the provider's answer, asked before any module call"
+
+[[unit]]
+rule = "own-generation"
+test = "a_provider_this_build_lacks_is_said"
+why = "a provider that generates from its own template only; SoftHSM's generic provider has none"
+
+[[unit]]
+rule = "templates"
+test = "the_gate_asks_the_provider_about_a_generation"
+why = "the templates as the provider adjusts them; SoftHSM's generic provider adjusts none"
+
+[[unit]]
+rule = "locator-free"
+test = "a_dry_run_refuses_what_the_run_refuses_on_the_token"
+why = "p11-fault adds an object only to a search that found one: a free locator cannot be lied full"
+
+[[unit]]
+rule = "unpinned-exists"
+test = "a_dry_run_refuses_what_the_run_refuses_on_the_token"
+why = "as locator-free: an object under a free locator is the token's state, not a lie"
+
+[[unit]]
+rule = "needs-login"
+test = "private_data_objects_are_identified_when_declared"
+why = "a token configured without a PIN; a login the module only claims is ok.login's 16"
+
+[[unit]]
+rule = "delete-refused"
+test = "a_profile_row_that_says_the_module_keeps_keys_refuses_the_delete"
+why = "a module profile's row, read before any destroy; the module refusing is refused.destroy"
+
+# Rules neither a lie nor a test of their own names: the tests rules.rs's `held` lists for them
+# assert the exit code alone (validate.rs, camigrate's dry_run.rs, lockfile.rs), so each is
+# exempt until one asserts its name. `max` only goes down.
+[exempt]
+max = 3
+
+[exempt.rules]
+attestation-cover = "the spec's attestation against its provider, decided before any token is opened"
+imported-attestation = "an import's, which camigrate makes: its liars are camigrate's table's"
+lock-writable = "the lock file's, not the module's"
+
+[[na]]
+classes = "*"
+verbs = ["create", "create --dry-run"]
+objects = ["certificate", "data", "public"]
+why = "adopted, never created: create refuses them (17) before any token is opened"
+
+[[na]]
+classes = "*"
+verbs = ["check --token"]
+objects = ["secret", "certificate", "data", "public"]
+why = "check --token is check of each object in one session: each object's verdict is its check cells'; its own cells, on ec-sign, show one refusal ends the run (20), or its token's failure (16)"
+
+[[na]]
+classes = ["CHANGE", "FORGE", "BLOB", "LOSS"]
+verbs = ["check --token"]
+objects = ["private"]
+why = "as for the other classes: check of each object, whose cells these are"
+
+[[na]]
+classes = ["CHANGE"]
+verbs = "*"
+objects = ["secret", "certificate", "data", "public"]
+why = "a run reads each value it decides by once (a_resolve_reads_the_public_key_once): within a run only a key pair's two objects are read twice, change.point's; between runs a change is an OTHER lie told to check after lock"
+
+[[na]]
+classes = ["CHANGE"]
+verbs = ["delete", "delete --dry-run", "create --dry-run"]
+objects = ["private"]
+why = "a delete identifies as check does, whose change.point cells these are, then destroys, after which only the re-find reads (ok.destroy's); a dry run's create proves nothing (forge.sign's create --dry-run cells)"
+
+[[na]]
+classes = ["FORGE"]
+verbs = ["create --dry-run"]
+objects = ["private", "secret"]
+why = "a dry run's create asks the rules on the token, and makes no proof or commitment: no output to forge"
+
+[[na]]
+classes = ["BLOB"]
+verbs = "*"
+objects = ["private", "certificate", "data", "public"]
+why = "only a secret key's identity wraps (kw, wrap-rebind); camigrate's moves, which wrap the rest, are its table's"
+
+[[na]]
+classes = ["BLOB"]
+verbs = ["create --dry-run"]
+objects = ["secret"]
+why = "a dry run commits nothing, so wraps nothing"
+
+[[na]]
+classes = ["LOSS"]
+verbs = ["create --dry-run", "delete --dry-run"]
+objects = ["certificate", "data", "public", "secret"]
+why = "a dry run reads as check reads (loss.removed's cells), and writes nothing a loss could cut short; loss.find's cells take it at its first search"
+
+[[na]]
+classes = "*"
+verbs = ["lock", "lock --dry-run", "delete --dry-run"]
+objects = ["secret", "certificate", "data", "public"]
+why = "lock and the dry runs identify each object as check does (one resolve, then the lock's or the plan's step): each lie's cells there take a key pair, and check's every class"
+
+[[na]]
+classes = ["OK"]
+verbs = ["check"]
+objects = ["secret", "certificate", "public"]
+why = "nothing but a delete destroys, and a login is the token's, made before any object is read: ok.login's check cells on a key and a private data object"
+
+[[na]]
+classes = ["LOSS"]
+verbs = ["check"]
+objects = ["certificate", "data", "public"]
+why = "loss.removed and loss.session start at a proof, which an adopted object's check never makes; a device gone at its reads is dev.read's cells on each"
