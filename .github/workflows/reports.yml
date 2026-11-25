@@ -1,21 +1,17 @@
-# The README's coverage and mutation badges: `nix build .#coverage` on each push to main,
-# `nix build .#mutants` (hours on a runner) weekly, both on a manual run. Each is a report,
-# never a check (docs/DEVELOPMENT.md, "Testing"): scripts/badges.sh reduces it to a shields.io
-# endpoint file, pushed to the `badges` branch, which holds nothing else. A report that fails
-# leaves its badge as it was.
+# The README's coverage badge: `nix build .#coverage` on each push to main and on a manual run.
+# It is a report, never a check (docs/DEVELOPMENT.md, "Testing"): scripts/badges.sh reduces it
+# to a shields.io endpoint file, pushed to the `badges` branch, which holds nothing else. A
+# report that fails leaves its badge as it was. The mutation badge is mutants.yml's monthly
+# sweep.
 #
-# Each report is two jobs, so the write token never sits beside repository code: the build
-# runs Nix and badges.sh with the read-only token and hands the badge file on as an artifact;
-# its publish job, the only one that may write, downloads that file and pushes it. The reports
-# do not wait for each other: coverage publishes without waiting hours for mutants, so a later
-# run's coverage is never overwritten by an older one published late.
+# The report is two jobs, so the write token never sits beside repository code: the build runs
+# Nix and badges.sh with the read-only token and hands the badge file on as an artifact; the
+# publish job, the only one that may write, downloads that file and pushes it.
 name: reports
 
 on:
   push:
     branches: [main]
-  schedule:
-    - cron: "0 4 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -23,7 +19,7 @@ permissions:
 
 jobs:
   coverage:
-    # One run of each report at a time, the newest kept.
+    # One run at a time, the newest kept.
     concurrency:
       group: ${{ github.workflow }}-coverage
       cancel-in-progress: true
@@ -31,7 +27,7 @@ jobs:
     timeout-minutes: 300
     env:
       REPORT: coverage
-    steps: &build
+    steps:
       # The runner image's toolchains the build never uses: room for the Nix store.
       - name: Free disk space
         run: |
@@ -59,17 +55,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  mutants:
-    if: github.event_name != 'push'
-    concurrency:
-      group: ${{ github.workflow }}-mutants
-      cancel-in-progress: true
-    runs-on: ubuntu-latest
-    timeout-minutes: 300
-    env:
-      REPORT: mutants
-    steps: *build
-
   # No checkout and no Nix: nothing of the repository runs next to the write token.
   publish-coverage:
     needs: coverage
@@ -79,13 +64,13 @@ jobs:
       contents: write
     env:
       REPORT: coverage
-    steps: &publish
+    steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: badge-${{ env.REPORT }}
           path: ${{ runner.temp }}/badge
-      # The branch is created by the first run. The other report may push between the fetch and
-      # the push: fetch again and retry.
+      # The branch is created by the first run. mutants.yml's badge may push between the fetch
+      # and the push: fetch again and retry.
       - name: Push the badge
         env:
           TOKEN: ${{ github.token }}
@@ -111,13 +96,3 @@ jobs:
             sleep $((attempt * 5))
           done
           exit 1
-
-  publish-mutants:
-    needs: mutants
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    env:
-      REPORT: mutants
-    steps: *publish

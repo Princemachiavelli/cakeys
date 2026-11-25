@@ -10,7 +10,9 @@
 # - Mondays at 02:00 UTC: the last week's changes on main, both tiers, the gate in `touched`
 #   mode. The first Monday of a month, instead, every mutant of both tiers in shards (`sweep`):
 #   the gate fails on new survivors and on stale entries, and the README's badge is published.
-# - By hand: either scheduled run, on any branch (the badge only from main).
+# - By hand: either scheduled run, on any branch (the badge only from main); or `calibrate`, the
+#   token tier's time per mutant (phase2-3-design.md §5.5): both passes over
+#   crates/pkcs11/src/token/policy.rs as if it were new, 66 mutants, the token pass in 2 shards.
 #
 # The gate is in report mode until the first sweep seeds the baseline (`enforce = false`): it
 # prints what would fail and passes, and the sweep uploads the seeded baseline to commit.
@@ -26,9 +28,9 @@ on:
   workflow_dispatch:
     inputs:
       run:
-        description: "sweep: every mutant; weekly: the last week's changes on this branch"
+        description: "sweep: every mutant; weekly: the last week's changes on this branch; calibrate: token/policy.rs"
         type: choice
-        options: [sweep, weekly]
+        options: [sweep, weekly, calibrate]
         default: sweep
 
 permissions:
@@ -65,7 +67,7 @@ jobs:
           shards() { if [ "$1" = 1 ]; then echo '[""]'; else jq -cn --argjson n "$1" '[range($n) | "\(.)/\($n)"]'; fi; }
           mkdir -p "$RUNNER_TEMP/diff"
           case $EVENT in
-          pull_request) kind=pr ;;
+          pull_request) kind="pr" ;;
           schedule) if [ "$(date -u +%-d)" -le 7 ]; then kind=sweep; else kind=weekly; fi ;;
           *) kind=$RUN ;;
           esac
@@ -84,6 +86,11 @@ jobs:
           sweep)
             echo "mode=sweep" >>"$GITHUB_OUTPUT"
             set -- 4 4 16
+            ;;
+          calibrate)
+            { git diff --no-index /dev/null crates/pkcs11/src/token/policy.rs || [ $? = 1 ]; } >"$RUNNER_TEMP/diff/changes.diff"
+            echo "mode=diff" >>"$GITHUB_OUTPUT"
+            set -- 1 1 2
             ;;
           esac
           empty=false
@@ -258,6 +265,16 @@ jobs:
           path: ${{ runner.temp }}/first
       - *build
       - *upload
+      # What sets the shard counts and the 120-mutant cap: a mutant's build and tests, in seconds.
+      - name: Time per mutant
+        run: |
+          for f in result/*/outcomes.json; do
+            [ -f "$f" ] || continue
+            jq -r --arg scope "$(basename "$(dirname "$f")")" \
+              '[.outcomes[] | select(.scenario != "Baseline") | [.phase_results[].duration] | add] as $t
+               | select($t | length > 0)
+               | "\($scope): \($t | length) mutants, \($t | add / length | floor) s each, \($t | max | floor) s at most"' "$f"
+          done | tee -a "$GITHUB_STEP_SUMMARY"
 
   # The token tier's gate for a pull request or a week: both passes, one run.
   tokens-gate:
