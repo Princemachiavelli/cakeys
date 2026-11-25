@@ -321,6 +321,11 @@ Outcomes:
   `CKF_USER_PIN_FINAL_TRY`, and the context-specific login reuses the PIN that already logged in,
   so it cannot be wrong (a successful login resets PIV's counter). `CKF_USER_PIN_COUNT_LOW` is a
   warning. A slot's PIV *touch* policy is invisible in PKCS#11 and not handled (OPEN.md).
+- **A login is what the session shows.** After every `C_Login` the module accepts (the user's
+  at open, the SO step's, the user's again after it), `C_GetSessionInfo` must show the login: a
+  session left public hides every private object, so a search would read a key as absent and
+  `delete` would drop its realisation. It is unavailable (16) instead (review 2026-11-24,
+  found through the Phase 2 design; `a_login_the_session_does_not_show_is_unavailable`).
 - **`pop-sign-pin` is recorded, never configured:** `binding = "pop-sign-pin"` in keys.toml is
   invalid (17); `pop-sign` (the default) becomes it on an always-authenticate key.
 
@@ -655,6 +660,12 @@ module and what real builds may reach.
 - **Refused operations leave nothing behind:** checks before creating, and cleanup after a failed
   identity — except a key on a module that cannot delete keys (ykcs11), which stays and is
   reported.
+- **A destroy is verified, never taken on the module's word** (review 2026-11-24 B-13). A
+  provider or a module profile that says the module keeps what it is asked to remove
+  (`Provider::deletion`, `delete.<class> = no`) refuses the delete before anything is
+  destroyed, a dry run too (`delete-refused`, 15); after every destroy cakeys looks under the
+  locator again, and an object still there is `delete-kept` (16), the lock keeping the
+  realisation.
 - **Token paths reach only builds that require the token's feature.**
 
 ### 8.2 Not enforced / known gaps

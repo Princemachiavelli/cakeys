@@ -16,10 +16,7 @@ use cakeys_core::config::Locator;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
-use cakeys_pkcs11::Token;
-use cakeys_pkcs11::provider::{
-    AttestCtx, AttestationCap, Attested, Checked, Destroy, PlaintextKind, PlaintextVia, Provider,
-};
+use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, PlaintextKind, PlaintextVia, Provider};
 use cakeys_pkcs11::token::{ModuleInfo, read_attribute};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass};
 use std::sync::LazyLock;
@@ -127,16 +124,12 @@ impl Provider for Ykcs11 {
     }
 
     /// A key is never claimed deleted (ykcs11 keeps it; the advice names `ykman`); anything else
-    /// is. The token has entered the SO session already (review 2026-11-24 B-2), so the refusal
-    /// comes after an SO login.
-    fn destroy(&self, tok: &Token, req: &Checked<Destroy<'_>>) -> Result<usize> {
-        if req.object.class.is_key() {
-            let advice = Self::keeps_destroyed_keys(req.locator);
-            return Err(KmError::Unsupported(
-                format!("deleting {} on '{}': {advice}", req.object.class, tok.name).into(),
-            ));
+    /// is. Asked before any SO login (review 2026-11-24 B-2).
+    fn deletion(&self, class: Class, loc: &Locator) -> Result<()> {
+        if class.is_key() {
+            return Err(KmError::Unsupported(Self::keeps_destroyed_keys(loc).into()));
         }
-        tok.destroy_plain(req)
+        Ok(())
     }
 
     /// ykcs11 reports `CKA_DERIVE` false on every private key, from a fixed per-slot table

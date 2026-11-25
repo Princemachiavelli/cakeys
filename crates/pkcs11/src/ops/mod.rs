@@ -561,7 +561,10 @@ impl Deleted {
 /// `Unsupported` for a `publicOnly` adoption or when no identity can be computed to check;
 /// `Unavailable` when a session without login finds no private object (it cannot see one);
 /// `PreconditionFailed` when there is nothing to check against (no `--if-match`, no locked
-/// ID) or the token holds another ID than expected. `destroy` keeps its own refusals (15).
+/// ID) or the token holds another ID than expected; `Unsupported` (15, `delete-refused`), a dry
+/// run too, when the module's profile or provider says it does not remove the object;
+/// `Unavailable` (16, `delete-kept`) when an object destroyed is still under the locator. A
+/// refusal leaves the lock as it was.
 pub fn delete(
     t: &Target,
     tok: &Token,
@@ -579,6 +582,8 @@ pub fn delete(
     // An expected identity is only required when there is something to delete.
     let mut outcome = Deleted::Absent;
     if let Some(h) = tok.find_key(&t.object, loc, false)? {
+        // Whether the module would remove it: a dry run says so as the delete would.
+        rules::delete_refused(t, tok)?;
         // Proven like `resolve`: If-Match must not pass on a public object beside another key.
         let Computed { ids: got, spki, .. } = compute_ids(t, tok, lock, h, plan_mode(t)?)?;
         // The schemes computed, in the spec's order of preference: the first is the primary one.

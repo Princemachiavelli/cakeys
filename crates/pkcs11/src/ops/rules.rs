@@ -66,7 +66,8 @@ rules! {
     NeedsLogin = "needs-login",
     /// The object holds the identity a delete expects: 14.
     IfMatch = "if-match",
-    /// The module's profile says its `C_DestroyObject` does not remove objects of the class: 15.
+    /// The module does not remove objects of the class: its profile's `delete.<class>` row, or
+    /// the provider ([`Provider::deletion`]): 15.
     DeleteRefused = "delete-refused",
     /// What a delete destroyed is still under the locator: 16.
     DeleteKept = "delete-kept",
@@ -245,6 +246,45 @@ pub(crate) fn placement(provider: &dyn Provider, class: Class, loc: &cakeys_core
         return Ok(());
     }
     provider.placement(loc).map_err(|e| Refusal::new(Rule::Placement, e).into())
+}
+
+/// Whether `provider`'s module removes an object of `class` under `loc` ([`Provider::deletion`]):
+/// the one place it is asked, for `delete`'s plan and every destroy (`Token::destroy_handles`).
+///
+/// # Errors
+///
+/// The provider's refusal (15), naming the rule.
+pub(crate) fn deletion(provider: &dyn Provider, class: Class, loc: &cakeys_core::config::Locator) -> Result<()> {
+    provider.deletion(class, loc).map_err(|e| Refusal::new(Rule::DeleteRefused, e).into())
+}
+
+/// Whether `tok` removes `t`'s object when asked, decided before anything is looked at again or
+/// destroyed, so `delete --dry-run` says what `delete` would (review 2026-11-24 B-13): the
+/// module profile's `delete.<class>` row answering no, measured by caprobe as objects
+/// `C_DestroyObject` left behind, refuses; so does the provider ([`Provider::deletion`]). A row
+/// that is not there decides nothing: the delete is tried, and the look after it
+/// (`Token::destroy_handles`) says what stayed.
+///
+/// # Errors
+///
+/// `Unsupported` (15, `delete-refused`) naming the row and its evidence, or the provider's
+/// refusal.
+pub(crate) fn delete_refused(t: &Target, tok: &crate::Token) -> Result<()> {
+    let class = t.object.class;
+    let row = cakeys_profile::Capability::Delete(class.to_string());
+    if let Some(m) = tok.profiles.module.as_ref()
+        && m.answer(&row) == Some(false)
+    {
+        let why = m.evidence(&row, "").map_or_else(String::new, |e| format!(": {e}"));
+        let refusal = format!(
+            "{t}: token '{}' does not remove a {class} when asked ({} says {row} = no{why}); remove it with the \
+             module's own tools, then `cakeys delete` finds it absent",
+            t.token_name, m.profile
+        );
+        return Err(Refusal::new(Rule::DeleteRefused, KmError::Unsupported(refusal.into())).into());
+    }
+    deletion(tok.provider.as_ref(), class, &t.on_token.locator)
+        .map_err(|e| e.prefixed(format_args!("{t}: deleting {class} on '{}'", t.token_name)))
 }
 
 /// The rules of `t` in `mode` decided without a token, for the write `verb`, by the provider in

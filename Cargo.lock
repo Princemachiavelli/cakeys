@@ -240,6 +240,7 @@ dependencies = [
  "cakeys-cli-common",
  "cakeys-core",
  "cakeys-pkcs11",
+ "cakeys-profile",
  "clap",
  "clap_complete",
  "cmac",

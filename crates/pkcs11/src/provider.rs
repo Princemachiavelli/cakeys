@@ -239,6 +239,19 @@ pub trait Provider: Send + Sync {
         Ok(())
     }
 
+    /// Whether this module removes an object of `class` under `loc` when asked: a module whose
+    /// `C_DestroyObject` reports success and keeps it refuses (15), naming how it is removed
+    /// (ykcs11 keeps a PIV slot's key). Static, so asked before anything is destroyed and before
+    /// any SO session, by core and never by an override: by `delete`'s plan and by every destroy
+    /// of the token's ([`Token::destroy_handles`]). The default removes anything.
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` (15) naming why the object would stay.
+    fn deletion(&self, _class: cakeys_core::types::ObjectClass, _loc: &Locator) -> Result<()> {
+        Ok(())
+    }
+
     /// Create `req`'s object on `tok`. [`Token::create`] calls it, and only it can: it asks
     /// [`Self::placement`] first and enters the SO session where [`Self::manages_as_so`] says the
     /// module needs one, then hands over a [`Checked`] request no other crate can build, so an
@@ -254,11 +267,10 @@ pub trait Provider: Send + Sync {
     }
 
     /// Destroy `req`'s handles, identified by the caller, on `tok`. The token's destroys call it
-    /// in the SO session where [`Self::manages_as_so`] says the module needs one, with a
-    /// [`Checked`] request. The default is [`Token::destroy_plain`]: `C_DestroyObject` each. An
-    /// override refuses (15) where the module's `C_DestroyObject` reports success but leaves
-    /// the key (ykcs11), naming how to remove it. The count it returns is a claim: what a delete
-    /// destroyed is looked for again after it.
+    /// once [`Self::deletion`] allows them, in the SO session where [`Self::manages_as_so`] says
+    /// the module needs one, with a [`Checked`] request. The default is
+    /// [`Token::destroy_plain`]: `C_DestroyObject` each. The count it returns is a claim: what a
+    /// delete destroyed is looked for again after it.
     ///
     /// # Errors
     ///

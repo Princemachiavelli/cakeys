@@ -234,17 +234,38 @@ impl Token {
         Ok((self.destroy_handles(object, loc, &handles)?, left))
     }
 
-    /// Destroy exactly `handles` (what a failed import created), as `object` under `loc` would be.
+    /// Destroy exactly `handles` (what a failed import created), as `object` under `loc` would be:
+    /// the provider's [`Provider::deletion`], the session it writes in, its `destroy`, then a look
+    /// under `loc` for any of `handles` left (`delete-kept`).
     ///
     /// # Errors
     ///
-    /// As [`Self::destroy`].
+    /// As [`Self::destroy`]; `Unavailable` (16, `delete-kept`) when any of `handles` is still
+    /// under `loc` after the provider reported them destroyed.
     pub fn destroy_handles(&self, object: &ObjectCfg, loc: &Locator, handles: &[ObjectHandle]) -> Result<usize> {
         if handles.is_empty() {
             return Ok(0);
         }
+        // Core's order, as for a creation: whether the module removes it, then the session it
+        // writes in, then the provider.
+        crate::ops::deletion(self.provider.as_ref(), object.class, loc)
+            .map_err(|e| e.prefixed(format_args!("deleting {} on '{}'", object.class, self.name)))?;
         let req = Checked::new(Destroy { object, locator: loc, handles });
-        self.managing("deleting", || self.provider.destroy(self, &req))
+        let n = self.managing("deleting", || self.provider.destroy(self, &req))?;
+        // The count is the provider's claim (review 2026-11-24 B-13): a handle still found under
+        // the locator is an object the module kept.
+        let kept = self.find_any(loc)?.into_iter().filter(|h| handles.contains(h)).count();
+        if kept > 0 {
+            let why = format!(
+                "{kept} of the {} object(s) of {} deleted on '{}' are still under its locator {loc}: the module \
+                 said it destroyed them",
+                handles.len(),
+                object.class,
+                self.name
+            );
+            return Err(crate::ops::Refusal::new(crate::ops::Rule::DeleteKept, KmError::Unavailable(why.into())).into());
+        }
+        Ok(n)
     }
 
     /// [`Provider::destroy`]'s default, for an override to wrap: `C_DestroyObject` on each of

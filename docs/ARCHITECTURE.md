@@ -156,9 +156,9 @@ behaviour or reach outside PKCS#11:
   in-tree provider overrides it yet.
   *Operations* a provider may replace
   whole, each default plain PKCS#11 through a public `Token` method an override wraps:
-  `create` (`Token::create_declared`) and `destroy` (`Token::destroy_plain`; ykcs11 refuses a
-  key it would not erase), each called only by the token, which asks `placement` and enters the
-  SO session `manages_as_so` asks for first and hands the override a `Checked` request no other
+  `create` (`Token::create_declared`) and `destroy` (`Token::destroy_plain`), each called only
+  by the token, which asks `placement` (a creation) or `deletion` (a destroy) and enters the SO
+  session `manages_as_so` asks for first, and hands the override a `Checked` request no other
   crate can build (review 2026-11-24 B-2: an override cannot skip either), `plaintext_import`
   (its kind, with tpm2-pkcs11's `tpm2_ptool` import as the tool) and `attestation` (its
   capability, with the computation; DESIGN §3.7).
@@ -172,7 +172,9 @@ behaviour or reach outside PKCS#11:
   step that way, camigrate's imports too), `placement` (where a key may be made, generated or
   imported: ykcs11's PIV slots by `CKA_ID` alone; asked by `ops::static_rules` for every pair
   a write puts on the token, as the capability gate, `create` and `ops::check_import` ask them,
-  and by `Token::create` before every creation) and
+  and by `Token::create` before every creation), `deletion` (whether the module removes an
+  object of a class when asked: ykcs11 keeps a PIV slot's key; asked by `delete`'s plan and
+  every destroy, before any SO session) and
   `generation` (create's static half, read by the
   capability gate before any token opens: a module's own template chosen from the spec, refused
   before creating what could not be proven, kmsp11). The probe alone reads `bound_keys` (what it
