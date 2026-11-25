@@ -75,7 +75,12 @@ whatever happens to each: cakeys' row (its `exit`, the `rule` that refused it, w
 `device` failed, the `error`), with the `method` it moved by. A key file's refusals are rows
 too. An object that reached its token but could not be recorded (the lock could not be saved)
 is a row with 21 and the rule `lock-writable`, and says how to record it; nothing after it
-moves. The run exits with the first failure.
+moves. The run exits with the first failure. A dry run's plans (`--json`) and rows name the
+rules only the run decides (`deferred`): a sealed move's are `unwraps` (the blob is intact:
+13, or 16 where the module says only that it failed) and `identity` (what unwrapped is the key
+the lock pins: 10, or 13 where its proof of possession fails); a host or file move's is
+`identity` (what the source handed over is the locked key: 10). The run ends as its dry run
+did, or by one of these, or by the device.
 
 ## Decisions
 

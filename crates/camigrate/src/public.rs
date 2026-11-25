@@ -193,7 +193,8 @@ pub(crate) fn free_locator(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Res
                 unrecorded_hint(dst)
             )
             .into(),
-        ));
+        )
+        .with_rule(ops::Rule::LocatorFree.name()));
     }
     Ok(occupied)
 }
@@ -223,11 +224,10 @@ pub(crate) fn public_key(src: &Target, spki: &[u8]) -> Result<Vec<Attribute>> {
     public_key_attrs(src.object, spki).map_err(|e| prefixed(src, e))
 }
 
-/// `e`, its message led by the pair it is about.
+/// `e`, its message led by the pair it is about, its rule and return value kept.
 fn prefixed(t: &Target, e: KmError) -> KmError {
     match e {
-        KmError::Conflict(m) => KmError::Conflict(format!("{t}: {m}").into()),
-        KmError::Validation(m) => KmError::Validation(format!("{t}: {m}").into()),
+        KmError::Conflict(_) | KmError::Validation(_) => e.prefixed(t),
         other => other,
     }
 }

@@ -133,6 +133,17 @@ fn landing_checks(
     if let (true, Some(target)) = (p.ready, target) {
         static_checks(p, dst, &target.provider, registry);
     }
+    // What only the run holds (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4): the blob
+    // the target unwraps, and the key the source hands over, held to the lock's identity (D-5).
+    if p.ready {
+        match p.exposure {
+            Some(Exposure::Sealed | Exposure::Enforced) => {
+                p.deferred.extend([crate::sealed::UNWRAPS, crate::sealed::IDENTITY]);
+            }
+            Some(Exposure::Host | Exposure::File) => p.deferred.push(crate::sealed::IDENTITY),
+            Some(Exposure::Public) | None => {}
+        }
+    }
 }
 
 /// [`landing_checks`]' static rules of `dst`, with the provider named `provider`.
@@ -147,6 +158,7 @@ fn static_checks(p: &mut plan::Plan, dst: &Target, provider: &str, registry: &Re
     match verdicts {
         Ok(v) => {
             p.notes.extend(ops::deferred_lines(&v.deferred));
+            p.deferred.extend(v.deferred.iter().map(|d| d.rule.name()));
             if let Some(r) = v.refusals.into_iter().next() {
                 p.refuse(r.error);
             }

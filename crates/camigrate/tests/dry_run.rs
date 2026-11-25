@@ -602,6 +602,34 @@ fn a_lock_that_cannot_be_saved_mid_run_keeps_the_rows() {
     assert_eq!((on_soft("lm-d1"), on_soft("lm-d2")), (1, 0));
 }
 
+/// A move into a token keys.toml gives no user PIN is refused before any plan (16, the rule
+/// `needs-login`: a session without login cannot tell its locator is free), dry and real alike,
+/// with nothing written.
+#[test]
+fn a_target_without_a_pin_is_refused_before_any_plan() {
+    let Some(e) = env("needs-login") else { return };
+    let Some([soft, kry]) = e.needs("needs-login", ["softhsm", "kryoptic"]) else { return };
+    let public = "attributes = { CKA_PRIVATE = false }\n";
+    e.config(
+        &("[objects.nl]\nclass = \"CKO_DATA\"\n\n".to_owned()
+            + &Env::spec("nl-soft", "nl", public, &[soft], "nl", "")
+            + &Env::spec("nl-kry", "nl", public, &[kry], "nl", IMPORT)),
+    );
+    let path = e.dir.join("keys.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let (head, tail) = text.split_once("[tokens.kryoptic]").unwrap();
+    let (section, rest) = tail.split_once("\n\n").unwrap();
+    let section: Vec<&str> = section.lines().filter(|l| !l.starts_with("pinFile")).collect();
+    std::fs::write(&path, format!("{head}[tokens.kryoptic]{}\n\n{rest}", section.join("\n"))).unwrap();
+    let lock = e.dir.join("keys.lock");
+    let before = state::snapshot(&[&lock], &[kry.view()]);
+    for dry in [&["--dry-run"][..], &[]] {
+        let o = e.km_alone(soft, &[&["migrate", "nl", "--from", "softhsm", "--to", "kryoptic"][..], dry].concat());
+        assert_eq!(code(&o), 16, "{dry:?}: {}", stderr(&o));
+        state::assert_unchanged(&before, &state::snapshot(&[&lock], &[kry.view()]), &format!("{dry:?}"));
+    }
+}
+
 /// A key file's refusal is its row, as a bundle entry's is (review 2026-11-24 D-9: `import --in`
 /// of a key file returned every refusal before printing a row): dry and real, the run's exit and
 /// the row's are the refusal's, and the row names the rule.
@@ -1966,6 +1994,9 @@ fn sealed_moves_wrap_with_oaep_sha256_between_kryoptic_tokens() {
     e.refs[0].env = both;
     e.refs.push(Ref { name: "kryoptic2", token_label: "kmtest2", ..e.refs[0].clone() });
     let (kry, two) = (&e.refs[0], &e.refs[1]);
+    // The twin compares the databases of this configuration, not the process's (review
+    // 2026-11-24 L3).
+    assert!(two.view().db.contains(&db) && kry.view().db.contains(&db), "{:?}", two.view().db);
     let attributes = "attributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n";
     let body = transport_key(two)
         + "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n"

@@ -87,6 +87,11 @@ pub(crate) struct Plan {
     pub reasons: Vec<String>,
     /// What changes on the way (attestation, a declared vendor level, ...).
     pub notes: Vec<String>,
+    /// The rules only the run decides (`ops::Deferred`, by name): the run may end with one of
+    /// them where the plan was ready, and by nothing else (docs/archive/REVIEW-2026-11-24/
+    /// phase1-design.md §1.4). The notes say why.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deferred: Vec<&'static str>,
     /// The refusal that blocked it, where a rule the write asks did (placement 17, an occupied
     /// locator 13): the run would end with it, so the plan does ([`Refused::error`]; review
     /// 2026-11-24 D-2, D-3). `None`: ready, or blocked for a reason of the plan's own (15).
@@ -159,6 +164,7 @@ impl Plan {
             ready: true,
             reasons: vec![],
             notes: vec![],
+            deferred: vec![],
             refused: None,
         }
     }
@@ -171,6 +177,7 @@ impl Plan {
             ready: false,
             reasons,
             notes: vec![],
+            deferred: vec![],
             refused: None,
         }
     }

@@ -391,7 +391,10 @@ pub(crate) fn import(
     let created = create(b, e, dst, to, &ready, &method, &mut made).and_then(|()| {
         let origin =
             Origin { from: b.source.token.clone(), method: e.method.clone(), exposure: e.exposure, declared: false };
+        // What unwrapped and does not prove to be the key the lock pins (a failed proof of
+        // possession, 13) fails the rule only the run decides, as a mismatched ID (10) does.
         ops::lock_import(dst, to, lock, origin, notes)
+            .map_err(|err| if err.exit_code() == 13 && err.rule().is_none() { err.with_rule(IDENTITY) } else { err })
     });
     match created {
         Ok(_) => Ok(Moved::Imported),
@@ -616,6 +619,16 @@ fn create(
     }
 }
 
+/// The rule a sealed import's dry run cannot decide, and its run refuses by: whether the blob
+/// unwraps (13; 16 where the module says only that it failed, a device failure). camigrate's own,
+/// beside `ops::Rule` (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4, "deferred rules
+/// today").
+pub(crate) const UNWRAPS: &str = "unwraps";
+
+/// The other: whether what unwrapped is the key the lock pins (10, which names no rule of its
+/// own: [`crate::Tally`] names this one for it).
+pub(crate) const IDENTITY: &str = "identity";
+
 /// What a failed `C_UnwrapKey` says, by the module's return value: only a blob the module finds
 /// invalid says the bundle was tampered with or wrapped to another key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -677,6 +690,7 @@ fn unwrap_error(what: &str, e: &cryptoki::error::Error, unsupported: impl FnOnce
     match unwrap_failure(e) {
         UnwrapFailure::Tampered => {
             KmError::Conflict(format!("{what}: {e} (the bundle was tampered with, or wrapped to another key)").into())
+                .with_rule(UNWRAPS)
         }
         UnwrapFailure::Refused => unsupported(format!("{what}: {e}")),
         UnwrapFailure::Opaque => KmError::Unavailable(
@@ -685,7 +699,8 @@ fn unwrap_error(what: &str, e: &cryptoki::error::Error, unsupported: impl FnOnce
                  so check that it is the one exported)"
             )
             .into(),
-        ),
+        )
+        .with_rule(UNWRAPS),
         UnwrapFailure::Failed => KmError::Unavailable(format!("{what}: {e}").into()),
     }
     .with_rv(rv)

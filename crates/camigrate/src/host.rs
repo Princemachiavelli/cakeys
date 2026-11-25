@@ -78,7 +78,8 @@ pub(crate) fn ptool_free(dst: &Target, occupied: &Occupied) -> Result<()> {
             crate::public::unrecorded_hint(dst)
         )
         .into(),
-    ))
+    )
+    .with_rule(ops::Rule::LocatorFree.name()))
 }
 
 /// The key `src` names on `from`, verified against the lock first: its handle, and a private

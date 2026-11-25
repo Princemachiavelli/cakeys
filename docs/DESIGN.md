@@ -193,7 +193,14 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   2026-11-24 C-1): its outcome, its exit code, the rule that refused it and whether the device
   failed, so a caller, and the dry-run twin, read what happened to each from the rows alone. The
   run's exit follows from them: 0 (22 when the lock was written), the one failure's code, or 20
-  for a plan refused more than once.
+  for a plan refused more than once. camigrate's `import` and `migrate` print the same rows
+  (with the `method`), and exit with the first failure (review 2026-11-24 D-9).
+- **A dry run is held to its run** (review 2026-11-24 §1.4, C-4): the test harness's twin runs
+  camigrate's moves and cakeys' `create`, `delete`, `lock` and `gc` dry first, which
+  must leave the lock and the tokens as they were, then for real, and the run must end as the
+  dry run did, unless a row ends with a failure of the device or with a rule the dry run named
+  as deferred (a plan's `deferred`, a row's: a sealed import defers `unwraps` and `identity`,
+  which only the target's unwrap decides). What the run says on stderr admits nothing.
 - **A write that replaces a realisation says what it accepted,** one line each (`re-recorded
   …`): what keys.toml changed (locator, object, `publicOnly`, spec digest) and policy
   attributes the lock did not record are notes; a policy attribute or immutable that changed

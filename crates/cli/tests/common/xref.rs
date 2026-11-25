@@ -2,7 +2,7 @@
 //! reference token whose suite variables are set, one keys.toml naming them all, and runs of
 //! either binary against it.
 
-use super::state::{TokenView, assert_unchanged, database, snapshot};
+use super::state::{Row, TokenView, assert_unchanged, database, snapshot};
 use super::{BIN, REQUIRE_ALL, Run, required_var, sibling, skip};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -40,7 +40,7 @@ impl Ref {
             module: &self.module,
             label: self.token_label,
             env: self.env,
-            db: database(&self.module),
+            db: database(&self.module, self.env),
         }
     }
 }
@@ -143,26 +143,25 @@ impl Env {
         self.run(&sibling("cakeys"), r, args)
     }
 
-    /// Run `bin` against reference `r`. A `camigrate` run that moves something (`export`,
-    /// `import`, `migrate` without `--dry-run`) is preceded by its dry-run twin: the same
-    /// arguments with `--dry-run`, which must change nothing and whose verdict the real run must
-    /// keep ([`Self::dry_run_twin`]).
+    /// Run `bin` against reference `r`. A run that writes (`camigrate`'s `export`, `import`,
+    /// `migrate`; `cakeys`' `create`, `delete`, `lock`, `gc`; without `--dry-run`) is preceded
+    /// by its dry-run twin: the same arguments with `--dry-run`, which must change nothing and
+    /// whose verdict the real run must keep ([`Self::dry_run_twin`]).
     fn run(&self, bin: &std::path::Path, r: &Ref, args: &[&str]) -> Output {
         let twin = self.dry_run_twin(bin, r, args);
         let out = self.run_once(bin, r, args);
         if let Some(dry) = twin {
             let real = out.status.code().unwrap();
-            // A refusal the dry run saw is the real run's refusal. A dry run that passed promises
-            // only what can be known before anything is created: the real run succeeds (0, or 22
-            // where it wrote the lock), or may still meet
-            // material that is not the locked one (10) or a blob that does not unwrap: 13 where
-            // the module says the data is bad, 16 where it says only that it failed (kryoptic's
-            // CKR_DEVICE_ERROR for a tampered blob [run], said as such). Any other 16 breaks the
-            // promise.
-            let unwrap_failed =
-                real == 16 && String::from_utf8_lossy(&out.stderr).contains("damaged or altered bundle");
-            let kept = if dry == 0 { matches!(real, 0 | 22 | 10 | 13) || unwrap_failed } else { real == dry };
-            assert!(kept, "camigrate {}: --dry-run exited {dry}, the run itself {real}", args.join(" "));
+            // Rows are read only where the exits alone do not keep the promise.
+            let rows = if !dry.kept_by(real, &[]) && stdout_is_rows(&out) { super::state::rows(&out) } else { vec![] };
+            assert!(
+                dry.kept_by(real, &rows),
+                "{} {}: --dry-run exited {} (deferring {:?}), the run itself {real}: {rows:?}",
+                bin.display(),
+                args.join(" "),
+                dry.exit,
+                dry.deferred
+            );
         }
         out
     }
@@ -183,24 +182,39 @@ impl Env {
         named
     }
 
-    /// The dry-run twin of a `camigrate` run that moves something: its exit code, after
-    /// asserting that it left the lock, the output file and every token the run names as they
-    /// were. `None` for any other run.
-    fn dry_run_twin(&self, bin: &std::path::Path, r: &Ref, args: &[&str]) -> Option<i32> {
-        let moves = args.iter().any(|a| matches!(*a, "export" | "import" | "migrate"));
-        if bin.file_name().is_none_or(|n| n != "camigrate") || !moves || args.contains(&"--dry-run") {
+    /// The dry-run twin of a run that writes, in JSON: its verdict, after asserting that it left
+    /// the lock, the output file and every token the run names (`cakeys` without `--token`:
+    /// every one) as they were. `None` for any other run. Review 2026-11-24 C-4: `cakeys`' dry
+    /// runs had no twin, and `create --dry-run` passed where the run refused.
+    fn dry_run_twin(&self, bin: &std::path::Path, r: &Ref, args: &[&str]) -> Option<Dry> {
+        let verb = |v: &[&str]| args.first().is_some_and(|a| v.contains(a));
+        let writes = match bin.file_name().and_then(|n| n.to_str()) {
+            Some("camigrate") => verb(&["export", "import", "migrate"]),
+            Some("cakeys") => verb(&["create", "delete", "lock", "gc"]),
+            _ => false,
+        };
+        if !writes || args.contains(&"--dry-run") {
             return None;
         }
         let value = |flag: &str| args.iter().position(|a| *a == flag).and_then(|i| args.get(i + 1)).copied();
         let lock = value("--lock").map_or_else(|| self.dir.join("keys.lock"), PathBuf::from);
         let out = value("--out").map(PathBuf::from);
         let files: Vec<&Path> = [Some(&lock), out.as_ref()].into_iter().flatten().map(PathBuf::as_path).collect();
-        let tokens: Vec<TokenView> = self.compared(args).into_iter().map(Ref::view).collect();
+        let mut reached = self.compared(args);
+        if reached.is_empty() && !args.contains(&"--token") {
+            reached = self.refs.iter().filter(|t| t.plant != Plant::Shared).collect();
+        }
+        let tokens: Vec<TokenView> = reached.into_iter().map(Ref::view).collect();
         // What must not change, each with its name: the files' bytes and each token's objects.
         let before = snapshot(&files, &tokens);
-        let dry = self.run_once(bin, r, &[args, &["--dry-run"]].concat());
-        assert_unchanged(&before, &snapshot(&files, &tokens), &format!("camigrate {} --dry-run", args.join(" ")));
-        dry.status.code()
+        let json: &[&str] = if args.contains(&"--json") { &[] } else { &["--json"] };
+        // `create --no-update-lock` records nothing, as its dry run does not.
+        let dry_args: Vec<&str> = args.iter().copied().filter(|a| *a != "--no-update-lock").collect();
+        let dry = self.run_once(bin, r, &[&dry_args[..], &["--dry-run"], json].concat());
+        let what = format!("{} {} --dry-run", bin.display(), args.join(" "));
+        assert_unchanged(&before, &snapshot(&files, &tokens), &what);
+        let dry = Dry::of(&dry);
+        Some(if bin.ends_with("cakeys") && args.first() == Some(&"lock") { dry.comparing() } else { dry })
     }
 
     fn run_once(&self, bin: &std::path::Path, r: &Ref, args: &[&str]) -> Output {
@@ -226,4 +240,61 @@ impl Env {
         }
         s + "\n"
     }
+}
+
+/// What a dry run said (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4): its exit, and the
+/// rules it named as only the run's to decide (each plan's `deferred`, each row's).
+#[derive(Debug)]
+pub struct Dry {
+    exit: i32,
+    deferred: Vec<String>,
+    /// `cakeys lock --dry-run`, which compares with the lock only: it refuses what the run
+    /// records (a first use, 18; a realisation or a change the lock lacks, 14).
+    compares: bool,
+}
+
+impl Dry {
+    /// A dry run that exited `exit`, deferring `deferred`.
+    pub fn new(exit: i32, deferred: Vec<String>) -> Dry {
+        Dry { exit, deferred, compares: false }
+    }
+
+    /// The same, of `cakeys lock`: a comparison.
+    #[must_use]
+    pub fn comparing(self) -> Dry {
+        Dry { compares: true, ..self }
+    }
+
+    fn of(o: &Output) -> Dry {
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_default();
+        let plans = v.get("plans").and_then(serde_json::Value::as_array).cloned();
+        let entries = plans.or_else(|| v.as_array().cloned()).unwrap_or_default();
+        let deferred = entries
+            .iter()
+            .flat_map(|e| e.get("deferred").and_then(serde_json::Value::as_array).cloned().unwrap_or_default())
+            .filter_map(|d| d.as_str().or_else(|| d.get("rule").and_then(serde_json::Value::as_str)).map(str::to_owned))
+            .collect();
+        Dry::new(o.status.code().unwrap(), deferred)
+    }
+
+    /// Whether the real run, which exited `real` with `rows`, is the one this dry run promised:
+    /// the same exit (0 and 22 alike: the lock written is no other outcome; what a comparison
+    /// refused as the lock's to record, 18 or 14, is the lock `lock` writes), unless a row ends
+    /// with a failure of the device, which no dry run foresees, or with a rule this dry run named
+    /// as deferred. Never by what the run says (review 2026-11-24 L3: a phrase of stderr admitted
+    /// a 16 after a dry 0).
+    pub fn kept_by(&self, real: i32, rows: &[Row]) -> bool {
+        let succeeded = |c: i32| matches!(c, 0 | 22);
+        let admitted = |r: &Row| {
+            i32::from(r.exit) == real && (r.device || r.rule.as_ref().is_some_and(|x| self.deferred.contains(x)))
+        };
+        let recorded = self.compares && matches!(self.exit, 14 | 18) && real == 22;
+        real == self.exit || (succeeded(real) && succeeded(self.exit)) || recorded || rows.iter().any(admitted)
+    }
+}
+
+/// Whether `o` printed rows (a JSON array), as `import` and `migrate` do; an export prints a
+/// bundle or nothing.
+fn stdout_is_rows(o: &Output) -> bool {
+    o.stdout.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'[')
 }

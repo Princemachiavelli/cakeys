@@ -445,6 +445,11 @@ fn from_its_file(
             });
         }
     }
+    // A secret key's identity is its commitments, computed on the host (`ops::check_identity`):
+    // checked here, so the dry run refuses what the run would (10).
+    if class == Class::SecretKey {
+        cakeys_pkcs11::ops::check_identity(dst, lock, cakeys_pkcs11::ops::Extracted::from_file(m.bytes.clone()))?;
+    }
     let first_use = locked.is_none_or(BTreeMap::is_empty);
     if how.dry_run {
         match class {

@@ -596,6 +596,18 @@ impl Tally {
         self.results.push(row);
     }
 
+    /// `of` ready to move by `method`, but for `deferred`: the rules only its run decides, which
+    /// the row names so that a run ending with one keeps the dry run's promise (§1.4).
+    fn ready(&mut self, of: Of<'_>, method: &str, deferred: &[(&str, &str)]) {
+        self.done(of, "ready", Some(method));
+        if let Some(row) = self.results.last_mut() {
+            row.deferred = deferred
+                .iter()
+                .map(|(rule, why)| cakeys_cli_common::DeferredRow { rule: (*rule).to_owned(), why: (*why).to_owned() })
+                .collect();
+        }
+    }
+
     /// `of` written (`outcome`, by `method`): the lock changed.
     fn moved(&mut self, of: Of<'_>, outcome: &str, method: Option<&str>) {
         self.changed = true;
@@ -606,7 +618,11 @@ impl Tally {
     /// failure.
     fn fail(&mut self, of: Of<'_>, what: impl std::fmt::Display, err: KmError, notes: &mut Notes) {
         notes.say(format!("{what}: {err}"));
-        let row = of.row("failed").refused_by(Some(&err));
+        let mut row = of.row("failed").refused_by(Some(&err));
+        // 10 names no rule of its own: the material is not the one the lock pins.
+        if matches!(err, KmError::HashMismatch { .. }) && row.rule.is_none() {
+            row.rule = Some(sealed::IDENTITY.to_owned());
+        }
         self.results.push(cakeys_cli_common::Outcome { error: Some(err.to_string()), ..row });
         self.failed.get_or_insert(err);
     }
@@ -811,7 +827,12 @@ impl Run<'_> {
                         "{dst}: {} by {} ({}) from {}: ready",
                         e.object, e.method, e.exposure, bundle.source.token
                     ));
-                    tally.done(Of::pair(&dst), "ready", Some(&e.method));
+                    // A blob is unwrapped, and what it holds known, only by the import itself.
+                    let sealed: &[(&str, &str)] = &[
+                        (sealed::UNWRAPS, "only the target's unwrap shows the blob is intact"),
+                        (sealed::IDENTITY, "only the unwrapped key shows it is the one the lock pins"),
+                    ];
+                    tally.ready(Of::pair(&dst), &e.method, if e.method == public { &[] } else { sealed });
                 }
                 Ok(Some(public::Moved::Imported)) => {
                     let hint = public::unrecorded_hint(&dst);
@@ -1102,7 +1123,8 @@ fn needs_login(cfg: &Config, token: &str) -> cakeys_core::Result<()> {
              configure pinFile or pinEnv"
             )
             .into(),
-        )),
+        )
+        .with_rule(cakeys_pkcs11::ops::Rule::NeedsLogin.name())),
         _ => Ok(()),
     }
 }
