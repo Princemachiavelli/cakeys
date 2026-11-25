@@ -361,11 +361,22 @@ change the file: for a profile, the probe, the token operations it drives, the h
 and the provider crate (`[groups] probe`), and for a cloud its script and module build. Not the
 emitter: every build holds the committed text to it.
 
+`code` also names the lock entries that pin what a run went through, not whole lockfiles, so a
+bump marks stale only what it can change:
+
+- `Cargo.lock#cryptoki` and `Cargo.lock#cryptoki-sys`, the binding, for every profile and the
+  lock (`[groups] probe` and `lock`, beside its patches);
+- `flake.lock#nixpkgs`, the nixpkgs that builds ykcs11 and the host TPM's tpm2-pkcs11 stack
+  (`[groups] nixpkgs`). SoftHSM, kryoptic and tpm2-pkcs11 on swtpm come from it too, but every
+  build re-probes them;
+- the cloud modules, vendor builds pinned by version and hash in `nix/kmsp11.nix` and
+  `nix/cloudhsm.nix`, are watched as those whole files.
+
 `checks.ledger` (`nix/ledger.py`, in CI's light job; locally `nix develop -c python3 -I
 nix/ledger.py .`) hashes the tree, not git. In the code's hash, a Rust file counts as its
 tokens: a comment, a doc comment or rustfmt's spacing changes nothing, while a literal or any
-other token does, an import reorder included. Any other file counts byte for byte. The check
-fails when:
+other token does, an import reorder included. Any other file counts byte for byte, and a lock
+entry as its parsed value. The check fails when:
 
 - a file changed and its entry did not;
 - a file is not its run's output and no hand-edit row says so;

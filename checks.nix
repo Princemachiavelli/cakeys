@@ -54,7 +54,8 @@
     '';
   # What was measured on hardware or a cloud and no build repeats (profiles/LEDGER.toml,
   # nix/ledger.py): a file changed, or the code on its path changed since its run, fails until
-  # the ledger records it. Its fixture tests first. Its own fileset, like doc-references.
+  # the ledger records it. Its fixture tests first. Its own fileset, like doc-references: what
+  # the ledger's `code` names, lock entries included (a path it lacks names no file and fails).
   ledger =
     let
       src = pkgs.lib.fileset.toSource {
@@ -65,6 +66,9 @@
           ./nix
           ./scripts
           ./examples
+          ./upstream/rust-cryptoki
+          ./Cargo.lock
+          ./flake.lock
         ];
       };
     in

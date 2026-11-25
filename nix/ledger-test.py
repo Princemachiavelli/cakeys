@@ -5,6 +5,7 @@ Usage: python3 -I ledger-test.py. Exits 1 on a failure.
 """
 
 import hashlib
+import json
 import pathlib
 import re
 import subprocess
@@ -29,6 +30,27 @@ fn a(x: &str) -> bool {
     x == "a // b /* c */" && f(q, r#"q " q"#) // and after
 }
 """
+CARGO_LOCK = """version = 4
+
+[[package]]
+name = "cryptoki"
+version = "0.12.0"
+source = "git+https://example.org/rust-cryptoki?rev=aaaa#aaaa"
+
+[[package]]
+name = "other"
+version = "1.0.0"
+"""
+FLAKE_LOCK = {
+    "nodes": {
+        "nixpkgs": {"locked": {"narHash": "sha256-A", "rev": "aaaa", "type": "tarball"}},
+        "other": {"locked": {"narHash": "sha256-B", "rev": "bbbb", "type": "github"}},
+        "root": {"inputs": {"nixpkgs": "nixpkgs", "other": "other"}},
+    },
+    "root": "root",
+    "version": 7,
+}
+LOCKS = '["@src", "Cargo.lock#cryptoki", "flake.lock#nixpkgs"]'
 
 
 def sha(text):
@@ -45,6 +67,8 @@ class Ledger(unittest.TestCase):
         self.write("code/a.rs", "fn a() {}\n")
         self.write("code/b.rs", "fn b() {}\n")
         self.write("scripts/regen.sh", "caprobe probe --write-probes --rsa-max-bits 4096 --out x\n")
+        self.write("Cargo.lock", CARGO_LOCK)
+        self.write("flake.lock", json.dumps(FLAKE_LOCK, indent=2))
         # The code's hash as the check prints it for pasting, read from a run that lacks it.
         code, out = self.run_with(code_hash="sha256:none")
         self.assertEqual(code, 1, out)
@@ -62,7 +86,7 @@ class Ledger(unittest.TestCase):
     def printed_code_hash(out):
         return re.search(r'code-hash = "(sha256:[0-9a-f]{64})"', out).group(1)
 
-    def run_with(self, *, module=None, code_hash=None, code='["@src"]', edits="", ack="", extra="", soft="", regen=""):
+    def run_with(self, *, module=None, code_hash=None, code='["@src"]', groups="", edits="", ack="", extra="", soft="", regen=""):
         """The check over the tree, with the ledger's entries as given; by default every hash is
         the tree's."""
         module, probed, captured = module or sha(PROBED), sha(PROBED), sha(CAPTURED)
@@ -73,6 +97,7 @@ sources = ["scripts/regen.sh"]
 
 [groups]
 src = ["code/*.rs"]
+{groups}
 
 [[artifact]]
 path = "{SOFT}"
@@ -227,13 +252,13 @@ hash = "{captured}"
         self.assertEqual(code, 1, out)
         self.assertIn(f"{MODULE}: its regen names scripts/gone.sh, which does not exist", out)
 
-    def code_changed(self, rel, before, after, code='["@src"]'):
+    def code_changed(self, rel, before, after, code='["@src"]', groups=""):
         """Whether the check reads `rel` going from `before` to `after` as a change of the code on
         the path: the run is recorded with `before`, then the check runs on `after`."""
         self.write(rel, before)
-        self.code = self.printed_code_hash(self.run_with(code=code, code_hash="sha256:none")[1])
+        self.code = self.printed_code_hash(self.run_with(code=code, groups=groups, code_hash="sha256:none")[1])
         self.write(rel, after)
-        status, out = self.run_with(code=code)
+        status, out = self.run_with(code=code, groups=groups)
         if status == 0:
             self.assertIn(f"fresh  {MODULE}", out)
             return False
@@ -276,6 +301,40 @@ hash = "{captured}"
     def test_any_other_file_counts_byte_for_byte(self):
         self.assertTrue(self.code_changed("code/x.sh", "run # why\n", "run # why not\n", code='["@src", "code/*.sh"]'))
 
+    # Review 2026-11-24, p0-follow: a cryptoki or nixpkgs bump changes what a run would measure,
+    # but watching whole lockfiles would make every bump a re-acknowledgement of everything.
+    def test_a_watched_lock_entry_is_code_and_the_rest_of_the_lock_is_not(self):
+        bumped = json.loads(json.dumps(FLAKE_LOCK))
+        bumped["nodes"]["nixpkgs"]["locked"]["rev"] = "cccc"
+        other = json.loads(json.dumps(FLAKE_LOCK))
+        other["nodes"]["other"]["locked"]["rev"] = "dddd"
+        flake = json.dumps(FLAKE_LOCK, indent=2)
+        for rel, before, after, change in (
+            ("Cargo.lock", CARGO_LOCK, CARGO_LOCK.replace("0.12.0", "0.12.1"), True),
+            ("Cargo.lock", CARGO_LOCK, CARGO_LOCK.replace("rev=aaaa#aaaa", "rev=bbbb#bbbb"), True),
+            ("Cargo.lock", CARGO_LOCK, CARGO_LOCK.replace('"1.0.0"', '"1.0.1"'), False),
+            ("flake.lock", flake, json.dumps(bumped, indent=2), True),
+            ("flake.lock", flake, json.dumps(other, indent=2), False),
+            # The entry, not the bytes: the same lock written another way.
+            ("flake.lock", flake, json.dumps(FLAKE_LOCK, sort_keys=True), False),
+        ):
+            self.assertEqual(self.code_changed(rel, before, after, code=LOCKS), change, (rel, after))
+
+    def test_a_lock_entry_that_names_nothing_fails(self):
+        for code, missing in (
+            ('["@src", "Cargo.lock#cryptokey"]', "Cargo.lock#cryptokey"),
+            ('["@src", "flake.lock#nixpkg"]', "flake.lock#nixpkg"),
+            ('["@src", "gone/Cargo.lock#cryptoki"]', "gone/Cargo.lock#cryptoki"),
+        ):
+            status, out = self.run_with(code=code)
+            self.assertEqual(status, 1, out)
+            self.assertIn(f"code entry {missing} names nothing", out)
+
+    def test_a_lock_entry_in_a_group_counts(self):
+        bumped = json.loads(json.dumps(FLAKE_LOCK))
+        bumped["nodes"]["nixpkgs"]["locked"]["rev"] = "cccc"
+        flake, groups = json.dumps(FLAKE_LOCK), 'locks = ["flake.lock#nixpkgs"]'
+        self.assertTrue(self.code_changed("flake.lock", flake, json.dumps(bumped), '["@src", "@locks"]', groups))
 
 
 if __name__ == "__main__":
