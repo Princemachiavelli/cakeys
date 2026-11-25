@@ -313,6 +313,23 @@ impl dyn Provider + '_ {
         asked.iter().filter(|m| self.stand_in(m).is_some()).map(Mechanism::mechanism_type).collect()
     }
 
+    /// `e` with the provider's advice on `about` where it is an `Unsupported` refusal and the
+    /// provider has any ([`Provider::hint`]); any other error as it is.
+    #[must_use]
+    pub fn hinted(&self, about: Topic, e: KmError) -> KmError {
+        match (e, self.hint(about)) {
+            (KmError::Unsupported(m), Some(h)) => {
+                let (rv, rule) = (m.rv(), m.rule());
+                let e = KmError::Unsupported(format!("{m} (hint for {}: {h})", self.name()).into()).with_rv(rv);
+                match rule {
+                    Some(r) => e.with_rule(r),
+                    None => e,
+                }
+            }
+            (e, _) => e,
+        }
+    }
+
     /// `template`, cakeys' template for `req`, as the provider adjusts it ([`Provider::template`]).
     ///
     /// # Errors

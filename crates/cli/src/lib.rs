@@ -558,12 +558,12 @@ impl Run<'_> {
                 let mode = ops::plan_mode(&t)?;
                 modes.push((spec_name, token, mode.to_string()));
                 if let Some(stack) = stacks.get(token.as_str()) {
-                    let creates = ops::creates(&t, &self.lock);
-                    let v = cakeys_pkcs11::gate::check(&t, mode, stack, self.opener.registry, creates)?;
-                    for n in &v.notes {
-                        notes.note(format_args!("validate: {n}"));
+                    let verb = ops::Verb::of(&t, &self.lock);
+                    let v = cakeys_pkcs11::gate::check(&t, mode, stack, self.opener.registry, verb)?;
+                    for d in &v.deferred {
+                        notes.note(format_args!("validate: {d}"));
                     }
-                    refusals.extend(v.refusals);
+                    refusals.extend(v.refusals.into_iter().map(|r| r.to_string()));
                 }
             }
         }

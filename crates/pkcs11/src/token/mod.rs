@@ -294,13 +294,7 @@ impl Token {
 
     /// [`Self::unsupported`], with the provider's advice on `about` if it has any.
     pub fn unsupported_for(&self, about: Topic, msg: impl Into<Msg>) -> KmError {
-        let msg = msg.into();
-        let rv = msg.rv();
-        match self.provider.hint(about) {
-            Some(h) => KmError::Unsupported(format!("{msg} (hint for {}: {h})", self.provider.name()).into()),
-            None => KmError::Unsupported(msg),
-        }
-        .with_rv(rv)
+        self.provider.hinted(about, KmError::Unsupported(msg.into()))
     }
 
     /// A warning for the run when the user PIN counters at open reported a failed login

@@ -19,8 +19,10 @@ pub use cakeys_core::reconcile::{Facts, LockWrite, Notes, Resolved};
 
 mod capabilities;
 mod planner;
+mod rules;
 pub use capabilities::*;
 pub use planner::*;
+pub use rules::*;
 
 /// The attestation scheme `t`'s token computes when opted in (`attestation = true`), if the
 /// provider attests this class at all (§3.7 of docs/DESIGN.md).
@@ -85,13 +87,6 @@ pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<Scheme>> {
 enum Provision {
     Never,
     IfMissing,
-}
-
-/// The verb a capability check is for: `create` also needs the generation.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Verb {
-    Lock,
-    Create,
 }
 
 /// GET: find by locator (exactly one), check type and attributes, compute IDs. Never writes,
@@ -277,11 +272,11 @@ fn answers(t: &Target, r: &Resolved, run: Run<'_>) -> std::collections::BTreeMap
         return out;
     }
     // The rows' own keys (`cakeys_profile::Capability`), as the gate reads them back.
-    if let Some(proof) = r.binding.and_then(|b| crate::gate::proof_capability(&t.object, b)) {
+    if let Some(proof) = r.binding.and_then(|b| rules::proof_capability(&t.object, b)) {
         out.insert(proof.to_string(), Answered::yes());
     }
     if let Run::Created(note) = run
-        && let Some(generated) = crate::gate::generate_capability(&t.object)
+        && let Some(generated) = rules::generate_capability(&t.object)
     {
         let via = note.and_then(|n| n.by_name.as_ref()).map(|_| "by-name".to_owned());
         out.insert(generated.to_string(), Answered { via, ..Answered::yes() });

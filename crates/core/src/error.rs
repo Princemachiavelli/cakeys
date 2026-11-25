@@ -2,13 +2,16 @@
 
 use std::fmt;
 
-/// What a [`KmError`] says, and the PKCS#11 return value behind it when a module call failed
-/// (`CK_RV`, a `CK_ULONG`: 64 bits on every platform this builds for). It displays as its text
-/// alone: the value is for code to match on (ISSUES.md Q3), never part of a message.
+/// What a [`KmError`] says, the PKCS#11 return value behind it when a module call failed
+/// (`CK_RV`, a `CK_ULONG`: 64 bits on every platform this builds for), and the name of the rule
+/// that refused when a plan's rule did (`cakeys_pkcs11::ops::Rule`). It displays as its text
+/// alone: the value and the rule are for code to match on (ISSUES.md Q3), never part of a
+/// message.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Msg {
     text: String,
     rv: Option<u64>,
+    rule: Option<&'static str>,
 }
 
 impl Msg {
@@ -30,6 +33,12 @@ impl Msg {
         self.rv = rv;
         self
     }
+
+    /// The name of the rule that refused, if a plan's rule did.
+    #[must_use]
+    pub fn rule(&self) -> Option<&'static str> {
+        self.rule
+    }
 }
 
 impl std::ops::Deref for Msg {
@@ -47,7 +56,7 @@ impl fmt::Display for Msg {
 
 impl From<String> for Msg {
     fn from(text: String) -> Self {
-        Msg { text, rv: None }
+        Msg { text, rv: None, rule: None }
     }
 }
 
@@ -292,6 +301,22 @@ impl KmError {
         self
     }
 
+    /// The name of the rule that refused, where a plan's rule did (`cakeys_pkcs11::ops::Rule`).
+    #[must_use]
+    pub fn rule(&self) -> Option<&'static str> {
+        self.msg().and_then(Msg::rule)
+    }
+
+    /// The same error, naming the rule that refused. The two variants that format their own
+    /// fields name none: no rule refuses with them.
+    #[must_use]
+    pub fn with_rule(mut self, rule: &'static str) -> Self {
+        if let Some(m) = self.msg_mut() {
+            m.rule = Some(rule);
+        }
+        self
+    }
+
     /// The message of a variant that has one, return value included.
     #[must_use]
     pub fn into_msg(self) -> Option<Msg> {
@@ -324,9 +349,10 @@ mod tests {
         ];
         for e in said {
             let code = e.exit_code();
-            let e = e.with_rv(Some(0x30)).prefixed("where");
+            let e = e.with_rv(Some(0x30)).with_rule("placement").prefixed("where");
             assert_eq!(e.exit_code(), code, "prefixing keeps the kind");
             assert_eq!((e.rv(), e.msg().map(|m| &**m)), (Some(0x30), Some("where: said")), "{code}");
+            assert_eq!(e.rule(), Some("placement"), "{code}");
             assert_eq!(e.into_msg().and_then(|m| m.rv()), Some(0x30), "{code}");
         }
         let fields = [
@@ -334,9 +360,9 @@ mod tests {
             KmError::FirstUse { what: "w".into(), got: "g".into() },
         ];
         for e in fields {
-            let e = e.with_rv(Some(0x30)).prefixed("where");
+            let e = e.with_rv(Some(0x30)).with_rule("placement").prefixed("where");
             assert!(!e.to_string().contains("where"));
-            assert_eq!((e.rv(), e.msg().is_none()), (None, true));
+            assert_eq!((e.rv(), e.rule(), e.msg().is_none()), (None, None, true));
             assert!(e.into_msg().is_none());
         }
     }

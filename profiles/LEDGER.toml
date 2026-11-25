@@ -135,9 +135,9 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:af18f79399c57c97336d734f88be7d3d044da7b4df0b5ba7fd76596431f77154"
+code-hash = "sha256:065f17c75e015d8aa853d0dad77b6121942cc6fc60af13eedc4ac7c66ed699a8"
 by = "review 2026-11-24 E-7 (the ledger's first entry)"
-why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000) and the token operations changed after the probe; rows the old logic wrote stand unchecked: the add row CKM_ECDSA_SHA224, and the import rows refused with CKR_DEVICE_ERROR (review 2026-11-24 E-2) Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000) and the token operations changed after the probe; rows the old logic wrote stand unchecked: the add row CKM_ECDSA_SHA224, and the import rows refused with CKR_DEVICE_ERROR (review 2026-11-24 E-2) Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed. Renewed by P1 (review 2026-11-24 phase 1, the cakeys plan): step 1 moved Token::unsupported_for's provider hint into provider.rs (`hinted`), same text, return value and kind, now also carrying the refusing rule's name; no probe row or lock value can change, and the re-probe above is still owed."
 reprobe = "the whole profile, by the regen command"
 
 [[artifact]]
@@ -174,9 +174,9 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:669c10c96438ebf7dacad9b58567994f7ef8134fd3648909aed8a6f209beae3a"
+code-hash = "sha256:e5371b2f7bc1a0dadc830113038bdee27bf380bd6938dc5f7ee08328e1187906"
 by = "review 2026-11-24 E-7 (the ledger's first entry)"
-why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the tpm2-pkcs11 provider changed after the probe; rows the old logic wrote stand unchecked: the add rows CKM_SHA384_RSA_PKCS and CKM_SHA512_RSA_PKCS, and the no rows of review 2026-11-24 E-2 Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the tpm2-pkcs11 provider changed after the probe; rows the old logic wrote stand unchecked: the add rows CKM_SHA384_RSA_PKCS and CKM_SHA512_RSA_PKCS, and the no rows of review 2026-11-24 E-2 Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed. Renewed by P1 (review 2026-11-24 phase 1, the cakeys plan): step 1 moved Token::unsupported_for's provider hint into provider.rs (`hinted`), same text, return value and kind, now also carrying the refusing rule's name; no probe row or lock value can change, and the re-probe above is still owed."
 reprobe = "the whole profile, by the regen command"
 
 [[artifact]]
@@ -219,9 +219,9 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:7aa069ebd80c7f8e9a1518d4aac9a14c70e51063b6ba56e7defb86778df4f784"
+code-hash = "sha256:4aec69cc73d3e3670817c4c23a94231d48a59e26a1c9080e112e9d7da2713ab0"
 by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
-why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the aws-cloudhsm provider changed after the probe; rows the old logic wrote stand unchecked: the add row CKM_SHA224_RSA_PKCS, wrap.rsa-oaep.SHA-1 and SHA-256 = yes from before the host-blob check, and the RsaAes export rows of review 2026-11-24 E-3; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the aws-cloudhsm provider changed after the probe; rows the old logic wrote stand unchecked: the add row CKM_SHA224_RSA_PKCS, wrap.rsa-oaep.SHA-1 and SHA-256 = yes from before the host-blob check, and the RsaAes export rows of review 2026-11-24 E-3; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed. Renewed by P1 (review 2026-11-24 phase 1, the cakeys plan): step 1 moved Token::unsupported_for's provider hint into provider.rs (`hinted`), same text, return value and kind, now also carrying the refusing rule's name; no probe row or lock value can change, and the re-probe above is still owed."
 reprobe = "the whole profile, by the regen command"
 
 [[artifact]]
@@ -264,9 +264,9 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:7aa069ebd80c7f8e9a1518d4aac9a14c70e51063b6ba56e7defb86778df4f784"
+code-hash = "sha256:4aec69cc73d3e3670817c4c23a94231d48a59e26a1c9080e112e9d7da2713ab0"
 by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
-why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the aws-cloudhsm provider changed after the probe; rows the old logic wrote stand unchecked: the add rows, wrap.rsa-oaep from before the host-blob check, and the RsaAes export rows of review 2026-11-24 E-3; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the aws-cloudhsm provider changed after the probe; rows the old logic wrote stand unchecked: the add rows, wrap.rsa-oaep from before the host-blob check, and the RsaAes export rows of review 2026-11-24 E-3; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed. Renewed by P1 (review 2026-11-24 phase 1, the cakeys plan): step 1 moved Token::unsupported_for's provider hint into provider.rs (`hinted`), same text, return value and kind, now also carrying the refusing rule's name; no probe row or lock value can change, and the re-probe above is still owed."
 reprobe = "the whole profile, by the regen command"
 
 [[artifact]]
@@ -299,9 +299,9 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:d5a9776f9b3948903d126ce44e737a326c34c1ee9ce6f7fceb76c2a97b3f6814"
+code-hash = "sha256:70e1528dc3878635c14621c7ba88b684713d4e00d38bb98a1ba8cb3f7d3de989"
 by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
-why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the kmsp11 provider changed after the probe; the cannot rows of review 2026-11-24 E-5 come from cakeys' own table; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the kmsp11 provider changed after the probe; the cannot rows of review 2026-11-24 E-5 come from cakeys' own table; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed. Renewed by P1 (review 2026-11-24 phase 1, the cakeys plan): step 1 moved Token::unsupported_for's provider hint into provider.rs (`hinted`), same text, return value and kind, now also carrying the refusing rule's name; no probe row or lock value can change, and the re-probe above is still owed."
 reprobe = "the whole profile, by the regen command"
 
 [[artifact]]
@@ -334,9 +334,9 @@ by = "review 2026-11-24 E-7 (p0-ledger)"
 what = "header: names this ledger instead of claiming a re-probe on every build and copying a regeneration command"
 
 [artifact.acknowledged]
-code-hash = "sha256:d5a9776f9b3948903d126ce44e737a326c34c1ee9ce6f7fceb76c2a97b3f6814"
+code-hash = "sha256:70e1528dc3878635c14621c7ba88b684713d4e00d38bb98a1ba8cb3f7d3de989"
 by = "review 2026-11-24 E-7 (the ledger's first entry), then E-8"
-why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the kmsp11 provider changed after the probe; the cannot rows of review 2026-11-24 E-5 come from cakeys' own table; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
+why = "the probe's D-2, D-3, D-5 and D-11 logic (review 2026-11-23: fce5432, 61b7000), the token operations and the kmsp11 provider changed after the probe; the cannot rows of review 2026-11-24 E-5 come from cakeys' own table; then E-8 made its script pass --rsa-max-bits 4096, so the next probe drops the generate.CKK_RSA rows above 4096 that caprobe's default (16384) wrote Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed. Renewed by P1 (review 2026-11-24 phase 1, the cakeys plan): step 1 moved Token::unsupported_for's provider hint into provider.rs (`hinted`), same text, return value and kind, now also carrying the refusing rule's name; no probe row or lock value can change, and the re-probe above is still owed."
 reprobe = "the whole profile, by the regen command"
 
 # Captured from devices: nothing in this repository produces them, so no code is on their path.
@@ -421,7 +421,7 @@ by = "714ef3e"
 what = "converted to the observation table without a token (its message: a throwaway conversion checked lossless both ways)"
 
 [artifact.acknowledged]
-code-hash = "sha256:aa787c0420b2082b6b224b39308da10a574d4ce66b9185298e3d7f99c3161375"
+code-hash = "sha256:1a710030ea1419eb5db502d84e9006c36fd67e2a70990dec34c826103faec890"
 by = "review 2026-11-24 E-7 (the ledger's first entry)"
-why = "recorded before the lock's observation table, the config split (8aaba2e) and every lock rule since; the lock round trip reads it on every build (cakeys_core::fuzzing), so only its values, not its form, wait on the device Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed."
+why = "recorded before the lock's observation table, the config split (8aaba2e) and every lock rule since; the lock round trip reads it on every build (cakeys_core::fuzzing), so only its values, not its form, wait on the device Renewed at the p0-gate merge: rustfmt of the files 8aaba2e left unformatted (16a7d14), doc comments (29cc929) and the cloud scripts' --new-lock (4f5a314) changed the watched files; no probe behaviour changed, and the re-probe above is still owed. Renewed by P1 (review 2026-11-24 phase 1, the cakeys plan): step 1 moved Token::unsupported_for's provider hint into provider.rs (`hinted`), same text, return value and kind, now also carrying the refusing rule's name; no probe row or lock value can change, and the re-probe above is still owed."
 reprobe = "a read-only check against the YubiKey, by the user"

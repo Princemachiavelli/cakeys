@@ -163,11 +163,11 @@ pub fn plan_create<'a>(
         }
         out.push(match &stacks[token_name] {
             Ok(stack) => {
-                let v = crate::gate::check(&t, mode, stack, registry, creates(&t, lock))?;
+                let v = crate::gate::check(&t, mode, stack, registry, Verb::of(&t, lock))?;
                 if v.refusals.is_empty() {
-                    planned(action, [why, v.notes].concat())
+                    planned(action, [why, v.deferred.iter().map(ToString::to_string).collect()].concat())
                 } else {
-                    planned(Action::Refuse, v.refusals)
+                    planned(Action::Refuse, v.refusals.iter().map(ToString::to_string).collect())
                 }
             }
             Err(e) => planned(action, [why, vec![format!("{t}: not checked before opening the token: {e}")]].concat()),
