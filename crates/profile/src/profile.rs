@@ -765,15 +765,8 @@ mod tests {
             "import.CKK_RSA.3072",
             "import.CKK_RSA.4096",
         ];
-        // The software profiles' own, until they are probed again with provenance.
-        let regenerated = [
-            "kryoptic/1.5 generate.CKK_EC.brainpoolP256r1",
-            "kryoptic/1.5 generate.CKK_EC.brainpoolP384r1",
-            "kryoptic/1.5 generate.CKK_EC.secp256k1",
-            "tpm2-pkcs11/1.10+swtpm derive.ecdh.sealed",
-            "tpm2-pkcs11/1.10+swtpm generate.CKK_RSA.1536",
-            "tpm2-pkcs11/1.10+swtpm prove.pop-sign.CKK_EC.secp521r1",
-        ];
+        // The software profiles, probed again with provenance (phase1-design §9.6), have none:
+        // their device failures are `[untested]` entries.
         let mut expected: Vec<String> = [
             "tpm2-pkcs11/1.10+amd-ftpm derive.ecdh.sealed",
             "tpm2-pkcs11/1.10+amd-ftpm generate.CKK_EC.secp521r1",
@@ -781,7 +774,6 @@ mod tests {
             "tpm2-pkcs11/1.10+amd-ftpm prove.pop-sign.CKK_EC.secp384r1",
         ]
         .into_iter()
-        .chain(regenerated)
         .map(str::to_owned)
         .chain(ykcs11.iter().map(|c| format!("ykcs11/2.7 {c}")))
         .collect();
