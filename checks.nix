@@ -35,8 +35,9 @@
   # build is x86_64-linux's and CI's kani job's, this comparison every system's and the light
   # job's.
   inherit kani-library-lock;
-  # Every test and function the docs name is a `fn`, and every docs/*.md cited exists
-  # (nix/doc-references.py). Its own fileset, so a docs edit does not rebuild crane.
+  # Every test and function the docs name is a `fn`, every name and path a doc or a Rust comment
+  # cites is in the sources, and every docs/*.md cited exists (nix/doc-references.py, its fixture
+  # tests first). Its own fileset, so a docs edit does not rebuild crane.
   doc-references =
     let
       src = pkgs.lib.fileset.toSource {
@@ -58,6 +59,7 @@
       };
     in
     pkgs.runCommand "cakeys-doc-references" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      python3 -I ${src}/nix/doc-references-test.py
       python3 -I ${src}/nix/doc-references.py ${src}
       touch $out
     '';
