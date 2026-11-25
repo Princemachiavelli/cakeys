@@ -18,7 +18,7 @@ use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::Token;
 use cakeys_pkcs11::provider::{
-    AttestCtx, AttestationCap, Attested, Create, Destroy, PlaintextKind, PlaintextVia, Provider,
+    AttestCtx, AttestationCap, Attested, Checked, Destroy, PlaintextKind, PlaintextVia, Provider,
 };
 use cakeys_pkcs11::token::{ModuleInfo, read_attribute};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass};
@@ -126,14 +126,10 @@ impl Provider for Ykcs11 {
         Self::check_create(loc)
     }
 
-    /// A key goes where its locator says (by `CKA_ID` alone, a PIV slot), as SO.
-    fn create(&self, tok: &Token, req: &Create<'_>) -> Result<Option<cakeys_pkcs11::token::CreateNote>> {
-        self.placement(req.locator)?;
-        tok.create_declared(req)
-    }
-
-    /// A key is never claimed deleted (ykcs11 keeps it; the advice names `ykman`); anything else is, as SO.
-    fn destroy(&self, tok: &Token, req: &Destroy<'_>) -> Result<usize> {
+    /// A key is never claimed deleted (ykcs11 keeps it; the advice names `ykman`); anything else
+    /// is. The token has entered the SO session already (review 2026-11-24 B-2), so the refusal
+    /// comes after an SO login.
+    fn destroy(&self, tok: &Token, req: &Checked<Destroy<'_>>) -> Result<usize> {
         if req.object.class.is_key() {
             let advice = Self::keeps_destroyed_keys(req.locator);
             return Err(KmError::Unsupported(

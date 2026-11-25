@@ -2,8 +2,8 @@
 //! Module-specific behaviour goes through the selected [`Provider`].
 
 use crate::provider::{
-    AttestCtx, AttestationCap, Attested, Create, Declared, Destroy, Generation, Half, Provider, SessionKey, Template,
-    Topic, keygen_mechanism,
+    AttestCtx, AttestationCap, Attested, Checked, Create, Declared, Destroy, Generation, Half, Provider, SessionKey,
+    Template, Topic, keygen_mechanism,
 };
 use crate::registry::Registry;
 use crate::templates;
@@ -114,6 +114,8 @@ pub struct Token {
     /// An SO login of this token was refused: the counters read at open no longer say what is
     /// left, so the credential is not tried again (review 2026-11-23 B-11).
     so_refused: std::sync::atomic::AtomicBool,
+    /// A step runs in the SO session now ([`Token::as_so`]): a nested one runs as it is.
+    in_so: std::sync::atomic::AtomicBool,
     /// The user credential, already read for login, kept for what needs it again: the
     /// context-specific login of a `CKA_ALWAYS_AUTHENTICATE` proof, the TPM attestation path
     /// (it unseals the token's wrapping key with it) and logging the user back in after an SO
@@ -280,6 +282,7 @@ impl Token {
             cfg: cfg.clone(),
             pins,
             so_refused: std::sync::atomic::AtomicBool::new(false),
+            in_so: std::sync::atomic::AtomicBool::new(false),
             pin,
             provider,
             chain_time,

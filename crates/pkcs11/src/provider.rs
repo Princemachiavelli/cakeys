@@ -225,11 +225,12 @@ pub trait Provider: Send + Sync {
 
     /// Whether a key may be made under `loc` on this module, generated or imported: a module
     /// that places keys into fixed slots by their locator (ykcs11's PIV slots) refuses one it
-    /// cannot place. Static, so asked before anything is created: by the capability gate for
-    /// every pair keys.toml makes on the token, before every import's write
-    /// ([`crate::ops::check_import`]), and by a [`Self::create`] override (review 2026-11-23 B-3:
-    /// only ykcs11's override asked, so `validate`, `create --dry-run` and camigrate's imports
-    /// never did). The default places a key anywhere.
+    /// cannot place. Static, so asked before anything is created, by core and never by an
+    /// override: the static rules ([`crate::ops::static_rules`]) ask it for every pair a write
+    /// puts on the token (the capability gate, `create`, every import's
+    /// [`crate::ops::check_import`]), and [`Token::create`] before it calls [`Self::create`]
+    /// (review 2026-11-24 B-2: only ykcs11's `create` override asked it there). The default
+    /// places a key anywhere.
     ///
     /// # Errors
     ///
@@ -238,27 +239,31 @@ pub trait Provider: Send + Sync {
         Ok(())
     }
 
-    /// Create `req`'s object on `tok`. The default is [`Token::create_declared`]: the module's
-    /// own template where [`Self::generation`] chooses one, else cakeys' templates, in an SO
-    /// session where [`Self::manages_as_so`]. An override refuses what the module would place
-    /// elsewhere than asked (ykcs11 places by `CKA_ID`), before anything is created.
+    /// Create `req`'s object on `tok`. [`Token::create`] calls it, and only it can: it asks
+    /// [`Self::placement`] first and enters the SO session where [`Self::manages_as_so`] says the
+    /// module needs one, then hands over a [`Checked`] request no other crate can build, so an
+    /// override can skip neither (review 2026-11-24 B-2). The default is
+    /// [`Token::create_declared`]: the module's own template where [`Self::generation`] chooses
+    /// one, else cakeys' templates.
     ///
     /// # Errors
     ///
     /// As [`Token::create_declared`], plus the override's refusals.
-    fn create(&self, tok: &Token, req: &Create<'_>) -> Result<Option<crate::token::CreateNote>> {
+    fn create(&self, tok: &Token, req: &Checked<Create<'_>>) -> Result<Option<crate::token::CreateNote>> {
         tok.create_declared(req)
     }
 
-    /// Destroy `req`'s handles, identified by the caller, on `tok`. The default is
-    /// [`Token::destroy_plain`]: `C_DestroyObject` each, in an SO session where
-    /// [`Self::manages_as_so`]. An override refuses (15) where the module's
-    /// `C_DestroyObject` reports success but leaves the key (ykcs11), naming how to remove it.
+    /// Destroy `req`'s handles, identified by the caller, on `tok`. The token's destroys call it
+    /// in the SO session where [`Self::manages_as_so`] says the module needs one, with a
+    /// [`Checked`] request. The default is [`Token::destroy_plain`]: `C_DestroyObject` each. An
+    /// override refuses (15) where the module's `C_DestroyObject` reports success but leaves
+    /// the key (ykcs11), naming how to remove it. The count it returns is a claim: what a delete
+    /// destroyed is looked for again after it.
     ///
     /// # Errors
     ///
     /// As [`Token::destroy_plain`], plus the override's refusals.
-    fn destroy(&self, tok: &Token, req: &Destroy<'_>) -> Result<usize> {
+    fn destroy(&self, tok: &Token, req: &Checked<Destroy<'_>>) -> Result<usize> {
         tok.destroy_plain(req)
     }
 
@@ -451,6 +456,27 @@ impl Attributes {
     /// The template's attributes, in order.
     pub fn iter(&self) -> impl Iterator<Item = &Attribute> {
         self.0.iter()
+    }
+}
+
+/// A request the token checked before it asks the provider ([`Provider::create`],
+/// [`Provider::destroy`]): only this crate makes one, after the rules core asks first (where a
+/// key may go) and in the session the module writes in, so an override that receives it was
+/// called through them. It reads as the request it holds.
+pub struct Checked<T>(T);
+
+impl<T> Checked<T> {
+    /// `req`, once the token has checked it.
+    pub(crate) fn new(req: T) -> Checked<T> {
+        Checked(req)
+    }
+}
+
+impl<T> std::ops::Deref for Checked<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
     }
 }
 
