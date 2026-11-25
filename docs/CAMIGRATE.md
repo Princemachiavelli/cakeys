@@ -37,8 +37,9 @@ array, whatever `--json` says; a run that wrote the lock exits 22 (CAKEYS.md, "E
   holds a realisation of.
 - `--dry-run` prints the plan (a table, or JSON) and changes nothing. The real run executes the
   same plan (D9), and exits as the dry run did: an `export` without names takes what can move,
-  so its dry run is 15 only when nothing can. On `import` it checks the bundle, or the key file, against the lock and the
-  token, and imports nothing.
+  so its dry run is 15 only when nothing can (nothing at all included), and an export to a key
+  file with nothing to put in it is 17. On `import` it checks the bundle, or the key file,
+  against the lock and the token, and imports nothing.
 - `--spec` names the spec to realise an object under where its object has several on the
   target. One that selects nothing (an unknown spec, or one of an object that is not moving
   there) is refused (17).

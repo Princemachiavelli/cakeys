@@ -17,14 +17,8 @@ impl Run<'_> {
         // The source is opened once, for the plan and the hand-over.
         let source = self.opener.open(from, Access::Scratch, notes);
         let (moves, source, _) = self.plan(ctx, super::Show::No, source, Access::Read, notes)?;
-        moves.ready()?;
-        let [p] = moves.plans.as_slice() else {
-            return Err(KmError::Validation(
-                format!("a key file holds one key, and {} are planned: name the one to export", moves.plans.len())
-                    .into(),
-            )
-            .into());
-        };
+        moves.verdict(ctx.take(), from)?;
+        let [p] = moves.plans.as_slice() else { unreachable!("the verdict takes one plan, ready") };
         let cfg = &self.opener.cfg;
         let pass = read_passphrase(pass)?;
         let src = source_target(cfg, &self.lock, &p.object, from)?;

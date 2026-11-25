@@ -12,7 +12,7 @@
 #   and optionally the entry `paths` they cover; or
 # - kind = "descriptive": `why` it is no guarantee a test can hold.
 
-max-unregistered = 101
+max-unregistered = 100
 
 # CAMIGRATE.md D5: a bundle's transport key is the target's own (review 2026-11-24 D-8).
 

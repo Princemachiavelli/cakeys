@@ -548,30 +548,65 @@ pub(crate) struct Moves {
     pub target: Option<Side>,
 }
 
+/// What a run takes of its plans, which decides its verdict ([`Moves::verdict`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Take {
+    /// Each plan: named objects, or a move.
+    Every,
+    /// What can go, the rest left out: an export to a bundle without names.
+    WhatCanGo,
+    /// The one key a key file holds.
+    One,
+}
+
+impl Take {
+    /// What a run of `objects` (none named: every one realised on the source) to `dest` takes.
+    pub(crate) fn of(objects: &[&str], dest: &Dest) -> Take {
+        match dest {
+            Dest::File(_) => Take::One,
+            _ if objects.is_empty() && dest.bundle() => Take::WhatCanGo,
+            _ => Take::Every,
+        }
+    }
+}
+
 impl Moves {
-    /// Whether every object can move as invoked.
+    /// The run's verdict over its plans, the dry run's and the run's alike (docs/CAMIGRATE.md
+    /// D9; review 2026-11-24 D-6: over no plan the dry run said ready, and the run refused):
+    /// each plan ready ([`Take::Every`]); one at least, the others left out
+    /// ([`Take::WhatCanGo`]); one plan, ready ([`Take::One`]).
     ///
     /// # Errors
     ///
-    /// `Unsupported` (15) when any plan is blocked.
-    pub(crate) fn ready(&self) -> Result<()> {
-        let blocked: Vec<String> =
-            self.plans.iter().filter(|p| !p.ready).map(|p| format!("{}: {}", p.object, p.reasons.join("; "))).collect();
-        if blocked.is_empty() {
+    /// The first blocked plan's refusal ([`Plan::refused`]), else `Unsupported` (15), saying
+    /// why for each blocked plan, or that nothing on `from` can go; `Validation` (17) for a key
+    /// file of no key.
+    pub(crate) fn verdict(&self, take: Take, from: &str) -> Result<()> {
+        if take == Take::WhatCanGo && self.plans.iter().any(|p| p.ready) {
             return Ok(());
         }
-        // With why: the run itself prints no plan, only `--dry-run` does.
-        Err(self.refusal(format!(
-            "{} of {} objects cannot move as invoked ({})",
-            blocked.len(),
-            self.plans.len(),
-            blocked.join(" | ")
-        )))
+        let blocked: Vec<String> =
+            self.plans.iter().filter(|p| !p.ready).map(|p| format!("{}: {}", p.object, p.reasons.join("; "))).collect();
+        match (take, blocked.is_empty()) {
+            // Each plan says why, as the plan's rows or as the export's warnings.
+            (Take::WhatCanGo, _) => Err(self.refusal(format!("nothing on '{from}' can go into a bundle"))),
+            (Take::One, true) if self.plans.is_empty() => Err(KmError::Validation(
+                format!("a key file holds one key, and nothing on '{from}' is planned: name the one to export").into(),
+            )),
+            (_, true) => Ok(()),
+            // With why: the run itself prints no plan, only `--dry-run` does.
+            (_, false) => Err(self.refusal(format!(
+                "{} of {} objects cannot move as invoked ({})",
+                blocked.len(),
+                self.plans.len(),
+                blocked.join(" | ")
+            ))),
+        }
     }
 
     /// `text` as the error of the first blocked plan's refusal ([`Plan::refused`]): the one the
     /// run would end with, as the run itself meets it; `Unsupported` (15) for a plan of none.
-    pub(crate) fn refusal(&self, text: String) -> KmError {
+    fn refusal(&self, text: String) -> KmError {
         match self.plans.iter().find(|p| !p.ready).and_then(|p| p.refused) {
             Some(r) => r.error(text),
             None => KmError::Unsupported(text.into()),

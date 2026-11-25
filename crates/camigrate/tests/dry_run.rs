@@ -1623,6 +1623,38 @@ fn locked_transport_keys_are_held_to_one_rule() {
     assert!(copy.is_empty(), "a 1024-bit key was made trusted");
 }
 
+/// An export without names takes what can go, and ends as its dry run did when nothing can
+/// (docs/CAMIGRATE.md D9; review 2026-11-24 D-6): a token that holds only its own transport
+/// key, which never leaves, has nothing to export, and both say so (15). With a name, the key
+/// is refused as one that never leaves (15).
+#[test]
+fn an_export_of_nothing_that_can_go_ends_as_its_plan() {
+    let Some((e, [_, kry, der])) = two_targets("nothing-goes") else { return };
+    let export = ["export", "--from", "kryoptic-der", "--to", "kryoptic"];
+    refused(&e.km_alone(&der, &[&export[..], &["--dry-run"]].concat()), 15, "nothing on 'kryoptic-der' can go");
+    let out = file_arg(&e, "nothing.bundle.toml");
+    refused(&e.km(&der, &[&export[..], &["--out", &out]].concat()), 15, "nothing on 'kryoptic-der' can go");
+    assert!(!std::path::Path::new(&out).exists(), "a bundle was written");
+    let named = ["export", "tk-kryoptic-der", "--from", "kryoptic-der", "--to", "kryoptic", "--dry-run"];
+    refused(&e.km_alone(&kry, &named), 15, "it never leaves 'kryoptic-der'");
+}
+
+/// A key file holds one key: an export to one without names, from a token where nothing can go,
+/// ends as its plan does (17), which once said ready over no plan (review 2026-11-24 D-6's
+/// sibling), and nothing is written.
+#[test]
+fn a_key_file_of_nothing_ends_as_its_plan() {
+    let Some((e, [_, _, der])) = two_targets("no-key-file") else { return };
+    let pass = file_arg(&e, "pass");
+    std::fs::write(&pass, "correct horse\n").unwrap();
+    let out = file_arg(&e, "nothing.p8");
+    let export = ["export", "--from", "kryoptic-der", "--to-key-file", "pkcs8", "--allow-host-plaintext"];
+    refused(&e.km_alone(&der, &[&export[..], &["--dry-run"]].concat()), 17, "a key file holds one key");
+    let o = e.km(&der, &[&export[..], &["--out", &out, "--passphrase-file", &pass]].concat());
+    refused(&o, 17, "a key file holds one key");
+    assert!(!std::path::Path::new(&out).exists(), "a key file was written");
+}
+
 /// Where the module can place a key (`Provider::placement`) is planned where a move lands, as
 /// the import asks it before its write (review 2026-11-24 D-2): into a PIV token (a `SoftHSM`
 /// token bound to ykcs11, which places a key by `CKA_ID` alone, never under a label nor in f9's

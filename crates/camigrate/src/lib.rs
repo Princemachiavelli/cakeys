@@ -368,7 +368,7 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
             specs_import(&run.opener.cfg, spec, to, MOVE)?;
             let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
             let dest = tokens::Dest::Token(to);
-            run.plan_moves(&MoveCtx { objects: &objects, from, dest: &dest, specs: spec, how }, false, notes)
+            run.plan_moves(&MoveCtx { objects: &objects, from, dest: &dest, specs: spec, how }, notes)
         }
         Cmd::Migrate { objects, from, to, spec, how } => {
             let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
@@ -432,9 +432,7 @@ impl Run<'_> {
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
         let ctx = MoveCtx { objects: &objects, from, dest: &dest, specs: &[], how: &how };
         if how.dry_run {
-            // Without names a bundle takes what can move, so its plan fails only when nothing can.
-            let partial = objects.is_empty() && !matches!(dest, tokens::Dest::File(_));
-            return self.plan_moves(&ctx, partial, notes);
+            return self.plan_moves(&ctx, notes);
         }
         if json {
             return Err(KmError::Validation(
@@ -544,6 +542,13 @@ struct MoveCtx<'a> {
     how: &'a MoveArgs,
 }
 
+impl MoveCtx<'_> {
+    /// What the run takes of its plans, the dry run's verdict and the run's.
+    fn take(&self) -> tokens::Take {
+        tokens::Take::of(self.objects, self.dest)
+    }
+}
+
 /// A verb's run over its objects (review D8: `import`, `migrate` and `import` from files each
 /// kept their own): each object on its own, so one that fails leaves nothing and the others
 /// still move. Each object's outcome, printed as the run's result (review 2026-11-23 C-7);
@@ -626,16 +631,13 @@ impl Run<'_> {
         })
     }
 
-    /// `--dry-run`: plan each object's move from `from` to `dest` and print it (docs/CAMIGRATE.md D9);
-    /// 15 when any object cannot move as invoked — or, for a `partial` move (an export without
-    /// names, which leaves out what cannot move), when none can: the real run's own verdict.
-    fn plan_moves(&self, ctx: &MoveCtx, partial: bool, notes: &mut Notes) -> anyhow::Result<()> {
+    /// `--dry-run`: plan each object's move from `from` to `dest` and print it (docs/CAMIGRATE.md
+    /// D9), and end with the real run's own verdict ([`tokens::Moves::verdict`]): an export
+    /// without names takes what can move, and fails only when nothing can.
+    fn plan_moves(&self, ctx: &MoveCtx, notes: &mut Notes) -> anyhow::Result<()> {
         let source = self.opener.open(ctx.from, Access::Read, notes);
         let (moves, ..) = self.plan(ctx, Show::Stdout, source, Access::Read, notes)?;
-        if partial && moves.plans.iter().any(|p| p.ready) {
-            return Ok(());
-        }
-        Ok(moves.ready()?)
+        Ok(moves.verdict(ctx.take(), ctx.from)?)
     }
 
     /// `export` for real: plan as `--dry-run` does, then wrap every key to the target's
@@ -646,24 +648,24 @@ impl Run<'_> {
     /// every key that can move is exported and the others are warned about. The bundle is
     /// written whole or not at all; nothing on either token changes.
     fn export(&self, ctx: &MoveCtx, out: Option<&Path>, notes: &mut Notes) -> anyhow::Result<()> {
-        let MoveCtx { objects, from, dest, how, .. } = *ctx;
+        let MoveCtx { from, dest, how, .. } = *ctx;
         // The source is opened once, for the plan and the wrap; so is a bundle's token, for the
         // plan and its transport key (review lib.rs F5).
         let source = self.opener.open(from, Access::Scratch, notes);
         let (moves, source, planned_target) = self.plan(ctx, Show::No, source, Access::Read, notes)?;
         // Named objects are all or nothing; without names, whatever can move does, and what
-        // cannot (a key made non-extractable, ...) is warned about and left out.
-        if !objects.is_empty() {
-            moves.ready()?;
+        // cannot (a key made non-extractable, ...) is warned about and left out. (What is meant
+        // never to leave is not planned at all: `landing::block`.)
+        let take = ctx.take();
+        if take == tokens::Take::WhatCanGo {
+            for p in moves.plans.iter().filter(|p| !p.ready) {
+                notes.warn(format_args!("{}: left out of the bundle: {}", p.object, p.reasons.join("; ")));
+            }
         }
+        moves.verdict(take, from)?;
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let mut items = Vec::new();
-        for p in &moves.plans {
-            if !p.ready {
-                // What is meant never to leave is not planned at all (`plan`).
-                notes.warn(format_args!("{}: left out of the bundle: {}", p.object, p.reasons.join("; ")));
-                continue;
-            }
+        for p in moves.plans.iter().filter(|p| p.ready) {
             // Ready means a method a bundle carries (`limit_bundle_plans`).
             let Some(method) = p.method.clone().filter(in_bundle) else {
                 unreachable!("{}: the plan blocks what a bundle cannot carry", p.object)
@@ -673,10 +675,6 @@ impl Run<'_> {
                 method,
                 exposure: p.exposure.unwrap_or(Exposure::Sealed),
             });
-        }
-        if items.is_empty() {
-            // With the refusal that kept the first object out, as the plan says it.
-            return Err(moves.refusal(format!("nothing on '{from}' can go into a bundle")).into());
         }
         let source = self.source(from, source, notes)?;
         let wraps = items.iter().any(|i| i.method != Method::Public);
@@ -830,7 +828,7 @@ impl Run<'_> {
         let ctx = MoveCtx { objects, from, dest: &dest, specs, how };
         let (moves, source, planned) = self.plan(&ctx, Show::Notes, source, Access::Write, notes)?;
         // The plan blocked a method not built yet, and checked every --spec (`plan`).
-        moves.ready()?;
+        moves.verdict(ctx.take(), from)?;
         let source = self.source(from, source, notes)?;
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
         // The one the plan opened; else opened now, which says why it does not open.
