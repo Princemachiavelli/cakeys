@@ -1,10 +1,11 @@
 //! Helpers shared by the integration tests of `cakeys`, `caprobe` and `camigrate` (each includes
 //! this file): running the package's own binary, the token headers of each suite's keys.toml,
-//! the cross-reference harness ([`xref`]), what a run must leave as it was ([`state`]), CLI
-//! output parsing and an independent DER oracle.
+//! the cross-reference harness ([`xref`]), what a run must leave as it was ([`state`]), the liar
+//! matrix's runner ([`liars`]), CLI output parsing and an independent DER oracle.
 #![allow(dead_code, reason = "each test binary uses a subset")]
 #![expect(unreachable_pub, reason = "its crate is a test binary: pub and pub(crate) say the same")]
 
+pub mod liars;
 pub mod state;
 pub mod surface;
 #[path = "../../../test-skip.rs"]
