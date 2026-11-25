@@ -81,7 +81,7 @@ fn tokens(name: &str) -> Option<(Env, String)> {
         ("lock", "crt-src", kry),
     ] {
         let o = e.cakeys(r, &[verb, "--spec", spec, "--token", r.name]);
-        assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+        assert_eq!(code(&o), 22, "{spec}: {}", stderr(&o));
     }
     Some((e, real))
 }
@@ -201,7 +201,7 @@ fn a_move_the_module_fails_is_refused_and_undone() {
     // alone passed a move that recorded nothing).
     for args in [out, host, cert] {
         let o = e.km_alone(&e.refs[0], args);
-        assert_eq!(common::code(&o), 0, "{args:?}: {}", stderr(&o));
+        assert_eq!(common::code(&o), 22, "{args:?}: {}", stderr(&o));
         let (spec, to) = (format!("{}-dst", args[1]), args[5]);
         let o = e.cakeys(&e.refs[0], &["check", "--spec", &spec, "--token", to]);
         assert_eq!(common::code(&o), 0, "{spec} on {to}: {}", stderr(&o));
@@ -250,7 +250,7 @@ fn an_import_killed_part_way_has_recorded_what_it_made() {
     assert!(lock["realisations"]["kk-dst"].get("softhsm").is_some(), "made before the kill, not recorded: {lock}");
     assert!(lock["realisations"].get("crt-dst").is_none(), "{lock}");
     let o = e.km_alone(&e.refs[0], import);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert!(stderr(&o).contains("already realised and verifies"), "{}", stderr(&o));
     assert_eq!(on_target("f-crt"), 1);
 }
@@ -271,7 +271,7 @@ fn a_transport_key_never_leaves() {
     assert!(!stderr(&o).contains("tk-kryoptic"), "{}", stderr(&o));
     assert!(!std::fs::read_to_string(&out).unwrap().contains("tk-kryoptic"));
     let o = e.km_alone(soft, &["migrate", "--from", "kryoptic", "--to", "softhsm", "--allow-host-plaintext"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     let on_target = |label: &str| open_session(&real, "kmtest", "1234").labelled(label).len();
     assert_eq!(on_target("tk-kryoptic"), 0);
     assert!(["f-kk", "f-ks", "f-crt"].iter().all(|l| on_target(l) > 0), "the others did not move");
@@ -331,7 +331,7 @@ fn a_failed_move_leaves_the_others_moving() {
     e.config_with(&body, &|_| String::new());
     for spec in ["c1-src", "c2-src"] {
         let o = e.cakeys(kry, &["lock", "--spec", spec, "--token", "kryoptic"]);
-        assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+        assert_eq!(code(&o), 22, "{spec}: {}", stderr(&o));
     }
     let lie = "[[rule]]\nfn = \"C_GetAttributeValue\"\nof_label = \"f-c1\"\nattribute = \"CKA_CERTIFICATE_TYPE\"\n\
                value = \"0100000000000000\"\n";

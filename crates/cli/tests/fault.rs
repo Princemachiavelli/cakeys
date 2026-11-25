@@ -114,7 +114,7 @@ fn a_failing_module_call_is_unavailable() {
     let plan = "[[rule]]\nfn = \"C_FindObjects\"\nrv = \"CKR_DEVICE_ERROR\"\n\n\
                 [[rule]]\nfn = \"C_Login\"\nwhen = \"after\"\nrv = \"CKR_PIN_INCORRECT\"\n";
     let Some((w, plan_path, trace)) = faulted("fault-module-fails", plan) else { return };
-    assert_eq!(w.code(&["create", "--spec", "k", "--token", "ref"]), 0, "no plan: transparent");
+    assert_eq!(w.code(&["create", "--spec", "k", "--token", "ref"]), 22, "no plan: transparent");
     let o = w.km_env(
         &["check", "--spec", "k", "--token", "ref"],
         &[("P11_FAULT_PLAN", &plan_path), ("P11_FAULT_TRACE", &trace)],
@@ -174,7 +174,7 @@ fn lying(name: &str) -> Option<Workdir> {
     );
     for spec in ["k", "d", "r", "u", "a"] {
         let o = w.km(&["create", "--spec", spec, "--token", "ref"]);
-        assert_eq!(code(&o), 0, "{spec}, no plan: {}", stderr(&o));
+        assert_eq!(code(&o), 22, "{spec}, no plan: {}", stderr(&o));
     }
     // The other keys, made on the real module itself.
     let s = open_session(&real, "kmtest", "1234");
@@ -300,7 +300,7 @@ fn a_lying_module_is_refused() {
         assert_eq!(w.code(&["check", "--spec", spec, "--token", "ref"]), 0, "{spec}");
     }
     // And the writing row, unrefused, does write: the comparison above can fail.
-    assert_eq!(w.code(&["create", "--spec", "new", "--token", "ref"]), 0);
+    assert_eq!(w.code(&["create", "--spec", "new", "--token", "ref"]), 22);
     assert_ne!(std::fs::read(&lock_path).unwrap(), lock, "a recorded creation left the lock as it was");
 }
 
@@ -314,7 +314,7 @@ fn a_substitution_of_nothing_is_the_plans_mistake() {
     else {
         return;
     };
-    assert_eq!(w.code(&["create", "--spec", "k", "--token", "ref"]), 0);
+    assert_eq!(w.code(&["create", "--spec", "k", "--token", "ref"]), 22);
     let o = w
         .km_env(&["check", "--spec", "k", "--token", "ref"], &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)]);
     // The shim's CKR_GENERAL_ERROR, unavailable like any failed call (docs/FAULT_SHIM.md).
@@ -468,7 +468,7 @@ fn a_create_killed_part_way_has_recorded_what_it_made() {
     assert!(lock["realisations"]["k1"].get("ref").is_some(), "made before the kill, not recorded: {lock}");
     assert!(lock["realisations"].get("k2").is_none(), "{lock}");
     let o = w.km(&create);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert_eq!((on_token("k1"), on_token("k2")), (2, 2));
 }
 
@@ -490,7 +490,7 @@ fn a_creation_that_fails_after_the_write_is_undone() {
     assert_eq!(left(), 0, "the pair the module made is still under the locator");
     // Nothing left in the way: the next run creates it.
     let o = w.km(&create);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert_eq!(left(), 2);
 }
 
@@ -500,7 +500,7 @@ fn a_creation_that_fails_after_the_write_is_undone() {
 /// it was given, with no second generation on the token.
 #[test]
 fn a_refused_curve_is_tried_by_name_only_where_the_profile_says_so() {
-    let refuse = "[[rule]]\nfn = \"C_GenerateKeyPair\"\nrv = \"CKR_DEVICE_ERROR\"\n";
+    let refuse = "[[rule]]\nfn = \"C_GenerateKeyPair\"\nrv = \"CKR_DOMAIN_PARAMS_INVALID\"\n";
     let Some((w, plan, trace)) = faulted("fault-by-name", refuse) else { return };
     w.write_config(
         &(reference_tokens(&fault_shim(), &w.dir)
@@ -513,7 +513,7 @@ fn a_refused_curve_is_tried_by_name_only_where_the_profile_says_so() {
         &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)],
     );
     assert_eq!(code(&o), 15, "{}", stderr(&o));
-    assert!(stderr(&o).contains("CKR_DEVICE_ERROR"), "{}", stderr(&o));
+    assert!(stderr(&o).contains("CKR_DOMAIN_PARAMS_INVALID"), "{}", stderr(&o));
     let text = std::fs::read_to_string(&trace).unwrap();
     let generations = text.lines().filter(|l| l.contains("\"C_GenerateKeyPair\"")).count();
     assert_eq!(generations, 1, "{text}");
@@ -537,7 +537,7 @@ fn a_curve_the_lock_records_by_name_is_tried_by_name() {
     );
     // A first key, unfaulted, records the token's observation; an earlier run's by-name answer
     // goes into it.
-    assert_eq!(w.code(&["create", "--spec", "k", "--token", "ref"]), 0);
+    assert_eq!(w.code(&["create", "--spec", "k", "--token", "ref"]), 22);
     let lock_path = w.dir.join("keys.lock");
     let mut lock: toml::Table = toml::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
     let observations = lock["observations"].as_table_mut().unwrap();
@@ -554,7 +554,7 @@ fn a_curve_the_lock_records_by_name_is_tried_by_name() {
     let text = std::fs::read_to_string(&trace).unwrap();
     let generations = text.lines().filter(|l| l.contains("\"C_GenerateKeyPair\"")).count();
     assert_eq!(generations, 2, "{text}\n{}", stderr(&o));
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     // The key made so is recorded so, by this run.
     let lock: toml::Table = toml::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
     let recorded: Vec<_> =

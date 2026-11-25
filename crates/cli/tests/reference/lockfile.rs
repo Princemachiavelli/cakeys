@@ -72,12 +72,13 @@ fn module_and_token_provenance_warn_but_do_not_fail() {
     let bare = format!("ref={}", module.file_name().unwrap().to_str().unwrap());
     let search = [("LD_LIBRARY_PATH", module.parent().unwrap())];
     assert_eq!(module_path(&e.km_env(&[&["--module", bare.as_str()][..], &r[..]].concat(), &search)), loaded);
-    // A per-machine `module = "$NAME"`: unset, it is invalid (17) unless --module replaces it
-    // first, as lib.mkKeys does in a build sandbox that sets no such variable.
+    // A per-machine `module = "$NAME"`: unset, it is unavailable (16, this host's environment
+    // not providing it: review A-14) unless --module replaces it first, as lib.mkKeys does in a
+    // build sandbox that sets no such variable.
     let toml = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
     e.write_config(&toml.replace(&format!("module = \"{}\"", e.module), "module = \"$CAKEYS_TEST_UNSET_MODULE\""));
     let o = e.km(&verify);
-    assert_eq!(code(&o), 17);
+    assert_eq!(code(&o), 16);
     assert!(stderr(&o).contains("CAKEYS_TEST_UNSET_MODULE"), "{}", stderr(&o));
     assert_eq!(e.code(&[&["--module", via_link.as_str()][..], &verify[..]].concat()), 0);
     assert!(!stderr(&e.km(&verify)).contains("warning"));

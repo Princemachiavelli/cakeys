@@ -360,6 +360,13 @@ mod tests {
         let Err(e) = read_lock(&path, false, false, "") else { panic!("a missing lock was read") };
         let e = e.downcast_ref::<KmError>().unwrap();
         assert!(e.exit_code() == 17 && e.to_string().contains("--new-lock"), "{e}");
+        // Inside a Nix build sandbox a lock write is refused up front (`lock_unwritable`), so
+        // `--new-lock` makes none there: the writing half of this test runs outside it.
+        if cakeys_core::config::in_nix_build() {
+            let Err(e) = read_lock(&path, true, true, "") else { panic!("a sandboxed run made a lock") };
+            assert!(e.to_string().contains("Nix build sandbox"), "{e}");
+            return;
+        }
         let (lock, guard) = read_lock(&path, true, true, "").unwrap();
         assert!(lock.realisations.is_empty() && guard.is_some());
         let mut notes = Notes::default();

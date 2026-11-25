@@ -162,13 +162,13 @@ fn tpm2_generated_keys_match_der_oracle() {
             got_hash(&first),
             "{k}: no duplicate"
         );
-        assert_eq!(e.code(&["lock", "--spec", &spec, "--token", "tpm"]), 0, "{k}");
+        assert_eq!(e.code(&["lock", "--spec", &spec, "--token", "tpm"]), 22, "{k}");
         // A session opened now: tpm2-pkcs11 sessions don't see objects created after they opened.
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki_with(&e.session(), k, unwrap_tpm2)), "{k}");
         let binding = if k == "tpm-p521" { "token-asserted" } else { "pop-sign" };
         assert_eq!(e.lock()["realisations"][&spec]["tpm"]["binding"].as_str(), Some(binding), "{k}");
         let pubs = format!("{k}-pub");
-        assert_eq!(e.code(&["lock", "--spec", &pubs, "--token", "tpm-anon"]), 0, "{k}");
+        assert_eq!(e.code(&["lock", "--spec", &pubs, "--token", "tpm-anon"]), 22, "{k}");
     }
 }
 
@@ -210,7 +210,7 @@ fn tpm2_proves_possession_by_deriving() {
          tokens.tpm = { locator = { CKA_LABEL = \"ecdh-p256\" }, origin = \"create\", binding = \"pop-ecdh\" }\n",
     );
     let o = e.km(&["create", "--spec", "p", "--token", "tpm"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert_eq!(e.lock()["realisations"]["p"]["tpm"]["binding"].as_str(), Some("pop-ecdh"));
     let o = e.km(&["check", "--spec", "p", "--token", "tpm"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -295,7 +295,7 @@ tokens.tpm = { locator = { CKA_LABEL = "imp-hmac384" }, origin = "adopt" }
 "#,
     );
     for (spec, token) in [("p256", "tpm"), ("rsa", "tpm-anon"), ("hmac", "tpm"), ("hmac384", "tpm")] {
-        assert_eq!(e.code(&["lock", "--spec", spec, "--token", token]), 0, "{spec}");
+        assert_eq!(e.code(&["lock", "--spec", spec, "--token", token]), 22, "{spec}");
     }
     assert_eq!(e.locked_id("p256", "rfc7093m4"), IMPORT_P256);
     assert_eq!(e.locked_id("rsa", "rfc7093m4"), IMPORT_RSA2048);
@@ -323,7 +323,7 @@ fn tpm2_aes_key_is_identified_by_its_kcv() {
     let first = e.km(&r);
     assert_eq!(code(&first), 18);
     assert_eq!(got_hash(&e.km(&r)), got_hash(&first));
-    assert_eq!(e.code(&recording(&r)), 0);
+    assert_eq!(e.code(&recording(&r)), 22);
     assert_eq!(e.code(&["check", "aes.id.kcv-ecb"]), 0);
 
     let s = e.session();
@@ -362,7 +362,7 @@ fn tpm2_private_data_object_is_identified_by_its_value() {
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("declare CKA_PRIVATE = true"), "{}", stderr(&o));
     let o = e.km(&["lock", "--spec", "blob", "--token", "tpm"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert_eq!(e.locked_id("blob", "valuehash"), sri(&value));
     assert_eq!(e.code(&["check", "blob", "--spec", "blob"]), 0);
 }
@@ -392,7 +392,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
     let ids = got["ids"].as_object().unwrap();
     assert_eq!(ids.len(), 1, "only the portable rfc7093m4 is an object ID: {ids:?}");
     assert!(got["attestation"]["id"].as_str().unwrap().starts_with("sha256-"));
-    assert_eq!(e.code(&recording(&r)), 0);
+    assert_eq!(e.code(&recording(&r)), 22);
     // The lock: the attestation lives on the realisation (per device), the portable ID on the
     // object; the realisation pins the AK beside its attestation ID.
     assert!(e.lock()["objects"]["p256"]["ids"].get("tpm-certify").is_none());
@@ -463,7 +463,7 @@ fn tpm2_keys_attest_their_tpm_residence() {
              [specs.hmac]\nobject = \"hmac\"\nattributes = { CKA_SIGN = true, CKA_EXTRACTABLE = true }\n\
              tokens.tpm = { locator = { CKA_LABEL = \"attest-hmac\" }, origin = \"adopt\", attestation = true }\n",
         );
-        assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "tpm"]), 0);
+        assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "tpm"]), 22);
         assert!(e.lock()["objects"]["hmac"]["ids"].get("commitment").is_some());
         assert!(e.locked_attestation("hmac", "tpm")["id"].as_str().is_some());
         // A TPM-held secret key, certified: a fresh proof, not the replayable fingerprint a
@@ -514,7 +514,7 @@ fn tpm2_attestation_activates_a_credential_to_the_certified_ek() {
 
     // First use, as before the EK certificate: the AK's own key is the anchor.
     config("");
-    assert_eq!(e.code(&lock), 0);
+    assert_eq!(e.code(&lock), 22);
     let first_use = e.locked_attestation("a", "tpm")["root"].clone();
     ek("ek-ecc.pem", "other-ca.pem");
     refused(&e.km(&lock), 13, "signed by no pinned root");
@@ -526,7 +526,7 @@ fn tpm2_attestation_activates_a_credential_to_the_certified_ek() {
     let mut edited = e.lock();
     edited["realisations"]["a"]["tpm"].as_table_mut().unwrap().remove("attestation").unwrap();
     e.write_lock(&edited);
-    assert_eq!(e.code(&lock), 0);
+    assert_eq!(e.code(&lock), 22);
     // The lock pins the test CA's key, the anchor the EK certificate verified to.
     let ca_spki =
         Command::new("openssl").args(["pkey", "-in", &path("ca.key"), "-pubout", "-outform", "DER"]).output().unwrap();
@@ -613,7 +613,7 @@ fn tpm2_the_salted_session_keeps_the_token_secrets_off_the_wire() {
     let has_key_text = |bytes: &[u8]| bytes.windows(64).any(|w| w.iter().all(u8::is_ascii_hexdigit));
 
     config(&format!("options = {{ ekCertificate = \"{}\", ekRoots = \"{}\" }}", path("ek-ecc.pem"), path("ca.pem")));
-    assert_eq!(e.code(&["lock", "--spec", "a", "--token", "tpm"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "a", "--token", "tpm"]), 22);
     let salted = wire(&resolve);
     assert!(!has(&salted, &seal_auth), "the seal auth crossed the transport in the clear");
     assert!(!has_key_text(&salted), "the wrapping key crossed the transport in the clear");
@@ -757,8 +757,8 @@ fn tpm2_each_token_pins_its_own_attestation() {
          tokens.tpm2 = {{ locator = {{ CKA_LABEL = \"two-hmac\" }}, origin = \"adopt\", attestation = true }}\n",
         e.module
     ));
-    assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "tpm"]), 0);
-    assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "tpm2"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "tpm"]), 22);
+    assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "tpm2"]), 22);
     let lock = e.lock();
     let ids = lock["objects"]["hmac"]["ids"].as_table().unwrap();
     assert_eq!(ids.keys().collect::<Vec<_>>(), ["commitment"], "{ids:?}");
@@ -817,8 +817,8 @@ fn tpm2_attested_material_travels_to_a_second_hsm() {
         .unwrap();
     // The portable identity first, from the token without attestation; the TPM realisation
     // then joins the same object through the shared commitment scheme, pinning its attestation.
-    assert_eq!(e.code(&["lock", "--spec", "hmac-soft", "--token", "soft"]), 0);
-    assert_eq!(e.code(&["lock", "--spec", "hmac-tpm", "--token", "tpm"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "hmac-soft", "--token", "soft"]), 22);
+    assert_eq!(e.code(&["lock", "--spec", "hmac-tpm", "--token", "tpm"]), 22);
     let lock = e.lock();
     let ids = lock["objects"]["hmac"]["ids"].as_table().unwrap();
     assert_eq!(ids.keys().collect::<Vec<_>>(), ["commitment"], "the portable ID only: {ids:?}");
@@ -1067,7 +1067,7 @@ fn tpm2_attests_each_key_type() {
     );
     for spec in ["p384", "p521", "rsa"] {
         let o = e.km(&["create", "--spec", spec, "--token", "tpm"]);
-        assert_eq!(code(&o), 0, "{spec}: {}", stderr(&o));
+        assert_eq!(code(&o), 22, "{spec}: {}", stderr(&o));
         assert_eq!(e.locked_attestation(spec, "tpm")["kind"].as_str(), Some("tpm-certify"), "{spec}");
         assert_eq!(e.code(&["check", "--spec", spec, "--token", "tpm"]), 0, "{spec}");
     }
@@ -1136,7 +1136,7 @@ fn tpm2_vendor_module_attests_as_the_store_path_does() {
     assert_eq!(vendor["attestation"]["root"], store["attestation"]["root"], "the same persistent AK signed");
     // Each realisation, locked through its own path, verifies: the same ID and root were pinned.
     for token in ["tpm", "store"] {
-        assert_eq!(e.code(&recording(&["lock", "--spec", "p256", "--token", token, "--dry-run"])), 0, "{token}");
+        assert_eq!(e.code(&recording(&["lock", "--spec", "p256", "--token", token, "--dry-run"])), 22, "{token}");
     }
     assert_eq!(e.locked_attestation("p256", "tpm"), e.locked_attestation("p256", "store"));
     for token in ["tpm", "store"] {
@@ -1162,7 +1162,7 @@ fn tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store() {
     let before = on_swtpm().then(persistent_handles);
     let first = e.km(&["create", "--spec", "p256", "--token", "tpm", "--no-update-lock"]);
     assert_eq!(code(&first), 18, "{}", stderr(&first));
-    assert_eq!(e.code(&recording(&["lock", "--spec", "p256", "--token", "tpm", "--dry-run"])), 0);
+    assert_eq!(e.code(&recording(&["lock", "--spec", "p256", "--token", "tpm", "--dry-run"])), 22);
     let att = e.locked_attestation("p256", "tpm");
     assert_eq!(att["kind"].as_str(), Some("tpm-certify"));
     for _ in 0..2 {

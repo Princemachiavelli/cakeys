@@ -28,9 +28,10 @@ fn session(module: &str) -> TestSession {
     open_session(module, "kmp11", "1234")
 }
 
-/// The IDs a `lock` run printed.
+/// The IDs a `lock` run printed: one result per object, so the one this test locks is the first.
 fn ids(o: &Output) -> serde_json::Value {
-    serde_json::from_str::<serde_json::Value>(&stdout(o)).unwrap()["ids"].clone()
+    let results: Vec<serde_json::Value> = serde_json::from_str(&stdout(o)).unwrap();
+    results[0]["ids"].clone()
 }
 
 /// A test-only AES-256 value planted on the token, known to the host.
@@ -110,24 +111,24 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-hmac" }, origin = "adopt" }
 
     // Generated through the forwarded token, then the same object opened directly: one identity.
     for (k, _) in kinds {
-        assert_eq!(e.code(&["create", "--spec", k, "--token", "fwd"]), 0, "{k}");
-        assert_eq!(e.code(&["lock", "--spec", k, "--token", "direct"]), 0, "{k}: direct agrees");
+        assert_eq!(e.code(&["create", "--spec", k, "--token", "fwd"]), 22, "{k}");
+        assert_eq!(e.code(&["lock", "--spec", k, "--token", "direct"]), 22, "{k}: direct agrees");
         let pubs = format!("{k}-pub");
-        assert_eq!(e.code(&["lock", "--spec", &pubs, "--token", "fwd-anon"]), 0, "{k}");
+        assert_eq!(e.code(&["lock", "--spec", &pubs, "--token", "fwd-anon"]), 22, "{k}");
         assert_eq!(e.locked_id(k, "rfc7093m4"), sri(&oracle_spki(&session(&direct), k)), "{k}");
     }
 
     // AES: p11-kit forwards CMAC and ECB but not key wrap, so the forwarded path computes two of
     // the three commitments; they still link to the direct path, which computes all three.
     let o = e.km(&["lock", "--spec", "aes", "--token", "fwd"]);
-    assert_eq!(code(&o), 0);
+    assert_eq!(code(&o), 22);
     assert_eq!(ids(&o).as_object().unwrap().keys().collect::<Vec<_>>(), ["cmac", "kcv-ecb"]);
-    assert_eq!(e.code(&["lock", "--spec", "aes", "--token", "direct"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "aes", "--token", "direct"]), 22);
     for scheme in ["cmac", "kcv-ecb", "kw"] {
         assert_eq!(e.locked_id("aes", scheme), aes_commitment(&AES_VALUE[..], scheme), "{scheme}");
     }
 
-    assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "fwd"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "hmac", "--token", "fwd"]), 22);
     let mut mac = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(&HMAC_VALUE).unwrap();
     mac.update(b"key-management/v1/commitment/CKK_GENERIC_SECRET/256");
     assert_eq!(e.locked_id("hmac", "commitment"), sri(&mac.finalize().into_bytes()));
@@ -187,11 +188,11 @@ fn p11kit_login_is_per_client() {
          tokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" }, origin = \"adopt\" }\n\n\
          [specs.k-pub]\nobject = \"k\"\ntokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" }, origin = \"adopt\", publicOnly = true }\n",
     );
-    assert_eq!(e.code(&["create", "--spec", "k", "--token", "fwd"]), 0);
+    assert_eq!(e.code(&["create", "--spec", "k", "--token", "fwd"]), 22);
     // Another client of the same server holds a logged-in session meanwhile...
     let held = session(&e.module);
     // ...yet a client without the PIN still cannot see the private key; the public half works.
     assert_eq!(e.code(&["lock", "--spec", "k", "--token", "fwd-anon", "--dry-run"]), 11);
-    assert_eq!(e.code(&["lock", "--spec", "k-pub", "--token", "fwd-anon"]), 0);
+    assert_eq!(e.code(&["lock", "--spec", "k-pub", "--token", "fwd-anon"]), 22);
     drop(held);
 }

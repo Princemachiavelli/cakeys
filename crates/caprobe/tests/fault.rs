@@ -283,7 +283,9 @@ fn the_probe_notes_which_derive_template_took() {
 /// module whose own wrap round trip works but which decodes no peer's blob (here the shim swaps
 /// another RSA key in for the host-made blob's unwrap) gets no `wrap.rsa-oaep` yes for that hash
 /// (review 2026-11-23 D-3: its own round trip was enough). The call is found in a clean run's
-/// trace: the second of two OAEP SHA-1 unwraps with no wrap between them.
+/// trace: the OAEP SHA-1 unwrap that follows the wrap and round trip of the same hash (a wrap,
+/// the round trip's unwrap, then the host blob's). Earlier SHA-1 unwraps of other probes have no
+/// wrap before them, and are not it.
 #[test]
 fn an_oaep_hash_counts_only_when_a_host_made_blob_decodes() {
     let Some(w) = scratch("fault-probe-host-blob") else { return };
@@ -311,13 +313,25 @@ fn an_oaep_hash_counts_only_when_a_host_made_blob_decodes() {
         calls.iter().filter(|c| c["fn"] == "C_WrapKey" || c["fn"] == "C_UnwrapKey").collect();
     // CKM_RSA_PKCS_OAEP (9) with CKM_SHA_1 (0x220).
     let sha1_unwrap = |c: &serde_json::Value| c["fn"] == "C_UnwrapKey" && c["mechanism"] == 9 && c["hash"] == 0x220;
-    let host = wraps.windows(2).find(|p| sha1_unwrap(p[0]) && sha1_unwrap(p[1])).map(|p| p[1]);
+    let sha1_wrap = |c: &serde_json::Value| c["fn"] == "C_WrapKey" && c["mechanism"] == 9 && c["hash"] == 0x220;
+    let host = wraps
+        .windows(3)
+        .find(|w| sha1_wrap(w[0]) && sha1_unwrap(w[1]) && sha1_unwrap(w[2]))
+        .map(|w| w[2]);
     let host = host.unwrap_or_else(|| panic!("no host-made blob's unwrap in the trace: {wraps:?}"));
     let plan = rule(&format!("fn = \"C_UnwrapKey\"\ncall = {}\nuse_label = \"decoy-rsa\"", host["n"]));
     let (exit, profile, said, fired) = probed(&w, "blob", &plan, &[]);
     assert_eq!(exit, 0, "{said}");
     assert_fired("blob", &plan, &fired, &said);
-    assert!(profile.contains("\"wrap.rsa-oaep.SHA-1\" = { answer = \"no\" }"), "{profile}");
+    let unwraps: String = std::fs::read_to_string(w.dir.join("blob.jsonl"))
+        .unwrap()
+        .lines()
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        profile.contains("\"wrap.rsa-oaep.SHA-1\" = { answer = \"no\" }"),
+        "{plan}\nfired {fired:?}\nunwraps in the blob run:\n{unwraps}\n{said}\n{profile}"
+    );
     assert!(profile.contains("unwraps its own blob but not one the host made"), "{profile}");
 }
 

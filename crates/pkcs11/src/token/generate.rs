@@ -4,7 +4,8 @@
     clippy::wildcard_imports,
     reason = "the token/ split files work on the parent module's imports (R9); `expect` is not fulfilled on a `use` item"
 )]
-use super::*;
+use super::rv::device_failed;
+use super::{Token, Object, SpecCfg, Locator, Binding, Result, Create, CkError, KmError, rv_of, Topic, Generation, keygen_mechanism, rv_name, Declared, Attribute, templates, Template, Half, key_type_of, KeyType, Mechanism, secret_key_gen, ObjectCfg, class_of, ObjectClass, ObjectHandle, Destroy, RvError, ck, Msg};
 use cakeys_profile::{Capability, On};
 
 impl Token {
@@ -67,6 +68,18 @@ impl Token {
         by_name_retry(self.profiles.module.as_ref(), key_type, curve)
     }
 
+    /// A refused generation. A failure of the device, token or session is the token's, not the
+    /// key's: unavailable (16), as an attribute read's is ([`device_failed`]). What the module
+    /// says of the key is unsupported (15), with the provider's hint.
+    fn refused_generation(&self, e: &CkError, msg: String) -> KmError {
+        let rv = rv_of(e);
+        if device_failed(e) {
+            KmError::Unavailable(msg.into()).with_rv(rv)
+        } else {
+            self.unsupported_for(Topic::Generate, msg).with_rv(rv)
+        }
+    }
+
     /// The module's own generation: its template alone, no public template.
     fn generate_own(&self, g: &Generation) -> Result<Option<CreateNote>> {
         let (mech, pair) = keygen_mechanism(g.keygen).ok_or_else(|| {
@@ -78,8 +91,7 @@ impl Token {
             self.session.generate_key(&mech, &g.template).map(drop)
         };
         made.map(|()| None).map_err(|e| {
-            self.unsupported_for(Topic::Generate, format!("generating key on '{}': {} ({e})", self.name, rv_name(&e)))
-                .with_rv(rv_of(&e))
+            self.refused_generation(&e, format!("generating key on '{}': {} ({e})", self.name, rv_name(&e)))
         })
     }
 
@@ -120,8 +132,7 @@ impl Token {
         let key = self.generation_key(on)?;
         let public = self.generation_public(on, None)?;
         let refused = |e: CkError| {
-            self.unsupported_for(Topic::Generate, format!("generating key on '{}': {} ({e})", self.name, rv_name(&e)))
-                .with_rv(rv_of(&e))
+            self.refused_generation(&e, format!("generating key on '{}': {} ({e})", self.name, rv_name(&e)))
         };
         let private_declared = templates::public_declares(spec, "CKA_PRIVATE");
         // A key pair, once more without the public half's default `CKA_PRIVATE = false` when the

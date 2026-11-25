@@ -1948,7 +1948,7 @@ fn tpm2_ptool_imports_under_the_locator_id() {
         ["migrate", "pid", "--from", "softhsm", "--to", "tpm2", "--spec", spec, "--allow-host-plaintext"]
     };
     let o = e.km(soft, &migrate("pid-tpm"));
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     let v = e.cakeys(tpm, &["check", "--spec", "pid-tpm", "--token", "tpm2"]);
     assert_eq!(code(&v), 0, "the key is not under CKA_ID 0a01: {}", stderr(&v));
     // No text spells the byte ff: refused before the tool runs, so nothing lands under the label.
@@ -2001,7 +2001,7 @@ fn a_failed_reopen_after_ptool_says_what_is_in_the_tpm() {
     };
     // A rule that never fires: the move goes through, and its logins are counted.
     let (o, logins) = faulted("count", "[[rule]]\nfn = \"C_Login\"\ncall = 999\nrv = \"CKR_DEVICE_ERROR\"\n", "pr-a");
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert!(logins >= 2, "the import and the reopen each log in: {logins}");
     let plan = format!("[[rule]]\nfn = \"C_Login\"\ncall = {logins}\nrv = \"CKR_DEVICE_ERROR\"\n");
     let (o, _) = faulted("reopen", &plan, "pr-b");
