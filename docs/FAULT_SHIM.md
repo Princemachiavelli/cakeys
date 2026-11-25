@@ -124,15 +124,36 @@ unsafe extern "C" fn C_FindObjects(s: CK_SESSION_HANDLE, out: *mut CK_OBJECT_HAN
 ```
 
 The `=> substitute_key` form marks the functions that take a key (`C_SignInit`, `C_DecryptInit`,
-`C_DeriveKey`, `C_UnwrapKey`, `C_WrapKey`, ...): a `use_label` rule substitutes the handle
-before forwarding; `=> corrupt_output` marks those whose output a rule may change. The plan's
-lists of both are generated from these marks.
+`C_DeriveKey`, ...): a `use_label` rule substitutes the handle before forwarding.
+`C_WrapKey`'s `=> wrap_key` does that too, substitutes the key wrapped under a `wrap_label`
+rule, and changes the blob as `corrupt_output` does; `C_UnwrapKey`'s `=> unwrap_key` undoes a
+`transcode`. `=> corrupt_output` marks those whose output a rule may change (`corrupt`,
+`replay_output`). The plan's lists are generated from these marks.
 
 ### The plan
 
 TOML, read once per process. cakeys runs one process per verb, so one plan is one run's
-behaviour. Rules apply in file order. A rule matches a function, optionally only its n-th call
-(`call`), or one object (`of_label`). It then does one thing:
+behaviour. Rules apply in file order. A rule matches a function (`fn = "*"`: every one), and
+optionally narrows it:
+
+- `call`: only the function's n-th call in the process (from 1).
+- `of_label`: only calls on an object with this label: the key used under `use_label`, the
+  key wrapped under `wrap_label`, any object the call names otherwise (`C_WrapKey`: either
+  key). For the functions that name an object (`C_GetAttributeValue`, `C_DestroyObject`,
+  `C_SignInit`, ...).
+- `mechanism`: only calls with this mechanism (the `*Init` functions, `C_GenerateKey`,
+  `C_WrapKey`, `C_GetMechanismInfo`, ...).
+- `class`, `key_type`: only calls whose input template says this class or key type
+  (`C_FindObjectsInit`, `C_CreateObject`, `C_GenerateKey`, `C_UnwrapKey`, ...).
+- `nth`: only the n-th call that meets the rule's other matchers; `from`: that one and those
+  after. `call`, `nth` and `from` exclude each other.
+- `from_seq`: only the process's n-th call of any function (the trace's `seq`), and those
+  after; with `fn = "*"`, the module failing from one point of a run on.
+
+A matcher is read from the call's arguments before it reaches the module (forward.rs's
+`[kind(args)]` lists), and refused where the function has none: it would never match. `fn =
+"*"` takes no `call` and no matcher on the arguments, and gives `rv` or `abort` only. The rule
+then does one thing:
 
 ```toml
 # A return value, without forwarding (default), or after forwarding (the real effect happened).
@@ -173,11 +194,25 @@ fn = "C_DecryptInit"
 of_label = "shown"
 use_label = "used"
 
-# Found objects hidden; a byte of what a call returns changed (C_Sign, C_SignFinal, C_Encrypt,
-# C_Decrypt); mechanisms no longer listed.
+# Another key wrapped than the one named (of its class; none under the label fails the call):
+# the blob holds another key's material. `of_label` names the key wrapped.
+[[rule]]
+fn = "C_WrapKey"
+of_label = "shown"
+wrap_label = "other"
+
+# Found objects hidden, or others found in their place (the one labelled `by` of each one's
+# class; none under it fails the call); a byte of what a call returns changed (C_Sign,
+# C_SignFinal, C_Encrypt, C_Decrypt, C_WrapKey), or what it returned n calls before returned
+# again (where there was one and it fits the caller's buffer); mechanisms no longer listed.
 [[rule]]
 fn = "C_FindObjects"
 hide_label = "gone"
+
+[[rule]]
+fn = "C_FindObjects"
+of_label = "shown"
+replace_label = "other"
 
 [[rule]]
 fn = "C_Sign"
@@ -185,8 +220,37 @@ call = 2
 corrupt = true
 
 [[rule]]
+fn = "C_Sign"
+replay_output = 1
+
+# A wrapped blob that round-trips through the module and is not what it made: every byte
+# C_WrapKey returns padded, and every C_UnwrapKey's blob unpadded (on a copy) before it reaches
+# the module. No matcher: the unwrap that undoes it cannot tell which wraps were padded.
+[[rule]]
+fn = "C_WrapKey"
+transcode = true
+
+[[rule]]
 fn = "C_GetMechanismList"
 hide_mechanisms = ["CKM_ECDH1_DERIVE"]
+
+# Matchers: the second ECDSA signing fails; a delete of `k` succeeds and does nothing; every
+# function's call fails from the process's 40th on (its trace `seq`).
+[[rule]]
+fn = "C_SignInit"
+mechanism = "CKM_ECDSA"
+nth = 2
+rv = "CKR_DEVICE_ERROR"
+
+[[rule]]
+fn = "C_DestroyObject"
+of_label = "k"
+rv = "CKR_OK"
+
+[[rule]]
+fn = "*"
+from_seq = 40
+rv = "CKR_DEVICE_REMOVED"
 
 # The process dies at the call, before it reaches the module (std::process::abort): a crash,
 # a kill or an OOM between two of a run's writes.
@@ -203,7 +267,7 @@ refuses what the client does next. To model a module that fails the operation, f
 that does the work, after it: `call = 2`, `when = "after"` for a client that asks the length
 first.
 
-**Labels to handles.** `of_label`, `from_label`, `add_label` and `use_label` are resolved
+**Labels to handles.** `of_label`, `from_label`, `add_label`, `use_label`, `wrap_label` and `replace_label` are resolved
 through a session of the shim's own (`C_OpenSession` on the caller's slot, read from
 `C_GetSessionInfo`), so resolving never interrupts a find the caller has open. The session is
 read-only, or read-write where the module refuses a read-only one because the caller holds an
@@ -218,6 +282,20 @@ writers of a test run interleave whole lines):
 ```json
 {"exe":"cakeys","fn":"C_SignInit","mechanism":4164,"n":2,"pid":4711,"rule":null,"rv":"CKR_OK","seq":17}
 ```
+
+`n` is the call's number among its function's in the process, and `seq` among every
+function's (both from 1): what `call`, `nth`/`from` and `from_seq` count.
+
+**Public values.** With `P11_FAULT_RECORD_VALUES=public` (beside `P11_FAULT_TRACE`, which it
+requires), a line also records the values a test compares with what the token holds, and only
+public ones (`record.rs`): `"values": [[type, "hex"], ...]` for what `C_GetAttributeValue`
+returned of `CKA_EC_POINT`, `CKA_EC_PARAMS`, `CKA_PUBLIC_KEY_INFO`, `CKA_MODULUS`,
+`CKA_PUBLIC_EXPONENT` and tpm2-pkcs11's `CKA_TPM2_PUB_BLOB`, and `CKA_VALUE` of a certificate
+only; `"signed": {"data": "hex", "signature": "hex"}` for a `C_Sign` that ends a TPM2
+certification (`CKM_TPM2_CERTIFY`, `CKM_TPM2_CERTIFY_OBJECT`: the nonce and the attestation's
+signature). No template a caller sends is recorded (it may carry key material), nor any other
+signature. Any other value of the variable, or `public` with no trace, is refused, never
+ignored: a test that asks for values never reads a trace without them.
 
 The function and return value are names; what the call was about (`mechanism`, here
 `CKM_ECDSA_SHA256`, attribute types, classes, ...) is numbers, which the reader maps to names
@@ -274,6 +352,20 @@ never yields a wrong plaintext to compare. The challenge was encrypted to the pu
 identity names, so that answer means another key: `CKR_ENCRYPTED_DATA_INVALID`/`_LEN_RANGE`
 and `CKR_WRAPPED_KEY_INVALID`/`_LEN_RANGE` are now a conflict (13). A module that answers a
 general error instead (SoftHSM's `C_UnwrapKey`) stays unavailable: nothing in it says which.
+
+`each_lie_kind_fires` takes each rule kind added since, one row each on a token of its own
+(`told`): the rule, the run, the exit and the message, and the functions the trace shows it
+fired on. Another key wrapped (`wrap_label`) under a secret key's wrap-rebind gives 10: the
+session copy committed on is another key's. Each matcher has a row where it fires and, where
+the point is what it leaves alone, one where it must not: `of_label` fails k's attribute reads
+(16) and not k2's; `nth` and `from` fire on the call they count to (the trace's `n`);
+`fn = "*"` with `from_seq` fails every call from a run's first signing on (16) and none before;
+`mechanism`, `class` and `key_type` each fail the one call (15, 16, 16) and not another.
+Another key pair found (`replace_label`), a wrap commitment corrupted, and a transcoded wrap
+commitment each give 10; a transcoded wrap-rebind still verifies (the unwrap undoes it), and a
+replayed signature fails the second key's proof (13). Under `P11_FAULT_RECORD_VALUES=public`
+a `check` records k's EC point as the token holds it and nothing outside the public
+attributes, and `=all` is refused.
 
 A second test, `a_creation_that_cannot_be_identified_is_undone_or_reported`, takes §8.1's
 "refused operations leave nothing behind": a key created whose proof then fails is removed

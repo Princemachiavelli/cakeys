@@ -4,7 +4,7 @@
 //! `rv_value` and `rv_name`, in every build). No cakeys dependency: p11-fault stays a module any
 //! client can load.
 
-use cryptoki_sys::{CK_ATTRIBUTE_TYPE, CK_FLAGS, CK_MECHANISM_TYPE, CK_RV};
+use cryptoki_sys::{CK_ATTRIBUTE_TYPE, CK_FLAGS, CK_KEY_TYPE, CK_MECHANISM_TYPE, CK_OBJECT_CLASS, CK_RV};
 
 macro_rules! rv_names {
     ($($name:ident),* $(,)?) => {
@@ -846,6 +846,120 @@ pub fn mechanism(name: &str) -> Option<CK_MECHANISM_TYPE> {
     MECHANISM.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }
 
+macro_rules! class_names {
+    ($($name:ident),* $(,)?) => {
+        /// Every `CKO_*` that `cryptoki-sys` defines, by name.
+        pub const CLASS: &[(&str, CK_OBJECT_CLASS)] = &[$((stringify!($name), cryptoki_sys::$name)),*];
+    };
+}
+
+class_names!(
+    CKO_DATA,
+    CKO_CERTIFICATE,
+    CKO_PUBLIC_KEY,
+    CKO_PRIVATE_KEY,
+    CKO_SECRET_KEY,
+    CKO_HW_FEATURE,
+    CKO_DOMAIN_PARAMETERS,
+    CKO_MECHANISM,
+    CKO_OTP_KEY,
+    CKO_PROFILE,
+    CKO_VALIDATION,
+    CKO_TRUST,
+    CKO_VENDOR_DEFINED,
+);
+
+macro_rules! key_type_names {
+    ($($name:ident),* $(,)?) => {
+        /// Every `CKK_*` that `cryptoki-sys` defines, by name (an alias beside the name it stands for).
+        pub const KEY_TYPE: &[(&str, CK_KEY_TYPE)] = &[$((stringify!($name), cryptoki_sys::$name)),*];
+    };
+}
+
+key_type_names!(
+    CKK_ACTI,
+    CKK_AES,
+    CKK_AES_XTS,
+    CKK_ARIA,
+    CKK_BATON,
+    CKK_BLAKE2B_160_HMAC,
+    CKK_BLAKE2B_256_HMAC,
+    CKK_BLAKE2B_384_HMAC,
+    CKK_BLAKE2B_512_HMAC,
+    CKK_BLOWFISH,
+    CKK_CAMELLIA,
+    CKK_CAST,
+    CKK_CAST128,
+    CKK_CAST3,
+    CKK_CAST5,
+    CKK_CDMF,
+    CKK_CHACHA20,
+    CKK_DES,
+    CKK_DES2,
+    CKK_DES3,
+    CKK_DH,
+    CKK_DSA,
+    CKK_EC,
+    CKK_EC_EDWARDS,
+    CKK_EC_MONTGOMERY,
+    CKK_ECDSA,
+    CKK_GENERIC_SECRET,
+    CKK_GOST28147,
+    CKK_GOSTR3410,
+    CKK_GOSTR3411,
+    CKK_HKDF,
+    CKK_HOTP,
+    CKK_HSS,
+    CKK_IDEA,
+    CKK_JUNIPER,
+    CKK_KEA,
+    CKK_MD5_HMAC,
+    CKK_ML_DSA,
+    CKK_ML_KEM,
+    CKK_POLY1305,
+    CKK_RC2,
+    CKK_RC4,
+    CKK_RC5,
+    CKK_RIPEMD128_HMAC,
+    CKK_RIPEMD160_HMAC,
+    CKK_RSA,
+    CKK_SALSA20,
+    CKK_SECURID,
+    CKK_SEED,
+    CKK_SHA_1_HMAC,
+    CKK_SHA224_HMAC,
+    CKK_SHA256_HMAC,
+    CKK_SHA3_224_HMAC,
+    CKK_SHA3_256_HMAC,
+    CKK_SHA3_384_HMAC,
+    CKK_SHA3_512_HMAC,
+    CKK_SHA384_HMAC,
+    CKK_SHA512_224_HMAC,
+    CKK_SHA512_256_HMAC,
+    CKK_SHA512_HMAC,
+    CKK_SHA512_T_HMAC,
+    CKK_SKIPJACK,
+    CKK_SLH_DSA,
+    CKK_TWOFISH,
+    CKK_VENDOR_DEFINED,
+    CKK_X2RATCHET,
+    CKK_X9_42_DH,
+    CKK_XMSS,
+    CKK_XMSSMT,
+);
+
+/// The value of the object class `name` (`CKO_...`).
+#[must_use]
+pub fn class(name: &str) -> Option<CK_OBJECT_CLASS> {
+    CLASS.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+}
+
+/// The value of the key type `name` (`CKK_...`).
+#[must_use]
+pub fn key_type(name: &str) -> Option<CK_KEY_TYPE> {
+    KEY_TYPE.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+}
+
 /// The value of the return code `name` (`CKR_...`).
 #[must_use]
 pub fn rv(name: &str) -> Option<CK_RV> {
@@ -873,6 +987,9 @@ mod tests {
         assert_eq!(slot_flag("CKF_REMOVABLE_DEVICE"), Some(2));
         assert_eq!(token_flag("CKF_RW_SESSION"), None);
         assert_eq!(mechanism("CKM_ECDH1_DERIVE"), Some(0x1050));
+        assert_eq!(class("CKO_SECRET_KEY"), Some(4));
+        assert_eq!(key_type("CKK_AES"), Some(0x1f));
+        assert_eq!(key_type("CKK_ECDSA"), key_type("CKK_EC"));
     }
 
     /// Each flag word has its own names: they share bit values, so a name in both tables, or
