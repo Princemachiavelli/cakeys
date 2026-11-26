@@ -1,5 +1,6 @@
-//! The scratch slot: the write probes' objects, their cleanup and the stale check
-//! (docs/CAPROBE.md).
+//! The write probes and their scratch objects (docs/CAPROBE.md): the tracking of what the probes
+//! make, the cleanup, the leftover check, and the removal of objects that an interrupted run
+//! left.
 
 use super::{
     Attribute, AttributeType, BTreeMap, BoundKey, Capability, Checked, Draft, Made, ObjectHandle, Result, Session,
@@ -7,8 +8,9 @@ use super::{
     secrets,
 };
 
-/// The objects the write probes make on their target: where they may write ([`Target`]), what
-/// they made and under which labels, for the cleanup and the leftover check.
+/// The objects that the write probes make on their target: where the probes may write
+/// ([`Target`]), and what they made and under which labels, for the cleanup and the leftover
+/// check.
 pub(super) struct Scratch {
     pub(super) target: Target,
     pub(super) handles: Vec<ObjectHandle>,
@@ -33,14 +35,15 @@ impl Scratch {
 
     pub(super) fn destroy_all(&self, session: &Session) {
         for h in &self.handles {
-            // Deletion failures are observations here: the leftover check reports them.
+            // A failed deletion is an observation here, which the leftover check reports.
             let _ = session.destroy_object(*h);
         }
     }
 
-    /// After a probe failed: destroy what the run made, by handle, then anything still under its
-    /// labels (a pair whose lookup failed is tracked by label alone). Not measured: a run that
-    /// writes no profile records no `delete` row.
+    /// Runs after a probe failed. The function destroys what the run made, first by handle and
+    /// then by finding anything that is still under the run's labels (a key pair whose lookup
+    /// failed is tracked only by its label). Nothing is measured, because a run that writes no
+    /// profile records no `delete` row.
     pub(super) fn destroy_after_failure(&self, session: &Session) {
         self.destroy_all(session);
         for l in &self.labels {
@@ -50,11 +53,13 @@ impl Scratch {
         }
     }
 
-    /// Which probe labels are still on the token: what `C_DestroyObject` really deleted.
+    /// Returns the probe labels that are still on the token, which shows what `C_DestroyObject`
+    /// really deleted.
     ///
     /// # Errors
     ///
-    /// The failed lookup: a label it could not look up is not gone.
+    /// Returns the failed lookup, because a label that could not be looked up is not known to be
+    /// gone.
     pub(super) fn leftovers(&self, session: &Session) -> std::result::Result<Vec<String>, String> {
         let mut left = Vec::new();
         for l in &self.labels {
@@ -68,9 +73,10 @@ impl Scratch {
         Ok(left)
     }
 
-    /// Destroy what an earlier, interrupted run left (`cakeys-probe-NN`, its own labels on a
-    /// scratch token, and a purpose-bound module's keys under the bound labels), so this run's
-    /// leftover check reports only this run. Returns the labels cleaned.
+    /// Destroys what an earlier, interrupted run left: the objects under the probe's own
+    /// `cakeys-probe-NN` labels on a scratch token, and a purpose-bound module's keys under the
+    /// bound labels. This run's leftover check then reports only this run's objects. Returns the
+    /// labels that were cleaned.
     pub(super) fn clear_stale(session: &Session, bound_keys: &[BoundKey]) -> Vec<String> {
         let mut cleaned = Vec::new();
         let Ok(all) = session.find_objects(&[]) else { return cleaned };
@@ -93,18 +99,20 @@ impl Scratch {
     }
 }
 
-/// The write probes: key pairs per curve and RSA size, each operation the module advertises
-/// on the first key of each kind, the secret-key generation it advertises (a refusal is a
-/// `subtract` row), the OAEP hashes it actually implements for wrapping (wrap and unwrap back),
-/// and the unwrap-template rules. On a scratch token every run cleans up after itself, a run a
-/// probe's error ends included (only a crash is left to the next run's stale check), and the
-/// leftover check turns "delete really deletes" into a note.
+/// Runs the write probes: key pairs on each curve and at each RSA size, the operations on the
+/// first key of each kind, the secret-key generation that the module advertises (an advertised
+/// mechanism that generates nothing becomes a `subtract` row), the OAEP hashes that the module
+/// actually implements for wrapping (a wrap, and then an unwrap of the result), and the rules of
+/// the unwrap template. On a scratch token, every run cleans up after itself, including a run
+/// that a probe's error ends. Only a crash leaves objects for the next run's stale check. The
+/// leftover check records in a note whether `C_DestroyObject` really removed the objects.
 pub(super) fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
     let labels = matches!(made.scratch.target, Target::Labels);
     if labels {
         let stale = Scratch::clear_stale(made.session, &made.bound_keys);
         if !stale.is_empty() {
-            // Not a profile row: an interrupted run is not something the module does.
+            // This is not a profile row, because an interrupted run is not something that the
+            // module does.
             made.undetermined.push(format!("destroyed objects an interrupted probe left: {}", stale.join(", ")));
         }
     }
@@ -112,8 +120,9 @@ pub(super) fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
     if labels {
         match probed {
             Ok(()) => destroy_all(made, profile),
-            // What the probes made before the error goes too (review D7): it was left for the
-            // next run's stale check, on a token keys.toml lends as scratch.
+            // The probe also destroys what the probes made before the error (review D7). Before
+            // that fix, those objects stayed for the next run's stale check, on a token that
+            // keys.toml offers as scratch.
             Err(_) => made.scratch.destroy_after_failure(made.session),
         }
     }
@@ -129,7 +138,7 @@ pub(super) fn write_probes(made: &mut Made, profile: &mut Draft) -> Result<()> {
     Ok(())
 }
 
-/// [`write_probes`] but its cleanup.
+/// Runs [`write_probes`] without its cleanup.
 pub(super) fn probe_writes(made: &mut Made, profile: &mut Draft, labels: bool) -> Result<()> {
     let bound = !made.bound_keys.is_empty();
     let transport = if bound {
@@ -159,10 +168,12 @@ pub(super) fn probe_writes(made: &mut Made, profile: &mut Draft, labels: bool) -
                         .into(),
                 ),
             }
-            // After the wrap probes: a secret key's sealed export takes an OAEP hash they found.
+            // The move probes run after the wrap probes, because a secret key's sealed export uses
+            // an OAEP hash that the wrap probes found.
             moves::probe_moves(made, profile, transport)?;
             // The secret keys' operations (docs/archive/CAPROBE_PROFILE_COVERAGE.md): commitments,
-            // symmetric modes and derivations, then the attributes and key types beyond cakeys'.
+            // symmetric modes and derivations, and then the attributes and the key types that
+            // cakeys does not manage.
             secrets::probe_commits(made, profile)?;
             secrets::probe_modes(made, profile)?;
             secrets::probe_kdfs(made, profile);
@@ -181,18 +192,19 @@ pub(super) fn probe_writes(made: &mut Made, profile: &mut Draft, labels: bool) -
     Ok(())
 }
 
-/// Destroy everything the probes made on a scratch token, and record what `C_DestroyObject`
-/// really removed: a `delete.<class>` row per class the probes made, and a note naming the
-/// labels still there.
-/// A lookup that fails says nothing about what is there: no `delete` row is written from it
-/// (the strongest yes from an error), only an undetermined line.
+/// Destroys everything that the probes made on a scratch token, and records what
+/// `C_DestroyObject` really removed: a `delete.<class>` row for each class that the probes made,
+/// and a note that names the labels that are still there. A failed lookup says nothing about what
+/// is there, so the probe writes no `delete` row from it, only an undetermined line. A row
+/// written from a failed lookup would report a yes (deleted) that only an error produced.
 pub(super) fn destroy_all(made: &mut Made, profile: &mut Draft) {
     let before = count_by_class(made);
     made.scratch.destroy_all(made.session);
     let after = count_by_class(made);
     match delete_rows(!made.scratch.labels.is_empty(), before, after) {
         Ok(rows) => {
-            // The host counted what is left after `C_DestroyObject`: its finding either way.
+            // The host counted what is left after `C_DestroyObject`, so the row is the host's
+            // finding whether it is yes or no.
             for (class, deleted, why) in rows {
                 if let Some(checked) = Checked::same(&deleted, &true) {
                     profile.yes(Capability::Delete(class), checked, None);
@@ -215,14 +227,15 @@ pub(super) fn destroy_all(made: &mut Made, profile: &mut Draft) {
     }
 }
 
-/// The `delete.<class>` rows from the per-class counts before and after the destroys: whether
-/// each class is gone, and why not.
+/// Returns the `delete.<class>` rows from the counts per class before and after the objects are
+/// destroyed: whether each class is gone, and why not.
 ///
 /// # Errors
 ///
-/// Either count's failure: rows from a count that was not made would say "deleted". A count
-/// before that finds nothing although the probes `made` objects (the fTPM run): no row could be
-/// written, and the run says so rather than nothing (review 2026-11-23 D-14).
+/// Returns the failure of either count, because rows from a count that failed would say
+/// "deleted". Also returns an error when the count before the destroys finds nothing although the
+/// probes made objects (`made` is true; the fTPM run). No row can be written then, and the run
+/// says so instead of saying nothing (review 2026-11-23 D-14).
 pub(super) fn delete_rows(
     made: bool,
     before: std::result::Result<BTreeMap<String, usize>, String>,
@@ -242,11 +255,11 @@ pub(super) fn delete_rows(
         .collect())
 }
 
-/// Per class, how many objects sit under the probe's labels.
+/// Returns, for each class, the number of objects under the probe's labels.
 ///
 /// # Errors
 ///
-/// What failed to look them up: a count it could not make is not zero.
+/// Returns the failure of a lookup, because a count that could not be made is not zero.
 pub(super) fn count_by_class(made: &Made) -> std::result::Result<BTreeMap<String, usize>, String> {
     let mut by_class = BTreeMap::<String, usize>::new();
     for label in &made.scratch.labels {
