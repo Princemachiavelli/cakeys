@@ -1,11 +1,12 @@
-//! The provider contract (review 2026-11-24, phase1-design.md §3.3): what every provider this
-//! build registers holds, whatever its module — the code providers of [`default_registry`],
-//! `generic`, and each module profile family's data provider. Each is named on the `SoftHSM`
-//! reference token, so its overrides run without its hardware; p11-fault supplies the module's
-//! lies (K-5, Linux). One test per case of the design's table (K-1 to K-7), and [`Hook`], the
-//! table of every `Provider` method with the case that holds it: a hook added to the trait fails
-//! here until it has one. The `SoftHSM` tests skip without `CAKEYS_TEST_MODULE`, K-5 without
-//! `P11_FAULT_MODULE` (nix/test-tokens.sh routes both).
+//! The provider contract (review 2026-11-24, phase1-design.md §3.3): the properties that every
+//! provider that this build registers must have, whatever its module. The providers are the code
+//! providers of [`default_registry`], `generic`, and the data provider of each module profile
+//! family. Each provider is named on the `SoftHSM` reference token, so that its overrides run
+//! without its hardware, and p11-fault simulates a module that returns false answers (K-5, Linux).
+//! There is one test for each case of the design's table (K-1 to K-7), and [`Hook`] is the table
+//! of every `Provider` method with the case that checks it, so a hook that is added to the trait
+//! fails here until it has a case. The `SoftHSM` tests skip without `CAKEYS_TEST_MODULE`, and K-5
+//! skips without `P11_FAULT_MODULE` (nix/test-tokens.sh sets both).
 
 #[path = "../../test-skip.rs"]
 mod test_skip;
@@ -29,9 +30,9 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-/// Every `Provider` method (`crates/pkcs11/src/provider.rs`), each with the test of this file
-/// that holds it ([`Hook::case`]): `k7_every_hook_has_a_case` reads the trait and fails on a
-/// method missing here, and the `match` fails to compile until a new one has its case.
+/// Every `Provider` method (`crates/pkcs11/src/provider.rs`), each with the test of this file that
+/// checks it ([`Hook::case`]). `k7_every_hook_has_a_case` reads the trait and fails when a method
+/// is missing here, and the `match` does not compile until a new hook has its case.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hook {
     Name,
@@ -80,7 +81,7 @@ impl Hook {
         Hook::ScratchCompanion,
     ];
 
-    /// The trait method's name.
+    /// Returns the name of the trait method.
     fn method(self) -> &'static str {
         match self {
             Hook::Name => "name",
@@ -106,33 +107,38 @@ impl Hook {
         }
     }
 
-    /// The test of this file that holds it, for every registered provider.
+    /// Returns the test of this file that checks the hook for every registered provider.
     fn case(self) -> &'static str {
         match self {
-            // Each is its own name, and only its own code claims its family (B-7, B-10).
+            // Each provider has its own name, and only a provider's own code claims its family
+            // (B-7, B-10).
             Hook::Name | Hook::Matches => "k4_a_code_family_is_its_codes_alone",
-            // Each opens the token, in the session it manages in, through its own options check.
+            // Each provider opens the token, in the session in which it manages objects, through
+            // its own check of the options.
             Hook::CheckOptions | Hook::ManagesAsSo => "k2_session_keys_read_back_as_built",
-            // Repairs of a read: declared, idempotent, and nothing to a compliant answer (B-3).
+            // The repairs of a read are declared and idempotent, and they do not change a
+            // compliant answer (B-3).
             Hook::EcPoint | Hook::KeyType | Hook::Repairs | Hook::PolicyFlag | Hook::StandIn => {
                 "k3_repairs_are_declared_and_idempotent"
             }
-            // Templates, and a module's own: no security attribute changed (B-3, B-8).
+            // The templates, including a module's own templates, change no security attribute
+            // (B-3, B-8).
             Hook::Template | Hook::Generation | Hook::BoundKeys => "k2_templates_keep_their_security_attributes",
-            // Placement before creation, on every path that creates (B-1, B-2).
+            // Placement comes before creation on every path that creates an object (B-1, B-2).
             Hook::Placement | Hook::Create | Hook::PlaintextImport => "k1_placement_comes_before_create_on_every_path",
-            // A destroy the module claimed and did not do is found (B-13).
+            // A destroy that the module reported as done but did not do is detected (B-13).
             Hook::Destroy => "k5_a_destroy_the_module_did_not_do_keeps_the_lock",
-            // A profile's no refuses before the provider is asked to destroy (B-13).
+            // A profile's "no" answer refuses the delete before the provider is asked to destroy
+            // the object (B-13).
             Hook::Deletion => "k6_a_profile_no_refuses_the_delete_before_any_destroy",
-            // Advice and facts change no outcome.
+            // Hints and reported facts change no outcome.
             Hook::Hint | Hook::Attestation | Hook::ScratchCompanion => "what_a_provider_only_says_changes_no_outcome",
         }
     }
 }
 
-/// Every provider this build registers, by name: the code ones, `generic`, and each profile
-/// family's (a code family's is its code).
+/// Returns every provider that this build registers, by name: the code providers, `generic`, and
+/// the provider of each profile family (for a family with code, that provider is its code).
 fn providers() -> Vec<Arc<dyn Provider>> {
     let set = Set::activate_embedded().unwrap();
     let registry = default_registry();
@@ -143,8 +149,8 @@ fn providers() -> Vec<Arc<dyn Provider>> {
     names.into_iter().map(|n| registry.named(n).unwrap().unwrap_or_else(|| panic!("{n}: not named"))).collect()
 }
 
-/// A provider as `inner` is, every hook passed through, recording which hooks are asked, in
-/// order; with `refuse_placement`, its placement refuses (17) whatever `inner` says.
+/// A provider that behaves as `inner`, passes every hook through, and records which hooks are
+/// called, in order. With `refuse_placement`, its placement refuses (17) whatever `inner` returns.
 #[derive(Clone)]
 struct Spy {
     inner: Arc<dyn Provider>,
@@ -166,8 +172,9 @@ impl Spy {
     }
 }
 
-/// The name a case gives `p` on the token: its own, but `generic`'s, which a registry never
-/// looks up (it is always [`cakeys_pkcs11::Generic`]), so a spy of it could not be selected.
+/// Returns the name that a case gives `p` on the token: its own name, except for `generic`. A
+/// registry never looks up `generic` (it is always [`cakeys_pkcs11::Generic`]), so a spy with
+/// that name could not be selected.
 fn spied(p: &dyn Provider) -> &'static str {
     match p.name() {
         "generic" => "generic-spied",
@@ -266,8 +273,9 @@ impl Provider for Spy {
     }
 }
 
-/// A provider named `name` that does as [`cakeys_pkcs11::Generic`] does: what makes and clears
-/// a case's key under a provider's name, by plain PKCS#11, whatever that provider would do.
+/// A provider with the name `name` that behaves as [`cakeys_pkcs11::Generic`] does. It makes and
+/// removes a case's key under a provider's name with plain PKCS#11, whatever that provider would
+/// do.
 struct Plain(&'static str);
 
 impl Provider for Plain {
@@ -281,10 +289,12 @@ impl Provider for Plain {
 
 // ── The reference token ──────────────────────────────────────────────────────────────────────
 
-/// Held by each test while it uses the token: login is the process's.
+/// Each test holds this mutex while it uses the token, because the login applies to the whole
+/// process.
 static TOKEN: Mutex<()> = Mutex::new(());
 
-/// The `SoftHSM` module, and the [`TOKEN`] guard; `None` (skipped) without it.
+/// Returns the `SoftHSM` module and the [`TOKEN`] guard, or `None` (the test skips) without the
+/// module.
 fn softhsm(test: &str) -> Option<(String, std::sync::MutexGuard<'static, ()>)> {
     let Ok(module) = std::env::var("CAKEYS_TEST_MODULE") else {
         test_skip::skip(test, "CAKEYS_TEST_REQUIRE", "CAKEYS_TEST_MODULE is not set");
@@ -293,8 +303,8 @@ fn softhsm(test: &str) -> Option<(String, std::sync::MutexGuard<'static, ()>)> {
     Some((module, TOKEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner)))
 }
 
-/// keys.toml for token `t` (the harness's `kmtest` through `module`, its provider `provider`)
-/// and an EC key of spec `s` under `label` on it.
+/// Returns a keys.toml for the token `t` (the harness's `kmtest` through `module`, with the
+/// provider `provider`) and an EC key of the spec `s` with the label `label` on that token.
 fn config(test: &str, module: &str, provider: &str, label: &str) -> Config {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("cakeys-contract-{test}"));
     std::fs::create_dir_all(&dir).unwrap();
@@ -313,8 +323,8 @@ fn config(test: &str, module: &str, provider: &str, label: &str) -> Config {
     .unwrap()
 }
 
-/// A label of the case's own for `provider`: Cloud KMS's `CryptoKey` ID rule, which every
-/// module takes (kmsp11's `generation` refuses another).
+/// Returns a label of the case's own for `provider`. It follows Cloud KMS's rule for a
+/// `CryptoKey` ID, which every module accepts (kmsp11's `generation` refuses other labels).
 fn label(case: &str, provider: &str) -> String {
     format!("contract-{case}-{provider}")
 }
@@ -323,7 +333,7 @@ fn open(cfg: &Config, registry: &Registry) -> Token {
     Token::open("t", &cfg.tokens["t"], None, registry, Access::Write, ChainTime::Unchecked).unwrap()
 }
 
-/// The token under `provider`'s name, opened as [`Plain`].
+/// Returns the token under `provider`'s name, opened with [`Plain`].
 fn plain(cfg: &Config, provider: &'static str) -> Token {
     open(cfg, &Registry::new().with(Plain(provider)))
 }
@@ -332,7 +342,7 @@ fn new_lock() -> Lock {
     Lock { version: cakeys_core::config::LOCK_VERSION, ..Lock::default() }
 }
 
-/// What a refused path reported: its exit code and the rule it named.
+/// Returns what a refused path reported: its exit code and the rule that it named.
 fn refused<T>(what: &str, r: cakeys_core::Result<T>) -> (u8, Option<Rule>) {
     match r {
         Ok(_) => panic!("{what}: not refused"),
@@ -342,10 +352,11 @@ fn refused<T>(what: &str, r: cakeys_core::Result<T>) -> (u8, Option<Rule>) {
 
 // ── K-1 ──────────────────────────────────────────────────────────────────────────────────────
 
-/// K-1 (B-1, B-2): every path that puts a key on the token asks placement before the provider
-/// creates anything: the static gate, `create`, an import's check and `Token::create` all refuse
-/// (17, naming the rule) when placement does, whatever else the provider overrides, and its
-/// `create` is never asked. With the provider's own placement, `create` is asked after it.
+/// K-1 (B-1, B-2): every path that puts a key on the token calls placement before the provider
+/// creates anything. The static gate, `create`, an import's check and `Token::create` all refuse
+/// (17, with the rule named) when placement refuses, whatever else the provider overrides, and
+/// the provider's `create` is never called. With the provider's own placement, `create` is called
+/// after placement.
 #[test]
 fn k1_placement_comes_before_create_on_every_path() {
     let Some((module, _token)) = softhsm("k1_placement_comes_before_create_on_every_path") else { return };
@@ -382,7 +393,7 @@ fn k1_placement_comes_before_create_on_every_path() {
         assert!(tok.find_any(&t.on_token.locator).unwrap().is_empty(), "{name}: a key was made");
         drop(tok);
 
-        // The provider's own placement, then its create (which may refuse on this module).
+        // The provider's own placement, and then its create (which may refuse on this module).
         let spy = Spy::new(&p, false);
         let tok = open(&cfg, &Registry::new().with(spy.clone()));
         let made = tok.create(t.object, t.spec, &t.on_token.locator, None);
@@ -398,8 +409,8 @@ fn k1_placement_comes_before_create_on_every_path() {
 
 // ── K-2 ──────────────────────────────────────────────────────────────────────────────────────
 
-/// The objects every template is asked for: an EC, an Edwards and an RSA key pair, an AES key,
-/// a certificate and a data object, each under a label of its own on token `t`.
+/// The objects for which every template is requested: an EC, an Edwards and an RSA key pair, an
+/// AES key, a certificate and a data object, each with a label of its own on the token `t`.
 const OBJECTS: &str = "[tokens.t]\nmodule = \"/none\"\ntokenLabel = \"kmtest\"\n\n\
     [objects.ec]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\
     [objects.ed]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards25519\"\n\
@@ -414,10 +425,10 @@ const OBJECTS: &str = "[tokens.t]\nmodule = \"/none\"\ntokenLabel = \"kmtest\"\n
     [specs.cert]\nobject = \"cert\"\ntokens.t = { locator = { CKA_LABEL = \"contract-cert\" }, origin = \"import\" }\n\
     [specs.data]\nobject = \"data\"\ntokens.t = { locator = { CKA_LABEL = \"contract-data\" }, origin = \"import\" }\n";
 
-/// secp256r1's `CKA_EC_PARAMS`.
+/// The `CKA_EC_PARAMS` of secp256r1.
 const P256: [u8; 10] = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 
-/// Every template cakeys builds for `on`, with what it is for.
+/// Returns every template that cakeys builds for `on`, with its purpose.
 fn templates_of(on: Declared<'_>) -> Vec<(Template<'_>, Vec<Attribute>)> {
     let none = |_: &str, m: &str| -> cakeys_core::Result<cryptoki::mechanism::MechanismType> {
         Err(KmError::Validation(format!("no mechanism {m} here").into()))
@@ -444,7 +455,7 @@ fn templates_of(on: Declared<'_>) -> Vec<(Template<'_>, Vec<Attribute>)> {
     out
 }
 
-/// What [`Token::create_trusted_copy`] builds, less the key's material.
+/// Returns what [`Token::create_trusted_copy`] builds, without the key's material.
 fn trusted_copy() -> Vec<Attribute> {
     vec![
         Attribute::Class(ObjectClass::PUBLIC_KEY),
@@ -459,7 +470,7 @@ fn trusted_copy() -> Vec<Attribute> {
     ]
 }
 
-/// Every session key cakeys makes.
+/// Every session key that cakeys makes.
 const SESSION_KEYS: [SessionKey; 9] = [
     SessionKey::ProofSecret { binding: Binding::PopEcdh, sealed: true },
     SessionKey::ProofSecret { binding: Binding::PopEcdh, sealed: false },
@@ -472,17 +483,18 @@ const SESSION_KEYS: [SessionKey; 9] = [
     SessionKey::ImportKek,
 ];
 
-/// The security attributes of `attrs` ([`SECURITY`]), as they are set.
+/// Returns the security attributes of `attrs` ([`SECURITY`]), as they are set.
 fn security(attrs: &[Attribute]) -> Vec<Option<&Attribute>> {
     SECURITY.iter().map(|(t, _, _)| attrs.iter().find(|a| a.attribute_type() == *t)).collect()
 }
 
-/// K-2 (B-3, B-8): every template a provider is asked about — each `Template` variant, every
-/// session key and wrap-rebind's copy — comes back from it with the security attributes it was
-/// built with (not even tightened: no in-tree provider needs to), or is refused by the provider
-/// itself, never by the check of what it changed. A module's own generation template
-/// (`generation`, kmsp11) and the probe's bound keys set no security attribute but the locator,
-/// and name a generation mechanism cakeys runs.
+/// K-2 (B-3, B-8): every template that a provider is asked about (each `Template` variant, every
+/// session key, and the copy of wrap-rebind) comes back from the provider with the security
+/// attributes with which it was built. The provider does not even make them stricter, because no
+/// provider in this repository needs to. Otherwise, the provider itself refuses the template, and
+/// the check of what the provider changed never refuses it. A module's own generation template
+/// (`generation`, kmsp11) and the probe's bound keys set no security attribute except the
+/// locator, and they name a generation mechanism that cakeys runs.
 #[test]
 fn k2_templates_keep_their_security_attributes() {
     let cfg: Config = toml::from_str(OBJECTS).unwrap();
@@ -502,7 +514,8 @@ fn k2_templates_keep_their_security_attributes() {
             if matches!(t.object.class, Class::PrivateKey | Class::SecretKey) {
                 let copy = templates::rebind_copy(t.object, &[]).unwrap();
                 check(&Template::Session(copy.key()), copy.attributes().to_vec());
-                // A module's own generation: the locator and nothing else of the security set.
+                // A module's own generation sets the locator and no other attribute of the
+                // security set.
                 let loc = &t.on_token.locator;
                 assert!(loc.id.is_none(), "the samples are located by label");
                 let locator: Vec<Attribute> =
@@ -535,11 +548,12 @@ fn k2_templates_keep_their_security_attributes() {
     }
 }
 
-/// K-2's token half (B-8): each session key, made on the token from the template the provider
-/// gave back, reads back as cakeys built it: `CKA_TOKEN`, `CKA_SENSITIVE` and `CKA_EXTRACTABLE`
-/// as `SessionTemplate::sealing` says, so neither the provider nor what cakeys adds after it
-/// unseals a key the host may not read. Opening the token runs each provider's `check_options`
-/// and the session it manages in.
+/// The token half of K-2 (B-8): each session key, made on the token from the template that the
+/// provider returned, reads back as cakeys built it, with `CKA_TOKEN`, `CKA_SENSITIVE` and
+/// `CKA_EXTRACTABLE` as `SessionTemplate::sealing` specifies. So neither the provider nor the
+/// attributes that cakeys adds after the provider make a key readable that the host may not read.
+/// Opening the token runs each provider's `check_options` and opens the session in which the
+/// provider manages objects.
 #[test]
 fn k2_session_keys_read_back_as_built() {
     let Some((module, _token)) = softhsm("k2_session_keys_read_back_as_built") else { return };
@@ -588,7 +602,7 @@ fn k2_session_keys_read_back_as_built() {
 
 // ── K-3 ──────────────────────────────────────────────────────────────────────────────────────
 
-/// The boolean attributes a policy reads ([`Provider::policy_flag`]).
+/// The boolean attributes that a policy reads ([`Provider::policy_flag`]).
 const FLAGS: [AttributeType; 22] = [
     AttributeType::Sign,
     AttributeType::SignRecover,
@@ -614,7 +628,7 @@ const FLAGS: [AttributeType; 22] = [
     AttributeType::AlwaysAuthenticate,
 ];
 
-/// The key types a repair is asked about.
+/// The key types about which a repair is asked.
 const KEY_TYPES: [KeyType; 7] = [
     KeyType::EC,
     KeyType::EC_EDWARDS,
@@ -625,11 +639,12 @@ const KEY_TYPES: [KeyType; 7] = [
     KeyType::DES3,
 ];
 
-/// K-3 (B-3): a repair of a read is declared, idempotent, and changes nothing a spec-compliant
-/// module reports. `policy_flag` differs from the reported value only for a pair `repairs`
-/// declares (core asks no other, so an undeclared one would never apply), and repairing twice
-/// is repairing once; `ec_point` and `key_type` leave a compliant answer as it is and are
-/// idempotent on the encodings the modules use; a stand-in has no stand-in of its own.
+/// K-3 (B-3): a repair of a read is declared and idempotent, and it changes nothing that a module
+/// that follows the specification reports. `policy_flag` differs from the reported value only for
+/// a pair that `repairs` declares (cakeys-core asks about no other pair, so an undeclared repair
+/// would never apply), and a repair applied twice gives the same result as one repair. `ec_point`
+/// and `key_type` leave a compliant answer unchanged and are idempotent on the encodings that the
+/// modules use. A stand-in has no stand-in of its own.
 #[test]
 fn k3_repairs_are_declared_and_idempotent() {
     let point = |n: usize| std::iter::once(0x04).chain((1..n).map(|i| u8::try_from(i).unwrap())).collect::<Vec<u8>>();
@@ -642,10 +657,11 @@ fn k3_repairs_are_declared_and_idempotent() {
         v.extend_from_slice(raw);
         v
     };
-    // Compliant: a DER OCTET STRING of the point (P-256, P-521's long form, Ed25519).
+    // The compliant form is a DER OCTET STRING of the point (P-256, the long form of P-521, and
+    // Ed25519).
     let compliant = [der(&point(65)), der(&point(133)), der(&[7; 32])];
-    // What modules report instead: the bare point, P-521's short form (tpm2-pkcs11), an Ed25519
-    // SPKI (AWS CloudHSM).
+    // What modules report instead: the bare point, the short form of P-521 (tpm2-pkcs11), and an
+    // Ed25519 SPKI (AWS CloudHSM).
     let mut short = vec![0x04, 0x85];
     short.extend(point(133));
     let mut spki = vec![0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
@@ -709,10 +725,11 @@ fn k3_repairs_are_declared_and_idempotent() {
 
 // ── K-4 ──────────────────────────────────────────────────────────────────────────────────────
 
-/// K-4 (B-7, B-10): a code family is its code's alone. A registry without the code refuses
-/// (17) every family of `CODE_FAMILIES`; this build's registry names each one it links as
-/// itself and refuses the others; a module of Yubico's that is no `YubiKey` (a `YubiHSM`) is no
-/// family's, so `generic`; and every provider is the one its name selects.
+/// K-4 (B-7, B-10): only the family's own code provides a code family. A registry without the
+/// code refuses (17) every family of `CODE_FAMILIES`. This build's registry returns each family
+/// that it links under the family's own name and refuses the others. A Yubico module that is not
+/// a `YubiKey` (a `YubiHSM`) belongs to no family, so it gets `generic`. Every provider is the
+/// provider that its name selects.
 #[test]
 fn k4_a_code_family_is_its_codes_alone() {
     Set::activate_embedded().unwrap();
@@ -736,7 +753,7 @@ fn k4_a_code_family_is_its_codes_alone() {
     let all = providers();
     for p in &all {
         assert_eq!(built.named(p.name()).unwrap().map(|q| q.name()), Some(p.name()));
-        // `generic` is what no other claims, so it claims any module.
+        // `generic` handles every module that no other provider claims, so it claims any module.
         assert!(p.name() == "generic" || !p.matches(&yubihsm), "{}: claims a YubiHSM", p.name());
     }
     let mut names: Vec<&str> = all.iter().map(|p| p.name()).collect();
@@ -748,10 +765,10 @@ fn k4_a_code_family_is_its_codes_alone() {
 
 // ── K-5, K-6 ─────────────────────────────────────────────────────────────────────────────────
 
-/// K-5 (B-13): a module whose `C_DestroyObject` answers `CKR_OK` and destroys nothing
-/// (p11-fault, every destroy) has `delete` end 16 (`delete-kept`) with the lock as it was, under
-/// every provider that does not refuse the delete first; one that does refuses before its
-/// `destroy` is asked. The key is made by plain PKCS#11 under the provider's name.
+/// K-5 (B-13): when a module's `C_DestroyObject` returns `CKR_OK` and destroys nothing (p11-fault,
+/// for every destroy), `delete` ends with 16 (`delete-kept`) and the lock stays unchanged, under
+/// every provider that does not refuse the delete first. A provider that does refuse it refuses
+/// before its `destroy` is called. The key is made with plain PKCS#11 under the provider's name.
 #[test]
 fn k5_a_destroy_the_module_did_not_do_keeps_the_lock() {
     let Some((_module, _token)) = softhsm("k5_a_destroy_the_module_did_not_do_keeps_the_lock") else { return };
@@ -763,7 +780,7 @@ fn k5_a_destroy_the_module_did_not_do_keeps_the_lock() {
         );
         return;
     };
-    // Written before the shim is loaded, which reads it once.
+    // The plan is written before the shim is loaded, because the shim reads it only once.
     std::fs::write(&plan, "[[rule]]\nfn = \"C_DestroyObject\"\nrv = \"CKR_OK\"\n").unwrap();
     let shim = fault_shim();
     let mut kept = 0;
@@ -790,7 +807,7 @@ fn k5_a_destroy_the_module_did_not_do_keeps_the_lock() {
     assert!(kept > 0, "no provider reached the destroy");
 }
 
-/// p11-fault, built beside this test binary as a dependency.
+/// Returns the path of p11-fault, which is built next to this test binary as a dependency.
 fn fault_shim() -> String {
     let exe = std::env::current_exe().unwrap();
     let path = exe.with_file_name(format!("libp11_fault{}", std::env::consts::DLL_SUFFIX));
@@ -798,9 +815,9 @@ fn fault_shim() -> String {
     path.to_str().unwrap().to_owned()
 }
 
-/// K-6 (B-13): a module profile that answers `delete.CKO_PRIVATE_KEY = no` (tpm2-pkcs11's on
-/// swtpm, as committed) refuses the delete (15) under every provider, before its `destroy` is
-/// asked, and the key and the lock stay.
+/// K-6 (B-13): a module profile that answers `delete.CKO_PRIVATE_KEY = no` (the committed profile
+/// of tpm2-pkcs11 on swtpm) refuses the delete (15) under every provider, before the provider's
+/// `destroy` is called, and the key and the lock stay unchanged.
 #[test]
 fn k6_a_profile_no_refuses_the_delete_before_any_destroy() {
     let Some((module, _token)) = softhsm("k6_a_profile_no_refuses_the_delete_before_any_destroy") else { return };
@@ -834,7 +851,7 @@ fn k6_a_profile_no_refuses_the_delete_before_any_destroy() {
 
 // ── K-7, and the rest ────────────────────────────────────────────────────────────────────────
 
-/// K-7: every `Provider` method is in [`Hook`], and each hook's case is a test of this file.
+/// K-7: every `Provider` method is in [`Hook`], and the case of each hook is a test of this file.
 #[test]
 fn k7_every_hook_has_a_case() {
     let source = |path: &str| {
@@ -854,9 +871,9 @@ fn k7_every_hook_has_a_case() {
     }
 }
 
-/// What a provider only says — its hint, its attestation, a scratch companion — changes no
-/// outcome: a hinted refusal keeps its kind, code and rule; an attestation names the classes it
-/// attests; and bytes that are no certificate are no companion.
+/// What a provider only reports (its hint, its attestation, and a scratch companion) changes no
+/// outcome. A refusal with a hint keeps its kind, its exit code and its rule. An attestation names
+/// the classes that it attests. Bytes that are not a certificate are not a companion.
 #[test]
 fn what_a_provider_only_says_changes_no_outcome() {
     for p in providers() {
