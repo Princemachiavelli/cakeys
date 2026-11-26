@@ -179,8 +179,8 @@ alone can compute, such as a TPM Name). If they return, they get their own names
   none of the computed schemes is among them, `lock` fails (exit 14) instead of attaching new
   IDs — `disjoint_schemes_never_link_material`.
 - **`lock`, `create` and `delete` write the lock by default, and a write only fills gaps.**
-  `lock` is the lock verb: it never creates, and `create` is the one verb that writes keys
-  (2026-11-15). Like `nix build` with `flake.lock`: what the lock lacks is recorded (first use included), but a
+  `lock` is the lock verb: it never creates the object, and of cakeys' verbs `create` is the
+  one that makes keys (2026-11-15; `lock` may provision a TPM Attestation Key, §3.7). Like `nix build` with `flake.lock`: what the lock lacks is recorded (first use included), but a
   locked ID, anchor, binding, type or immutable is never overwritten — those changes fail even
   when the lock is written. `lock --dry-run`, `delete --dry-run` and `create --dry-run` open
   the token read-only and ask what the run asks before it writes (review 2026-11-24 C-4: the
@@ -363,7 +363,7 @@ content-addressed identity — one per token type that can produce it:
 | Scheme | Token | Evidence | Anchor pinned in the lock |
 |---|---|---|---|
 | `piv-attestation` | YubiKey PIV (ykcs11) | the slot's on-demand attestation certificate, signed by the device attestation key in slot f9, verified to a pinned Yubico root (never to f9 alone — a holder of the management key can overwrite it) through Yubico's *PIV* intermediates only (the pool's FIDO, OpenPGP, SD and YubiHSM CAs are excluded), every issuer a CA within its `pathLen` whose `keyUsage`, when present, has `keyCertSign`, and no certificate of the chain with a critical extension cakeys does not process — the device certificate as the slot's issuer and the slot certificate included, one `chain::link` for every link (review 2026-11-24 A-7: the slot link checked the signature alone) (RFC 5280 §4.2; the same walk holds an EK certificate, which must also name `tcg-kp-EKCertificate` when it names purposes); under `check`, every certificate also within its validity period (the system clock, `--at`, or `--ignore-validity`), while every other verb only warns about a chain out of its dates. Yubico attests only keys generated on device; ykcs11 mints the certificate when it lists the slot, with no login | the Yubico root's SPKI |
-| `tpm-certify` | tpm2-pkcs11 tokens | a `TPM2_Certify` over the object's Name with a fresh random nonce, host-verified. A module with the vendor mechanism `CKM_TPM2_CERTIFY` (upstream/tpm2-pkcs11/) runs it itself (`C_Sign` on the object; the signer is a persistent AK by handle, or with `options.akLabel` a token object through `CKM_TPM2_CERTIFY_OBJECT`, which needs no TCTI or store); the object's public area is its `CKA_TPM2_PUB_BLOB`, whose Name the statement must carry. Any other module is attested natively (tss-esapi) as follows: the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. A secret key has no public key to cross-check, so the loaded object computes the key's HMAC commitment again (`TPM2_HMAC` over the commitment's input), which must be the commitment the module computed: a store row or a module pointing at another TPM object is refused (13), not attested (review 2026-11-23 B-1, `tpm2_a_secret_keys_attestation_is_bound_to_its_material`). A secret key without an HMAC commitment (AES, Triple DES), a SHA-224 HMAC key (the TPM defines no SHA-224) and any secret key through the module's own certify, which never lets cakeys load the object, are refused (15). Every transient object is flushed again, so TCTIs without a resource manager do not fill the TPM | the EK certificate's root, when one verifies and the AK activates a credential with that EK (§3.7); else the Attestation Key's SPKI |
+| `tpm-certify` | tpm2-pkcs11 tokens | a `TPM2_Certify` over the object's Name with a fresh random nonce, host-verified. A module with the vendor mechanism `CKM_TPM2_CERTIFY` (upstream/tpm2-pkcs11/) runs it itself (`C_Sign` on the object; the signer is a persistent AK by handle, or with `options.akLabel` a token object through `CKM_TPM2_CERTIFY_OBJECT`, which needs no TCTI or store); the object's public area is its `CKA_TPM2_PUB_BLOB`, whose Name the statement must carry. Any other module is attested natively (tss-esapi) as follows: the object's TPM blobs are read (read-only) from the module's own store — `options.tpm2Store`, else found as the module finds it — and loaded under the token's primary over the module's TCTI (`options.tcti`, else `$TPM2_PKCS11_TCTI`, `$TPM2TOOLS_TCTI`, `$TCTI`): `TPM2_Load` revalidates their integrity, the certify signs their Name, and the nonce makes the response fresh. A secret key has no public key to cross-check, so the loaded object computes the key's HMAC commitment again (`TPM2_HMAC` over the commitment's input), which must be the commitment the module computed: a store row or a module pointing at another TPM object is refused (13), not attested (review 2026-11-23 B-1, `tpm2_a_secret_keys_attestation_is_bound_to_its_material`). A secret key without an HMAC commitment (AES, Triple DES), a SHA-224 HMAC key (the TPM defines no SHA-224) and any secret key through the module's own certify, which never lets cakeys load the object, are refused (15). Each transient object it loads is flushed again, so TCTIs without a resource manager do not fill the TPM (no test sees it: the suites run under tpm2-abrmd, which flushes too) | the EK certificate's root, when one verifies and the AK activates a credential with that EK (§3.7); else the Attestation Key's SPKI |
 
 - **The commitment hashes asserted content, never signed bytes.** A PIV certificate is minted
   per session with a random serial and a randomized ECDSA signature; a `TPMS_ATTEST` carries a
@@ -423,8 +423,8 @@ content-addressed identity — one per token type that can produce it:
   conflict (13), since an unrestricted key there could sign a forged attestation. The handle
   defaults to `0x81000016` (cakeys-tpm2-pkcs11 `DEFAULT_AK_HANDLE`), configurable per token
   (`options.akHandle`, `0x`-prefixed, owner persistent range). With `options.akLabel` the AK is
-  instead a private key object of the token (a restricted P-256 key the module makes and never
-  releases), found by that label and checked to be restricted and fixed to the TPM and its parent;
+  instead a private key object of the token (a restricted P-256 key the module makes in the TPM),
+  found by that label and checked to be restricted and fixed to the TPM and its parent;
   `lock` makes it, reads never do. Its `qualifiedSigner` is not checked: it is `H(QN(primary) ‖ Name(AK))`, and
   the host does not have the Name of the module's primary without the TPM or the store, so the
   signature under the pinned key is what identifies the signer (for the persistent AK, a primary
@@ -657,48 +657,85 @@ module and what real builds may reach.
 
 ### 8.1 Enforced (with tests)
 
-- **Identity is the CA-ID.** Every check recomputes it from the token and compares it with the lock.
+Each bullet names the tests that hold it (`checks.claims` fails on one that names none). The
+liar matrix (`liars_<class>`, `crates/cli/tests/liars.rs`) tells each lie to each verb about
+each kind of object.
+
+- **Identity is the CA-ID.** Every check recomputes it from the token and compares it with the
+  lock: the identity is the host's on every reference token
+  (`asymmetric_material_has_one_identity_on_every_reference`), a lock pinning another ID is a
+  mismatch (`observed_and_provenance_never_change_a_verdict`), and so is another object found
+  in its place (`liars_other`).
 - **Locators never create over occupied slots** (If-None-Match), and never match more than one
-  object.
-- **Type and policy of the live object** must match the spec.
+  object (`never_create_over_an_occupied_locator`,
+  `a_second_private_key_under_the_same_id_is_ambiguous`; a second object under the locator in
+  `liars_other`).
+- **Type and policy of the live object** must match the spec
+  (`the_live_object_must_be_what_the_spec_says`, `policy_drift_and_replaced_objects_are_refused`;
+  a flipped flag in `liars_flag`).
 - **Private keys prove possession** of the key their identity names, unless opted out per token;
-  the binding is recorded and cannot weaken (§3.6).
+  the binding is recorded and cannot weaken (§3.6; `derive_and_decrypt_only_keys_prove_possession`,
+  `h1_a_private_key_beside_an_unbound_public_object_is_a_conflict`,
+  `binding_downgrade_is_refused`; another key answering, for each binding, in `liars_other`).
 - **Attestation commitments are verified evidence, never a standalone identity** (§3.7): the
   chain or signature is checked on the host against the pinned anchor, the attested key must be
   the material the object's portable scheme names, and the attestation is pinned per
   realisation beside a portable scheme — so the same material on another token verifies there
-  through the portable scheme, attested by that token or not.
-- **Identity modes never weaken.** A downgrade fails (§3.4).
-- **Material is linked only through a shared scheme.**
-- **The lock never holds token outputs, only their hashes.** Private data objects are not hashed.
+  through the portable scheme, attested by that token or not
+  (`attestation_is_per_realisation_and_never_alone`,
+  `tpm2_attested_material_travels_to_a_second_hsm`,
+  `a_slot_certificate_signed_by_another_key_is_refused`, `a_statement_by_another_signer_is_refused`,
+  `the_material_is_the_attested_blobs_not_read_publics`).
+- **Identity modes never weaken.** A downgrade fails (§3.4; `downgrade_is_an_error`,
+  `the_same_or_more_passes_and_less_is_a_downgrade`).
+- **Material is linked only through a shared scheme** (`material_links_only_through_a_shared_scheme`,
+  `disjoint_schemes_never_link_material`).
+- **The lock never holds token outputs, only their hashes** (`a_lock_holds_no_token_output`). A
+  private data object is hashed only when its spec declares `CKA_PRIVATE = true` (§8.2;
+  `private_data_objects_are_identified_when_declared`).
 - **Lock updates are serialized** by the advisory `<lock>.lck` sidecar; readers get consistent
   snapshots through the atomic rename — `update_lock_waits_for_the_sidecar_lock`.
 - **Refused operations leave nothing behind:** checks before creating, and cleanup after a failed
   identity — except a key on a module that cannot delete keys (ykcs11), which stays and is
-  reported.
+  reported (`create_checks_the_profiles_before_it_makes_anything`,
+  `a_creation_that_cannot_be_identified_is_undone_or_reported`,
+  `a_creation_that_fails_after_the_write_is_undone`,
+  `tpm2_identity_failure_after_create_leaves_nothing`, `a_move_the_module_fails_is_refused_and_undone`;
+  every refusal cell of the liar matrix asserts the lock and the token as they were).
 - **A provider's operation runs after core's rules, never instead of them** (review 2026-11-24
   B-2). `Token::create` and `Token::destroy` ask `placement` or `deletion` and enter the SO
   session `manages_as_so` asks for, then call the provider's `create` or `destroy` with a
   `Checked` request no other crate can build, so an override cannot skip either; the gate, the
-  live checks and the capability check ask the same named rules (`ops::Rule`).
+  live checks and the capability check ask the same named rules (`ops::Rule`;
+  `k1_placement_comes_before_create_on_every_path`, `placement_holds_on_every_path`,
+  `a_provider_override_runs_as_so_where_the_module_needs_it`).
 - **A destroy is verified, never taken on the module's word** (review 2026-11-24 B-13). A
   provider or a module profile that says the module keeps what it is asked to remove
   (`Provider::deletion`, `delete.<class> = no`) refuses the delete before anything is
   destroyed, a dry run too (`delete-refused`, 15); after every destroy cakeys looks under the
   locator again, and an object still there is `delete-kept` (16), the lock keeping the
-  realisation.
+  realisation (`a_delete_the_module_did_not_do_keeps_the_lock`,
+  `a_profile_row_that_says_the_module_keeps_keys_refuses_the_delete`,
+  `k5_a_destroy_the_module_did_not_do_keeps_the_lock`,
+  `k6_a_profile_no_refuses_the_delete_before_any_destroy`).
 - **A provider adjusts templates and repairs reads only where it may** (review 2026-11-24
   B-3). A template comes back from `Provider::template` with its security attributes as cakeys
   built them or tightened (a restriction set true, a permission false); any other change to
   `CKA_TOKEN`, `CKA_PRIVATE`, `CKA_SENSITIVE`, `CKA_EXTRACTABLE`, `CKA_WRAP_WITH_TRUSTED`,
   `CKA_TRUSTED`, `CKA_ID`, `CKA_LABEL`, `CKA_MODIFIABLE`, `CKA_COPYABLE` or `CKA_DESTROYABLE`
-  is refused (17) before anything is made. A policy flag is repaired only for the
-  (attribute, private key type) pairs the provider declares (`Provider::repairs`; ykcs11:
-  `CKA_DERIVE` of EC and X25519 keys). A session key's template is a type,
-  `templates::SessionTemplate`, built only by `templates::session` and `rebind_copy` and asked of
-  the provider as the key it was built for (`adjusted_session`); each key's `CKA_TOKEN`,
-  `CKA_SENSITIVE` and `CKA_EXTRACTABLE` are pinned by a test (review 2026-11-24 B-8).
-- **Token paths reach only builds that require the token's feature.**
+  is refused (17) before anything is made (`a_provider_changes_no_security_attribute_but_to_tighten_it`,
+  `a_provider_cannot_loosen_a_session_key`, `k2_templates_keep_their_security_attributes`). A
+  policy flag is repaired only for the (attribute, private key type) pairs the provider
+  declares (`Provider::repairs`; ykcs11: `CKA_DERIVE` of EC and X25519 keys;
+  `a_repair_applies_only_where_it_is_declared`, `k3_repairs_are_declared_and_idempotent`). A
+  session key's template is a type, `templates::SessionTemplate`, built only by
+  `templates::session` and `rebind_copy` and asked of the provider as the key it was built for
+  (`adjusted_session`); each key's `CKA_TOKEN`, `CKA_SENSITIVE` and `CKA_EXTRACTABLE` are pinned
+  (review 2026-11-24 B-8; `each_session_key_is_sealed_as_its_purpose_says`,
+  `k2_session_keys_read_back_as_built`).
+- **Token paths reach only builds that require the token's feature** (`checks.module`, its
+  subtest "the hook grants token paths only to builds requiring the token's feature"; a NixOS
+  test, tier T1).
 
 ### 8.2 Not enforced / known gaps
 

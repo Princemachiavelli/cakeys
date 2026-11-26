@@ -232,9 +232,9 @@ fn seal_auth(pin: &[u8], salt: &str) -> Zeroizing<Vec<u8>> {
 }
 
 /// Load the seal object and unseal the token's wrapping key with the user PIN — the same
-/// protocol the module runs at login (`token_unseal_wrapping_key`): the sealed payload is the
-/// wrapping key *as a hex string*, the AES key is its 32 decoded bytes. Through `auth`: a
-/// salted session encrypts the unsealed key on its way back.
+/// protocol the module runs at login (`backend_token_unseal_wrapping_key`): the sealed payload
+/// is the wrapping key *as a hex string*, the AES key is its 32 decoded bytes. Through `auth`:
+/// a salted session encrypts the unsealed key on its way back.
 ///
 /// # Errors
 ///

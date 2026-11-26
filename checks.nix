@@ -66,7 +66,9 @@
   # A universal claim of the documents that say what the tools guarantee (every, never, always,
   # … about a PIN, the lock, a slot, …) names the tests that hold it in docs/claims.toml, or is
   # counted against its max-unregistered, which only goes down (nix/claims.py, its fixture tests
-  # first). Its own fileset, like doc-references: the docs, and the sources the tests are in.
+  # first); each bullet of DESIGN.md §8.1 names a test that holds it. Its own fileset, like
+  # doc-references: the docs, the sources the tests are in, and this file (a bullet may name a
+  # NixOS test of it).
   claims =
     let
       src = pkgs.lib.fileset.toSource {
@@ -79,6 +81,7 @@
           ./nix/doc-references.py
           ./nix/claims.py
           ./nix/claims-test.py
+          ./checks.nix
         ];
       };
     in

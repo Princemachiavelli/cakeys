@@ -8,11 +8,13 @@
 # its seed. A new claim is registered with its tests, or softened in its document.
 #
 # Each [[claim]] names its document (`doc`) and a phrase found there once (`says`), and is
-# - kind = "enforced": `tests`, the fns that fail when the claim is false (each one must exist),
-#   and optionally the entry `paths` they cover; or
+# - kind = "enforced": `tests`, the fns that fail when the claim is false (each one must exist;
+#   a Nix check of checks.nix as "checks.<name>"), and optionally the entry `paths` they cover; or
 # - kind = "descriptive": `why` it is no guarantee a test can hold.
+# An entry registers the whole line its phrase is on, so an enforced entry's tests hold every
+# universal claim of that line; a line with one claim no test holds stays unregistered.
 
-max-unregistered = 99
+max-unregistered = 7
 
 # CAMIGRATE.md D5: a bundle's transport key is the target's own (review 2026-11-24 D-8).
 
@@ -23,13 +25,25 @@ kind = "enforced"
 tests = ["bundles_are_bound_to_the_targets_transport_key", "a_bundle_binds_only_to_its_targets_transport_key"]
 paths = ["import --in", "import --in --dry-run"]
 
-# DESIGN.md §8.1, "Enforced (with tests)": the bullets whose tests exist.
+# DESIGN.md §8.1, "Enforced (with tests)": each bullet names its tests (claims.py's ENFORCED),
+# and its universal lines are registered with them.
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = """Every check recomputes it from the token and compares it with the
+  lock: the identity is the host's on every reference token"""
+kind = "enforced"
+tests = [
+  "asymmetric_material_has_one_identity_on_every_reference",
+  "observed_and_provenance_never_change_a_verdict",
+  "liars_other",
+]
 
 [[claim]]
 doc = "docs/DESIGN.md"
 says = "Locators never create over occupied slots"
 kind = "enforced"
-tests = ["never_create_over_an_occupied_locator", "a_second_private_key_under_the_same_id_is_ambiguous"]
+tests = ["never_create_over_an_occupied_locator", "a_second_private_key_under_the_same_id_is_ambiguous", "liars_other"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
@@ -41,19 +55,30 @@ tests = ["binding_downgrade_is_refused"]
 doc = "docs/DESIGN.md"
 says = "Attestation commitments are verified evidence, never a standalone identity"
 kind = "enforced"
-tests = ["attestation_is_per_realisation_and_never_alone"]
+tests = [
+  "attestation_is_per_realisation_and_never_alone",
+  "tpm2_attested_material_travels_to_a_second_hsm",
+  "a_slot_certificate_signed_by_another_key_is_refused",
+  "a_statement_by_another_signer_is_refused",
+]
 
 [[claim]]
 doc = "docs/DESIGN.md"
 says = "Identity modes never weaken."
 kind = "enforced"
-tests = ["downgrade_is_an_error"]
+tests = ["downgrade_is_an_error", "the_same_or_more_passes_and_less_is_a_downgrade"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "Material is linked only through a shared scheme."
+says = "Material is linked only through a shared scheme"
 kind = "enforced"
 tests = ["material_links_only_through_a_shared_scheme", "disjoint_schemes_never_link_material"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "The lock never holds token outputs, only their hashes"
+kind = "enforced"
+tests = ["a_lock_holds_no_token_output"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
@@ -66,11 +91,18 @@ doc = "docs/DESIGN.md"
 says = "Refused operations leave nothing behind:"
 kind = "enforced"
 tests = [
+  "create_checks_the_profiles_before_it_makes_anything",
   "a_creation_that_cannot_be_identified_is_undone_or_reported",
   "a_creation_that_fails_after_the_write_is_undone",
   "a_move_the_module_fails_is_refused_and_undone",
   "tpm2_identity_failure_after_create_leaves_nothing",
 ]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "every refusal cell of the liar matrix asserts the lock and the token as they were"
+kind = "descriptive"
+why = "says what the liar runner asserts (crates/cli/tests/common/liars.rs), not what the tools do"
 
 # Phase 1 P1 (review 2026-11-24 B-4, B-13, C-1, and the login lie): each claim it added is held
 # by the tests that were run red before its fix.
@@ -116,13 +148,6 @@ tests = ["every_pair_has_a_row_of_one_shape", "a_failure_row_says_its_code_rule_
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "never 0 and never a failure's code"
-kind = "enforced"
-tests = ["a_run_that_wrote_the_lock_exits_22_whatever_failed_after", "a_run_exits_22_exactly_when_it_wrote_the_lock"]
-paths = ["lock", "create", "delete", "lock --dry-run", "create --dry-run", "delete --dry-run"]
-
-[[claim]]
-doc = "docs/CAKEYS.md"
 says = "so a script never misses a written lock"
 kind = "enforced"
 tests = ["a_run_that_wrote_the_lock_exits_22_whatever_failed_after", "create_records_what_it_made_before_a_failure"]
@@ -133,3 +158,662 @@ says = "a written lock is never hidden"
 kind = "enforced"
 tests = ["a_failed_move_leaves_the_others_moving", "a_run_exits_22_exactly_when_it_wrote_the_lock"]
 paths = ["migrate"]
+
+# CAKEYS.md (Phase 2 L7b, the triage of review 2026-11-24 §4.2's inventory).
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "out selects every one, so `create` alone selects"
+kind = "enforced"
+tests = ["create_makes_keys_and_nothing_else_does", "check_token_checks_every_object_on_it"]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "The options every verb takes, before or after"
+kind = "descriptive"
+why = "lists the options the parser gives every verb: a usage description, not a security guarantee"
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "(17) unless `--new-lock`, so a mistyped `--lock` never"
+kind = "enforced"
+tests = [
+  "a_missing_lock_is_refused_unless_a_new_one_is_asked_for",
+  "lock_is_written_by_default_and_refused_where_it_cannot_be",
+]
+
+# The liar runner holds exit 22 exactly when the lock changed, on every run of its verbs
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "exits 22, never 0 and never a failure's code"
+kind = "enforced"
+tests = [
+  "liars_ok",
+  "liars_other",
+  "liars_flag",
+  "liars_dev",
+  "gc_says_what_it_did_through_the_notes",
+  "create_makes_keys_and_nothing_else_does",
+  "a_run_that_wrote_the_lock_exits_22_whatever_failed_after",
+  "a_run_exits_22_exactly_when_it_wrote_the_lock",
+]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "*unknown*, or every provider rule when the provider"
+kind = "enforced"
+tests = [
+  "a_profile_no_refuses_and_names_its_profile",
+  "a_provider_known_only_at_open_defers_its_rules_by_name",
+  "the_gate_refuses_what_it_can_decide_and_says_what_it_cannot",
+  "validate_prints_the_modes_only_when_it_passes",
+]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "`got:`. It never creates the object: absent is"
+kind = "enforced"
+tests = ["create_makes_keys_and_nothing_else_does"]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "declares: every selected (spec, token) pair with"
+kind = "enforced"
+tests = [
+  "create_makes_keys_and_nothing_else_does",
+  "never_create_over_an_occupied_locator",
+  "create_never_fights_a_locked_identity",
+  "create_records_what_it_made_before_a_failure",
+  "a_dry_run_refuses_what_the_run_refuses_on_the_token",
+  "create_checks_the_profiles_before_it_makes_anything",
+  "tpm2_identity_failure_after_create_leaves_nothing",
+]
+
+# The lock and the token: the liar runner, on every run of check; a TPM's persistent handles: tpm2_keys_attest_their_tpm_residence (swtpm)
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "URI. It never writes: not the lock, not"
+kind = "enforced"
+tests = [
+  "liars_ok",
+  "liars_other",
+  "tpm2_keys_attest_their_tpm_residence",
+  "a_chain_out_of_its_dates_warns_where_check_refuses",
+  "check_judges_attestation_dates_at_the_time_asked",
+]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "`check` of every (spec, token) pair keys.toml places"
+kind = "enforced"
+tests = ["check_token_checks_every_object_on_it", "liars_ok"]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "<lock>` as every writing verb does (22); `--dry-run`"
+kind = "enforced"
+tests = ["gc_says_what_it_did_through_the_notes", "gc_prints_then_removes_stale_entries"]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "mismatch | never blindly | a swapped or"
+kind = "descriptive"
+why = "the Retry column is advice to whoever reads the exit code, not something cakeys does"
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "build inputs. Everything is usable before anything is"
+kind = "enforced"
+tests = ["checks.lib"]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "— `check` never writes, and in the sandbox"
+kind = "enforced"
+tests = ["liars_ok", "lock_is_written_by_default_and_refused_where_it_cannot_be"]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "grant is host-wide: pcscd serves every reader, so"
+kind = "descriptive"
+why = "states a limit of pcscd's grant (it serves every reader), a warning to whoever enables it"
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "- **Never** a token database: SoftHSM files allow"
+kind = "descriptive"
+why = "advice on what a deployment may grant: the module grants the paths its configuration names, and cannot tell a token database from a socket"
+
+# CAMIGRATE.md (Phase 2 L7b).
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "Every verb takes cakeys' global options: `-c`, `-l`,"
+kind = "descriptive"
+why = "lists the options the parser gives every verb: a usage description, not a security guarantee"
+
+# Paths: the four refused_in_a_nix_build runs; any other verb that writes the lock is refused by read_lock's sandbox check
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "- Every writing verb is refused inside a"
+kind = "enforced"
+tests = ["refusals_around_the_plans_and_the_offline_export", "a_missing_lock_is_refused_unless_a_new_one_is_asked_for"]
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "never moves, and `CKA_NEVER_EXTRACTABLE` is an immutable in"
+kind = "enforced"
+tests = [
+  "exportability_is_fixed_at_creation",
+  "export_plans_follow_each_sides_capabilities",
+  "a_write_fills_gaps_and_never_overrides",
+]
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "token allows no other wrapping: the key carries"
+kind = "enforced"
+tests = [
+  "enforced_moves_wrap_only_under_the_trusted_transport_key",
+  "wrap_with_trusted_needs_a_trusted_transport_and_never_goes_through_the_host",
+  "unrecorded_restrictions_restrict",
+]
+
+# The export KEK is sensitive and leaves only wrapped to the transport key; the moved keys are sensitive, so a sealed move that read them would fail
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "The host never sees it. The default. |"
+kind = "enforced"
+tests = [
+  "each_session_key_is_sealed_as_its_purpose_says",
+  "k2_session_keys_read_back_as_built",
+  "sealed_moves_do_what_the_plan_says",
+]
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "source that never exports, a type or proof"
+kind = "descriptive"
+why = "names a kind of source (one whose profile says it exports nothing), a row of the plan's vocabulary"
+
+# The host path is no export's, a private data object never moves, and the bundle's fields are pinned
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "per export** (a source and a target), never"
+kind = "enforced"
+tests = [
+  "export_plans_follow_each_sides_capabilities",
+  "private_data_objects_never_move",
+  "the_format_is_pinned_and_round_trips",
+]
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "to it. Import recomputes every identity on the"
+kind = "enforced"
+tests = ["bundles_are_checked_against_the_lock", "a_bundle_files_unproven_ec_key_is_refused"]
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "whose bundle never leaves the process, moves it."
+kind = "descriptive"
+why = "migrate's bundle is a value inside its one process (no file or socket on its way): the structure of the code, not an outcome a run shows"
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "never duplicated. `cakeys create` still refuses over anything"
+kind = "enforced"
+tests = ["objects_sharing_a_locator_move_in_any_order", "never_create_over_an_occupied_locator"]
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "is written: a private key's `rfc7093m4`, and every"
+kind = "enforced"
+tests = [
+  "a_source_that_hands_over_another_key_writes_nothing",
+  "every_spelling_of_a_secret_key_imports_as_the_same_key",
+  "files_populate_tokens_with_their_material",
+]
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "provenance, never a verdict. The source's entry is"
+kind = "enforced"
+tests = ["observed_and_provenance_never_change_a_verdict", "provenance_changes_only_warn"]
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "credential and can never carry an attestation, so"
+kind = "enforced"
+tests = [
+  "an_import_the_provider_cannot_attest_is_refused_before_the_write",
+  "landing_checks_follow_the_spec_named",
+  "exports_plan_against_their_target_either_way",
+]
+
+# No vendor method exists in this tree; each built-in one realises after it lands
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "cannot check it. The identity is never the"
+kind = "enforced"
+tests = [
+  "bundles_are_checked_against_the_lock",
+  "sealed_moves_do_what_the_plan_says",
+  "host_moves_do_what_the_plan_says",
+  "public_moves_do_what_the_plan_says",
+]
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "refused) [run]; never Ed25519, which it holds as"
+kind = "descriptive"
+why = "a measurement of the module ([run], [src], [doc]), recorded in its profile and the ledger, not a behaviour of camigrate"
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "1.10 | never: no `C_WrapKey`/`C_UnwrapKey` [src] | `tpm2_ptool"
+kind = "descriptive"
+why = "a measurement of the module ([run], [src], [doc]), recorded in its profile and the ledger, not a behaviour of camigrate"
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "2.7) | never [src] | `C_CreateObject` as SO"
+kind = "descriptive"
+why = "a measurement of the module ([run], [src], [doc]), recorded in its profile and the ledger, not a behaviour of camigrate"
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "command line (no other option [src]): both stated"
+kind = "descriptive"
+why = "a fact of tpm2_ptool ([src]: its PIN is an argument), which the plan states as a note"
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "exit code: non-extractable keys, a source that never"
+kind = "descriptive"
+why = "says what camigrate's tests cover (Testing); each refusal's own claim is registered where it is made"
+
+# CAPROBE.md (Phase 2 L7b).
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "never reads keys.lock, so it answers as `validate`"
+kind = "descriptive"
+why = "the inputs of `caprobe supports`, an interface description: it answers for a kind of token, and holds no key"
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "this cakeys never writes such a row, so"
+kind = "enforced"
+tests = ["the_committed_profiles_name_only_known_rows", "a_newer_cakeys_names_load_and_answer_nothing"]
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "TOML is what everything queries. Write probes are"
+kind = "descriptive"
+why = "a design decision (D5): the committed profiles are what the tools read"
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "possession by every binding of its kind, a"
+kind = "enforced"
+tests = [
+  "softhsm_committed_profile_is_what_the_probe_observes",
+  "kryoptic_committed_profile_is_what_the_probe_observes",
+  "every_secret_key_type_has_lengths_to_generate_at",
+]
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "a failed one active [run]) is undetermined, never"
+kind = "enforced"
+tests = ["the_probe_records_what_a_misbehaving_module_does"]
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "Every run destroys what it made. Notes carry"
+kind = "enforced"
+tests = ["a_probe_an_error_ends_destroys_what_it_made", "the_probe_clears_what_an_interrupted_run_left"]
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "one for every key it generates, a real"
+kind = "descriptive"
+why = "a fact of ykcs11 (it writes a placeholder certificate for each key it generates), which the scratch guard allows for"
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "reason) and every probed capability row (answer and"
+kind = "enforced"
+tests = ["every_differing_row_is_a_named_line", "rows_only_one_side_has_are_named"]
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "is `CKR_ARGUMENTS_BAD`); every baseline curve generates; RSA 512–16384"
+kind = "descriptive"
+why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "probed). Generates every secret key type it lists,"
+kind = "descriptive"
+why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "(`derive.read-only = false`). Never wraps or unwraps |"
+kind = "descriptive"
+why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "no HMAC; every key reports `CKA_DERIVE = false`"
+kind = "descriptive"
+why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "RSA-1024, brainpool, every Edwards and Montgomery curve. OAEP"
+kind = "descriptive"
+why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "[run]. It never imports one (`[migration] refuses`: a"
+kind = "descriptive"
+why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "profiles a build re-probes (`verified-by`), so every module"
+kind = "enforced"
+tests = ["checks.ledger"]
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "on its path then), every hand edit since"
+kind = "enforced"
+tests = ["checks.ledger"]
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "`Cargo.lock#cryptoki-sys`, the binding, for every profile and the"
+kind = "descriptive"
+why = "says what LEDGER.toml's `[groups]` list, a description of that file"
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "On 2026-11-25 every hardware and cloud profile and"
+kind = "descriptive"
+why = "the ledger's state on one date, which `checks.ledger` prints"
+
+# DESIGN.md, beyond §8.1 (Phase 2 L7b).
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "handle.** It is never written to the token."
+kind = "descriptive"
+why = "defines the object name: the token's attributes are the locator's and the spec's"
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "**Commitment schemes never reveal what the token computed.**"
+kind = "enforced"
+tests = ["aes_commitments_match_host_oracles", "a_lock_holds_no_token_output", "secret_commitments_match_host_hmac"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "otherwise turn every previously-attested realisation into a downgrade."
+kind = "descriptive"
+why = "a rationale: what a run that cannot attest would otherwise do"
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "label is never written to a token.** It"
+kind = "descriptive"
+why = "defines the commitment label, a public message (it is in the lock)"
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "that allows every scheme of its type, committed,"
+kind = "enforced"
+tests = [
+  "aes_commitments_match_host_oracles",
+  "des3_check_values_match_host_oracles",
+  "each_session_key_is_sealed_as_its_purpose_says",
+]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "verb: it never creates the object, and of"
+kind = "enforced"
+tests = ["create_makes_keys_and_nothing_else_does"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "immutable is never overwritten — those changes fail"
+kind = "enforced"
+tests = [
+  "a_write_fills_gaps_and_never_overrides",
+  "what_a_write_may_and_may_not_override",
+  "attestation_changes_are_never_rerecorded",
+  "binding_downgrade_is_refused",
+]
+
+# The liar runner holds exit 22 exactly when the lock changed, on every run of its verbs
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "lock exits 22, never 0, so a caller"
+kind = "enforced"
+tests = [
+  "liars_ok",
+  "liars_other",
+  "liars_flag",
+  "liars_dev",
+  "a_missing_lock_is_refused_unless_a_new_one_is_asked_for",
+]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "mistyped `--lock` never starts a second lock (review"
+kind = "enforced"
+tests = [
+  "a_missing_lock_is_refused_unless_a_new_one_is_asked_for",
+  "lock_is_written_by_default_and_refused_where_it_cannot_be",
+]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "not drift; everything else is observed** (decided 2026-11-15)."
+kind = "enforced"
+tests = ["policy_drift_and_replaced_objects_are_refused", "an_undeclared_mechanism_list_is_observed_policy"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "failed is never retried, since a module may"
+kind = "enforced"
+tests = [
+  "only_a_refused_oaep_hash_is_tried_again",
+  "an_oaep_proof_tries_the_next_hash_only_when_refused_before_it_began",
+]
+
+# Never the last: the flag cells and the counters; one failed attempt: the refused-login cells end the run (16), though no cell counts the logins
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "attempt, and never the last: the login at"
+kind = "enforced"
+tests = [
+  "liars_flag",
+  "liars_dev",
+  "pin_counters_stop_cakeys_before_it_spends_a_try",
+  "a_refused_so_credential_is_not_tried_again",
+]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "is recorded, never configured:** `binding = \"pop-sign-pin\"` in"
+kind = "enforced"
+tests = ["attributes_are_validated_per_class"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "a realisation never weakens unless it drops to"
+kind = "enforced"
+tests = ["binding_downgrade_is_refused", "binding_ranks_are_pinned"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "Yubico root (never to f9 alone — a"
+kind = "enforced"
+tests = [
+  "a_slot_certificate_signed_by_another_key_is_refused",
+  "the_slot_link_keeps_the_chain_rules",
+  "issuers_must_be_cas_within_their_path_length",
+  "issuers_sign_certificates_and_critical_extensions_are_understood",
+  "an_ek_certificate_names_the_ek_purpose_or_none",
+  "check_holds_the_chain_to_its_dates",
+  "a_chain_out_of_its_dates_warns_where_check_refuses",
+]
+
+# The flush of transient objects is said in the row to be untested
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "certify, which never lets cakeys load the object,"
+kind = "enforced"
+tests = [
+  "tpm2_a_secret_keys_attestation_is_bound_to_its_material",
+  "tpm2_attestation_refuses_a_store_that_disagrees",
+  "the_material_is_the_attested_blobs_not_read_publics",
+  "tpm2_vendor_attestation_liars",
+]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "conflict (13), never a second opinion; an asymmetric"
+kind = "enforced"
+tests = [
+  "the_material_is_the_attested_blobs_not_read_publics",
+  "tpm2_attestation_refuses_a_store_that_disagrees",
+  "a_slot_certificate_signed_by_another_key_is_refused",
+]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "(`attestation.id`), never in `objects.<name>.ids`, where a second TPM's"
+kind = "enforced"
+tests = ["tpm2_each_token_pins_its_own_attestation", "attestation_is_per_realisation_and_never_alone"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "- **Attestation never replaces portable identity — and"
+kind = "enforced"
+tests = ["attestation_is_per_realisation_and_never_alone", "tpm2_attested_material_travels_to_a_second_hsm"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "object's `ids` never hold an attestation scheme —"
+kind = "enforced"
+tests = ["attestation_is_per_realisation_and_never_alone"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "it, reads never do. Its `qualifiedSigner` is not"
+kind = "enforced"
+tests = ["tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store", "tpm2_keys_attest_their_tpm_residence"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "it made. Every run that attests this way"
+kind = "enforced"
+tests = ["tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "manufacturer certified, on every attestation. The certificate is"
+kind = "enforced"
+tests = ["tpm2_attestation_activates_a_credential_to_the_certified_ek"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "PIN-derived seal auth and the object's auth never"
+kind = "enforced"
+tests = ["tpm2_the_salted_session_keeps_the_token_secrets_off_the_wire", "the_seal_auth_is_the_modules_and_wiped"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "created: generated material could never match (D1) —"
+kind = "enforced"
+tests = ["create_never_fights_a_locked_identity"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "attributes, `create` never makes it, and `delete` refuses"
+kind = "enforced"
+tests = ["adopt_certificate_and_public_only_key", "what_create_never_makes_cannot_say_origin_create"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "PIN spends no retry, and every key type"
+kind = "enforced"
+tests = ["always_authenticate_keys_prove_possession_with_a_per_use_pin"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "invariants** (exit 17, never a hash mismatch) —"
+kind = "enforced"
+tests = ["lock_invariants_are_checked", "lock_objects_keep_their_invariants"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "so first: `note: waiting for <lock>.lck`). Readers never"
+kind = "enforced"
+tests = ["update_lock_waits_for_the_sidecar_lock"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "another user's never refuses the run. The guard,"
+kind = "enforced"
+tests = ["a_saved_lock_keeps_its_mode_and_a_read_only_sidecar_guards"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "application secret, never a password or PIN); undeclared"
+kind = "descriptive"
+why = "what the author's declaration means: nothing can tell a random value from a password"
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "(H1 is fixed for every `pop-*` proof —"
+kind = "enforced"
+tests = [
+  "h1_a_private_key_beside_an_unbound_public_object_is_a_conflict",
+  "derive_and_decrypt_only_keys_prove_possession",
+]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "`CKA_SENSITIVE`, and \"never more than one object\" holds"
+kind = "descriptive"
+why = "states the limit of a guarantee (a known gap, §8.2): what holds only if the module answers truly"
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "is unpublished and changes in place until every"
+kind = "descriptive"
+why = "a statement of process: lock version 1 is frozen once the reviews pass it"
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "one: the bytes every commitment scheme feeds the"
+kind = "enforced"
+tests = ["scheme_definitions_are_pinned"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "lock records everything else an ID depends on:**"
+kind = "enforced"
+tests = [
+  "the_lock_pins_type_spec_provenance_and_schemes",
+  "spec_digests_are_pinned",
+  "commitment_label_comes_from_the_lock",
+]

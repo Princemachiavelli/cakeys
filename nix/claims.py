@@ -10,7 +10,8 @@ either
 - registered in the register: an entry whose `says`, a phrase found once in its `doc`
   (whitespace and line breaks aside), is on the claim's line, with
   - `kind = "enforced"` and `tests`, each a `fn` in crates/ or fuzz/ (nix/doc-references.py's
-    index), and optionally the entry `paths` those tests cover; or
+    index) or a check of checks.nix as `checks.<name>` (a NixOS or Nix test), and optionally
+    the entry `paths` those tests cover; or
   - `kind = "descriptive"` and `why` it is no guarantee a test can hold;
 - or unregistered, and counted against the register's `max-unregistered`. More fails, and so
   does fewer, until the register is lowered to the count: the number moves only in a diff a
@@ -18,6 +19,11 @@ either
 
 An entry may register a claim the words miss (DESIGN.md §8.1's bullets). A claim is softened in
 its document: the line stops matching, or its entry becomes descriptive.
+
+DESIGN.md §8.1, "Enforced (with tests)", is held to its heading (ENFORCED): each of its bullets
+names in backticks a test that holds it, a `fn` marked `#[test]` (or a runtime's
+`#[tokio::test]`) in crates/ or fuzz/, or a check of checks.nix as `checks.<name>` (a NixOS
+test). A bullet no test holds goes to §8.2, the known gaps.
 
 Usage: python3 -I nix/claims.py ROOT [--list]. --list prints the unregistered claims. Exits 1
 on a failure. Its tests are nix/claims-test.py.
@@ -38,6 +44,18 @@ SUBJECT = re.compile(
     r"|\bleav|extract|bundle|transport|\bslot|scratch|\bwrit",
     re.I,
 )
+# The section held to its heading: (document, heading), each bullet naming a test.
+ENFORCED = ("docs/DESIGN.md", "### 8.1 Enforced (with tests)")
+# A test: a fn whose attributes include `#[test]` or a runtime's `#[tokio::test]`.
+TEST = re.compile(
+    r"#\s*\[\s*(?:\w+\s*::\s*)?test\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*"
+    r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)"
+)
+NAMED = re.compile(r"`([A-Za-z_]\w*)(?:\(\))?`")
+# The flake's checks, and a bullet's name of one.
+CHECKS = "checks.nix"
+CHECK = re.compile(r"(?m)^  (?:([A-Za-z][\w-]*) =|inherit (?:\([^)]*\) )?([\w\s-]+);)")
+NAMED_CHECK = re.compile(r"`checks\.([A-Za-z][\w-]*)`")
 # What each kind of entry needs, and may have.
 KINDS = {"enforced": ({"tests"}, {"paths"}), "descriptive": ({"why"}, set())}
 COMMON = {"doc", "says", "kind"}
@@ -60,6 +78,61 @@ def claims(text):
     return out
 
 
+def tests(root):
+    """The names of the tests in crates/ and fuzz/ (TEST)."""
+    return {
+        name
+        for p in doc_references.rust_sources(root)
+        for name in TEST.findall(doc_references.NOT_CODE.sub(" ", p.read_text(errors="replace")))
+    }
+
+
+def checks(root):
+    """The names of the checks checks.nix defines or inherits, at its top level."""
+    try:
+        text = (root / CHECKS).read_text()
+    except OSError:
+        return set()
+    return {name for one, many in CHECK.findall(text) for name in ([one] if one else many.split())}
+
+
+def bullets(text, heading):
+    """The bullets of the section under `heading`, each (its first line, its text joined), or
+    None without the heading. Fenced code is not read."""
+    out, fenced = None, False
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif fenced:
+            continue
+        elif line.startswith("#"):
+            if out is not None:
+                break
+            if line.strip() == heading:
+                out = []
+        elif out is not None and line.startswith(("- ", "* ")):
+            out.append((n, line[2:].strip()))
+        elif out and line.startswith(" ") and line.strip():
+            out[-1] = (out[-1][0], f"{out[-1][1]} {line.strip()}")
+    return out
+
+
+def unheld(root, text):
+    """ENFORCED's failures in its document's `text`: each bullet that names no test."""
+    doc, heading = ENFORCED
+    found = bullets(text, heading)
+    if not found:
+        return [f"{doc} has no bullets under {heading!r}: claims.py's ENFORCED names it"]
+    known, nixos = tests(root), checks(root)
+    return [
+        f"{doc}:{n}: a bullet of {heading!r} names no test in backticks (a `#[test]` fn, or `checks.<name>`): "
+        f"name the one that holds it, or move it to the known gaps ({bullet[:60]}…)"
+        for n, bullet in found
+        if not any(name in known for name in NAMED.findall(bullet))
+        and not any(name in nixos for name in NAMED_CHECK.findall(bullet))
+    ]
+
+
 def check(root):
     """(failures, unregistered claims, registered entries)."""
     failures = []
@@ -67,7 +140,7 @@ def check(root):
         register = tomllib.loads((root / REGISTER).read_text())
     except (OSError, tomllib.TOMLDecodeError) as e:
         return [f"{REGISTER}: {e}"], [], 0
-    fns = doc_references.index(root)[1]
+    fns = doc_references.index(root)[1] | {f"checks.{name}" for name in checks(root)}
     texts = {}
     registered = set()  # (doc, line)
     entries = register.get("claim", [])
@@ -106,7 +179,7 @@ def check(root):
         registered |= lines
         for test in entry.get("tests", []):
             if test not in fns:
-                failures.append(f"{where}: `{test}` is no fn in crates/ or fuzz/")
+                failures.append(f"{where}: `{test}` is no fn in crates/ or fuzz/, nor a check of {CHECKS}")
 
     unregistered = []
     for doc in DOCUMENTS:
@@ -116,6 +189,8 @@ def check(root):
             failures.append(f"{doc} does not exist: claims.py's DOCUMENTS names it")
             continue
         unregistered += [f"{doc}:{n}: {line}" for n, line in claims(text) if (doc, n) not in registered]
+        if doc == ENFORCED[0]:
+            failures += unheld(root, text)
     most = register.get("max-unregistered")
     if not isinstance(most, int) or isinstance(most, bool) or most < 0:
         failures.append(f"{REGISTER}: max-unregistered is {most!r}, not a count")
