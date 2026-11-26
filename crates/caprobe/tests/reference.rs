@@ -248,15 +248,21 @@ fn a_mark_vouches_for_its_key(w: &Workdir, module: &str) {
     // Each run leaves its slot marked as the probe's: a certificate over the slot's own key, or,
     // where the SO generates none (SoftHSM, kryoptic), over the probe's own P-256 test key.
     let session = open_session(module, "kmtest", "1234");
+    // This closure returns the CKA_VALUE of each object of `class` in slot 05, sorted. The values
+    // are sorted because C_FindObjects returns objects in no fixed order: SoftHSM on Linux
+    // returned the same three certificates in a different order before and after a refused run.
     let in_slot = |s: &TestSession, class| {
-        s.find_objects(&[A::Class(class), A::Id(vec![0x05])])
+        let mut values = s
+            .find_objects(&[A::Class(class), A::Id(vec![0x05])])
             .unwrap()
             .into_iter()
             .map(|h| match &s.get_attributes(h, &[cryptoki::object::AttributeType::Value]).unwrap()[..] {
                 [A::Value(v)] => v.clone(),
                 other => panic!("slot 05: {other:?}"),
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        values.sort();
+        values
     };
     let public = |s: &TestSession| {
         let keys = s.find_objects(&[A::Class(cryptoki::object::ObjectClass::PUBLIC_KEY), A::Id(vec![0x05])]).unwrap();
