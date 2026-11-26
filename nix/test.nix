@@ -105,7 +105,9 @@ let
           return out
 
       def got(out):
-          m = re.search(r"got:\s+(sha256-\S+)", out)
+          # Match only the base64 characters of the hash. `create` also prints its row as JSON,
+          # where the same `got:` line ends with a closing quote, and `\S+` would include it.
+          m = re.search(r"got:\s+(sha256-[A-Za-z0-9+/]+=*)", out)
           assert m, f"no got: line in\n{out}"
           return m.group(1)
 
