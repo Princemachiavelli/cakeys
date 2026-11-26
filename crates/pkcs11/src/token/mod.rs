@@ -13,7 +13,7 @@ use cakeys_core::config::{AttrValue, Binding, Locator, Mode, Object, ObjectCfg, 
 pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
 use cakeys_core::id::{self, BlockCipher, Commit, Curve, HmacHash, Scheme};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::error::{Error as CkError, Rv, RvError};
 use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
@@ -571,7 +571,10 @@ impl Token {
         match found.len() {
             0 => Ok(None),
             1 => Ok(Some(found[0])),
-            n => Err(KmError::Ambiguous(format!("{n} objects match locator {loc} on token '{}'", self.name).into())),
+            n => Err(KmError::Ambiguous(Reason::check(
+                Check::LocatorUnique,
+                format!("{n} objects match locator {loc} on token '{}'", self.name),
+            ))),
         }
     }
 
@@ -596,15 +599,15 @@ impl Token {
             .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Id(id.clone())])
             .map_err(ck("C_FindObjects"))?;
         if keys.len() > 1 {
-            return Err(KmError::Ambiguous(
+            return Err(KmError::Ambiguous(Reason::check(
+                Check::CkaIdUnique,
                 format!(
                     "{} private keys on token '{}' share CKA_ID {}; a consumer selecting by ID may use another key",
                     keys.len(),
                     self.name,
                     pct_all(&id)
-                )
-                .into(),
-            ));
+                ),
+            )));
         }
         Ok(())
     }
@@ -691,13 +694,13 @@ fn find_slot(ctx: &Pkcs11, label: &str, serial: Option<&str>, module_path: &str)
     match found.len() {
         0 => Err(KmError::Unavailable(format!("{named} not present in {module_path}").into())),
         1 => Ok(found.remove(0)),
-        _ => Err(KmError::Ambiguous(
+        _ => Err(KmError::Ambiguous(Reason::check(
+            Check::TokenUnique,
             format!(
                 "several tokens labelled '{label}' (serials {}); name one with tokenSerial",
                 found.iter().map(|f| format!("'{}'", f.token.serial)).collect::<Vec<_>>().join(", ")
-            )
-            .into(),
-        )),
+            ),
+        ))),
     }
 }
 

@@ -352,12 +352,8 @@ impl dyn Provider + '_ {
     pub fn hinted(&self, about: Topic, e: KmError) -> KmError {
         match (e, self.hint(about)) {
             (KmError::Unsupported(m), Some(h)) => {
-                let (rv, rule) = (m.rv(), m.rule());
-                let e = KmError::Unsupported(format!("{m} (hint for {}: {h})", self.name()).into()).with_rv(rv);
-                match rule {
-                    Some(r) => e.with_rule(r),
-                    None => e,
-                }
+                let text = format!("{m} (hint for {}: {h})", self.name());
+                KmError::Unsupported(m.with_text(text))
             }
             (e, _) => e,
         }

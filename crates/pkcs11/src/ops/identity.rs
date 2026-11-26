@@ -10,7 +10,7 @@ use cakeys_core::id::{self, BlockCipher, Commit, HmacHash, Scheme};
 use cakeys_core::plan::{Target, block_commits};
 use cakeys_core::reconcile::commitment_label;
 use cakeys_core::types::ObjectClass as Class;
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Result};
 use zeroize::Zeroizing;
 
 /// A key's plaintext on the host whose identity is not checked yet: a private key's PKCS#8, a
@@ -83,6 +83,7 @@ pub fn check_identity(t: &Target, lock: &Lock, key: Extracted) -> Result<Checked
         what: format!("{t}: the key on the host"),
         expected: pinned(scheme).cloned().unwrap_or_else(|| format!("a locked {}", scheme.name())),
         got,
+        check: Check::IdentityMaterial,
     };
     match t.object.class {
         Class::PrivateKey => {

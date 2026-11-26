@@ -8,7 +8,7 @@ use cakeys_core::config::{
 };
 use cakeys_core::id::{self, Commit, HmacHash, Scheme};
 use cakeys_core::types::ObjectClass as Class;
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cryptoki::mechanism::MechanismType;
 use cryptoki::object::{KeyType, ObjectHandle};
 
@@ -234,19 +234,23 @@ fn attest(
         Err(e @ (KmError::Unavailable(_) | KmError::Unsupported(_) | KmError::NotFound(_))) => {
             let locked = lock.realisation(t.spec_name, t.token_name).and_then(|r| r.attestation.as_ref());
             return Err(match locked {
-                Some(was) => KmError::PreconditionFailed(format!(
-                    "identity downgrade for {}: it was realised with a {} attestation, which it cannot compute now: {e}",
-                    t, was.kind
-                ).into()),
+                Some(was) => KmError::PreconditionFailed(Reason::check(
+                    Check::LockAttestationKept,
+                    format!(
+                        "identity downgrade for {}: it was realised with a {} attestation, which it cannot compute now: {e}",
+                        t, was.kind
+                    ),
+                )),
                 None => e,
             });
         }
         Err(e) => return Err(e),
     };
     if a.scheme != scheme {
-        return Err(KmError::Conflict(
-            format!("provider '{}' advertises {scheme} but attested {}", tok.provider.name(), a.scheme).into(),
-        ));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestScheme,
+            format!("provider '{}' advertises {scheme} but attested {}", tok.provider.name(), a.scheme),
+        )));
     }
     if let Some(w) = &a.warning {
         notes.warn(format!("{t}: its attestation would fail `check` today: {w}"));
@@ -548,14 +552,18 @@ pub fn delete(
         let (scheme, expected) = match if_match {
             Some(want) => (primary, want.to_owned()),
             None => computed.iter().find_map(|s| Some((*s, locked?.get(s.name())?.clone()))).ok_or_else(|| {
-                let e = KmError::PreconditionFailed(format!("no expected {primary} for {t}; pass --if-match").into());
+                let e = KmError::PreconditionFailed(Reason::rule(
+                    Rule::IfMatch,
+                    format!("no expected {primary} for {t}; pass --if-match"),
+                ));
                 KmError::from(Refusal::new(Rule::IfMatch, e))
             })?,
         };
         if got.get(scheme.name()) != Some(&expected) {
-            let e = KmError::PreconditionFailed(
-                format!("{} holds {:?}, expected {expected}; not deleting", t, got.get(scheme.name())).into(),
-            );
+            let e = KmError::PreconditionFailed(Reason::rule(
+                Rule::IfMatch,
+                format!("{} holds {:?}, expected {expected}; not deleting", t, got.get(scheme.name())),
+            ));
             return Err(Refusal::new(Rule::IfMatch, e).into());
         }
         if dry_run {

@@ -5,10 +5,10 @@
 //! key file can carry. [`block`] runs them over a run's plans, in one place, so the dry run and
 //! the run block alike (C-2).
 
-use cakeys_core::KmError;
 use cakeys_core::config::{Config, KeyOrigin, Lock, SpecCfg, SpecTokenCfg};
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::types::ObjectClass as Class;
+use cakeys_core::{Check, KmError, Reason};
 use cakeys_pkcs11::ops::{self, Notes, Seat, Target, Verb};
 use cakeys_pkcs11::{Registry, Token};
 
@@ -138,9 +138,9 @@ fn landing_checks(
     if p.ready {
         match p.exposure {
             Some(Exposure::Sealed | Exposure::Enforced) => {
-                p.deferred.extend([crate::sealed::UNWRAPS, crate::sealed::IDENTITY]);
+                p.deferred.extend([crate::sealed::UNWRAPS.name(), crate::sealed::IDENTITY.name()]);
             }
-            Some(Exposure::Host | Exposure::File) => p.deferred.push(crate::sealed::IDENTITY),
+            Some(Exposure::Host | Exposure::File) => p.deferred.push(crate::sealed::IDENTITY.name()),
             Some(Exposure::Public) | None => {}
         }
     }
@@ -450,9 +450,10 @@ pub(crate) fn realised_target<'a>(
         .find(|(_, by_token)| by_token.get(token).is_some_and(|r| r.object == object))
         .and_then(|(spec, _)| cfg.specs.get_key_value(spec).map(|(name, _)| name.as_str()))
         .ok_or_else(|| {
-            KmError::PreconditionFailed(
-                format!("{what} '{object}' has no realisation on '{token}' under a spec keys.toml still names").into(),
-            )
+            KmError::PreconditionFailed(Reason::check(
+                Check::LockRealised,
+                format!("{what} '{object}' has no realisation on '{token}' under a spec keys.toml still names"),
+            ))
         })?;
     Target::new(cfg, spec, token)
 }

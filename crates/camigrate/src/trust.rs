@@ -11,7 +11,7 @@ use cakeys_core::id::Scheme;
 use cakeys_core::known::{Known, Permission};
 use cakeys_core::plan::Target;
 use cakeys_core::types::{KeyType, ObjectClass};
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cakeys_pkcs11::Token;
 use cakeys_pkcs11::ops::{self, Notes};
 
@@ -86,24 +86,31 @@ impl BoundTransport {
     /// none) or has no locked identity; `Validation` (17) for one keys.toml says is no RSA
     /// private key, a recorded public key that does not decode, or one below 2048 bits.
     pub(crate) fn from_lock(cfg: &Config, lock: &Lock, to: &str, spec: Option<&str>) -> Result<BoundTransport> {
-        let precondition = |msg: String| KmError::PreconditionFailed(msg.into());
+        let precondition = |check, msg: String| KmError::PreconditionFailed(Reason::check(check, msg));
         let named = spec.or_else(|| cfg.tokens.get(to).and_then(|t| t.migrate.transport_with.as_deref()));
         let Some(chosen) = named else {
-            return Err(precondition(format!(
-                "no transport key is named for '{to}' (docs/CAMIGRATE.md D3): set transportWith in [tokens.{to}.migrate] \
+            return Err(precondition(
+                Check::ImportTransport,
+                format!(
+                    "no transport key is named for '{to}' (docs/CAMIGRATE.md D3): set transportWith in [tokens.{to}.migrate] \
                  to the spec of an RSA key there that may unwrap and never leaves the token, lock it, or pass \
                  --transport-spec"
-            )));
+                ),
+            ));
         };
         let Some((spec, r)) =
             lock.realisations.get_key_value(chosen).and_then(|(spec, by_token)| Some((spec, by_token.get(to)?)))
         else {
-            return Err(precondition(format!(
-                "transport key '{chosen}' is not realised on '{to}' in the lock: lock it there first"
-            )));
+            return Err(precondition(
+                Check::LockRealised,
+                format!("transport key '{chosen}' is not realised on '{to}' in the lock: lock it there first"),
+            ));
         };
         let Some(declared) = cfg.specs.get(spec) else {
-            return Err(precondition(format!("the transport key's spec '{spec}' is gone from keys.toml")));
+            return Err(precondition(
+                Check::ImportTransport,
+                format!("the transport key's spec '{spec}' is gone from keys.toml"),
+            ));
         };
         let rsa = |class, key_type| class == ObjectClass::PrivateKey && key_type == Some(KeyType::Rsa);
         if let Some(o) = cfg.objects.get(&declared.object).filter(|o| !rsa(o.class, o.key_type)) {
@@ -132,15 +139,19 @@ impl BoundTransport {
             }
         };
         if let Some(why) = fault {
-            return Err(precondition(format!(
-                "'{spec}' on '{to}' is no transport key: a transport key {why}, as the lock records it"
-            )));
+            return Err(precondition(
+                Check::ImportTransport,
+                format!("'{spec}' on '{to}' is no transport key: a transport key {why}, as the lock records it"),
+            ));
         }
         let Some(id) = locked.and_then(|o| o.ids.get(Scheme::Rfc7093m4.name())) else {
-            return Err(precondition(format!(
-                "the lock pins no key for transport key '{spec}' ('{}') on '{to}', so nothing vouches for it",
-                r.object
-            )));
+            return Err(precondition(
+                Check::ImportTransport,
+                format!(
+                    "the lock pins no key for transport key '{spec}' ('{}') on '{to}', so nothing vouches for it",
+                    r.object
+                ),
+            ));
         };
         let bound = BoundTransport {
             token: to.to_owned(),
@@ -182,22 +193,22 @@ impl BoundTransport {
         let shown = path.display();
         let bound = Self::from_lock(cfg, lock, to, spec).map_err(|e| e.prefixed(&shown))?;
         if t.object != bound.object {
-            return Err(KmError::PreconditionFailed(
+            return Err(KmError::PreconditionFailed(Reason::check(
+                Check::ImportTransport,
                 format!(
                     "{shown}: its object '{}' is not the transport key of '{to}': the lock realises '{}' there as '{}'",
                     t.object, bound.spec, bound.object
-                )
-                .into(),
-            ));
+                ),
+            )));
         }
         if t.rfc7093m4 != bound.rfc7093m4 {
-            return Err(KmError::PreconditionFailed(
+            return Err(KmError::PreconditionFailed(Reason::check(
+                Check::ImportTransport,
                 format!(
                     "{shown}: its key {} is not the {} the lock pins for '{}'",
                     t.rfc7093m4, bound.rfc7093m4, t.object
-                )
-                .into(),
-            ));
+                ),
+            )));
         }
         bound.with_key(t.spki()?).map_err(|e| e.prefixed(&shown))
     }
@@ -228,6 +239,7 @@ impl BoundTransport {
                 what: format!("transport key '{}' on '{}'", self.spec, self.token),
                 expected: self.rfc7093m4,
                 got,
+                check: Check::ImportTransport,
             });
         }
         crate::sealed::check_transport_size(&spki)?;
@@ -260,7 +272,12 @@ impl BoundTransport {
     ///
     /// As `Target::new`, for a `cfg` other than the one it was bound with.
     pub(crate) fn target<'a>(&self, cfg: &'a Config) -> Result<Target<'a>> {
-        let gone = || KmError::PreconditionFailed(format!("the transport key's spec '{}' is gone", self.spec).into());
+        let gone = || {
+            KmError::PreconditionFailed(Reason::check(
+                Check::ImportTransport,
+                format!("the transport key's spec '{}' is gone", self.spec),
+            ))
+        };
         let (spec, _) = cfg.specs.get_key_value(&self.spec).ok_or_else(gone)?;
         let (token, _) = cfg.tokens.get_key_value(&self.token).ok_or_else(gone)?;
         Target::new(cfg, spec, token)
@@ -279,14 +296,14 @@ impl BoundTransport {
 
     /// The refusal for a key whose public key is not known.
     pub(crate) fn no_public_key(&self) -> KmError {
-        KmError::PreconditionFailed(
+        KmError::PreconditionFailed(Reason::check(
+            Check::ImportTransport,
             format!(
                 "the lock records no public key for transport key '{}' on '{}': lock it there with \
                  migrate.transportWith naming it",
                 self.spec, self.token
-            )
-            .into(),
-        )
+            ),
+        ))
     }
 
     /// A transport key that may also decrypt is warned about: the target's PIN holder could
@@ -357,10 +374,10 @@ impl<'a> BoundBundle<'a> {
         let bundle = file.0;
         match &bundle.target {
             Some(target) if target != to => {
-                return Err(KmError::PreconditionFailed(
-                    format!("the bundle is for '{target}', not '{to}': import it there, or export it again for '{to}'")
-                        .into(),
-                ));
+                return Err(KmError::PreconditionFailed(Reason::check(
+                    Check::ImportTransport,
+                    format!("the bundle is for '{target}', not '{to}': import it there, or export it again for '{to}'"),
+                )));
             }
             Some(_) => {}
             None => notes.warn(format_args!(
@@ -387,9 +404,10 @@ impl<'a> BoundBundle<'a> {
     /// `PreconditionFailed` for a bundle that is not.
     pub(crate) fn made(bundle: Bundle, transport: &BoundTransport, cfg: &'a Config) -> Result<BoundBundle<'a>> {
         if bundle.target.as_deref() != Some(transport.token()) {
-            return Err(KmError::PreconditionFailed(
-                format!("the bundle was not made for '{}'", transport.token()).into(),
-            ));
+            return Err(KmError::PreconditionFailed(Reason::check(
+                Check::ImportTransport,
+                format!("the bundle was not made for '{}'", transport.token()),
+            )));
         }
         let transport = Some(Self::sealed_to(&bundle, transport, cfg)?);
         Ok(BoundBundle { bundle, transport })
@@ -404,16 +422,20 @@ impl<'a> BoundBundle<'a> {
                 what: format!("the bundle's transport key '{}' on '{}'", named.object, bound.token),
                 expected: bound.rfc7093m4.clone(),
                 got: named.rfc7093m4.clone(),
+                check: Check::ImportTransport,
             }),
-            Some(named) => Err(KmError::PreconditionFailed(
+            Some(named) => Err(KmError::PreconditionFailed(Reason::check(
+                Check::ImportTransport,
                 format!(
                     "the bundle is sealed to '{}' ({}), not to the transport key of '{}', '{}' ({}, spec '{}'): name \
                      the key it was sealed to with --transport-spec if it is that token's (docs/CAMIGRATE.md D3)",
                     named.object, named.rfc7093m4, bound.token, bound.object, bound.rfc7093m4, bound.spec
-                )
-                .into(),
-            )),
-            None => Err(KmError::PreconditionFailed("the bundle names no transport key".into())),
+                ),
+            ))),
+            None => Err(KmError::PreconditionFailed(Reason::check(
+                Check::ImportTransport,
+                "the bundle names no transport key",
+            ))),
         }
     }
 

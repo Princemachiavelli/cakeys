@@ -9,13 +9,13 @@
 
 mod common;
 
-use cakeys_core::KmError;
 use cakeys_core::config::{
     AttestationRecord, AttrValue, Binding, Config, Immutables, Lock, Mode, ObjectCfg, parse_config_with, parse_lock,
 };
 use cakeys_core::id;
 use cakeys_core::plan::Target;
 use cakeys_core::reconcile::{LockWrite, Notes, Resolved, commitment_label, reconcile};
+use cakeys_core::{Check, KmError};
 use common::{empty_lock, facts};
 use quint_connect::{Driver, State, Step, switch};
 use serde::Deserialize;
@@ -177,37 +177,48 @@ struct Compared {
     rule: String,
 }
 
-/// The model's rule a refusal of `reconcile` is, by a marker of its message only that rule's
-/// has: exactly one must match, so a refusal the model does not have, or two rules' messages
-/// grown alike, fails rather than passing for one of them.
-fn rule_of(e: &KmError) -> quint_connect::Result<&'static str> {
-    const MARKERS: [(&str, &str); 12] = [
-        ("type", "in keys.toml changed since it was locked"),
-        ("spec", "changed in keys.toml since it was realised"),
-        ("mode", "locked mode"),
-        ("binding", "binding downgrade"),
-        ("anchor", "attestation anchor for"),
-        ("attestation-lost", "attestation, which it no longer computes"),
-        ("schemes-lost", "], which it no longer computes"),
-        ("replaced", "was replaced since it was realised"),
-        ("object", "changed on the token since it was realised"),
-        ("unlinked", "is locked only by"),
-        ("unrealised", "the lock records no realisation of spec"),
-        ("second-name", "instead of a second name"),
-    ];
-    match e {
-        KmError::HashMismatch { what, .. } if what.ends_with("attestation)") => Ok("attestation-id"),
-        KmError::HashMismatch { .. } => Ok("mismatch"),
-        KmError::FirstUse { .. } => Ok("first-use"),
-        KmError::PreconditionFailed(m) => {
-            let rules: Vec<&str> = MARKERS.iter().filter(|(_, marker)| m.contains(marker)).map(|(r, _)| *r).collect();
-            match rules[..] {
-                [rule] => Ok(rule),
-                _ => anyhow::bail!("{e}: the rules {rules:?}, not one"),
-            }
-        }
-        _ => anyhow::bail!("{e}: no rule of the model"),
+/// The Rust's lock checks that the model does not have, each with the reason it leaves it out.
+/// A replayed step that one of them refuses fails, because the model never refuses by it.
+/// `every_lock_rule_is_modelled_or_left_out` requires every lock check to be either a rule of
+/// the model or listed here.
+const LEFT_OUT: [(Check, &str); 2] = [
+    (Check::LockImportIds, "the model leaves out imports: its runs have no `facts.origin`"),
+    (
+        Check::LockSameObject,
+        "the model's keys.toml has no two specs of one object on one token under one locator, so no second spec \
+         of the same token object is ever realised",
+    ),
+];
+
+/// The model's rule for the refusal `e` of `reconcile`, read from the check that the error names:
+/// a lock check's name without its `lock.` prefix, `mismatch` for `identity.material`, and
+/// `first-use` for a `FirstUse` error, which names no check. A refusal by a check that the model
+/// leaves out, by a check that is not a lock check, or by no check is an error, so a refusal that
+/// the model does not have fails the step instead of passing for one of the model's rules (review
+/// 2026-11-24 A-6: the message markers that this replaced read a message with a suffix as the
+/// rule of its first part).
+fn model_rule(e: &KmError) -> quint_connect::Result<&'static str> {
+    if let KmError::FirstUse { .. } = e {
+        return Ok("first-use");
     }
+    match e.check() {
+        Some(Check::IdentityMaterial) => Ok("mismatch"),
+        Some(c) if LEFT_OUT.iter().any(|(out, _)| *out == c) => {
+            anyhow::bail!("{e}: the check {c}, which the model leaves out")
+        }
+        Some(c) => c.name().strip_prefix("lock.").ok_or_else(|| anyhow::anyhow!("{e}: the check {c} is no lock check")),
+        None => anyhow::bail!("{e}: no check of the model"),
+    }
+}
+
+/// The rules that decide a run of the model: the names its `decidedBy` witnesses compare `rule`
+/// with.
+fn model_rules() -> BTreeSet<String> {
+    let spec = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/spec/lock.qnt")).unwrap();
+    spec.lines()
+        .filter_map(|l| l.trim().strip_prefix("val decidedBy")?.split_once("rule == \"")?.1.strip_suffix('"'))
+        .map(str::to_owned)
+        .collect()
 }
 
 // The model's numbers as the Rust's digests, and back.
@@ -445,7 +456,7 @@ impl Mbt {
                     (LockWrite::Record, false) => "unchanged",
                 },
             ),
-            Err(e) => (Verdict::Exit(e.exit_code().into()), rule_of(&e)?),
+            Err(e) => (Verdict::Exit(e.exit_code().into()), model_rule(&e)?),
         };
         rule.clone_into(&mut self.rule);
         self.seen.borrow_mut().insert(self.rule.clone());
@@ -568,13 +579,87 @@ fn reconcile_refines_the_lock_model() {
     if let Err(e) = quint_connect::runner::run_test(driver, config) {
         panic!("{e}");
     }
-    let spec = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/spec/lock.qnt")).unwrap();
-    let rules: BTreeSet<&str> = spec
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("val decidedBy")?.split_once("rule == \"")?.1.strip_suffix('"'))
-        .collect();
+    let rules = model_rules();
     assert_eq!(rules.len(), 18, "the witnesses the scan reads: {rules:?}");
     let seen = seen.borrow();
-    let missed: Vec<&&str> = rules.iter().filter(|r| !seen.contains(**r)).collect();
+    let missed: Vec<&String> = rules.iter().filter(|r| !seen.contains(*r)).collect();
     assert!(missed.is_empty(), "rules no replayed trace reaches: {missed:?}");
+}
+
+/// Every lock check of the Rust (a `Check` named `lock.…`) is either a rule of the model or
+/// listed in `LEFT_OUT` with its reason, never both, and every rule by which the model refuses
+/// is a lock check, `identity.material` or `FirstUse`. Every check that `reconcile.rs` names is a
+/// lock check or `identity.material`, so each refusal of `reconcile` maps to the model by its
+/// check. A refusal that the model leaves out fails the replay, never passes for a modelled rule:
+/// a second spec of one token object recorded weaker than the first (review 2026-11-23 A-2)
+/// refuses by `lock.same-object`, although its message ends with the message of the rule it
+/// extends (review 2026-11-24 A-6).
+#[test]
+fn every_lock_rule_is_modelled_or_left_out() {
+    let modelled = model_rules();
+    let left_out: Vec<Check> = LEFT_OUT.iter().map(|(c, _)| *c).collect();
+    let lock_checks: Vec<Check> = Check::ALL.iter().copied().filter(|c| c.name().starts_with("lock.")).collect();
+    let mut wrong = Vec::new();
+    for c in &lock_checks {
+        let rule = c.name().trim_start_matches("lock.");
+        match (modelled.contains(rule), left_out.contains(c)) {
+            (true, false) | (false, true) => {}
+            (false, false) => wrong.push(format!("{c} is no rule of lock.qnt and not in LEFT_OUT")),
+            (true, true) => wrong.push(format!("{c} is a rule of lock.qnt and in LEFT_OUT")),
+        }
+    }
+    for (c, why) in &LEFT_OUT {
+        if !lock_checks.contains(c) || why.trim().is_empty() {
+            wrong.push(format!("LEFT_OUT names {c}, which is no lock check or has no reason"));
+        }
+    }
+    for rule in &modelled {
+        let verdict = ["compared", "recorded", "unchanged", "mismatch", "first-use"].contains(&rule.as_str());
+        if !verdict && !lock_checks.iter().any(|c| c.name() == format!("lock.{rule}")) {
+            wrong.push(format!("the model's rule {rule} is no lock check"));
+        }
+    }
+    let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/reconcile.rs")).unwrap();
+    let code = source.split("#[cfg(test)]").next().unwrap_or_default();
+    for named in code.split("Check::").skip(1) {
+        let variant: String = named.chars().take_while(char::is_ascii_alphanumeric).collect();
+        match Check::ALL.iter().find(|c| format!("{c:?}") == variant) {
+            Some(c) if lock_checks.contains(c) || *c == Check::IdentityMaterial => {}
+            _ => wrong.push(format!("reconcile.rs refuses by Check::{variant}, which is no lock check")),
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+
+    // The A-2 refusal: spec s3 is s's token object under the same locator, and the lock records
+    // s with an attestation, so s3 without one is refused by lock.same-object, which the model
+    // leaves out, and the replay fails.
+    let mut mbt = Mbt::default();
+    for (curve, cfg) in &mut mbt.configs {
+        let text = CONFIG.replace("CURVE", curve)
+            + "\n[specs.s3]\nobject = \"k\"\nattributes = { CKA_SIGN = true }\n\
+               tokens.t1 = { locator = { CKA_LABEL = \"k\" }, origin = \"adopt\" }\n";
+        *cfg = parse_config_with(&text, Path::new("keys.toml"), &|_| None).unwrap();
+    }
+    let realise = |mbt: &mut Mbt, spec: &str, attestation| {
+        mbt.realise(&Input {
+            target: (spec.into(), "t1".into()),
+            write: MWrite::Record,
+            curve: CURVES[0].into(),
+            material: 1,
+            schemes: ["rfc7093m4".to_owned()].into(),
+            mode: MMode::Direct,
+            binding: MBinding::PopSign,
+            attestation,
+            policy: MPolicy { sign: Flag::Unset, decrypt: Flag::Unset },
+            immutables: MImmutables {
+                local: Flag::Unset,
+                never_extractable: Flag::Unset,
+                always_sensitive: Flag::Unset,
+            },
+            digest: 1,
+        })
+    };
+    realise(&mut mbt, "s", MAttestation::Attested { anchor: 1, id: 1 }).unwrap();
+    let e = realise(&mut mbt, "s3", MAttestation::Unattested).expect_err("a refusal the model leaves out was mapped");
+    assert!(e.to_string().contains(Check::LockSameObject.name()), "{e}");
 }

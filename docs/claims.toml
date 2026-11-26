@@ -14,7 +14,7 @@
 # An entry registers the whole line its phrase is on, so an enforced entry's tests hold every
 # universal claim of that line; a line with one claim no test holds stays unregistered.
 
-max-unregistered = 3
+max-unregistered = 0
 
 # CAMIGRATE.md D5: a bundle's transport key is the target's own (review 2026-11-24 D-8).
 
@@ -31,7 +31,7 @@ paths = ["import --in", "import --in --dry-run"]
 [[claim]]
 doc = "docs/DESIGN.md"
 says = """Every check recomputes it from the token and compares it with the
-  lock: the identity is the host's on every reference token"""
+  lock. On every reference token, the identity is the one that the host computes"""
 kind = "enforced"
 tests = [
   "asymmetric_material_has_one_identity_on_every_reference",
@@ -47,7 +47,7 @@ tests = ["never_create_over_an_occupied_locator", "a_second_private_key_under_th
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "the binding is recorded and cannot weaken"
+says = "The binding is recorded and cannot weaken"
 kind = "enforced"
 tests = ["binding_downgrade_is_refused"]
 
@@ -124,7 +124,7 @@ tests = [
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "session left public hides every private object"
+says = "session that is left public hides every private object"
 kind = "enforced"
 tests = ["a_login_the_session_does_not_show_is_unavailable"]
 
@@ -143,23 +143,81 @@ says = "`every_pair_has_a_row_of_one_shape`)"
 kind = "enforced"
 tests = ["every_pair_has_a_row_of_one_shape", "a_failure_row_says_its_code_rule_and_device"]
 
+# CAKEYS.md "Rules and checks" (L2): an error of 12, 13 or 14 takes a Reason, which only
+# Reason::check, Reason::rule and Reason::malformed make, and a HashMismatch (10) has a check;
+# malformed_only_in_parsers fails when Reason::malformed is used outside the parser modules, and
+# a_refusal_row_names_its_check when a row does not print the check's name.
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "Every other refusal of 10, 12, 13 or 14 names a rule or a check"
+kind = "enforced"
+tests = ["malformed_only_in_parsers", "a_refusal_row_names_its_check"]
+
+# The verb `resolve` never writes the lock or the token. The test
+# lock_is_written_by_default_and_refused_where_it_cannot_be runs `resolve` on a key that the lock
+# does not record, with no lock file present, and fails if a lock file appears or the token's
+# objects change. It also runs `resolve` in a Nix build sandbox and with a read-only lock, where
+# a verb that writes is refused with exit 21. The liar runner fails if `check` changes anything.
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "never write either"
+kind = "enforced"
+tests = [
+  "lock_is_written_by_default_and_refused_where_it_cannot_be",
+  "liars_ok",
+  "create_makes_keys_and_nothing_else_does",
+]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "It never writes. For a private key"
+kind = "enforced"
+tests = [
+  "lock_is_written_by_default_and_refused_where_it_cannot_be",
+  "a_foreign_public_key_conflicts_and_is_never_deleted",
+]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "and `resolve` never write and are unaffected"
+kind = "enforced"
+tests = ["lock_is_written_by_default_and_refused_where_it_cannot_be", "liars_ok"]
+
+# Review 2026-11-24 L5: a run that wrote the lock exits 22, whatever failed after the write
+# (each run seen exiting the failure's code before its fix).
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "so a script never misses a written lock"
+kind = "enforced"
+tests = ["a_run_that_wrote_the_lock_exits_22_whatever_failed_after", "create_records_what_it_made_before_a_failure"]
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "a written lock is never hidden"
+kind = "enforced"
+tests = ["a_failed_move_leaves_the_others_moving", "a_run_exits_22_exactly_when_it_wrote_the_lock"]
+paths = ["migrate"]
+
 # CAKEYS.md (Phase 2 L7b, the triage of review 2026-11-24 §4.2's inventory).
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "out selects every one, so `create` alone selects"
+says = "leaves out selects every value of that part, so `create` alone selects"
 kind = "enforced"
 tests = ["create_makes_keys_and_nothing_else_does", "check_token_checks_every_object_on_it"]
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "The options every verb takes, before or after"
+says = "The options that every verb takes, before or after the verb"
 kind = "descriptive"
 why = "lists the options the parser gives every verb: a usage description, not a security guarantee"
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "(17) unless `--new-lock`, so a mistyped `--lock` never"
+says = "(17) unless `--new-lock` is given, so a mistyped `--lock` never"
 kind = "enforced"
 tests = [
   "a_missing_lock_is_refused_unless_a_new_one_is_asked_for",
@@ -169,7 +227,7 @@ tests = [
 # The liar runner holds exit 22 exactly when the lock changed, on every run of its verbs
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "exits 22, never 0 (see \"Exit codes\"), and"
+says = "exits 22, never 0 and never a failure's code"
 kind = "enforced"
 tests = [
   "liars_ok",
@@ -178,6 +236,8 @@ tests = [
   "liars_dev",
   "gc_says_what_it_did_through_the_notes",
   "create_makes_keys_and_nothing_else_does",
+  "a_run_that_wrote_the_lock_exits_22_whatever_failed_after",
+  "a_run_exits_22_exactly_when_it_wrote_the_lock",
 ]
 
 [[claim]]
@@ -193,13 +253,13 @@ tests = [
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "`got:`. It never creates the object: absent is"
+says = "`got:`. It never creates the object: an absent object"
 kind = "enforced"
 tests = ["create_makes_keys_and_nothing_else_does"]
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "declares: every selected (spec, token) pair with"
+says = "It creates every selected (spec, token) pair with"
 kind = "enforced"
 tests = [
   "create_makes_keys_and_nothing_else_does",
@@ -226,19 +286,19 @@ tests = [
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "`check` of every (spec, token) pair keys.toml places"
+says = "`check` of every (spec, token) pair that keys.toml places"
 kind = "enforced"
 tests = ["check_token_checks_every_object_on_it", "liars_ok"]
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "<lock>` as every writing verb does (22); `--dry-run`"
+says = "`updated <lock>` as every writing verb does (22)"
 kind = "enforced"
 tests = ["gc_says_what_it_did_through_the_notes", "gc_prints_then_removes_stale_entries"]
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "mismatch | never blindly | a swapped or"
+says = "mismatch | never without review | a swapped or"
 kind = "descriptive"
 why = "the Retry column is advice to whoever reads the exit code, not something cakeys does"
 
@@ -250,19 +310,19 @@ tests = ["checks.lib"]
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "— `check` never writes, and in the sandbox"
+says = "because `check` never writes, and in the sandbox"
 kind = "enforced"
 tests = ["liars_ok", "lock_is_written_by_default_and_refused_where_it_cannot_be"]
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "grant is host-wide: pcscd serves every reader, so"
+says = "pcscd serves every reader, so a build"
 kind = "descriptive"
 why = "states a limit of pcscd's grant (it serves every reader), a warning to whoever enables it"
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "- **Never** a token database: SoftHSM files allow"
+says = "- **Never** allowed: a token database, because SoftHSM files allow"
 kind = "descriptive"
 why = "advice on what a deployment may grant: the module grants the paths its configuration names, and cannot tell a token database from a socket"
 
@@ -277,13 +337,13 @@ why = "lists the options the parser gives every verb: a usage description, not a
 # Paths: the four refused_in_a_nix_build runs; any other verb that writes the lock is refused by read_lock's sandbox check
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "- Every writing verb is refused inside a"
+says = "- Every verb that writes is refused inside a Nix build"
 kind = "enforced"
 tests = ["refusals_around_the_plans_and_the_offline_export", "a_missing_lock_is_refused_unless_a_new_one_is_asked_for"]
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "never moves, and `CKA_NEVER_EXTRACTABLE` is an immutable in"
+says = "never moves, and the lock treats `CKA_NEVER_EXTRACTABLE` as immutable"
 kind = "enforced"
 tests = [
   "exportability_is_fixed_at_creation",
@@ -304,7 +364,7 @@ tests = [
 # The export KEK is sensitive and leaves only wrapped to the transport key; the moved keys are sensitive, so a sealed move that read them would fail
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "The host never sees it. The default. |"
+says = "The host never sees the material. This is the default. |"
 kind = "enforced"
 tests = [
   "each_session_key_is_sealed_as_its_purpose_says",
@@ -314,14 +374,14 @@ tests = [
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "source that never exports, a type or proof"
+says = "the source never exports, or the target lacks a type or a proof"
 kind = "descriptive"
 why = "names a kind of source (one whose profile says it exports nothing), a row of the plan's vocabulary"
 
 # The host path is no export's, a private data object never moves, and the bundle's fields are pinned
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "per export** (a source and a target), never"
+says = "per export** (for one source and one target), and it never contains plaintext"
 kind = "enforced"
 tests = [
   "export_plans_follow_each_sides_capabilities",
@@ -331,7 +391,7 @@ tests = [
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "to it. Import recomputes every identity on the"
+says = "Import recomputes every identity on the target and proves the binding"
 kind = "enforced"
 tests = ["bundles_are_checked_against_the_lock", "a_bundle_files_unproven_ec_key_is_refused"]
 
@@ -343,13 +403,13 @@ why = "migrate's bundle is a value inside its one process (no file or socket on 
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "never duplicated. `cakeys create` still refuses over anything"
+says = "is reused and never duplicated. `cakeys create` still refuses"
 kind = "enforced"
 tests = ["objects_sharing_a_locator_move_in_any_order", "never_create_over_an_occupied_locator"]
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "is written: a private key's `rfc7093m4`, and every"
+says = "It computes a private key's `rfc7093m4` and every commitment that the lock pins for a secret key"
 kind = "enforced"
 tests = [
   "a_source_that_hands_over_another_key_writes_nothing",
@@ -359,7 +419,7 @@ tests = [
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "provenance, never a verdict. The source's entry is"
+says = "This record is provenance and never changes a verdict."
 kind = "enforced"
 tests = ["observed_and_provenance_never_change_a_verdict", "provenance_changes_only_warn"]
 
@@ -376,7 +436,7 @@ tests = [
 # No vendor method exists in this tree; each built-in one realises after it lands
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "cannot check it. The identity is never the"
+says = "The identity never comes from the vendor"
 kind = "enforced"
 tests = [
   "bundles_are_checked_against_the_lock",
@@ -387,25 +447,25 @@ tests = [
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "refused) [run]; never Ed25519, which it holds as"
+says = "It never imports Ed25519, which it holds as"
 kind = "descriptive"
 why = "a measurement of the module ([run], [src], [doc]), recorded in its profile and the ledger, not a behaviour of camigrate"
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "1.10 | never: no `C_WrapKey`/`C_UnwrapKey` [src] | `tpm2_ptool"
+says = "1.10 | Never: it has no `C_WrapKey` or `C_UnwrapKey` [src] |"
 kind = "descriptive"
 why = "a measurement of the module ([run], [src], [doc]), recorded in its profile and the ledger, not a behaviour of camigrate"
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "2.7) | never [src] | `C_CreateObject` as SO"
+says = "2.7) | Never [src] | `C_CreateObject` as the SO"
 kind = "descriptive"
 why = "a measurement of the module ([run], [src], [doc]), recorded in its profile and the ledger, not a behaviour of camigrate"
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "command line (no other option [src]): both stated"
+says = "(there is no other option [src]). The plan states both"
 kind = "descriptive"
 why = "a fact of tpm2_ptool ([src]: its PIN is an argument), which the plan states as a note"
 
@@ -431,13 +491,13 @@ tests = ["the_committed_profiles_name_only_known_rows", "a_newer_cakeys_names_lo
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "TOML is what everything queries. Write probes are"
+says = "the committed TOML is what every tool queries"
 kind = "descriptive"
 why = "a design decision (D5): the committed profiles are what the tools read"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "possession by every binding of its kind, a"
+says = "possession by every binding of its kind, and it writes a `prove.*` row for each binding. Every secret key type"
 kind = "enforced"
 tests = [
   "softhsm_committed_profile_is_what_the_probe_observes",
@@ -447,7 +507,7 @@ tests = [
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "a failed one active [run]) is undetermined, never"
+says = "A failure never becomes a row when an earlier operation leaves"
 kind = "enforced"
 tests = ["the_probe_records_what_a_misbehaving_module_does"]
 
@@ -459,25 +519,25 @@ tests = ["a_probe_an_error_ends_destroys_what_it_made", "the_probe_clears_what_a
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "one for every key it generates, a real"
+says = "ykcs11 writes one for every key it generates, including a real key"
 kind = "descriptive"
 why = "a fact of ykcs11 (it writes a placeholder certificate for each key it generates), which the scratch guard allows for"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "reason) and every probed capability row (answer and"
+says = "and every probed capability row (its answer and"
 kind = "enforced"
 tests = ["every_differing_row_is_a_named_line", "rows_only_one_side_has_are_named"]
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "is `CKR_ARGUMENTS_BAD`); every baseline curve generates; RSA 512–16384"
+says = "`CKR_ARGUMENTS_BAD`). Generates every baseline curve."
 kind = "descriptive"
 why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "probed). Generates every secret key type it lists,"
+says = "Generates every secret key type that it lists, including the five hash-bound HMAC types"
 kind = "descriptive"
 why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
 
@@ -489,31 +549,31 @@ why = "a measurement of the module recorded in its committed profile, which the 
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "no HMAC; every key reports `CKA_DERIVE = false`"
+says = "Every key reports `CKA_DERIVE = false`"
 kind = "descriptive"
 why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "RSA-1024, brainpool, every Edwards and Montgomery curve. OAEP"
+says = "Refuses RSA-1024, brainpool, and every Edwards and Montgomery curve."
 kind = "descriptive"
 why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "[run]. It never imports one (`[migration] refuses`: a"
+says = "The module never imports an Ed25519 key (`[migration] refuses`"
 kind = "descriptive"
 why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "profiles a build re-probes (`verified-by`), so every module"
+says = "so every module profile has an entry"
 kind = "enforced"
 tests = ["checks.ledger"]
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "on its path then), every hand edit since"
+says = "The entry also records every hand edit since then"
 kind = "enforced"
 tests = ["checks.ledger"]
 
@@ -525,7 +585,7 @@ why = "says what LEDGER.toml's `[groups]` list, a description of that file"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "On 2026-11-25 every hardware and cloud profile and"
+says = "On 2026-11-25, every hardware and cloud profile and the lock are stale"
 kind = "descriptive"
 why = "the ledger's state on one date, which `checks.ledger` prints"
 
@@ -550,7 +610,7 @@ tests = [
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "the gate refuses only when every"
+says = "refuses only when every commitment that a spec declares is measured as *no*"
 kind = "enforced"
 tests = ["the_gate_refuses_commitments_only_when_every_one_is_no"]
 
@@ -570,7 +630,7 @@ tests = ["aes_commitments_match_host_oracles", "a_lock_holds_no_token_output", "
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "otherwise turn every previously-attested realisation into a downgrade."
+says = "would turn every realisation that was attested before into a downgrade."
 kind = "descriptive"
 why = "a rationale: what a run that cannot attest would otherwise do"
 
@@ -582,7 +642,7 @@ why = "defines the commitment label, a public message (it is in the lock)"
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "that allows every scheme of its type, committed,"
+says = "session copy that allows every scheme of its type. The copy computes the commitments"
 kind = "enforced"
 tests = [
   "aes_commitments_match_host_oracles",
@@ -592,13 +652,13 @@ tests = [
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "verb: it never creates the object, and of"
+says = "verb that writes the lock: it never creates the object"
 kind = "enforced"
 tests = ["create_makes_keys_and_nothing_else_does"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "immutable is never overwritten — those changes fail"
+says = "immutable is never overwritten. Such changes fail"
 kind = "enforced"
 tests = [
   "a_write_fills_gaps_and_never_overrides",
@@ -610,7 +670,7 @@ tests = [
 # The liar runner holds exit 22 exactly when the lock changed, on every run of its verbs
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "lock exits 22, never 0, so a caller"
+says = "lock exits 22, never 0, so that a caller"
 kind = "enforced"
 tests = [
   "liars_ok",
@@ -647,7 +707,7 @@ tests = [
 # Never the last: the flag cells and the counters; one failed attempt: the refused-login cells end the run (16), though no cell counts the logins
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "attempt, and never the last: the login at"
+says = "failed PIN attempt, and it never spends the last one."
 kind = "enforced"
 tests = [
   "liars_flag",
@@ -664,13 +724,13 @@ tests = ["attributes_are_validated_per_class"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "a realisation never weakens unless it drops to"
+says = "never weakens unless it drops to `token-asserted`, and that drop is refused"
 kind = "enforced"
 tests = ["binding_downgrade_is_refused", "binding_ranks_are_pinned"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "Yubico root (never to f9 alone — a"
+says = "pinned Yubico root, never to f9 alone"
 kind = "enforced"
 tests = [
   "a_slot_certificate_signed_by_another_key_is_refused",
@@ -685,7 +745,7 @@ tests = [
 # The flush of transient objects is said in the row to be untested
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "certify, which never lets cakeys load the object,"
+says = "own certify, which never lets cakeys load the object"
 kind = "enforced"
 tests = [
   "tpm2_a_secret_keys_attestation_is_bound_to_its_material",
@@ -696,7 +756,7 @@ tests = [
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "conflict (13), never a second opinion; an asymmetric"
+says = "conflict (13), and cakeys never accepts it as additional evidence"
 kind = "enforced"
 tests = [
   "the_material_is_the_attested_blobs_not_read_publics",
@@ -712,19 +772,19 @@ tests = ["tpm2_each_token_pins_its_own_attestation", "attestation_is_per_realisa
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "- **Attestation never replaces portable identity — and"
+says = "- **Attestation never replaces portable identity, and it is never the only identity.**"
 kind = "enforced"
 tests = ["attestation_is_per_realisation_and_never_alone", "tpm2_attested_material_travels_to_a_second_hsm"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "object's `ids` never hold an attestation scheme —"
+says = "object's `ids` never hold an attestation scheme. Loading"
 kind = "enforced"
 tests = ["attestation_is_per_realisation_and_never_alone"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "it, reads never do. Its `qualifiedSigner` is not"
+says = "`lock` makes it, and reads never do."
 kind = "enforced"
 tests = ["tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store", "tpm2_keys_attest_their_tpm_residence"]
 
@@ -736,7 +796,7 @@ tests = ["tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "manufacturer certified, on every attestation. The certificate is"
+says = "every attestation proves that the AK resides in a TPM that its manufacturer certified"
 kind = "enforced"
 tests = ["tpm2_attestation_activates_a_credential_to_the_certified_ek"]
 
@@ -748,7 +808,7 @@ tests = ["tpm2_the_salted_session_keeps_the_token_secrets_off_the_wire", "the_se
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "created: generated material could never match (D1) —"
+says = "is created, because generated material could never match (D1)"
 kind = "enforced"
 tests = ["create_never_fights_a_locked_identity"]
 
@@ -766,31 +826,31 @@ tests = ["always_authenticate_keys_prove_possession_with_a_per_use_pin"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "invariants** (exit 17, never a hash mismatch) —"
+says = "invariants** (exit 17, never a hash mismatch), and"
 kind = "enforced"
 tests = ["lock_invariants_are_checked", "lock_objects_keep_their_invariants"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "so first: `note: waiting for <lock>.lck`). Readers never"
+says = "`note: waiting for <lock>.lck`. Readers never take that lock"
 kind = "enforced"
 tests = ["update_lock_waits_for_the_sidecar_lock"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "another user's never refuses the run. The guard,"
+says = "so another user's `.lck` never refuses the run"
 kind = "enforced"
 tests = ["a_saved_lock_keeps_its_mode_and_a_read_only_sidecar_guards"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "application secret, never a password or PIN); undeclared"
+says = "application secret, never a password or PIN). Without the declaration"
 kind = "descriptive"
 why = "what the author's declaration means: nothing can tell a random value from a password"
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "(H1 is fixed for every `pop-*` proof —"
+says = "(H1 is fixed for every `pop-*` proof:"
 kind = "enforced"
 tests = [
   "h1_a_private_key_beside_an_unbound_public_object_is_a_conflict",

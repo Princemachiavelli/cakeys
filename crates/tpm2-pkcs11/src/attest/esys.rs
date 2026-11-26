@@ -19,7 +19,7 @@
 use super::credential;
 use super::store::{Parent, Store, TObject};
 use cakeys_core::id;
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use std::convert::TryFrom;
 
 use aes_gcm::aead::{Aead, KeyInit};
@@ -198,14 +198,14 @@ fn check_ak(public: &Public, template: &Public, handle: u32) -> Result<()> {
     if same {
         return Ok(());
     }
-    Err(KmError::Conflict(
+    Err(KmError::Conflict(Reason::check(
+        Check::AttestTpmAk,
         format!(
             "the object at akHandle {handle:#010x} is not a cakeys Attestation Key (a restricted P-256 \
          ECDSA-SHA256 signing key, fixedTPM, empty policy): an unrestricted key could sign forged \
          attestations; free the handle or set tokens.<t>.akHandle to another"
-        )
-        .into(),
-    ))
+        ),
+    )))
 }
 
 fn read_public(ctx: &mut Context, key: KeyHandle) -> Result<(Public, Name, Name)> {
@@ -268,11 +268,14 @@ pub(crate) fn wrapping_key(
     })?;
     let hex = Zeroizing::new(
         String::from_utf8(unsealed.value().to_vec())
-            .map_err(|_| KmError::Conflict("the unsealed wrapping key is not hex text".into()))?,
+            .map_err(|_| KmError::Conflict(Reason::malformed("the unsealed wrapping key is not hex text")))?,
     );
     let key = Zeroizing::new(super::store::hex(&hex)?);
     if key.len() != 32 {
-        return Err(KmError::Conflict(format!("token wrapping key is {} bytes, expected 32", key.len()).into()));
+        return Err(KmError::Conflict(Reason::malformed(format!(
+            "token wrapping key is {} bytes, expected 32",
+            key.len()
+        ))));
     }
     Ok(key)
 }
@@ -285,7 +288,7 @@ pub(crate) fn wrapping_key(
 /// `Conflict` when the value is not `<iv>:<tag>:<ct>` with the right lengths, or does not
 /// decrypt under the token's wrapping key.
 pub(crate) fn unwrap_objauth(wrapping_key: &[u8], wrapped: &str) -> Result<Zeroizing<Vec<u8>>> {
-    let bad = || KmError::Conflict("CKA_TPM2_OBJAUTH_ENC is not <iv>:<tag>:<ct>".into());
+    let bad = || KmError::Conflict(Reason::malformed("CKA_TPM2_OBJAUTH_ENC is not <iv>:<tag>:<ct>"));
     let mut parts = wrapped.split(':');
     let iv = super::store::hex(parts.next().ok_or_else(bad)?)?;
     let tag = super::store::hex(parts.next().ok_or_else(bad)?)?;
@@ -298,10 +301,9 @@ pub(crate) fn unwrap_objauth(wrapping_key: &[u8], wrapped: &str) -> Result<Zeroi
     ct_tag.extend_from_slice(&tag);
     let iv: [u8; 12] = iv.as_slice().try_into().map_err(|_| bad())?;
     let nonce: &aes_gcm::Nonce<aes_gcm::aead::consts::U12> = (&iv).into();
-    cipher
-        .decrypt(nonce, ct_tag.as_ref())
-        .map(Zeroizing::new)
-        .map_err(|_| KmError::Conflict("the object's authValue does not decrypt under the token wrapping key".into()))
+    cipher.decrypt(nonce, ct_tag.as_ref()).map(Zeroizing::new).map_err(|_| {
+        KmError::Conflict(Reason::malformed("the object's authValue does not decrypt under the token wrapping key"))
+    })
 }
 
 /// `TPM2_Load` a key blob under the token's primary parent, the parent authorized through
@@ -326,7 +328,7 @@ fn load(ctx: &mut Context, parent: &Parent, priv_blob: &[u8], pub_blob: &[u8], a
 
 /// The content of one size-prefixed store blob, with the prefix checked.
 fn blob_content<'a>(blob: &'a [u8], what: &str) -> Result<&'a [u8]> {
-    let truncated = || KmError::Conflict(format!("the store's {what} blob is truncated").into());
+    let truncated = || KmError::Conflict(Reason::malformed(format!("the store's {what} blob is truncated")));
     let size = u16::from_be_bytes(*blob.first_chunk::<2>().ok_or_else(truncated)?) as usize;
     blob.get(2..2 + size).ok_or_else(truncated)
 }
@@ -335,7 +337,7 @@ fn blob_content<'a>(blob: &'a [u8], what: &str) -> Result<&'a [u8]> {
 /// carry the content without the size prefix, so the prefix is checked and stripped.
 fn blobs(priv_blob: &[u8], pub_blob: &[u8]) -> Result<(Private, Public)> {
     let private = Private::try_from(blob_content(priv_blob, "private")?.to_vec())
-        .map_err(|e| KmError::Conflict(format!("the store's private blob: {e}").into()))?;
+        .map_err(|e| KmError::Conflict(Reason::malformed(format!("the store's private blob: {e}"))))?;
     Ok((private, unmarshal_public(pub_blob)?))
 }
 
@@ -346,9 +348,10 @@ fn blobs(priv_blob: &[u8], pub_blob: &[u8]) -> Result<(Private, Public)> {
 /// `Conflict` when the blob does not unmarshal, or is not a public area tss-esapi accepts.
 pub(crate) fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
     PublicBuffer::unmarshall(pub_blob)
-        .map_err(|e| KmError::Conflict(format!("the store's public blob does not unmarshal: {e}").into()))
+        .map_err(|e| KmError::Conflict(Reason::malformed(format!("the store's public blob does not unmarshal: {e}"))))
         .and_then(|b| {
-            Public::try_from(b).map_err(|e| KmError::Conflict(format!("the store's public blob: {e}").into()))
+            Public::try_from(b)
+                .map_err(|e| KmError::Conflict(Reason::malformed(format!("the store's public blob: {e}"))))
         })
 }
 
@@ -382,12 +385,16 @@ pub(crate) fn certify(
         .map_err(|e| KmError::Unavailable(format!("TPM2_Certify: {e}").into()))?;
     // A certify statement for this run's nonce — never another statement or a replay.
     if attest.attestation_type() != AttestationType::Certify {
-        return Err(KmError::Conflict(
-            format!("the attestation is a {:?}, not a certify statement", attest.attestation_type()).into(),
-        ));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmStatement,
+            format!("the attestation is a {:?}, not a certify statement", attest.attestation_type()),
+        )));
     }
     if attest.extra_data().value() != nonce {
-        return Err(KmError::Conflict("the attestation names other qualifying data than this run's nonce".into()));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmNonce,
+            "the attestation names other qualifying data than this run's nonce",
+        )));
     }
     Ok((attest, signature))
 }
@@ -429,16 +436,22 @@ pub(crate) fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u
     let mut raw = [0u8; 64];
     for (half, v) in raw.as_chunks_mut::<32>().0.iter_mut().zip([&r, &s]) {
         let at = 32usize.checked_sub(v.len()).ok_or_else(|| {
-            KmError::Conflict(format!("the AK's signature has a {}-byte component; P-256 has 32", v.len()).into())
+            KmError::Conflict(Reason::check(
+                Check::AttestTpmSignature,
+                format!("the AK's signature has a {}-byte component; P-256 has 32", v.len()),
+            ))
         })?;
         half[at..].copy_from_slice(v);
     }
     match sig::ecdsa(ak_spki, bytes, &raw, Encoding::Raw, Some(HashAlg::Sha256)) {
         Some(Ok(())) => Ok(()),
-        Some(Err(_)) => {
-            Err(KmError::Conflict("the attestation signature does not verify against the pinned AK".into()))
+        Some(Err(_)) => Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmSignature,
+            "the attestation signature does not verify against the pinned AK",
+        ))),
+        None => {
+            Err(KmError::Conflict(Reason::check(Check::AttestTpmSignature, "the AK's public key is not an ECDSA key")))
         }
-        None => Err(KmError::Conflict("the AK's public key is not an ECDSA key".into())),
     }
 }
 
@@ -501,7 +514,7 @@ pub(crate) fn material_of(public: &Public) -> Result<Material> {
 /// `Conflict` when the blob is truncated (a size prefix past its end); `Unsupported` for a
 /// `nameAlg` that is not SHA-256/384/512.
 pub(crate) fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
-    let truncated = || KmError::Conflict("the store's public blob is truncated".into());
+    let truncated = || KmError::Conflict(Reason::malformed("the store's public blob is truncated"));
     let size = u16::from_be_bytes(*pub_blob.first_chunk::<2>().ok_or_else(truncated)?) as usize;
     tpmt_name(pub_blob.get(2..2 + size).ok_or_else(truncated)?)
 }
@@ -518,7 +531,7 @@ pub(crate) fn tpmt_name(tpmt: &[u8]) -> Result<Vec<u8>> {
     let name_alg = u16::from_be_bytes(
         tpmt.get(2..4)
             .and_then(|s| s.try_into().ok())
-            .ok_or_else(|| KmError::Conflict("a public area too short to name its nameAlg".into()))?,
+            .ok_or_else(|| KmError::Conflict(Reason::malformed("a public area too short to name its nameAlg")))?,
     );
     let hash = match name_alg {
         0x000B => sha2::Sha256::digest(tpmt).to_vec(),
@@ -602,11 +615,11 @@ fn bound(ctx: &mut Context, key: KeyHandle, bind: Bind<'_>, auth: AuthSession) -
     if id::sri(digest.value()) == bind.id {
         return Ok(());
     }
-    Err(KmError::Conflict(
+    Err(KmError::Conflict(Reason::check(
+        Check::AttestTpmMaterial,
         "the TPM object certified is another key: its HMAC commitment is not the one the key computes through \
-         PKCS#11"
-            .into(),
-    ))
+         PKCS#11",
+    )))
 }
 
 /// Load, certify, verify and pin one key of the token (§3.7): the store row `tobj` whose
@@ -678,10 +691,9 @@ fn certify_under(
     auth: AuthSession,
 ) -> Result<(Certified, KeyHandle, Public)> {
     let wrapping = wrapping_key(ctx, store, pin, auth)?;
-    let objauth_enc = tobj
-        .objauth_enc
-        .as_deref()
-        .ok_or_else(|| KmError::Conflict("the store object carries no encrypted auth value to unwrap".into()))?;
+    let objauth_enc = tobj.objauth_enc.as_deref().ok_or_else(|| {
+        KmError::Conflict(Reason::malformed("the store object carries no encrypted auth value to unwrap"))
+    })?;
     let objauth = unwrap_objauth(&wrapping, objauth_enc)?;
     let priv_blob = tobj
         .priv_blob
@@ -743,31 +755,45 @@ fn verify_certified(
     let certify_info = match attest.attested() {
         AttestInfo::Certify { info } => info,
         info => {
-            return Err(KmError::Conflict(format!("the attestation attests {info:?}, not a certify statement").into()));
+            return Err(KmError::Conflict(Reason::check(
+                Check::AttestTpmStatement,
+                format!("the attestation attests {info:?}, not a certify statement"),
+            )));
         }
     };
     let name = certify_info.name().value().to_vec();
     let qualified_name = certify_info.qualified_name().value().to_vec();
     if name != recompute_name(pub_blob)? {
-        return Err(KmError::Conflict("the attested Name is not the Name of the public blob in the store".into()));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmName,
+            "the attested Name is not the Name of the public blob in the store",
+        )));
     }
     if name != live_name.value() || qualified_name != live_qn.value() {
-        return Err(KmError::Conflict("the attested Names do not match the loaded object's".into()));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmName,
+            "the attested Names do not match the loaded object's",
+        )));
     }
     let ak_material = material_of(ak_public)?;
-    let ak_spki =
-        ak_material.spki.ok_or_else(|| KmError::Conflict("the Attestation Key exposes no public key".into()))?;
+    let ak_spki = ak_material.spki.ok_or_else(|| {
+        KmError::Conflict(Reason::check(Check::AttestTpmAk, "the Attestation Key exposes no public key"))
+    })?;
     verify_signature(signature, &ak_spki, &attest_bytes(attest)?)?;
     if attest.qualified_signer().value() != ak_qualified_name.value() {
-        return Err(KmError::Conflict("the attestation was signed by another key than the AK".into()));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmSigner,
+            "the attestation was signed by another key than the AK",
+        )));
     }
     // The attested public area is the store blob the signed Name hashes, never ReadPublic's
     // unauthenticated copy: the material cross-check is made on it.
     let attested = unmarshal_public(pub_blob)?;
     if *live_public != attested {
-        return Err(KmError::Conflict(
-            "TPM2_ReadPublic answered another public area than the one the attested Name hashes".into(),
-        ));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmName,
+            "TPM2_ReadPublic answered another public area than the one the attested Name hashes",
+        )));
     }
     let material = material_of(&attested)?;
     cross_check(&material, spki)?;
@@ -783,23 +809,23 @@ fn verify_certified(
 /// `Conflict` when the attested material is another key than `spki`, or of another kind.
 pub(crate) fn cross_check(material: &Material, spki: Option<&[u8]>) -> Result<()> {
     match (spki, &material.spki) {
-        (Some(want), Some(attested)) if want != attested.as_slice() => Err(KmError::Conflict(
+        (Some(want), Some(attested)) if want != attested.as_slice() => Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmMaterial,
             format!(
                 "the TPM attests the public key {}, but the object's material is {}",
                 id::sri(attested),
                 id::sri(want)
-            )
-            .into(),
-        )),
+            ),
+        ))),
         (Some(_), Some(_)) | (None, None) => Ok(()),
-        (want, _) => Err(KmError::Conflict(
+        (want, _) => Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmMaterial,
             format!(
                 "the TPM object is {}, but the PKCS#11 object is {}",
                 if material.spki.is_some() { "an asymmetric key" } else { "a symmetric object" },
                 if want.is_some() { "an asymmetric key" } else { "a secret key" }
-            )
-            .into(),
-        )),
+            ),
+        ))),
     }
 }
 
@@ -875,7 +901,10 @@ pub(crate) fn endorsement_key(ctx: &mut Context, ek_spki: &[u8]) -> Result<KeyHa
     let ek = created.key_handle;
     if material_of(&created.out_public).map(|m| m.spki).ok().flatten().as_deref() != Some(ek_spki) {
         let _ = ctx.flush_context(ek.into());
-        return Err(KmError::Conflict("the EK certificate names another key than this TPM's endorsement key".into()));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmEkCertificate,
+            "the EK certificate names another key than this TPM's endorsement key",
+        )));
     }
     Ok(ek)
 }
@@ -937,13 +966,17 @@ pub(crate) fn activate(
     ek: KeyHandle,
     ek_spki: &[u8],
 ) -> Result<()> {
-    let ak_tpmt = ak_public.marshall().map_err(|e| KmError::Conflict(format!("the AK's public area: {e}").into()))?;
+    let ak_tpmt =
+        ak_public.marshall().map_err(|e| KmError::Conflict(Reason::malformed(format!("the AK's public area: {e}"))))?;
     let mut secret = Zeroizing::new(vec![0u8; 32]);
     getrandom::fill(&mut secret).map_err(|e| KmError::Unavailable(format!("OS RNG: {e}").into()))?;
     let cred = credential::make_credential(ek_spki, &ak_tpmt, &secret)?;
     let recovered = activate_with_ek(ctx, ak, ek, cred)?;
     if recovered.as_slice() != secret.as_slice() {
-        return Err(KmError::Conflict("the TPM activated the credential to another secret".into()));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmCredential,
+            "the TPM activated the credential to another secret",
+        )));
     }
     Ok(())
 }
@@ -1003,10 +1036,10 @@ fn activate_with_ek(
                     )
                 ) =>
             {
-                KmError::Conflict(
-                    format!("the TPM refused the credential: the AK is not in the TPM the EK certificate names ({e})")
-                        .into(),
-                )
+                KmError::Conflict(Reason::check(
+                    Check::AttestTpmCredential,
+                    format!("the TPM refused the credential: the AK is not in the TPM the EK certificate names ({e})"),
+                ))
             }
             e => unavailable("TPM2_ActivateCredential", e),
         })
@@ -1015,9 +1048,12 @@ fn activate_with_ek(
     out
 }
 
+/// The unit tests of this module. The helpers `blob_of` and `certify_statement` are `pub(crate)`
+/// because the tests in vendor.rs use them to build certify statements too.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use cakeys_core::testing::assert_fires;
     use tss_esapi::structures::{EccParameter, EccSignature, PublicKeyRsa, RsaSignature};
 
     /// A P-256 key's `TPM2B_PUBLIC` from the store fixture (tests/fixtures/tobject-private.yaml).
@@ -1154,7 +1190,7 @@ mod tests {
     }
 
     /// The fixture's P-256 public blob with its `unique` point replaced by `key`'s.
-    fn blob_of(key: &p256::ecdsa::SigningKey) -> Vec<u8> {
+    pub(crate) fn blob_of(key: &p256::ecdsa::SigningKey) -> Vec<u8> {
         use p256::pkcs8::EncodePublicKey;
         let spki = key.verifying_key().to_public_key_der().unwrap();
         let point = &spki.as_bytes()[spki.as_bytes().len() - 64..];
@@ -1167,7 +1203,12 @@ mod tests {
     }
 
     /// A `TPMS_ATTEST` certifying `name`/`qn`, signed by `ak` as the TPM would.
-    fn certify_statement(ak: &p256::ecdsa::SigningKey, ak_qn: &[u8], name: &[u8], qn: &[u8]) -> (Attest, Signature) {
+    pub(crate) fn certify_statement(
+        ak: &p256::ecdsa::SigningKey,
+        ak_qn: &[u8],
+        name: &[u8],
+        qn: &[u8],
+    ) -> (Attest, Signature) {
         use p256::ecdsa::signature::Signer;
         let tpm2b = |b: &[u8]| [&u16::try_from(b.len()).unwrap().to_be_bytes()[..], b].concat();
         let bytes = [
@@ -1219,12 +1260,10 @@ mod tests {
         assert_eq!((honest.local, honest.extractable), (true, false));
         // ReadPublic swapped for the victim's public area: refused, whichever SPKI is asked.
         for spki in [&victim_spki, &key_spki] {
-            let swapped = verify(&victim_public, spki);
-            assert!(matches!(swapped, Err(KmError::Conflict(m)) if m.contains("ReadPublic")), "{spki:?}");
+            assert_fires(&verify(&victim_public, spki).map(|_| ()), Check::AttestTpmName);
         }
         // The victim's SPKI against the honest blob: the cross-check refuses it.
-        let other = verify(&unmarshal_public(&blob).unwrap(), &victim_spki);
-        assert!(matches!(other, Err(KmError::Conflict(m)) if m.contains("attests the public key")));
+        assert_fires(&verify(&unmarshal_public(&blob).unwrap(), &victim_spki).map(|_| ()), Check::AttestTpmMaterial);
     }
 
     /// A statement is the AK's only when the AK signed it as itself (review 2026-11-24 B-12, the
@@ -1251,13 +1290,8 @@ mod tests {
         };
         verify(&ak, ak_qn.value()).unwrap();
         for qualified in [ak_qn.value(), other_qn.as_slice()] {
-            let e = verify(&other, qualified).err();
-            assert!(
-                matches!(&e, Some(KmError::Conflict(m)) if m.contains("does not verify against the pinned AK")),
-                "{e:?}"
-            );
+            assert_fires(&verify(&other, qualified).map(|_| ()), Check::AttestTpmSignature);
         }
-        let e = verify(&ak, &other_qn).err();
-        assert!(matches!(&e, Some(KmError::Conflict(m)) if m.contains("signed by another key than the AK")), "{e:?}");
+        assert_fires(&verify(&ak, &other_qn).map(|_| ()), Check::AttestTpmSigner);
     }
 }

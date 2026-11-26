@@ -7,7 +7,8 @@
 //!
 //! Verification uses the `RustCrypto` crates; no proof value is ever stored.
 
-use crate::error::{KmError, Result};
+use crate::Check;
+use crate::error::{KmError, Reason, Result};
 use crate::id::{Curve, KeyAlg};
 use crate::migrate::OaepHash;
 use crate::sig;
@@ -86,13 +87,13 @@ pub fn verify(spki: &[u8], msg: &[u8], sig: &[u8], rsa: RsaSignature) -> Result<
     };
     match verdict {
         Some(Ok(())) => Ok(()),
-        Some(Err(sig::Refused::Signature(e))) => Err(KmError::Conflict(
+        Some(Err(sig::Refused::Signature(e))) => Err(KmError::Conflict(Reason::check(
+            Check::PopSign,
             format!(
                 "proof of possession failed: the private key did not sign for the public key {} ({e})",
                 crate::id::sri(spki)
-            )
-            .into(),
-        )),
+            ),
+        ))),
         // An RSA key of a size `rsa` does not compute with has its identity (id.rs F1), but
         // no verifier here: the refusal says so, by its size. Any other key its parser refuses
         // is named with the parser's reason.

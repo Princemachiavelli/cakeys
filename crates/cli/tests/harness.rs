@@ -40,7 +40,9 @@ fn workspace_tests() -> Vec<(PathBuf, String)> {
 /// this one sets and clears the latch; no device is needed.
 /// The dry-run twin's oracle (review 2026-11-24 phase 1, T-1): a real run keeps its dry run's
 /// promise by the same exit (0 and 22 alike), by a device failure, or by a rule the dry run named
-/// as deferred; never by another refusal, and never by what it says.
+/// as deferred; never by another refusal, and never by what it says. A run that wrote the lock
+/// and then failed exits 22 (review 2026-11-24 L5), so the oracle judges it by the exit code of
+/// its failed row and never treats the 22 as a success.
 #[test]
 fn the_twin_holds_a_run_to_its_dry_runs_exit_and_deferred_rules() {
     use common::xref::Dry;
@@ -50,21 +52,39 @@ fn the_twin_holds_a_run_to_its_dry_runs_exit_and_deferred_rules() {
         device,
         ..Row::passed("o", "s", "t", "failed")
     };
-    let ready = Dry::new(0, vec!["unwraps".into()]);
+    let ready = Dry::new(0, vec!["import.unwraps".into()]);
     assert!(ready.kept_by(0, &[]) && ready.kept_by(22, &[]), "the same success");
     let compared = |exit| Dry::new(exit, vec![]).comparing();
     assert!(compared(18).kept_by(22, &[]) && compared(14).kept_by(22, &[]), "what `lock` records");
     assert!(!compared(18).kept_by(0, &[]) && !compared(10).kept_by(22, &[]), "a comparison, then another run");
     assert!(!Dry::new(14, vec![]).kept_by(22, &[]), "a plan refused, then done");
     assert!(!ready.kept_by(13, &[row(13, Some("locator-free"), false)]), "a rule it did not defer");
-    assert!(ready.kept_by(13, &[row(13, Some("unwraps"), false)]), "a rule it deferred");
+    assert!(ready.kept_by(13, &[row(13, Some("import.unwraps"), false)]), "a rule it deferred");
     assert!(ready.kept_by(16, &[row(16, None, true)]), "the device");
     assert!(!ready.kept_by(16, &[]), "a 16 without its row");
-    assert!(!ready.kept_by(10, &[row(13, Some("unwraps"), false)]), "a row of another exit than the run's");
+    assert!(!ready.kept_by(10, &[row(13, Some("import.unwraps"), false)]), "a row of another exit than the run's");
     let refused = Dry::new(17, vec![]);
     assert!(refused.kept_by(17, &[row(17, Some("placement"), false)]));
     assert!(!refused.kept_by(13, &[row(13, Some("locator-free"), false)]), "refused by one rule, then another");
     assert!(!refused.kept_by(0, &[]) && !refused.kept_by(22, &[]), "refused, then done");
+    // A run that writes the lock for one pair and then fails another pair exits 22. The oracle
+    // must judge it by the failed row's code and must not treat the 22 as a success.
+    let wrote_then = |r: Row| [Row::passed("o", "s", "t", "created"), r];
+    let partial = |dry: &Dry, failed: Row| dry.kept_by(22, &wrote_then(failed));
+    assert!(
+        partial(&Dry::new(13, vec![]), row(13, Some("locator-free"), false)),
+        "the dry run refused with the same code and rule"
+    );
+    assert!(
+        !partial(&ready, row(13, Some("locator-free"), false)),
+        "a write, then a refusal by a rule the dry run did not defer"
+    );
+    assert!(
+        partial(&ready, row(13, Some("import.unwraps"), false)),
+        "a write, then a refusal by a rule the dry run deferred"
+    );
+    assert!(partial(&ready, row(16, None, true)), "a write, then a device failure");
+    assert!(!partial(&refused, row(13, Some("locator-free"), false)), "refused by one rule, then another");
 }
 
 #[test]

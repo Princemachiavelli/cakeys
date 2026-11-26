@@ -13,7 +13,7 @@
 //! 2026-11-23 B-2: this header said the module was no more trusted than on the store path).
 
 use super::{Tpm2Options, esys};
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cakeys_pkcs11::provider::AttestCtx;
 use cryptoki::mechanism::vendor_defined::VendorDefinedMechanism;
 use cryptoki::mechanism::{Mechanism, MechanismType};
@@ -107,7 +107,7 @@ pub(crate) struct Output {
 /// `Conflict` for anything else: truncated, another magic, a trailing byte, or a structure that
 /// does not marshal back to the bytes it was read from.
 pub(crate) fn parse_output(bytes: &[u8]) -> Result<Output> {
-    let bad = |why: &str| KmError::Conflict(format!("the module's certify output {why}").into());
+    let bad = |why: &str| KmError::Conflict(Reason::malformed(format!("the module's certify output {why}")));
     let size = usize::from(u16::from_be_bytes(*bytes.first_chunk::<2>().ok_or_else(|| bad("is empty"))?));
     let attest_bytes = bytes.get(2..2 + size).ok_or_else(|| bad("is cut short in the attestation"))?;
     let rest = &bytes[2 + size..];
@@ -175,40 +175,67 @@ pub(crate) fn certify(ctx: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<esys::C
         let (spki, qualified) = {
             let mut tpm = esys::context(&super::tcti(ctx, opts)?)?;
             let (_, public, qualified) = esys::attestation_key(&mut tpm, handle, ctx.provision)?;
-            let spki = esys::material_of(&public)?
-                .spki
-                .ok_or_else(|| KmError::Conflict("the Attestation Key exposes no public key".into()))?;
+            let spki = esys::material_of(&public)?.spki.ok_or_else(|| {
+                KmError::Conflict(Reason::check(Check::AttestTpmAk, "the Attestation Key exposes no public key"))
+            })?;
             (spki, qualified.value().to_vec())
         };
         let raw = sign(ctx, CKM_TPM2_CERTIFY, &Signer(c_ulong::from(handle)), &nonce)?;
         (Statement { spki, qualified: Some(qualified) }, raw)
     };
-    let out = parse_output(&raw)?;
+    check_statement(&parse_output(&raw)?, &nonce, (&blob, &public), signer, ctx.spki)
+}
+
+/// Checks the certify statement that the module returned (`out`) and needs no session, so a unit
+/// test can call it. The statement must be a certify statement over this run's `nonce` and over
+/// the Name of the public area that the module reports for the object (`blob`, parsed as
+/// `public`), and `signer`'s key must have signed it. When the host read the signer from the TPM
+/// (`signer.qualified` is set), the statement must name that qualified Name as its signer, and the
+/// material in the public area must be the object's key (`spki`).
+///
+/// # Errors
+///
+/// `Conflict` when the statement, its signer, its Name or the material is not what it must be.
+fn check_statement(
+    out: &Output,
+    nonce: &[u8],
+    (blob, public): (&[u8], &Public),
+    signer: Statement,
+    spki: Option<&[u8]>,
+) -> Result<esys::Certified> {
     let info = match out.attest.attested() {
         AttestInfo::Certify { info } => info,
         other => {
-            return Err(KmError::Conflict(
-                format!("the attestation attests {other:?}, not a certify statement").into(),
-            ));
+            return Err(KmError::Conflict(Reason::check(
+                Check::AttestTpmStatement,
+                format!("the attestation attests {other:?}, not a certify statement"),
+            )));
         }
     };
     if out.attest.extra_data().value() != nonce {
-        return Err(KmError::Conflict("the attestation names other qualifying data than this run's nonce".into()));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmNonce,
+            "the attestation names other qualifying data than this run's nonce",
+        )));
     }
     let name = info.name().value().to_vec();
-    if name != esys::recompute_name(&blob)? {
-        return Err(KmError::Conflict(
-            "the attested Name is not the Name of the public area the module reports for the object".into(),
-        ));
+    if name != esys::recompute_name(blob)? {
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmName,
+            "the attested Name is not the Name of the public area the module reports for the object",
+        )));
     }
     esys::verify_signature(&out.signature, &signer.spki, &out.attest_bytes)?;
     if let Some(qualified) = &signer.qualified
         && out.attest.qualified_signer().value() != qualified.as_slice()
     {
-        return Err(KmError::Conflict("the attestation was signed by another key than the AK".into()));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmSigner,
+            "the attestation was signed by another key than the AK",
+        )));
     }
-    let material = esys::material_of(&public)?;
-    esys::cross_check(&material, ctx.spki)?;
+    let material = esys::material_of(public)?;
+    esys::cross_check(&material, spki)?;
     Ok(esys::certified(name, info.qualified_name().value().to_vec(), signer.spki, &material))
 }
 
@@ -267,16 +294,17 @@ fn token_ak(ctx: &AttestCtx<'_>, label: &str) -> Result<(ObjectHandle, Vec<u8>)>
             ));
         }
         many => {
-            return Err(KmError::Conflict(
-                format!("{} private keys are labelled {label:?}: the Attestation Key must be one", many.len()).into(),
-            ));
+            return Err(KmError::Conflict(Reason::check(
+                Check::AttestTpmAk,
+                format!("{} private keys are labelled {label:?}: the Attestation Key must be one", many.len()),
+            )));
         }
     };
     let public = esys::unmarshal_public(&pub_blob(ctx, ak)?)?;
     check_ak(&public, label)?;
-    let spki = esys::material_of(&public)?
-        .spki
-        .ok_or_else(|| KmError::Conflict("the Attestation Key exposes no public key".into()))?;
+    let spki = esys::material_of(&public)?.spki.ok_or_else(|| {
+        KmError::Conflict(Reason::check(Check::AttestTpmAk, "the Attestation Key exposes no public key"))
+    })?;
     Ok((ak, spki))
 }
 
@@ -303,14 +331,14 @@ fn check_ak(public: &Public, label: &str) -> Result<()> {
     if ok {
         return Ok(());
     }
-    Err(KmError::Conflict(
+    Err(KmError::Conflict(Reason::check(
+        Check::AttestTpmAk,
         format!(
             "the key labelled {label:?} is not a cakeys Attestation Key (a restricted P-256 ECDSA-SHA256 \
              signing key, fixedTPM and fixedParent): an unrestricted key could sign forged attestations; \
              rename it or set tokens.<t>.options.akLabel to another"
-        )
-        .into(),
-    ))
+        ),
+    )))
 }
 
 #[cfg(test)]
@@ -370,6 +398,76 @@ mod tests {
         let mut magic = attest;
         magic[0] = 0;
         refused(&output(&magic, &signature), "has no attestation");
+    }
+
+    /// This test calls `check_statement` with a correct statement and with statements that each
+    /// differ from it in one field. The correct statement is accepted both when the host knows the
+    /// AK's qualified Name and when it does not (a token AK). Each other statement must be
+    /// refused: one that names another qualified signer although the AK's key signed it, one that
+    /// another key signed, one with another nonce, one over another object's Name, and one whose
+    /// material is not the object's key. Before review 2026-11-24 L5, no test covered the
+    /// qualified-signer check, because the check was inline in `certify` and needed a session.
+    #[test]
+    fn check_statement_refuses_a_statement_with_a_wrong_field() {
+        use super::super::esys::tests::{blob_of, certify_statement};
+        use p256::ecdsa::SigningKey;
+        let key_of = |k: u8| SigningKey::from_slice(&[k; 32]).unwrap();
+        let (ak, other, key) = (key_of(1), key_of(4), key_of(2));
+        let blob = blob_of(&key);
+        let public = esys::unmarshal_public(&blob).unwrap();
+        let spki_of = |b: &[u8]| esys::material_of(&esys::unmarshal_public(b).unwrap()).unwrap().spki.unwrap();
+        let (ak_spki, key_spki) = (spki_of(&blob_of(&ak)), spki_of(&blob));
+        let (ak_qn, other_qn) = (vec![0x0b; 34], vec![0x0d; 34]);
+        let (name, other_name) =
+            (esys::recompute_name(&blob).unwrap(), esys::recompute_name(&blob_of(&other)).unwrap());
+        // The closure builds a statement and checks it. Its arguments are the key that signs the
+        // statement, the qualified signer Name written in the statement, the certified Name, the
+        // nonce, the object's SPKI, and the AK's qualified Name if the host knows it.
+        let check = |signer: &SigningKey,
+                     signed_qn: &[u8],
+                     name: &[u8],
+                     nonce: [u8; 32],
+                     spki: &[u8],
+                     known: Option<&Vec<u8>>| {
+            let (attest, signature) = certify_statement(signer, signed_qn, name, &[0x0c; 34]);
+            let out = Output { attest_bytes: esys::attest_bytes(&attest).unwrap(), attest, signature };
+            let signer = Statement { spki: ak_spki.clone(), qualified: known.cloned() };
+            check_statement(&out, &nonce, (&blob, &public), signer, Some(spki))
+        };
+        // The helper `certify_statement` always writes this nonce into the extraData field.
+        let nonce = [5; 32];
+        let honest = check(&ak, &ak_qn, &name, nonce, &key_spki, Some(&ak_qn)).unwrap();
+        assert_eq!((honest.name, honest.ak_spki), (name.clone(), ak_spki.clone()));
+        check(&ak, &other_qn, &name, nonce, &key_spki, None).unwrap();
+        for (what, run, why) in [
+            (
+                "another qualified signer",
+                check(&ak, &other_qn, &name, nonce, &key_spki, Some(&ak_qn)),
+                "signed by another key than the AK",
+            ),
+            (
+                "another key's signature",
+                check(&other, &ak_qn, &name, nonce, &key_spki, Some(&ak_qn)),
+                "does not verify against the pinned AK",
+            ),
+            (
+                "another nonce",
+                check(&ak, &ak_qn, &name, [6; 32], &key_spki, Some(&ak_qn)),
+                "other qualifying data than this run's nonce",
+            ),
+            (
+                "another object's Name",
+                check(&ak, &ak_qn, &other_name, nonce, &key_spki, Some(&ak_qn)),
+                "not the Name of the public area",
+            ),
+            ("another material", check(&ak, &ak_qn, &name, nonce, &ak_spki, Some(&ak_qn)), "attests the public key"),
+        ] {
+            assert!(
+                matches!(&run, Err(KmError::Conflict(m)) if m.contains(why)),
+                "the statement with {what} was not refused as expected: {:?}",
+                run.map(|c| c.name)
+            );
+        }
     }
 
     /// The vendor numbers are the module's (`src/tpm2-pkcs11-vendor.h`): `CKA_VENDOR_DEFINED`

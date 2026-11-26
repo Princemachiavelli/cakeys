@@ -7,15 +7,14 @@
 #
 # Each lie is a statement that passes every check cakeys makes of it but one (attest/vendor.rs's
 # certify: the nonce, the Name, the signature, the material), so its cell is that check's: with
-# the check removed, the run takes the forgery. A refused statement names no rule (its row's
-# `rule` is absent): a cell tells its check from the others by the lie alone.
+# the check removed, the run takes the forgery. A refused statement's row names that check in its
+# `rule` (attest.tpm.nonce, attest.tpm.name, attest.tpm.signature, attest.tpm.material:
+# docs/CAKEYS.md, "Rules and checks").
 #
-# Not cells here, until a row can name a check as it names a rule (L2), and then [[unit]] rows:
-# - cakeys-tpm2-pkcs11 attest::esys::tests::a_statement_by_another_signer_is_refused: the store
-#   path's signature and qualified signer. The module path's qualified signer has no cell, nor a
-#   unit test: a TPM names its own AK, and vendor::certify's checks sit behind a session.
-# - cakeys-ykcs11 attest::tests::a_slot_certificate_signed_by_another_key_is_refused and
-#   a_chain_longer_than_three_is_refused (B-11: a PIV attestation's chain).
+# The [[unit]] rows at the end name the checks that unit tests fire where no cell can: the store
+# path's signature and qualified signer (attest::esys), and a PIV attestation's chain (B-11,
+# cakeys-ykcs11's attest). The module path's qualified signer has no cell, nor a unit test: a
+# TPM names its own AK, and vendor::certify's checks sit behind a session.
 
 # ── Objects: each a P-256 key or an AES key made by tpm2_ptool, its spec of its name adopted with
 # `attestation = true` (and `binding = "token-asserted"`: certify is a run's one C_Sign), its
@@ -29,7 +28,9 @@ class = "private" # locked, also on tpm-b by spec ec-sign-b: a lock compares and
 [objects.ec-adopt]
 token = "tpm"
 class = "private"
-# not locked: an honest lock pins it, a refused one writes nothing
+# not locked, and also placed on tpm-b by the spec ec-adopt-b. A lock without a fault pins it, a
+# refused lock writes nothing, and a lock of both pairs whose second pair is refused writes the
+# first pair's entry
 honest = 22
 
 [objects.aes]
@@ -44,9 +45,9 @@ token = "tpm-ek"
 # tpm-ek's ekCertificate, which the module's certify cannot chain the AK to
 honest = 15
 
-# ── Verbs. `lock --spec --spec` locks ec-sign on tpm, then spec ec-sign-b of the same object on
-# tpm-b: two certifies of one key in one process, so the shim holds the first statement when the
-# second is asked for.
+# ── Verbs. `lock --spec --spec` locks the object (ec-sign or ec-adopt) on tpm and then its spec
+# `<name>-b` on tpm-b. This makes two certify calls for one key in one process, so the shim still
+# has the first statement when the second one is requested.
 
 [verbs.lock]
 args = ["lock", "--spec", "{spec}", "--token", "{token}"]
@@ -129,28 +130,40 @@ from_label = "{other}"
 lies = ["forge.certify.corrupt"]
 verbs = ["lock"]
 objects = ["ec-sign", "ec-adopt"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "attest.tpm.signature" }
 
 # The nonce (the statement's extraData, this run's).
 [[block]]
 lies = ["forge.certify.replay"]
 verbs = ["lock --spec --spec"]
 objects = ["ec-sign"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "attest.tpm.nonce" }
+
+# A replayed nonce after a write: the first statement for ec-adopt is genuine and its lock entry
+# is recorded, and the shim returns that same statement again for ec-adopt-b. The run exits 22
+# because it wrote the lock, and the second row shows 13 (before review 2026-11-24 L5, the run
+# exited 13).
+[[block]]
+lies = ["forge.certify.replay"]
+verbs = ["lock --spec --spec"]
+objects = ["ec-adopt"]
+expect = { exit = 22, refused = 13, rule = "attest.tpm.nonce", changed = [
+  "lock",
+], why = "the first pair's statement is genuine and its lock entry is recorded before the replayed statement of the second pair is refused" }
 
 # The Name (the attested Name, the reported public area's).
 [[block]]
 lies = ["forge.certify.blob"]
 verbs = ["lock"]
 objects = ["ec-adopt"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "attest.tpm.name" }
 
 # The material (esys::cross_check: the certified area's key, the object's).
 [[block]]
 lies = ["other.certify"]
 verbs = ["lock"]
 objects = ["ec-adopt"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "attest.tpm.material" }
 
 # A secret key, and an ekCertificate, refused (15) before the module is asked to certify: the lie
 # never fires.
@@ -185,3 +198,25 @@ classes = ["OTHER"]
 verbs = ["lock --spec --spec"]
 objects = ["private"]
 why = "another object certified on a pair is other.certify's lock cell: a second pair adds nothing"
+
+# ── Unit tests: the checks no cell here can fire.
+
+[[unit]]
+rule = "attest.tpm.signature"
+test = "a_statement_by_another_signer_is_refused"
+why = "the cell forge.certify.corrupt fires it on the module path; this test fires it on the store path (attest::esys), which this table does not run"
+
+[[unit]]
+rule = "attest.tpm.signer"
+test = "a_statement_by_another_signer_is_refused"
+why = "a TPM names its own AK as the signer, so no lie of the module makes a statement that the AK signed and that names another signer; the test builds one"
+
+[[unit]]
+rule = "attest.piv.slot-by-device"
+test = "a_slot_certificate_signed_by_another_key_is_refused"
+why = "a PIV attestation (B-11) needs a YubiKey; the test verifies forged chains against the fixture's roots"
+
+[[unit]]
+rule = "chain.length"
+test = "a_chain_longer_than_three_is_refused"
+why = "a PIV attestation chain longer than three links needs a YubiKey; the test builds the chain from fixtures"

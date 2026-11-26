@@ -7,6 +7,7 @@
     reason = "the verbs split from lib.rs work on its imports and helpers, as pkcs11's token/ (R9)"
 )]
 use super::*;
+use cakeys_core::{Check, Reason};
 
 impl Run<'_> {
     /// `export --to-key-file`: one private key, through the host (`Token::extract`), into a
@@ -70,7 +71,10 @@ impl Run<'_> {
         notes: &mut Notes,
     ) -> anyhow::Result<Vec<u8>> {
         let pair = self.paired_certificate_target(object, from).ok_or_else(|| {
-            KmError::PreconditionFailed(format!("the lock pairs no certificate with '{object}' on '{from}'").into())
+            KmError::PreconditionFailed(Reason::check(
+                Check::ImportLocked,
+                format!("the lock pairs no certificate with '{object}' on '{from}'"),
+            ))
         })?;
         let t = source_target(&self.opener.cfg, &self.lock, &pair, from)?;
         Ok(public::material(&t, tok, &self.lock, notes)?)
@@ -108,9 +112,10 @@ impl Run<'_> {
             })
             .map(|(name, _)| name.clone())
             .ok_or_else(|| {
-                KmError::PreconditionFailed(
-                    format!("{}: the lock pins no private key with this key's identity ({id})", input.display()).into(),
-                )
+                KmError::PreconditionFailed(Reason::check(
+                    Check::ImportLocked,
+                    format!("{}: the lock pins no private key with this key's identity ({id})", input.display()),
+                ))
             })?;
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let pairs = self.lock.objects.get(&object).map(|o| o.pairs.clone()).unwrap_or_default();
@@ -251,7 +256,8 @@ impl Run<'_> {
     /// file (`origin = "file"`), or each of `objects`, from its object's `migrate.file`. Keys
     /// first, so a public key object finds the public half its key's import made. Each on its
     /// own, as a bundle's entries: one that fails leaves nothing, the others still import, the
-    /// lock records them, and the run exits with the first failure.
+    /// lock records them. The run exits with the code of the first failure, or with 22 if it
+    /// recorded any object in the lock.
     pub(super) fn import_files(
         &mut self,
         token: &str,
@@ -329,10 +335,10 @@ impl Run<'_> {
 fn local_key_id(lock: &Lock, object: &str) -> cakeys_core::Result<String> {
     let scheme = cakeys_core::id::Scheme::Rfc7093m4.name();
     lock.objects.get(object).and_then(|o| o.ids.get(scheme)).cloned().ok_or_else(|| {
-        KmError::PreconditionFailed(
-            format!("the lock pins no {scheme} for '{object}', which a PKCS#12 pairs its key and certificate by")
-                .into(),
-        )
+        KmError::PreconditionFailed(Reason::check(
+            Check::ImportLocked,
+            format!("the lock pins no {scheme} for '{object}', which a PKCS#12 pairs its key and certificate by"),
+        ))
     })
 }
 
@@ -442,6 +448,7 @@ fn from_its_file(
                 what: format!("{dst}: the material in {}", path.display()),
                 expected: want.clone(),
                 got: got.clone(),
+                check: Check::IdentityMaterial,
             });
         }
     }

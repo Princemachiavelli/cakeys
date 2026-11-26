@@ -15,7 +15,7 @@ use cakeys_core::chain::{Cert, pem_certs};
 use cakeys_core::config::Locator;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass as Class;
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, PlaintextKind, PlaintextVia, Provider};
 use cakeys_pkcs11::token::{ModuleInfo, read_attribute};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass};
@@ -229,7 +229,10 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
             )
             .into(),
         )),
-        n => Err(KmError::Ambiguous(format!("{n} attestation certificates share the key's CKA_ID").into())),
+        n => Err(KmError::Ambiguous(Reason::check(
+            Check::AttestPivUnique,
+            format!("{n} attestation certificates share the key's CKA_ID"),
+        ))),
     }
 }
 
@@ -264,7 +267,10 @@ fn find_device_cert(ctx: &AttestCtx<'_>) -> Result<Vec<u8>> {
             )
             .into(),
         )),
-        n => Err(KmError::Ambiguous(format!("{n} objects carry the f9 device certificate label").into())),
+        n => Err(KmError::Ambiguous(Reason::check(
+            Check::AttestPivUnique,
+            format!("{n} objects carry the f9 device certificate label"),
+        ))),
     }
 }
 

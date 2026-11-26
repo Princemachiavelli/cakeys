@@ -57,9 +57,9 @@ pub struct Table {
     pub exempt_max: usize,
     /// What a cell's state oracle names ([`STATE`] unless the table lists its own).
     pub state: Vec<String>,
-    /// The tool's own rules, beside the plan's (`cakeys_pkcs11::ops::Rule`): each name, and the
-    /// source file (from the repository's root) that defines it.
-    pub rules: BTreeMap<String, String>,
+    /// The checks (`cakeys_core::Check`) that the table's cells must name as a rule or as
+    /// deferred: those that only the tool's runs decide.
+    pub covers: Vec<String>,
 }
 
 /// An object of the fixture.
@@ -127,6 +127,10 @@ pub struct Lie {
 pub struct Expect {
     /// The exit: one of these.
     pub exit: Vec<i32>,
+    /// The exit code that the refused pair's row must show when the run itself exits 22. This
+    /// applies when an earlier pair of the same run wrote the lock and a later pair is refused
+    /// (review 2026-11-24 L5). When it is `None`, the refused row's exit code is the run's.
+    pub refused: Option<i32>,
     /// The rule the refused row names; none: it names none.
     pub rule: Option<String>,
     /// A rule the passing dry run's row lists as deferred.
@@ -238,6 +242,7 @@ fn expect(v: &toml::Value, what: &str) -> Expect {
     let t = v.as_table().unwrap_or_else(|| panic!("{what}: expect is no table"));
     let known = [
         "exit",
+        "refused",
         "rule",
         "deferred",
         "device",
@@ -271,6 +276,9 @@ fn expect(v: &toml::Value, what: &str) -> Expect {
     let flag = |k: &str, default| t.get(k).map_or(default, |v| v.as_bool().unwrap_or_else(|| panic!("{what}: {k}")));
     Expect {
         exit,
+        refused: t
+            .get("refused")
+            .map(|n| i32::try_from(n.as_integer().unwrap_or_else(|| panic!("{what}: refused"))).unwrap()),
         rule: opt("rule"),
         deferred: opt("deferred"),
         device: flag("device", false),
@@ -419,11 +427,8 @@ impl Table {
             .map(|t| t.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_owned())).collect())
             .unwrap_or_default();
         let state = doc.get("state").map_or_else(|| STATE.map(str::to_owned).to_vec(), |v| list(Some(v), "state"));
-        let rules = section("rules")
-            .into_iter()
-            .map(|(name, v)| (name.clone(), v.as_str().unwrap_or_else(|| panic!("rules.{name}")).to_owned()))
-            .collect();
-        Table { path, objects, verbs, lies, blocks, na, units, exempt, exempt_max, state, rules }
+        let covers = list(doc.get("covers"), "covers");
+        Table { path, objects, verbs, lies, blocks, na, units, exempt, exempt_max, state, covers }
     }
 
     /// cakeys' own table.
@@ -545,6 +550,25 @@ impl Table {
                 out.push(format!("exempt {r}: a cell or a unit row names it"));
             }
         }
+        out.extend(self.partial(&cells));
+        out
+    }
+
+    /// Returns what is wrong with the `refused` expectation of cell `id`. A cell with `refused`
+    /// must expect exit 22, its verb must print rows for two or more pairs, and its `changed`
+    /// list must include the lock.
+    fn partial_cell(id: &str, e: &Expect, verb: &Verb) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(r) = e.refused {
+            if matches!(r, 0 | 22) || e.exit != [22] || verb.pairs < 2 || verb.form != Form::Rows {
+                out.push(format!(
+                    "{id}: `refused = {r}` requires a verb that prints rows for two or more pairs and an expected exit of 22"
+                ));
+            }
+            if !e.changed.iter().any(|k| k == "lock") {
+                out.push(format!("{id}: `refused` is set, but `changed` does not include the lock"));
+            }
+        }
         out
     }
 
@@ -555,7 +579,8 @@ impl Table {
         let id = c.id();
         let (Some(verb), Some(object)) = (self.verbs.get(&c.verb), self.objects.get(&c.object)) else { return out };
         let e = &c.expect;
-        let refused = e.exit.iter().any(|x| !matches!(x, 0 | 22));
+        let refused = e.refused.is_some() || e.exit.iter().any(|x| !matches!(x, 0 | 22));
+        out.extend(Self::partial_cell(&id, e, verb));
         let rows = verb.form == Form::Rows;
         if verb.pairs == 0 || (verb.pairs > 1 && !rows) {
             out.push(format!("{id}: {} runs {} pairs, and its rows say which", c.verb, verb.pairs));
@@ -594,6 +619,20 @@ impl Table {
             out.push(format!("{id}: {} is adopted: create refuses it before any token (17)", c.object));
         }
         out
+    }
+
+    /// Requires a cell that tests a partial run if the table has a verb that prints rows and is
+    /// not a dry run, because such a verb writes the lock. A partial run writes the lock for one
+    /// pair and then refuses a later pair, and the runner checks that it exits 22 (the cell's
+    /// `refused`). No such cell existed before review 2026-11-24 L5, so the runner never saw that
+    /// such a run exited with the failure's code.
+    fn partial(&self, cells: &[Cell]) -> Option<String> {
+        let writes = self.verbs.values().any(|v| v.form == Form::Rows && !v.args.iter().any(|a| a == "--dry-run"));
+        (writes && !cells.iter().any(|c| c.expect.refused.is_some())).then(|| {
+            "no cell sets `refused`, so no cell checks that a run that writes the lock for one pair \
+             and then refuses another pair exits 22"
+                .to_owned()
+        })
     }
 
     /// The (lie class, verb, object class) points no cell covers and no `na` decides, and each
@@ -904,11 +943,15 @@ impl Tool for Fixture {
         if what == self.lock().display().to_string() { "lock" } else { "token" }.to_owned()
     }
 
-    /// The object's own ([`Object::honest`]), else 22 for a verb that writes (a delete, a
-    /// creation of an object not made), else 0.
+    /// Returns the exit code of a run of `verb` on `object` when no fault is injected. That is
+    /// the object's own code ([`Object::honest`]) if it has one. Otherwise it is 22 for a run
+    /// that writes the lock, which the verb's arguments decide: `delete`, or `create` of an
+    /// object that does not exist yet, without `--dry-run`. Every other run exits 0.
     fn honest_exit(&self, table: &Table, verb: &str, object: &str) -> i32 {
         let o = &table.objects[object];
-        let writes = verb == "delete" || (verb == "create" && !o.made);
+        let args = &table.verbs[verb].args;
+        let dry = args.iter().any(|a| a == "--dry-run");
+        let writes = !dry && (args[0] == "delete" || (args[0] == "create" && !o.made));
         o.honest.unwrap_or(if writes { 22 } else { 0 })
     }
 
@@ -1056,9 +1099,12 @@ pub fn judge(tool: &impl Tool, table: &Table, cell: &Cell, n: usize) -> Vec<Stri
             wrong.push(format!("the {what} {is}"));
         }
     }
-    let refused = exit.is_some_and(|x| !matches!(x, 0 | 22));
+    // The exit code that the refused row must show. It is the cell's `refused` value when an
+    // earlier pair wrote the lock (the run then exits 22), and otherwise the run's own code.
+    let refusal = e.refused.or_else(|| exit.filter(|x| !matches!(x, 0 | 22)));
+    let refused = refusal.is_some();
     match verb.form {
-        Form::Rows => wrong.extend(judge_rows(e, &out, exit, refused, verb.pairs)),
+        Form::Rows => wrong.extend(judge_rows(e, &out, refusal, verb.pairs)),
         Form::Plan => wrong.extend(judge_plan(e, &out)),
         Form::Profile => wrong.extend(judge_profile(e, &out, refused)),
         Form::Nothing if refused && !out.stdout.is_empty() => {
@@ -1075,15 +1121,16 @@ pub fn judge(tool: &impl Tool, table: &Table, cell: &Cell, n: usize) -> Vec<Stri
 
 /// The rows of a verb that prints a row per pair, one per pair it runs ([`Verb::pairs`]): a
 /// refused run's end at the refused one, which names the cell's rule and device bit, the rows
-/// before it passing; a passing run's each name its outcome and deferrals.
-fn judge_rows(e: &Expect, out: &Output, exit: Option<i32>, refused: bool, pairs: usize) -> Vec<String> {
+/// before it passing; a passing run's each name its outcome and deferrals. `refusal` is the exit
+/// code that the refused row must show, or `None` when no pair may be refused.
+fn judge_rows(e: &Expect, out: &Output, refusal: Option<i32>, pairs: usize) -> Vec<String> {
     let mut wrong = Vec::new();
     match serde_json::from_slice::<Vec<Row>>(&out.stdout) {
         Err(err) => wrong.push(format!("no rows on stdout ({err})")),
         Ok(rows) => match rows.split_last() {
-            Some((row, passed)) if refused && rows.len() <= pairs => {
+            Some((row, passed)) if refusal.is_some() && rows.len() <= pairs => {
                 let got = (i32::from(row.exit), row.rule.as_deref(), row.device);
-                let want = (exit.unwrap_or(-1), e.rule.as_deref(), e.device);
+                let want = (refusal.unwrap_or(-1), e.rule.as_deref(), e.device);
                 if got != want {
                     wrong.push(format!("the row says (exit, rule, device) {got:?}, not {want:?}"));
                 }
@@ -1091,7 +1138,7 @@ fn judge_rows(e: &Expect, out: &Output, exit: Option<i32>, refused: bool, pairs:
                     wrong.push(format!("a row before the refused one is refused: {row:?}"));
                 }
             }
-            Some(_) if !refused && rows.len() == pairs => {
+            Some(_) if refusal.is_none() && rows.len() == pairs => {
                 for row in &rows {
                     if row.exit != 0 || row.rule.is_some() {
                         wrong.push(format!("a passing run's row is refused: {row:?}"));
@@ -1240,7 +1287,10 @@ pub fn run_cells<T: Tool>(table: &Table, cells: &[Cell], f: &T) -> Vec<String> {
     for (verb, object) in &reads {
         wrong.extend(honest(f, table, verb, object));
     }
+    // Restore the fixture before each write, because two writes can create the same object (the
+    // first pair of a partial run and the later run of that pair), and after it.
     for (verb, object) in met.iter().filter(|(v, o)| f.honest_exit(table, v, o) == 22) {
+        f.restore(table);
         wrong.extend(honest(f, table, verb, object));
         f.restore(table);
     }

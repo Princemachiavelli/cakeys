@@ -3,11 +3,13 @@
 //! row no `exit`, and `create` printed no row for a failure), and what a dry run's row and its
 //! run's must agree on (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4).
 
-use cakeys_core::KmError;
+use cakeys_core::{Check, KmError, Rule};
 use serde::{Deserialize, Serialize};
 
-/// One pair's row. The process exit follows from the rows: 0 (22 when the lock was written),
-/// the one failure's code, or 20 for several ([`refused`]).
+/// One pair's row. The process exit code follows from the rows. It is 22 if the lock was
+/// written, even if a pair failed after the write; in that case the failed pair's row holds the
+/// failure's code. Otherwise it is 0, the code of the one failure, or 20 for several failures
+/// ([`refused`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Outcome {
     /// The object the spec realises.
@@ -23,7 +25,9 @@ pub struct Outcome {
     /// The exit code the pair alone ends a run with: 0, a write recorded included (the run's 22
     /// says the lock was written), or its failure's.
     pub exit: u8,
-    /// The rule that refused it (`cakeys_pkcs11::ops::Rule::name`), where one did.
+    /// The rule that refused it (`cakeys_core::Rule::name`), where one did; otherwise the check
+    /// that refused it (`cakeys_core::Check::name`, a dotted name such as `identity.material`),
+    /// where one did. docs/CAKEYS.md lists both under "Rules and checks".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule: Option<String>,
     /// Whether the failure is the device's: its PKCS#11 return value says the device, the token
@@ -87,7 +91,7 @@ impl Outcome {
     pub fn refused_by(self, e: Option<&KmError>) -> Outcome {
         Outcome {
             exit: e.map_or(1, KmError::exit_code),
-            rule: e.and_then(KmError::rule).map(str::to_owned),
+            rule: e.and_then(|e| e.rule().map(Rule::name).or_else(|| e.check().map(Check::name))).map(str::to_owned),
             device: e.and_then(KmError::rv).is_some_and(cakeys_pkcs11::token::device_failed_rv),
             ..self
         }
@@ -141,6 +145,29 @@ pub fn refused(mut errors: Vec<KmError>, what: &str) -> Option<KmError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cakeys_core::{Check, Reason};
+
+    /// A refusal by a check names the check in its row's `rule`, as a refusal by a plan's rule
+    /// names the rule (docs/CAKEYS.md, "Rules and checks"): a mismatch of the material is
+    /// `identity.material` and a failed proof is `pop.sign`. A check's refusal that a plan's rule
+    /// returns names the rule. A first use compared nothing, and a malformed input is no check's
+    /// refusal, so both name none.
+    #[test]
+    fn a_refusal_row_names_its_check() {
+        let rule = |e: KmError| Outcome::failed("o", "s", "t", &anyhow::Error::from(e)).rule;
+        let mismatch = KmError::HashMismatch {
+            what: "o".into(),
+            expected: "sha256-a".into(),
+            got: "sha256-b".into(),
+            check: Check::IdentityMaterial,
+        };
+        assert_eq!(rule(mismatch).as_deref(), Some("identity.material"));
+        let proof = || KmError::Conflict(Reason::check(Check::PopSign, "the signature does not verify"));
+        assert_eq!(rule(proof()).as_deref(), Some("pop.sign"));
+        assert_eq!(rule(proof().with_rule(Rule::Capability)).as_deref(), Some("capability"));
+        assert_eq!(rule(KmError::FirstUse { what: "o".into(), got: "sha256-b".into() }), None);
+        assert_eq!(rule(KmError::Conflict(Reason::malformed("no DER"))), None);
+    }
 
     fn row(outcome: &str, exit: u8, rule: Option<&str>, device: bool, deferred: &[&str]) -> Outcome {
         Outcome {
@@ -180,7 +207,7 @@ mod tests {
     /// and the verb's own round-trip through the one type.
     #[test]
     fn a_failure_row_says_its_code_rule_and_device() {
-        let refusal = KmError::Conflict("taken".into()).with_rule("locator-free");
+        let refusal = KmError::Conflict(Reason::rule(Rule::LocatorFree, "taken"));
         let r = Outcome::failed("o", "s", "t", &anyhow::Error::from(refusal));
         assert_eq!(
             (r.exit, r.rule.as_deref(), r.device, r.outcome.as_str()),
@@ -202,9 +229,10 @@ mod tests {
     #[test]
     fn a_run_ends_with_the_one_refusal_or_20() {
         assert!(refused(Vec::new(), "pairs refused").is_none());
-        let one = refused(vec![KmError::Conflict("taken".into())], "pairs refused").unwrap();
+        let taken = || KmError::Conflict(Reason::rule(Rule::LocatorFree, "taken"));
+        let one = refused(vec![taken()], "pairs refused").unwrap();
         assert_eq!(one.exit_code(), 13);
-        let two = vec![KmError::Conflict("taken".into()), KmError::Unsupported("no".into())];
+        let two = vec![taken(), KmError::Unsupported("no".into())];
         let several = refused(two, "pairs refused").unwrap();
         assert!(several.exit_code() == 20 && several.to_string().contains("2 pairs refused"), "{several}");
     }

@@ -107,7 +107,7 @@ impl Token {
             }
             kt => return Err(KmError::Unsupported(format!("proof of possession for {kt}").into())),
         };
-        let refused = self.proof_failed("C_Sign", "sign", "CKA_SIGN");
+        let refused = self.proof_failed(Check::PopSign, "C_Sign", "sign", "CKA_SIGN");
         let sig = if binding == Binding::PopSignPin {
             self.sign_with_pin(&mech, h, &data, refused)?
         } else {
@@ -179,7 +179,7 @@ impl Token {
         // sealed secret, the extractable one. Only that refusal, of the template: a key that may
         // not derive or a derivation that failed is the proof's answer, never derived again
         // (review 2026-11-23 B-8).
-        let failed = self.proof_failed("C_DeriveKey", "derive", "CKA_DERIVE");
+        let failed = self.proof_failed(Check::PopEcdh, "C_DeriveKey", "derive", "CKA_DERIVE");
         let sealed = self.proof_secret(Binding::PopEcdh, true)?;
         let (derived, rw) = match self.derive_for_proof(h, &ch.peer, &sealed, ch.secret.len())? {
             Ok(derived) => derived,
@@ -205,13 +205,13 @@ impl Token {
         };
         drop(derived);
         if !pop::ct_eq(&ch.mac, &tag) {
-            return Err(KmError::Conflict(
+            return Err(KmError::Conflict(Reason::check(
+                Check::PopEcdh,
                 format!(
                     "proof of possession failed: the private key did not derive for the public key {}",
                     id::sri(spki)
-                )
-                .into(),
-            ));
+                ),
+            )));
         }
         Ok(())
     }
@@ -221,7 +221,7 @@ impl Token {
     /// secret it computed itself. The secret belongs to a single-use ephemeral key the host
     /// generated, so reading it reveals nothing the host did not already hold.
     fn prove_ecdh_extractable(&self, h: ObjectHandle, spki: &[u8], ch: &pop::EcdhChallenge) -> Result<()> {
-        let failed = self.proof_failed("C_DeriveKey", "derive", "CKA_DERIVE");
+        let failed = self.proof_failed(Check::PopEcdh, "C_DeriveKey", "derive", "CKA_DERIVE");
         let (derived, rw) = self
             .derive_for_proof(h, &ch.peer, &self.proof_secret(Binding::PopEcdh, false)?, ch.secret.len())?
             .map_err(failed)?;
@@ -245,13 +245,13 @@ impl Token {
             }
         };
         if !pop::ct_eq(&ch.secret, &value) {
-            return Err(KmError::Conflict(
+            return Err(KmError::Conflict(Reason::check(
+                Check::PopEcdh,
                 format!(
                     "proof of possession failed: the private key did not derive for the public key {}",
                     id::sri(spki)
-                )
-                .into(),
-            ));
+                ),
+            )));
         }
         Ok(())
     }
@@ -295,7 +295,7 @@ impl Token {
         let permits = self.proof_permits(h)?;
         let usable = |m: MechanismType| self.has(m) && permits(m);
         let (oaep, v15) = (MechanismType::RSA_PKCS_OAEP, MechanismType::RSA_PKCS);
-        let failed = self.proof_failed("C_Decrypt", "decrypt", "CKA_DECRYPT");
+        let failed = self.proof_failed(Check::PopDecrypt, "C_Decrypt", "decrypt", "CKA_DECRYPT");
         let plain = if usable(oaep) || (permits(oaep) && !usable(v15)) {
             // Each hash in turn; the last one's refusal is the proof's.
             let mut plain = None;
@@ -322,13 +322,13 @@ impl Token {
         };
         let plain = Zeroizing::new(plain);
         if !pop::ct_eq(msg, &plain) {
-            return Err(KmError::Conflict(
+            return Err(KmError::Conflict(Reason::check(
+                Check::PopDecrypt,
                 format!(
                     "proof of possession failed: the private key did not decrypt for the public key {}",
                     id::sri(spki)
-                )
-                .into(),
-            ));
+                ),
+            )));
         }
         Ok(())
     }
@@ -343,7 +343,7 @@ impl Token {
             return Err(self.none_allowed(&[MechanismType::RSA_PKCS_OAEP]));
         }
         let template = self.proof_secret(Binding::PopUnwrap, true)?;
-        let failed = self.proof_failed("C_UnwrapKey", "unwrap", "CKA_UNWRAP");
+        let failed = self.proof_failed(Check::PopUnwrap, "C_UnwrapKey", "unwrap", "CKA_UNWRAP");
         // Like a derive: a module that keeps session keys as store rows unwraps only read-write.
         // C_UnwrapKey is one call: a hash it refuses began nothing the next try meets.
         let mut rw: Option<Session> = None;
@@ -375,13 +375,13 @@ impl Token {
                 .with_rv(rv_of(&e))
         })?;
         if !pop::ct_eq(&ch.mac, &tag) {
-            return Err(KmError::Conflict(
+            return Err(KmError::Conflict(Reason::check(
+                Check::PopUnwrap,
                 format!(
                     "proof of possession failed: the private key did not unwrap for the public key {}",
                     id::sri(spki)
-                )
-                .into(),
-            ));
+                ),
+            )));
         }
         Ok(())
     }
@@ -436,15 +436,28 @@ impl Token {
     /// spec needs `attr`, or the opt-out); a challenge the token finds invalid was made for another
     /// key than the one it holds, a `Conflict` (the host encrypted or wrapped it to the public key
     /// the identity names); any other failure is `Unavailable`.
-    fn proof_failed(&self, call: &'static str, op: &'static str, attr: &'static str) -> impl Fn(CkError) -> KmError {
+    fn proof_failed(
+        &self,
+        check: Check,
+        call: &'static str,
+        op: &'static str,
+        attr: &'static str,
+    ) -> impl Fn(CkError) -> KmError {
         move |e| {
             let rv = rv_of(&e);
-            self.proof_failure(call, op, attr, e).with_rv(rv)
+            self.proof_failure(check, call, op, attr, e).with_rv(rv)
         }
     }
 
     /// [`Self::proof_failed`]'s mapping, before the return value is attached.
-    fn proof_failure(&self, call: &'static str, op: &'static str, attr: &'static str, e: CkError) -> KmError {
+    fn proof_failure(
+        &self,
+        check: Check,
+        call: &'static str,
+        op: &'static str,
+        attr: &'static str,
+        e: CkError,
+    ) -> KmError {
         match e {
             CkError::Pkcs11(
                 RvError::KeyFunctionNotPermitted
@@ -464,15 +477,12 @@ impl Token {
                 | RvError::WrappedKeyInvalid
                 | RvError::WrappedKeyLenRange,
                 _,
-            ) => KmError::Conflict(
-                format!(
+            ) => KmError::Conflict(Reason::check(check, format!(
                     "proof of possession failed: the private key on token '{}' did not {op} what was made for its \
                  public key ({call}: {}: {e})",
                     self.name,
                     rv_name(&e)
-                )
-                .into(),
-            ),
+                ))),
             e => KmError::Unavailable(
                 format!("{call} (proof of possession) on token '{}': {}: {e}", self.name, rv_name(&e)).into(),
             ),
@@ -820,12 +830,12 @@ fn permitted(allowed: Option<&[MechanismType]>, m: MechanismType) -> bool {
 fn after_sealed(e: KmError, why: &str) -> KmError {
     match e {
         KmError::Unavailable(m) => {
-            let rv = m.rv();
-            KmError::Unavailable(Msg::from(format!("{m} (sealed: {why})")).with_rv(rv))
+            let text = format!("{m} (sealed: {why})");
+            KmError::Unavailable(m.with_text(text))
         }
         KmError::Unsupported(m) => {
-            let rv = m.rv();
-            KmError::Unsupported(Msg::from(format!("{m} (sealed: {why})")).with_rv(rv))
+            let text = format!("{m} (sealed: {why})");
+            KmError::Unsupported(m.with_text(text))
         }
         other => other,
     }
@@ -879,7 +889,8 @@ mod tests {
         assert_eq!(said(unavailable), (16, rv, "unavailable: C_DeriveKey (sealed: refused)".into()));
         let unsupported = after_sealed(KmError::Unsupported(Msg::from("C_DeriveKey").with_rv(rv)), "refused");
         assert_eq!(said(unsupported), (15, rv, "unsupported: C_DeriveKey (sealed: refused)".into()));
-        let conflict = after_sealed(KmError::Conflict(Msg::from("did not derive").with_rv(rv)), "refused");
+        let conflict =
+            after_sealed(KmError::Conflict(Reason::check(Check::PopEcdh, "did not derive")).with_rv(rv), "refused");
         assert_eq!(said(conflict), (13, rv, "conflict: did not derive".into()));
     }
 
