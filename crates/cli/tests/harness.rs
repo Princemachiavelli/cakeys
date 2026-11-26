@@ -79,7 +79,10 @@ fn the_twin_holds_a_run_to_its_dry_runs_exit_and_deferred_rules() {
         !partial(&ready, row(13, Some("locator-free"), false)),
         "a write, then a refusal by a rule the dry run did not defer"
     );
-    assert!(partial(&ready, row(13, Some("import.unwraps"), false)), "a write, then a refusal by a rule the dry run deferred");
+    assert!(
+        partial(&ready, row(13, Some("import.unwraps"), false)),
+        "a write, then a refusal by a rule the dry run deferred"
+    );
     assert!(partial(&ready, row(16, None, true)), "a write, then a device failure");
     assert!(!partial(&refused, row(13, Some("locator-free"), false)), "refused by one rule, then another");
 }
