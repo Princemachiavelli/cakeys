@@ -1,17 +1,18 @@
-//! What every object matrix table must say, whatever the code under test makes of the grid
-//! (review 2026-11-24 C-8: the tables are written by that code, so comparing with them detects a
-//! change, never an error). Each property is derived from DESIGN.md, cakeys' spec, or from
-//! PKCS #11, never from a table. [`check`](super::check) holds a token's fresh table to them
-//! before it compares or regenerates it; `reference/matrix.rs` holds every committed table to
-//! them on every build, and sees each fail on its row flipped in a copy.
+//! Properties that every object matrix table must have, whatever the code under test makes of
+//! the grid (review 2026-11-24 C-8: the code under test writes the tables, so a comparison with
+//! them detects a change, but never an error). Each property is derived from DESIGN.md, cakeys'
+//! spec, or PKCS #11, and never from a table. [`check`](super::check) checks a token's new table
+//! against the properties before it compares or regenerates the table. `reference/matrix.rs`
+//! checks every committed table against them on every build, and it checks that each property
+//! fails when its row is flipped in a copy.
 #![allow(dead_code, reason = "tests/tpm2.rs holds its fresh table to them, reference/matrix.rs every committed one")]
 
 use std::collections::BTreeMap;
 
-/// A row's key, read back into the grid's dimensions.
+/// A row's key, parsed back into the grid's dimensions.
 struct Key<'a> {
     kind: &'a str,
-    /// `generated` or `imported` (a key), else none.
+    /// `generated` or `imported` for a key, and `None` otherwise.
     origin: Option<&'a str>,
     /// Where an imported private key's public half is.
     public: Option<&'a str>,
@@ -21,7 +22,7 @@ struct Key<'a> {
     allowed: Option<&'a str>,
     /// A certificate's or data object's `CKA_PRIVATE`, and whether its spec declares it.
     privacy: (bool, bool),
-    /// The certificate (`malformed`, or its key) or the data object's length.
+    /// For a certificate, `malformed` or its key. For a data object, its length.
     what: &'a str,
 }
 
@@ -74,9 +75,9 @@ impl<'a> Key<'a> {
         self.usage.contains(&bit)
     }
 
-    /// The commitment schemes of the key's type, strongest first, each with the usage bit and
-    /// mechanism it needs (DESIGN.md §3.1). A generic secret has no hash of its own: the grid
-    /// names SHA-256 as the one its identity uses.
+    /// Returns the commitment schemes of the key's type, strongest first, each with the usage bit
+    /// and the mechanism that it needs (DESIGN.md §3.1). A generic secret has no hash of its own,
+    /// so the grid names SHA-256 as the hash that its identity uses.
     fn schemes(&self) -> &'static [(&'static str, &'static str, &'static str)] {
         match self.kind {
             "aes" => &[
@@ -91,14 +92,15 @@ impl<'a> Key<'a> {
         }
     }
 
-    /// The commitments the declared usage bits allow and the declared allowed list does too
-    /// (DESIGN.md §3.1, §3.4).
+    /// Returns the commitments that both the declared usage bits and the declared allowed list
+    /// allow (DESIGN.md §3.1, §3.4).
     fn usable(&self) -> Vec<&'static str> {
         let allows = |m: &str| self.allowed.is_none_or(|a| a == m);
         self.schemes().iter().filter(|(_, bit, m)| self.may(bit) && allows(m)).map(|(s, ..)| *s).collect()
     }
 
-    /// The binding a private key's spec declares (DESIGN.md §3.6, as the grid declares it).
+    /// Returns the binding that a private key's spec declares (DESIGN.md §3.6, as the grid
+    /// declares it).
     fn binding(&self) -> &'static str {
         match self.kind {
             _ if self.may("SIGN") => "pop-sign",
@@ -108,8 +110,8 @@ impl<'a> Key<'a> {
         }
     }
 
-    /// The mechanisms the declared binding proves with (DESIGN.md §3.6); none for
-    /// `token-asserted`, which proves nothing.
+    /// Returns the mechanisms with which the declared binding proves possession (DESIGN.md §3.6).
+    /// It returns none for `token-asserted`, which proves nothing.
     fn proofs(&self) -> &'static [&'static str] {
         match (self.kind, self.binding()) {
             ("ec-p256", "pop-sign") => &["CKM_ECDSA_SHA256", "CKM_ECDSA"],
@@ -131,11 +133,11 @@ impl<'a> Key<'a> {
     }
 }
 
-/// A row's outcome, read back.
+/// A row's outcome, parsed back.
 #[derive(PartialEq, Eq)]
 enum Outcome<'a> {
     Exit(u8),
-    /// The token refused to hold the object: nothing of cakeys is in it.
+    /// The token refused to hold the object, so the row holds no outcome of cakeys.
     NotCreated,
     Identified {
         mode: &'a str,
@@ -170,25 +172,26 @@ impl<'a> Outcome<'a> {
         }
     }
 
-    /// Refused at load (17), or never on the token at all.
+    /// Returns whether the object was refused at load (17), or never got onto the token at all.
     fn refused(&self) -> bool {
         matches!(self, Outcome::Exit(17) | Outcome::NotCreated)
     }
 }
 
-/// Whether `o` identified the object: a free function, so its lifetimes are its own.
+/// Returns whether `o` identified the object. It is a free function, so that it has lifetimes of
+/// its own and can be passed as a `fn` pointer.
 fn identified(o: &Outcome<'_>) -> bool {
     o.identified()
 }
 
-/// A property of one row: `Err` says how the row breaks it.
+/// A property of one row. `Err` says how the row violates it.
 type Rule = fn(&Key<'_>, &Outcome<'_>) -> Result<(), String>;
 
-/// The part of a row's key a property varies, as it is spelled there; none where it does not
-/// apply.
+/// The part of a row's key that a property varies, as the key spells it, or `None` where the
+/// property does not apply.
 type Dimension = fn(&Key<'_>) -> Option<String>;
 
-/// The properties of one row: name, source, rule.
+/// The properties of a single row, each as (name, source, rule).
 const ROWS: &[(&str, &str, Rule)] = &[
     (
         "mode-by-class",
@@ -337,7 +340,8 @@ const ROWS: &[(&str, &str, Rule)] = &[
     ),
 ];
 
-/// How `table` breaks the properties: one line per row and property, none when it keeps them.
+/// Returns how `table` violates the properties: one line per row and property, or no lines when
+/// the table has all of them.
 #[must_use]
 pub fn violations(table: &str) -> Vec<String> {
     let parsed: toml::Table = match toml::from_str(table) {
@@ -360,8 +364,9 @@ pub fn violations(table: &str) -> Vec<String> {
             }
         }
     }
-    // Rows that differ only in a dimension the spec says decides nothing have one outcome: of
-    // those `counted` (a token's refusal to hold the object is no outcome of cakeys').
+    // Rows that differ only in a dimension that the spec says decides nothing must have one
+    // outcome, among the rows that `counted` accepts (a token's refusal to hold the object is not
+    // an outcome of cakeys).
     let same =
         |name: &str, source: &str, dimension: Dimension, counted: fn(&Outcome<'_>) -> bool, out: &mut Vec<String>| {
             let mut groups: BTreeMap<String, Vec<(&str, &str)>> = BTreeMap::new();
@@ -395,12 +400,12 @@ pub fn violations(table: &str) -> Vec<String> {
     out
 }
 
-/// Fail, naming each property `table` (token `name`'s) breaks and the report of what each row
-/// printed.
+/// Fails, and names each property that `table` (token `name`'s table) violates and the report of
+/// what each row printed.
 ///
 /// # Panics
 ///
-/// When it breaks one.
+/// Panics when the table violates a property.
 pub fn assert_kept(name: &str, table: &str, report: &std::path::Path) {
     let broken = violations(table);
     assert!(
@@ -412,7 +417,7 @@ pub fn assert_kept(name: &str, table: &str, report: &std::path::Path) {
     );
 }
 
-/// Each property with a row of the grid flipped to an outcome it forbids.
+/// Each property, with a row of the grid and an outcome that the property forbids for that row.
 pub const FLIPS: &[(&str, &str, &str)] = &[
     ("mode-by-class", "data 32B public", "commitment valuehash"),
     ("schemes-by-class", "ec-p256 generated usage=SIGN non-extractable sensitive", "direct certhash pop-sign"),
@@ -457,11 +462,11 @@ pub const FLIPS: &[(&str, &str, &str)] = &[
     ("origin-does-not-decide", "aes imported usage=SIGN+ENCRYPT non-extractable sensitive", "commitment cmac"),
 ];
 
-/// `table` with `row`'s outcome replaced by `outcome`.
+/// Returns `table` with `row`'s outcome replaced by `outcome`.
 ///
 /// # Panics
 ///
-/// When `table` has no such row.
+/// Panics when `table` has no such row.
 #[must_use]
 pub fn flipped(table: &str, row: &str, outcome: &str) -> String {
     let prefix = format!("{row:?} = ");
@@ -469,7 +474,7 @@ pub fn flipped(table: &str, row: &str, outcome: &str) -> String {
     table.replacen(line, &format!("{prefix}{outcome:?}"), 1)
 }
 
-/// The committed tables, by file name.
+/// Returns the committed tables, by file name.
 #[must_use]
 pub fn committed() -> Vec<(String, String)> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec-coverage/objects");
