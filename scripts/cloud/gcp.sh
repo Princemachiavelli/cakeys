@@ -156,8 +156,8 @@ probe() {
   done
   ((write)) && preflight
   local bin variant lib name out cfg rc=0 status=0
-  bin=${CAPROBE:-$(nix build --no-link --print-out-paths --impure --expr \
-    "((builtins.getFlake \"git+file://$repo\").packages.x86_64-linux.cakeys.overrideAttrs { doCheck = false; }).caprobe")/bin/caprobe}
+  # packages.cakeys has no check phase: the Nix-built caprobe, as scripts/regen-profiles.sh builds it.
+  bin=${CAPROBE:-$(nix build --no-link --print-out-paths "$repo#packages.x86_64-linux.cakeys^caprobe")/bin/caprobe}
   echo unused >"$state/pin"
   for variant in kmsp11 kmsp11-fips; do
     lib=$(nix build --no-link --print-out-paths "$repo#$variant")
@@ -171,17 +171,18 @@ tokenLabel = "caprobe"
 pinFile = "$state/pin"
 probe = { scratch = true }
 EOF
-    local -a args=(--config "$state/keys.toml" probe --profiles "$repo/profiles" --token gcp --name "$name")
+    # The module profiles alone: profiles/ also holds LEDGER.toml, which is no profile (17).
+    local -a args=(--config "$state/keys.toml")
     if ((write)); then
       out=$repo/profiles/modules/$name.toml
       mkdir -p "$(dirname "$out")"
-      # RSA up to 4096 bits, as every regeneration probes (profiles/LEDGER.toml, [regen]).
-      # Over the committed profile only with CAKEYS_ACCEPT=1: else beside it, as $out.new.
-      args+=(--write-probes --rsa-max-bits 4096 --out "$out" ${CAKEYS_ACCEPT:+--accept})
-      [[ -f $out ]] && args+=(--diff "$name")
+      # The flags every regeneration shares are the verb's (profiles/LEDGER.toml, [regen]); it
+      # diffs against the committed profile when there is one. Over the committed profile only
+      # with CAKEYS_ACCEPT=1: else beside it, as $out.new.
+      args+=(regenerate "$name" --profiles "$repo/profiles/modules" --token gcp --out "$out" ${CAKEYS_ACCEPT:+--accept})
     else
       out=$state/${variant}-read-only.toml
-      args+=(--out "$out")
+      args+=(probe --profiles "$repo/profiles/modules" --token gcp --name "$name" --out "$out")
     fi
     echo "== $variant: $name"
     rc=0

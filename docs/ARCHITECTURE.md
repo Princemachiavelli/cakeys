@@ -9,6 +9,7 @@ lock rules are is [DESIGN.md](DESIGN.md); each tool's behaviour is in its own do
 ```text
 crates/
   core/         cakeys-core      no token access: config, lock, identity, lock rules, plaintext key parts, the names of moves
+  names/        cakeys-names     the names core and the profiles share: curves, hashes, proofs, commitments, device failures (no dependency)
   profile/      cakeys-profile   capability profiles as data (no token access)
   pkcs11/       cakeys-pkcs11    cryptoki token layer, verbs, Provider trait, static gate
   ykcs11/       cakeys-ykcs11    YubiKey PIV provider + piv-attestation (pinned Yubico roots)
@@ -49,6 +50,7 @@ flowchart TD
     PROVS["cakeys-kmsp11 · cakeys-aws-cloudhsm<br/>cakeys-ykcs11 (feature ykcs11)<br/>cakeys-tpm2-pkcs11 (feature tpm2)"]
     CORE["cakeys-core<br/>config · id · plan · reconcile · pop · sig · attrs · migrate · plaintext"]
     PROF["cakeys-profile<br/>baseline · profile · effective"]
+    NAMES["cakeys-names<br/>curves · hashes · proofs · commitments · device failures"]
 
     CLI --> COMMON
     PROBE --> COMMON
@@ -59,6 +61,8 @@ flowchart TD
     P11 --> CORE
     P11 --> PROF
     MIG --> CORE
+    CORE --> NAMES
+    PROF --> NAMES
 
     CORE --- RC["RustCrypto: p256/p384/p521/k256/bp256/bp384,<br/>ed25519-dalek, rsa, x509-cert, sha2, hmac, pkcs8"]
     P11 --- CK["cryptoki 0.12 (+6 patches)"]

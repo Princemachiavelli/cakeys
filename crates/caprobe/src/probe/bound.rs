@@ -2,8 +2,8 @@
 //! the unbound pass that probes the rest (docs/CAPROBE.md).
 
 use super::{
-    Attribute, Capability, Curve, Draft, GenerateRow, KeyKind, MONTGOMERY, Made, Mechanism, On, Refusal, ckr,
-    keygen_mechanism, operate, secrets, token,
+    Attribute, Capability, Curve, Draft, GenerateRow, KeyKind, Made, Mechanism, On, Refusal, ckr, keygen_mechanism,
+    montgomery, operate, secrets, token,
 };
 
 /// A module that binds every key to one purpose at creation ([`BoundKey`], Google Cloud KMS):
@@ -143,7 +143,7 @@ pub(super) fn probe_unbound(made: &mut Made, profile: &mut Draft, ec: &mut Gener
         }
     }
     let edwards: Vec<String> = Curve::ALL.iter().filter(|c| c.edwards()).map(|c| c.name().to_owned()).collect();
-    let montgomery: Vec<String> = MONTGOMERY.iter().map(|m| m.0.to_owned()).collect();
+    let montgomery: Vec<String> = montgomery().into_iter().map(|m| m.0.to_owned()).collect();
     for (kt, mech, names) in [
         (KeyKind::EcEdwards, Mechanism::EccEdwardsKeyPairGen, edwards),
         (KeyKind::EcMontgomery, Mechanism::EccMontgomeryKeyPairGen, montgomery),

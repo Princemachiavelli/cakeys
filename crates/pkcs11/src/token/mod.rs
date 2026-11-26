@@ -43,6 +43,7 @@ mod uri;
 pub use generate::{BY_NAME, CreateNote, PUBLIC_MADE_PRIVATE, with_public_default_dropped};
 pub use host::accepts_public_keys;
 pub use identity::commit_mechanism;
+pub use library::unpadded;
 use library::{Library, Logins, library, module_info};
 pub use login::has_admin;
 use login::{Pin, PinState, read_pin, session};
@@ -652,20 +653,22 @@ struct FoundSlot {
 ///
 /// `Ambiguous` when several match, naming their serials; `Unavailable` when none does or a
 /// `C_*` call fails.
+/// The token as `C_GetTokenInfo` describes it, its fixed-width fields as text ([`unpadded`]):
+/// what the lock records and a module profile's match keys are compared with.
+pub(crate) fn token_info(model: &str, serial: &str, firmware: String) -> TokenInfo {
+    TokenInfo { model: unpadded(model), serial: unpadded(serial), firmware }
+}
+
 fn find_slot(ctx: &Pkcs11, label: &str, serial: Option<&str>, module_path: &str) -> Result<FoundSlot> {
     let mut found: Vec<FoundSlot> = Vec::new();
     for slot in ctx.get_slots_with_token().map_err(ck("C_GetSlotList"))? {
         let info = ctx.get_token_info(slot).map_err(ck("C_GetTokenInfo"))?;
-        if info.label() != label || serial.is_some_and(|s| info.serial_number().trim() != s) {
+        if info.label() != label || serial.is_some_and(|s| unpadded(info.serial_number()) != s) {
             continue;
         }
         found.push(FoundSlot {
             slot,
-            token: TokenInfo {
-                model: info.model().trim().to_owned(),
-                serial: info.serial_number().trim().to_owned(),
-                firmware: info.firmware_version().to_string(),
-            },
+            token: token_info(info.model(), info.serial_number(), info.firmware_version().to_string()),
             pins: PinState {
                 user: Pin {
                     locked: info.user_pin_locked(),

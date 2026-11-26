@@ -6,6 +6,7 @@
 )]
 use super::*;
 use cakeys_core::pop;
+use cakeys_core::sig::digest;
 use cakeys_profile::{Capability, Profile};
 use cryptoki::context::Function;
 use cryptoki::mechanism::rsa::PkcsPssParams;
@@ -86,7 +87,7 @@ impl Token {
                 if usable(hashed.mechanism_type()) {
                     (hashed, msg.to_vec())
                 } else if permits(raw) {
-                    (Mechanism::Ecdsa, hash.digest(msg))
+                    (Mechanism::Ecdsa, digest(hash, msg))
                 } else {
                     return Err(none_allowed(&[hashed.mechanism_type(), raw]));
                 }
@@ -583,7 +584,7 @@ fn rsa_sign(m: MechanismType, scheme: pop::RsaSignature, msg: &[u8]) -> (Mechani
     use pop::HashAlg::{Sha256, Sha384, Sha512};
     match scheme {
         pop::RsaSignature::Pkcs1v15(h) if m == MechanismType::RSA_PKCS => {
-            (Mechanism::RsaPkcs, [digest_info(h), h.digest(msg).as_slice()].concat())
+            (Mechanism::RsaPkcs, [digest_info(h), digest(h, msg).as_slice()].concat())
         }
         pop::RsaSignature::Pkcs1v15(h) => (
             match h {
@@ -601,7 +602,7 @@ fn rsa_sign(m: MechanismType, scheme: pop::RsaSignature, msg: &[u8]) -> (Mechani
             };
             let params = PkcsPssParams { hash_alg, mgf, s_len: len.into() };
             match (m == MechanismType::RSA_PKCS_PSS, h) {
-                (true, _) => (Mechanism::RsaPkcsPss(params), h.digest(msg)),
+                (true, _) => (Mechanism::RsaPkcsPss(params), digest(h, msg)),
                 (false, Sha256) => (Mechanism::Sha256RsaPkcsPss(params), msg.to_vec()),
                 (false, Sha384) => (Mechanism::Sha384RsaPkcsPss(params), msg.to_vec()),
                 (false, Sha512) => (Mechanism::Sha512RsaPkcsPss(params), msg.to_vec()),
@@ -912,8 +913,8 @@ mod tests {
         // The data each signs: the message for a hashed mechanism, the digest (in its
         // DigestInfo for v1.5) for a raw one.
         let (_, data) = rsa_sign(raw, Pkcs1v15(Sha512), b"m");
-        assert_eq!(data, [digest_info(Sha512), Sha512.digest(b"m").as_slice()].concat());
-        assert_eq!(rsa_sign(raw_pss, Pss(Sha256), b"m").1, Sha256.digest(b"m"));
+        assert_eq!(data, [digest_info(Sha512), digest(Sha512, b"m").as_slice()].concat());
+        assert_eq!(rsa_sign(raw_pss, Pss(Sha256), b"m").1, digest(Sha256, b"m"));
         assert_eq!(rsa_sign(pss256, Pss(Sha256), b"m").1, b"m");
     }
 

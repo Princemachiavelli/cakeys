@@ -18,12 +18,16 @@ pub(crate) const RSA_SIZES: [u32; 10] = [512, 1024, 1536, 2048, 3072, 4096, 6144
 /// name where PKCS#11 3.0 allows it.
 pub(super) type CurveForm = (&'static str, &'static [u8], Option<&'static [u8]>);
 
-/// The Montgomery curves (`CKK_EC_MONTGOMERY`): RFC 8410's OIDs, PKCS#11 3.0's names. Not
-/// keys.toml objects yet (no Montgomery key type in id.rs), so they live here.
-pub(super) const MONTGOMERY: [CurveForm; 2] = [
-    ("curve25519", &[0x06, 0x03, 0x2b, 0x65, 0x6e], Some(b"\x13\x0acurve25519")),
-    ("curve448", &[0x06, 0x03, 0x2b, 0x65, 0x6f], Some(b"\x13\x08curve448")),
-];
+/// The Montgomery curves (`CKK_EC_MONTGOMERY`) of the names table (`cakeys_names::Curve`), with
+/// RFC 8410's OIDs and PKCS#11 3.0's names. Not keys.toml objects yet (no Montgomery key type
+/// in core), so the probe takes them from the table, not from core's curves.
+pub(super) fn montgomery() -> Vec<CurveForm> {
+    cakeys_names::Curve::ALL
+        .into_iter()
+        .filter(|c| c.family() == cakeys_names::Family::Montgomery)
+        .map(|c| (c.name(), c.params(), c.params_by_name()))
+        .collect()
+}
 
 /// The templates a Montgomery pair is tried on, as (public, with usage, private). A Montgomery
 /// public key verifies nothing, so it names only the curve. The usage its operation probes need
@@ -51,7 +55,7 @@ pub(super) fn probe_curves(made: &mut Made, profile: &mut Draft) -> Result<()> {
     let families = [
         (KeyKind::Ec, Mechanism::EccKeyPairGen, forms(false)),
         (KeyKind::EcEdwards, Mechanism::EccEdwardsKeyPairGen, forms(true)),
-        (KeyKind::EcMontgomery, Mechanism::EccMontgomeryKeyPairGen, MONTGOMERY.to_vec()),
+        (KeyKind::EcMontgomery, Mechanism::EccMontgomeryKeyPairGen, montgomery()),
     ];
     for (kt, mech, curves) in families {
         let mut row = GenerateRow::default();
@@ -306,9 +310,9 @@ pub(super) fn operate(
 ) {
     if matches!(kt, KeyKind::EcMontgomery) {
         // No Montgomery SPKI or host X25519 in cakeys: ECDH between two pairs on the token.
-        match MONTGOMERY.iter().find(|m| m.0 == on) {
+        match montgomery().into_iter().find(|m| m.0 == on) {
             Some((_, oid, name)) => {
-                let forms: Vec<&[u8]> = std::iter::once(*oid).chain(*name).collect();
+                let forms: Vec<&[u8]> = std::iter::once(oid).chain(name).collect();
                 extras::montgomery_ecdh(made, profile, on, &forms, (public, private));
             }
             None => made.undetermined.push(format!("no operation probes on {on}: unknown curve")),
@@ -414,7 +418,7 @@ pub(super) fn prove(made: &mut Made, profile: &mut Draft, kt: &KeyKind, on: &str
             if let Ok([Attribute::Modulus(n)]) =
                 made.session.get_attributes(private, &[AttributeType::Modulus]).as_deref()
             {
-                object.modulus_bits = u32::try_from(n.len() * 8).ok().map(Into::into);
+                object.modulus_bits = Some(cakeys_core::id::modulus_bits(n));
             }
         }
         (_, None) => object.curve = Some(on.to_owned()),
@@ -455,14 +459,14 @@ pub(super) fn sign(
 /// against the digest it signs; SHA-1, which the host does not compute, is signed unchecked.
 pub(super) fn ec_ops(made: &mut Made, private: ObjectHandle, spki: &[u8], on: &str, hash: Option<HashAlg>) {
     // Raw ECDSA signs the curve's digest of the message.
-    let raw = hash.unwrap_or(HashAlg::Sha256).digest(MSG);
+    let raw = sig::digest(hash.unwrap_or(HashAlg::Sha256), MSG);
     let tries = [
         (Mechanism::Ecdsa, raw.clone(), Some(raw)),
         (Mechanism::EcdsaSha1, MSG.to_vec(), None),
         (Mechanism::EcdsaSha224, MSG.to_vec(), Some(Sha224::digest(MSG).to_vec())),
-        (Mechanism::EcdsaSha256, MSG.to_vec(), Some(HashAlg::Sha256.digest(MSG))),
-        (Mechanism::EcdsaSha384, MSG.to_vec(), Some(HashAlg::Sha384.digest(MSG))),
-        (Mechanism::EcdsaSha512, MSG.to_vec(), Some(HashAlg::Sha512.digest(MSG))),
+        (Mechanism::EcdsaSha256, MSG.to_vec(), Some(sig::digest(HashAlg::Sha256, MSG))),
+        (Mechanism::EcdsaSha384, MSG.to_vec(), Some(sig::digest(HashAlg::Sha384, MSG))),
+        (Mechanism::EcdsaSha512, MSG.to_vec(), Some(sig::digest(HashAlg::Sha512, MSG))),
     ];
     for (mech, data, digest) in tries {
         let mt = mech.mechanism_type();

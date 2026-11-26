@@ -102,10 +102,15 @@ pub(super) fn library(module: &str) -> Result<Arc<Library>> {
     Ok(library)
 }
 
-/// A fixed-width `CK_INFO` field without its padding: blanks by the specification, NULs from
-/// some modules.
-pub(super) fn unpadded(field: &str) -> String {
-    field.trim_matches(|c: char| c.is_whitespace() || c == '\0').to_owned()
+/// The text of a fixed-width `CK_INFO` or `CK_TOKEN_INFO` field: its padding dropped, blanks by
+/// the specification and NULs from some modules, and a run of NULs inside it one blank
+/// (tpm2-pkcs11 fills the token's model from the TPM's four 4-byte vendor strings, so swtpm
+/// reports `SW   TPM` and eight NULs \[run\]). The one spelling of these fields: what the
+/// open reads, the lock records, and caprobe writes as a profile's match keys, which resolution
+/// compares with what the open read.
+#[must_use]
+pub fn unpadded(field: &str) -> String {
+    field.split('\0').filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ").trim().to_owned()
 }
 
 /// What a module says about itself (`C_GetInfo`), and the file the loader mapped for `module` with
@@ -157,13 +162,17 @@ pub(super) fn loaded_path(module: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// One normalisation of `C_GetInfo`'s fixed-width fields, so every provider compares exactly
-    /// (review 2026-11-23 B-26).
+    /// One normalisation of `C_GetInfo`'s and `C_GetTokenInfo`'s fixed-width fields, so every
+    /// provider and every match key compares exactly (review 2026-11-23 B-26).
     #[test]
     fn info_fields_lose_blank_and_nul_padding() {
         assert_eq!(unpadded("Google\0\0\0"), "Google");
         assert_eq!(unpadded("CloudHSM      \0 "), "CloudHSM");
         assert_eq!(unpadded("Yubico (www.yubico.com)"), "Yubico (www.yubico.com)");
+        assert_eq!(unpadded("SW   TPM\0\0\0\0\0\0\0\0"), "SW   TPM");
+        assert_eq!(unpadded("AMD\0\0\0\0"), "AMD");
+        assert_eq!(unpadded("A\0\0B"), "A B");
+        assert_eq!(unpadded("2.7\0\0"), "2.7");
     }
 
     /// A lookup that finds a library whose last holder is finalizing it waits until its entry is

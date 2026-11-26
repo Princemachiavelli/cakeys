@@ -18,6 +18,9 @@ fuzzing = []
 
 [dependencies]
 base16ct.workspace = true
+# The tables core shares with the profiles and the token layer: curves, ECDSA hashes, proofs,
+# commitments, modulus sizes (crates/names).
+cakeys-names.workspace = true
 base64.workspace = true
 ed25519-dalek.workspace = true
 ed448.workspace = true

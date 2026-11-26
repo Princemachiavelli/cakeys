@@ -21,7 +21,7 @@ use cakeys_core::pop::{self, RsaPadding};
 use cakeys_core::sig::{self, Encoding, HashAlg};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Msg, Result};
-use cakeys_pkcs11::token::{self, Token, derive_any, is_policy_default, show, template_refusal};
+use cakeys_pkcs11::token::{self, Token, derive_any, is_policy_default, show, template_refusal, unpadded};
 use cakeys_pkcs11::{BoundKey, Declared, Half, Template, keygen_mechanism};
 use cakeys_profile::capability::{DECRYPT_OAEP, UNWRAP_TEMPLATE};
 use cakeys_profile::{Answer, By, Capability, GenerateRow, KeyKind, MatchInfo, Mode, On, Profile, Row, Untested, Why};
@@ -45,24 +45,16 @@ mod secrets;
 mod wraps;
 
 pub(crate) use asymmetric::RSA_SIZES;
-use asymmetric::{MONTGOMERY, operate, probe_curves, probe_rsa};
+use asymmetric::{montgomery, operate, probe_curves, probe_rsa};
 use bound::probe_bound;
 use checked::Checked;
 use scratch::{Scratch, write_probes};
 use wraps::{probe_key_wraps, probe_wrapping, rsa_aes_key_wrap};
 
-/// The text of a module-supplied string with its C padding removed: PKCS#11's fixed-width
-/// fields are C strings, and a module may NUL-pad them (tpm2-pkcs11's token model comes from
-/// the TPM's four 4-byte vendor-string properties, so swtpm reports `SW` + NULs + `TPM`
-/// \[run\]). The padding is layout, not content — a note records the text.
-fn clean(s: &str) -> String {
-    s.split('\0').filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ")
-}
-
 /// A generated profile's name without `--name` or `--diff`: `<provider>/<version>`, the
-/// version [`clean`] as the match key's is.
+/// version [`unpadded`] as the match key's is.
 fn default_name(provider: &str, version: &str) -> String {
-    format!("{provider}/{}", clean(version))
+    format!("{provider}/{}", unpadded(version))
 }
 
 /// The `CKR_*` name of a failure, for notes: cryptoki's `Display` is the spec's prose, which
@@ -129,12 +121,12 @@ pub(crate) fn probe(tok: &Token, cfg: &TokenCfg, write: Option<u32>) -> Result<P
         // Every match key there is: the module and the hardware it ran on. No serial — it
         // changes with every token re-initialisation, and a profile must regenerate identically.
         r#match: MatchInfo {
-            manufacturer: Some(clean(&tok.module.manufacturer)),
+            manufacturer: Some(unpadded(&tok.module.manufacturer)),
             // A module reporting 0.0 hides its version (kryoptic [run]): the firmware is then
             // the version evidence.
-            module_version: (tok.module.version != "0.0").then(|| clean(&tok.module.version)),
-            model: Some(clean(&tok.token.model)),
-            firmware: Some(clean(&tok.token.firmware)),
+            module_version: (tok.module.version != "0.0").then(|| unpadded(&tok.module.version)),
+            model: Some(unpadded(&tok.token.model)),
+            firmware: Some(unpadded(&tok.token.firmware)),
         },
         advertise: advertised.clone(),
         ..Profile::new(default_name(tok.provider.name(), &tok.module.version), Mode::Observed)
@@ -1299,7 +1291,7 @@ mod tests {
     /// that accept the first try, and cakeys would then record a curve it can generate as refused.
     #[test]
     fn a_montgomery_fallback_is_never_stricter_than_the_first_try() {
-        let (public, with_usage, private) = montgomery_templates(MONTGOMERY[0].1);
+        let (public, with_usage, private) = montgomery_templates(montgomery()[0].1);
         let first: Vec<_> = public.iter().chain(&with_usage).collect();
         let fallback: Vec<_> = public.iter().chain(&private).collect();
         for attr in &fallback {

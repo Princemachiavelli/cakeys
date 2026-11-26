@@ -286,6 +286,15 @@ impl BlockCipher {
         }
     }
 
+    /// The key type it is the cipher of.
+    #[must_use]
+    pub fn key_type(self) -> KeyType {
+        match self {
+            BlockCipher::Aes => KeyType::Aes,
+            BlockCipher::Des3 => KeyType::Des3,
+        }
+    }
+
     /// The block length in bytes: what a key check value encrypts.
     #[must_use]
     pub fn block_len(self) -> usize {
@@ -344,41 +353,45 @@ impl Commit {
         }
     }
 
-    /// The `CKM_` name of the mechanism the commitment runs: what a declared
-    /// `CKA_ALLOWED_MECHANISMS` must hold for it. cakeys-pkcs11's `commit_mechanism` is the same
-    /// mechanism, pinned against this.
+    /// The kind a profile's `commit.<kind>.<key type>.<bytes>` rows name it by
+    /// (`cakeys_names::CommitKind`, whose table names it and the mechanism it runs): the
+    /// scheme's own name, the HMAC's hash beside it (one scheme for every hash, which a generic
+    /// secret does not imply). The cipher is the row's key type, as it is the label's.
     #[must_use]
-    pub fn mechanism(self) -> &'static str {
+    pub fn kind(self) -> cakeys_names::CommitKind {
+        use cakeys_names::CommitKind as K;
         match self {
-            Commit::Hmac(HmacHash::Sha1) => "CKM_SHA_1_HMAC",
-            Commit::Hmac(HmacHash::Sha224) => "CKM_SHA224_HMAC",
-            Commit::Hmac(HmacHash::Sha256) => "CKM_SHA256_HMAC",
-            Commit::Hmac(HmacHash::Sha384) => "CKM_SHA384_HMAC",
-            Commit::Hmac(HmacHash::Sha512) => "CKM_SHA512_HMAC",
-            Commit::Cmac => "CKM_AES_CMAC",
-            Commit::KcvEcb(BlockCipher::Aes) | Commit::KcvEcbDecrypt(BlockCipher::Aes) => "CKM_AES_ECB",
-            Commit::KcvEcb(BlockCipher::Des3) | Commit::KcvEcbDecrypt(BlockCipher::Des3) => "CKM_DES3_ECB",
-            Commit::Kw => "CKM_AES_KEY_WRAP",
+            Commit::Hmac(HmacHash::Sha1) => K::HmacSha1,
+            Commit::Hmac(HmacHash::Sha224) => K::HmacSha224,
+            Commit::Hmac(HmacHash::Sha256) => K::HmacSha256,
+            Commit::Hmac(HmacHash::Sha384) => K::HmacSha384,
+            Commit::Hmac(HmacHash::Sha512) => K::HmacSha512,
+            Commit::Cmac => K::Cmac,
+            Commit::KcvEcb(_) => K::KcvEcb,
+            Commit::KcvEcbDecrypt(_) => K::KcvEcbDec,
+            Commit::Kw => K::Kw,
         }
     }
 
-    /// The kind a profile's `commit.<kind>.<key type>.<bytes>` rows name it by: the scheme's own
-    /// name, the HMAC's hash beside it (one scheme for every hash, which a generic secret does
-    /// not imply). The cipher is the row's key type, as it is the label's (review 2026-11-23
-    /// A-9: one table here, no name of the profile's own).
+    /// The `CKM_` name of the mechanism the commitment runs: what a declared
+    /// `CKA_ALLOWED_MECHANISMS` must hold for it, what cakeys-pkcs11's `commit_mechanism` asks
+    /// the token for, and what a `commit.*` row was measured with: [`Commit::kind`]'s, on a
+    /// check value's cipher.
+    #[must_use]
+    pub fn mechanism(self) -> &'static str {
+        let key_type = match self {
+            Commit::KcvEcb(c) | Commit::KcvEcbDecrypt(c) => c.key_type().name(),
+            // No cipher: the kind alone names the mechanism.
+            Commit::Hmac(_) | Commit::Cmac | Commit::Kw => "",
+        };
+        self.kind().mechanism(key_type)
+    }
+
+    /// [`Commit::kind`]'s name: what a `commit.*` row calls it (review 2026-11-23 A-9: one
+    /// table, no name of the profile's own).
     #[must_use]
     pub fn profile_kind(self) -> &'static str {
-        match self {
-            Commit::Hmac(HmacHash::Sha1) => "hmac-sha1",
-            Commit::Hmac(HmacHash::Sha224) => "hmac-sha224",
-            Commit::Hmac(HmacHash::Sha256) => "hmac-sha256",
-            Commit::Hmac(HmacHash::Sha384) => "hmac-sha384",
-            Commit::Hmac(HmacHash::Sha512) => "hmac-sha512",
-            Commit::Cmac => "cmac",
-            Commit::KcvEcb(_) => "kcv-ecb",
-            Commit::KcvEcbDecrypt(_) => "kcv-ecb-dec",
-            Commit::Kw => "kw",
-        }
+        self.kind().name()
     }
 
     /// Domain-separation label `<commitment label>/<scheme>/<keyType>/<bits>`. The intrinsic type
@@ -406,7 +419,10 @@ impl Commit {
     }
 }
 
-/// Named curves for `CKK_EC` and `CKK_EC_EDWARDS`.
+/// Named curves for `CKK_EC` and `CKK_EC_EDWARDS`: the curves of `cakeys_names::Curve` that
+/// core has a key type for (`in_core`), whose table gives each its names, parameters and ECDSA
+/// hash. This enum holds what core computes with, so a curve it has no key type for (a
+/// Montgomery one) cannot reach a key here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Curve {
     /// NIST P-256 (`secp256r1`).
@@ -430,9 +446,28 @@ pub enum Curve {
 /// Named curves tokens offer that have no `RustCrypto` crate to validate and encode them with.
 pub const CURVES_WITHOUT_CRATE: [&str; 1] = ["brainpoolP512r1"];
 
+/// The curve in the names table: what names it, and what its ECDSA hash is
+/// (`HashAlg::for_curve` takes a core curve through this).
+impl From<Curve> for cakeys_names::Curve {
+    fn from(c: Curve) -> Self {
+        use cakeys_names::Curve as N;
+        match c {
+            Curve::P256 => N::P256,
+            Curve::P384 => N::P384,
+            Curve::P521 => N::P521,
+            Curve::Secp256k1 => N::Secp256k1,
+            Curve::BrainpoolP256r1 => N::BrainpoolP256r1,
+            Curve::BrainpoolP384r1 => N::BrainpoolP384r1,
+            Curve::Ed25519 => N::Ed25519,
+            Curve::Ed448 => N::Ed448,
+        }
+    }
+}
+
 impl Curve {
     /// Every curve cakeys has a key type for, Weierstrass then Edwards: the curves keys.toml
     /// takes, and the ones the probe generates on (beside the Montgomery curves it measures).
+    /// The names table's `in_core` curves, in its order (`the_curves_are_the_names_tables`).
     pub const ALL: [Curve; 8] = [
         Curve::P256,
         Curve::P384,
@@ -444,66 +479,47 @@ impl Curve {
         Curve::Ed448,
     ];
 
-    /// `curve` in keys.toml, for the given `keyType`.
+    /// The curve in the names table.
+    #[must_use]
+    pub fn named(self) -> cakeys_names::Curve {
+        self.into()
+    }
+
+    /// `curve` in keys.toml, for the given `keyType`: the canonical name, the display name
+    /// (`P-256`, `Ed25519`), or OpenSSL's `prime256v1`.
     #[must_use]
     pub fn from_cfg(key_type: KeyType, name: &str) -> Option<Curve> {
-        match (key_type, name) {
-            (KeyType::Ec, "secp256r1" | "prime256v1" | "P-256") => Some(Curve::P256),
-            (KeyType::Ec, "secp384r1" | "P-384") => Some(Curve::P384),
-            (KeyType::Ec, "secp521r1" | "P-521") => Some(Curve::P521),
-            (KeyType::Ec, "secp256k1") => Some(Curve::Secp256k1),
-            (KeyType::Ec, "brainpoolP256r1") => Some(Curve::BrainpoolP256r1),
-            (KeyType::Ec, "brainpoolP384r1") => Some(Curve::BrainpoolP384r1),
-            (KeyType::EcEdwards, "edwards25519" | "Ed25519") => Some(Curve::Ed25519),
-            (KeyType::EcEdwards, "edwards448" | "Ed448") => Some(Curve::Ed448),
-            _ => None,
-        }
+        let edwards = match key_type {
+            KeyType::Ec => false,
+            KeyType::EcEdwards => true,
+            _ => return None,
+        };
+        let named = |c: &Curve| name == c.name() || name == c.display() || (*c == Curve::P256 && name == "prime256v1");
+        Curve::ALL.into_iter().find(|c| c.edwards() == edwards && named(c))
     }
 
     /// The canonical `curve` name, as recorded in the lock.
     #[must_use]
     pub fn name(self) -> &'static str {
-        match self {
-            Curve::P256 => "secp256r1",
-            Curve::P384 => "secp384r1",
-            Curve::P521 => "secp521r1",
-            Curve::Secp256k1 => "secp256k1",
-            Curve::BrainpoolP256r1 => "brainpoolP256r1",
-            Curve::BrainpoolP384r1 => "brainpoolP384r1",
-            Curve::Ed25519 => "edwards25519",
-            Curve::Ed448 => "edwards448",
-        }
+        self.named().name()
     }
 
     /// An Edwards curve (`CKK_EC_EDWARDS`) rather than a Weierstrass one (`CKK_EC`).
     #[must_use]
     pub fn edwards(self) -> bool {
-        matches!(self, Curve::Ed25519 | Curve::Ed448)
+        self.named().family() == cakeys_names::Family::Edwards
     }
 
     /// `CKA_EC_PARAMS` used when generating: the DER OID (RFC 5480 / RFC 8410).
     #[must_use]
     pub fn params(self) -> &'static [u8] {
-        match self {
-            Curve::P256 => &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07],
-            Curve::P384 => &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22],
-            Curve::P521 => &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23],
-            Curve::Secp256k1 => &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x0a],
-            Curve::BrainpoolP256r1 => &[0x06, 0x09, 0x2b, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x07],
-            Curve::BrainpoolP384r1 => &[0x06, 0x09, 0x2b, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x0b],
-            Curve::Ed25519 => &[0x06, 0x03, 0x2b, 0x65, 0x70],
-            Curve::Ed448 => &[0x06, 0x03, 0x2b, 0x65, 0x71],
-        }
+        self.named().params()
     }
 
     /// PKCS#11 3.0 also allows Edwards curves as a `PrintableString` curve name.
     #[must_use]
     pub fn params_by_name(self) -> Option<&'static [u8]> {
-        match self {
-            Curve::Ed25519 => Some(b"\x13\x0cedwards25519"),
-            Curve::Ed448 => Some(b"\x13\x0aedwards448"),
-            _ => None,
-        }
+        self.named().params_by_name()
     }
 
     /// The curve named by a token's `CKA_EC_PARAMS`.
@@ -515,18 +531,13 @@ impl Curve {
     /// The name a message gives it: `P-256`, `Ed25519`.
     #[must_use]
     pub fn display(self) -> &'static str {
-        match self {
-            Curve::P256 => "P-256",
-            Curve::P384 => "P-384",
-            Curve::P521 => "P-521",
-            Curve::Secp256k1 => "secp256k1",
-            Curve::BrainpoolP256r1 => "brainpoolP256r1",
-            Curve::BrainpoolP384r1 => "brainpoolP384r1",
-            Curve::Ed25519 => "Ed25519",
-            Curve::Ed448 => "Ed448",
-        }
+        self.named().display()
     }
 }
+
+/// The size in bits of an RSA modulus (`cakeys_names::modulus_bits`): its significant bits, never
+/// its bytes times eight.
+pub use cakeys_names::modulus_bits;
 
 /// What a key is, by its `AlgorithmIdentifier` (ISSUES.md Q20): a key on a curve (Edwards
 /// included) or RSA. The one parser that reads it is chosen by these OIDs, never by trying each
@@ -926,6 +937,52 @@ mod tests {
             assert_eq!(Curve::from_params(c.params()), Some(c));
         }
         assert_eq!(Curve::from_params(b"\x13\x0cedwards25519"), Some(Curve::Ed25519));
+    }
+
+    /// Core's curves are the names table's `in_core` ones, in its order: a curve the table
+    /// gains for core, or core for the table, fails here until the other has it. keys.toml takes
+    /// each by its canonical and its display name, as the lock and the messages write them.
+    #[test]
+    fn the_curves_are_the_names_tables() {
+        let core: Vec<cakeys_names::Curve> = Curve::ALL.map(Curve::named).into();
+        let table: Vec<cakeys_names::Curve> = cakeys_names::Curve::ALL.into_iter().filter(|c| c.in_core()).collect();
+        assert_eq!(core, table);
+        for c in Curve::ALL {
+            let kt = if c.edwards() { KeyType::EcEdwards } else { KeyType::Ec };
+            assert_eq!((Curve::from_cfg(kt, c.name()), Curve::from_cfg(kt, c.display())), (Some(c), Some(c)), "{c:?}");
+            let other = if c.edwards() { KeyType::Ec } else { KeyType::EcEdwards };
+            assert_eq!(Curve::from_cfg(other, c.name()), None, "{c:?}");
+        }
+        assert_eq!(Curve::from_cfg(KeyType::Ec, "prime256v1"), Some(Curve::P256));
+        assert_eq!(Curve::from_cfg(KeyType::Ec, "curve25519"), None, "no Montgomery key type in core");
+    }
+
+    /// Every commitment is a kind of the names table, every kind is some commitment's, and a
+    /// kind other than an HMAC is named as its scheme (frozen: `scheme_definitions_are_pinned`),
+    /// so a `commit.*` row, the lock's scheme and the mechanism asked for are one commitment.
+    #[test]
+    fn every_commitment_is_a_kind_of_the_names_table() {
+        let ciphers = [BlockCipher::Aes, BlockCipher::Des3];
+        let hashes = [HmacHash::Sha1, HmacHash::Sha224, HmacHash::Sha256, HmacHash::Sha384, HmacHash::Sha512];
+        let all: Vec<Commit> = [Commit::Cmac, Commit::Kw]
+            .into_iter()
+            .chain(ciphers.into_iter().flat_map(|c| [Commit::KcvEcb(c), Commit::KcvEcbDecrypt(c)]))
+            .chain(hashes.map(Commit::Hmac))
+            .collect();
+        for c in &all {
+            assert_eq!(c.profile_kind(), c.kind().name(), "{c:?}");
+            if !matches!(c, Commit::Hmac(_)) {
+                assert_eq!(c.kind().name(), c.scheme().name(), "{c:?}");
+            }
+        }
+        for kind in cakeys_names::CommitKind::ALL {
+            assert!(all.iter().any(|c| c.kind() == kind), "{kind:?} is no commitment's kind");
+        }
+        for c in ciphers {
+            assert_eq!(BlockCipher::for_key_type(c.key_type()), Some(c), "{c:?}");
+            assert!(Commit::KcvEcb(c).mechanism().ends_with("_ECB"), "{c:?}");
+        }
+        assert_ne!(Commit::KcvEcb(BlockCipher::Aes).mechanism(), Commit::KcvEcb(BlockCipher::Des3).mechanism());
     }
 
     #[test]

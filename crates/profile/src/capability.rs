@@ -311,21 +311,12 @@ pub fn generation_mechanism(key_type: &str) -> Option<&'static str> {
     })
 }
 
-/// The mechanism a commitment of `kind` computes with on a key of `key_type`.
+/// The mechanism a commitment of `kind` computes with on a key of `key_type`: the names table's
+/// (`cakeys_names::CommitKind::mechanism`, which core's `Commit::mechanism` reads too); `None`
+/// for a kind this cakeys does not know.
 #[must_use]
 pub fn commit_mechanism(kind: &str, key_type: &str) -> Option<&'static str> {
-    Some(match kind {
-        "hmac-sha1" => "CKM_SHA_1_HMAC",
-        "hmac-sha224" => "CKM_SHA224_HMAC",
-        "hmac-sha256" => "CKM_SHA256_HMAC",
-        "hmac-sha384" => "CKM_SHA384_HMAC",
-        "hmac-sha512" => "CKM_SHA512_HMAC",
-        "cmac" => "CKM_AES_CMAC",
-        "kcv-ecb" | "kcv-ecb-dec" if key_type == "CKK_DES3" => "CKM_DES3_ECB",
-        "kcv-ecb" | "kcv-ecb-dec" => "CKM_AES_ECB",
-        "kw" => "CKM_AES_KEY_WRAP",
-        _ => return None,
-    })
+    cakeys_names::CommitKind::from_name(kind).map(|k| k.mechanism(key_type))
 }
 
 /// A key length: bytes, whatever the key type.
@@ -449,7 +440,7 @@ impl Capability {
             Capability::DeriveSealed | Capability::DeriveReadOnly | Capability::DeriveEcdh { .. } => {
                 vec!["CKM_ECDH1_DERIVE".into()]
             }
-            Capability::Prove { binding, .. } if binding.name() == "pop-ecdh" => vec!["CKM_ECDH1_DERIVE".into()],
+            Capability::Prove { binding: Proof::PopEcdh, .. } => vec!["CKM_ECDH1_DERIVE".into()],
             Capability::Commit { kind, key_type, .. } => {
                 commit_mechanism(kind, key_type.name()).map(str::to_owned).into_iter().collect()
             }
@@ -536,34 +527,7 @@ impl Answer {
     }
 }
 
-/// The `CKR_*` return values that say the device, the token or the session failed, rather than
-/// anything of the operation asked (review 2026-11-24 E-2, phase1-design §2.5): a refusal citing
-/// one is no answer of the module's. The token crate's `rv::device_failed` matches by these
-/// names, so the probe, the loader and the token agree.
-// P4: this list moves to the leaf crate (`cakeys-names`) with the other restated tables.
-pub const DEVICE_FAILED_RV: [&str; 11] = [
-    "CKR_DEVICE_ERROR",
-    "CKR_DEVICE_MEMORY",
-    "CKR_DEVICE_REMOVED",
-    "CKR_HOST_MEMORY",
-    "CKR_GENERAL_ERROR",
-    "CKR_TOKEN_NOT_PRESENT",
-    "CKR_TOKEN_NOT_RECOGNIZED",
-    "CKR_SESSION_CLOSED",
-    "CKR_SESSION_HANDLE_INVALID",
-    "CKR_CRYPTOKI_NOT_INITIALIZED",
-    "CKR_FUNCTION_CANCELED",
-];
-
-/// The first of [`DEVICE_FAILED_RV`] that `text` names, as a whole name
-/// (`CKR_DEVICE_ERROR`, never a prefix of a longer `CKR_*`).
-#[must_use]
-pub fn names_device_failure(text: &str) -> Option<&'static str> {
-    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    DEVICE_FAILED_RV.into_iter().find(|name| {
-        text.match_indices(name).any(|(i, _)| !text[..i].ends_with(ident) && !text[i + name.len()..].starts_with(ident))
-    })
-}
+pub use cakeys_names::{DEVICE_FAILED_RV, names_device_failure};
 
 /// Who showed a row's answer (`by`, review 2026-11-24 E-2..E-4): what the row is worth. A row
 /// without one is legacy, written before provenance was recorded.
