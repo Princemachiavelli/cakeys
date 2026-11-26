@@ -39,7 +39,9 @@ array, whatever `--json` says; a run that wrote the lock exits 22 (CAKEYS.md, "E
   same plan (D9), and exits as the dry run did: an `export` without names takes what can move,
   so its dry run is 15 only when nothing can (nothing at all included), and an export to a key
   file with nothing to put in it is 17. On `import` it checks the bundle, or the key file,
-  against the lock and the token, and imports nothing.
+  against the lock and the token, and imports nothing. The dry run of an `import` or a `migrate`
+  opens the token it would write read-only, and refuses a write-protected one
+  (`CKF_WRITE_PROTECTED`, 15) as the run does.
 - `--spec` names the spec to realise an object under where its object has several on the
   target. One that selects nothing (an unknown spec, or one of an object that is not moving
   there) is refused (17).

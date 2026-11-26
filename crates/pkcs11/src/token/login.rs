@@ -181,8 +181,27 @@ pub(super) fn so_outcome<T>(what: &str, token: &str, step: Result<T>, after: Res
     }
 }
 
-/// Open the session `access` asks for (M1) and log in as the user when a PIN is configured —
-/// unless the counters say the login must not be tried (M2).
+/// Whether `access` opens a read-write session on token `name`, `write_protected` or not:
+/// only to write, or for scratch objects where the token allows it. A write on a
+/// write-protected token is refused (15), and so is its dry run, which opens read-only: it
+/// refuses what its run refuses (review 2026-11-24 L4a-3).
+fn read_write(access: Access, write_protected: bool, name: &str) -> Result<bool> {
+    match access {
+        Access::Write | Access::DryWrite if write_protected => Err(KmError::Unsupported(
+            format!(
+                "token '{name}' is write-protected (CKF_WRITE_PROTECTED): it can be read, never created on or \
+                 deleted from"
+            )
+            .into(),
+        )),
+        Access::Write => Ok(true),
+        Access::Scratch => Ok(!write_protected),
+        Access::Read | Access::DryWrite => Ok(false),
+    }
+}
+
+/// Open the session `access` asks for (M1, [`read_write`]) and log in as the user when a PIN is
+/// configured — unless the counters say the login must not be tried (M2).
 #[expect(clippy::too_many_arguments, reason = "the open's parts, as Token::open has them")]
 pub(super) fn session(
     ctx: &Pkcs11,
@@ -194,19 +213,10 @@ pub(super) fn session(
     write_protected: bool,
     pins: PinState,
 ) -> Result<(Session, Option<Zeroizing<String>>)> {
-    let session = match access {
-        Access::Read => ctx.open_ro_session(slot).map_err(ck("C_OpenSession (read-only)"))?,
-        Access::Write if write_protected => {
-            return Err(KmError::Unsupported(
-                format!(
-                    "token '{name}' is write-protected (CKF_WRITE_PROTECTED): it can be read, never created on or \
-                 deleted from"
-                )
-                .into(),
-            ));
-        }
-        Access::Scratch if write_protected => ctx.open_ro_session(slot).map_err(ck("C_OpenSession (read-only)"))?,
-        Access::Write | Access::Scratch => ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?,
+    let session = if read_write(access, write_protected, name)? {
+        ctx.open_rw_session(slot).map_err(ck("C_OpenSession"))?
+    } else {
+        ctx.open_ro_session(slot).map_err(ck("C_OpenSession (read-only)"))?
     };
     let pin = read_pin(name, cfg)?;
     if let Some(pin) = pin.as_deref() {
@@ -265,6 +275,38 @@ pub(super) fn read_so_credential(name: &str, cfg: &TokenCfg) -> Result<Option<Ze
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every access, on a token write-protected or not: a dry run of a write refuses exactly
+    /// what the write refuses (15), and never opens read-write; only a write and scratch work
+    /// open read-write, scratch never on a write-protected token; a read refuses nothing (review
+    /// 2026-11-24 L4a-3: `create --dry-run` and `delete --dry-run` passed a write-protected
+    /// token).
+    #[test]
+    fn a_dry_run_refuses_the_token_its_write_refuses() {
+        for access in [Access::Read, Access::Write, Access::Scratch, Access::DryWrite] {
+            let writes = match access {
+                Access::Write | Access::DryWrite => true,
+                Access::Read | Access::Scratch => false,
+            };
+            for protected in [false, true] {
+                let got = read_write(access, protected, "t").map_err(|e| e.exit_code());
+                let want = match access {
+                    _ if writes && protected => Err(15),
+                    Access::Write => Ok(true),
+                    Access::Scratch => Ok(!protected),
+                    Access::Read | Access::DryWrite => Ok(false),
+                };
+                assert_eq!(got, want, "{access:?}, write-protected {protected}");
+            }
+        }
+        for protected in [false, true] {
+            assert_eq!(
+                read_write(Access::DryWrite, protected, "t").is_err(),
+                read_write(Access::Write, protected, "t").is_err(),
+                "write-protected {protected}"
+            );
+        }
+    }
 
     /// `as_so` reports the step first (token/mod.rs F2): a step that succeeded is never dropped
     /// for a failed logout or re-login without saying it was done, and a step that failed is

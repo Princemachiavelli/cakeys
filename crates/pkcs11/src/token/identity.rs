@@ -296,13 +296,14 @@ impl Token {
     ///
     /// # Errors
     ///
-    /// `Unsupported` carrying the module's `CK_RV` when it refuses the operation.
+    /// `Unsupported` carrying the module's `CK_RV` when it refuses the operation; `Unavailable`
+    /// when the device, the token or the session failed ([`refused_unless_device`]).
     pub fn commit(&self, h: ObjectHandle, object: &ObjectCfg, c: Commit, commitment_label: &str) -> Result<Vec<u8>> {
         let s = &self.session;
         let input = c.input(commitment_label, object);
         let fail = |e: CkError| {
-            KmError::Unsupported(format!("{} commitment ({}): {e}", c.scheme(), commit_mechanism(c)).into())
-                .with_rv(rv_of(&e))
+            let msg = Msg::from(format!("{} commitment ({}): {e}", c.scheme(), commit_mechanism(c)));
+            refused_unless_device(msg.with_rv(rv_of(&e)), KmError::Unsupported)
         };
         let m = operation(c);
         match c {
@@ -332,7 +333,12 @@ impl Token {
     ) -> Result<Vec<(Commit, Vec<u8>)>> {
         let s = &self.session;
         let fail = |what: &'static str| {
-            move |e: CkError| KmError::Unsupported(format!("wrap-rebind {what}: {e}").into()).with_rv(rv_of(&e))
+            move |e: CkError| {
+                refused_unless_device(
+                    Msg::from(format!("wrap-rebind {what}: {e}")).with_rv(rv_of(&e)),
+                    KmError::Unsupported,
+                )
+            }
         };
         // Both templates before anything is made.
         let kek_template = self.session_template(SessionKey::RebindKek)?;

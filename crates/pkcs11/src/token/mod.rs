@@ -53,7 +53,8 @@ pub use possession::{
 };
 pub use public::{public_key_attrs, public_object_attrs};
 pub use rv::{
-    SO_LOGIN, device_failed, device_failed_rv, read_attribute, rv_is, rv_name, rv_of, rv_value, rv_value_name,
+    SO_LOGIN, device_failed, device_failed_rv, read_attribute, refused_unless_device, rv_is, rv_name, rv_of, rv_value,
+    rv_value_name,
 };
 use rv::{ck, if_readable};
 use types::managed_class;
@@ -75,6 +76,11 @@ pub enum Access {
     /// allows it, since AWS `CloudHSM` refuses even a session object in a read-only session
     /// (`CKR_SESSION_READ_ONLY` \[run\]); read-only on a write-protected token.
     Scratch,
+    /// The dry run of a write (`create --dry-run`, `delete --dry-run`, camigrate's into a
+    /// token): a read-only session, so it writes nothing, on a token [`Access::Write`] would
+    /// open, so it refuses a write-protected one as its run does (15; review 2026-11-24 L4a-3:
+    /// the dry runs opened [`Access::Read`] and passed it).
+    DryWrite,
 }
 
 /// An open token: its module and the session cakeys works in, with the provider that handles
@@ -302,6 +308,13 @@ impl Token {
         self.provider.hinted(about, KmError::Unsupported(msg.into()))
     }
 
+    /// The module's failed call `e` as [`Self::unsupported_for`], carrying its return value; a
+    /// failure of the device, the token or the session unavailable instead
+    /// ([`refused_unless_device`]).
+    pub fn refused_for(&self, about: Topic, e: &CkError, msg: impl Into<Msg>) -> KmError {
+        refused_unless_device(msg.into().with_rv(rv_of(e)), |m| self.unsupported_for(about, m))
+    }
+
     /// A warning for the run when the user PIN counters at open reported a failed login
     /// (`CKF_USER_PIN_COUNT_LOW`) and cakeys logged in: retries remain, so it is no refusal.
     #[must_use]
@@ -334,7 +347,7 @@ impl Token {
     pub fn extra_session(&self, access: Access) -> Result<Session> {
         let ctx = &self.library.0;
         match access {
-            Access::Read => ctx.open_ro_session(self.slot).map_err(ck("C_OpenSession (read-only)")),
+            Access::Read | Access::DryWrite => ctx.open_ro_session(self.slot).map_err(ck("C_OpenSession (read-only)")),
             Access::Scratch if ctx.get_token_info(self.slot).is_ok_and(|i| i.write_protected()) => {
                 ctx.open_ro_session(self.slot).map_err(ck("C_OpenSession (read-only)"))
             }
@@ -511,7 +524,7 @@ impl Token {
         self.as_so("marking the transport key trusted", || {
             self.session
                 .create_object(&template)
-                .map_err(|e| self.unsupported_for(Topic::Create, trusted_copy_refused(&self.name, &e)))
+                .map_err(|e| self.refused_for(Topic::Create, &e, trusted_copy_refused(&self.name, &e)))
         })
     }
 

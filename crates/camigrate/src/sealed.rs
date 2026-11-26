@@ -106,7 +106,7 @@ pub(crate) fn export(
     let modulus = rsa_parts(spki)?.0.len();
     let session = from.raw();
     let refused = |what: &str, e: cryptoki::error::Error| {
-        from.unsupported_for(Topic::Mechanism, format!("{what} on '{}': {e}", from.name))
+        from.refused_for(Topic::Mechanism, &e, format!("{what} on '{}': {e}", from.name))
     };
     // The transport public key and the shared KEK are session objects on the source: both go
     // when this returns, however it does.
@@ -722,7 +722,7 @@ pub(crate) fn create_public_half(dst: &Target, to: &Token, spki: &[u8]) -> Resul
     let create = || {
         with_public_default_dropped(&t, declared, |p| to.raw().create_object(p))
             .map(|(made, _)| made)
-            .map_err(|e| to.unsupported_for(Topic::Create, format!("{dst}: the public half: C_CreateObject: {e}")))
+            .map_err(|e| to.refused_for(Topic::Create, &e, format!("{dst}: the public half: C_CreateObject: {e}")))
     };
     to.managing("creating the public half", create)
 }
