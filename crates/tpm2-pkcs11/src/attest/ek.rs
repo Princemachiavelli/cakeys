@@ -156,6 +156,33 @@ mod tests {
         assert!(e.to_string().contains("does not name tcg-kp-EKCertificate"), "{e}");
     }
 
+    /// This test checks that `verify` refuses an EK certificate chain with more than
+    /// [`MAX_LINKS`] signatures, counting the signature on the EK certificate itself. The chain of
+    /// `ek-3` has three signatures and verifies. The chain of `ek-4` has four signatures and is
+    /// refused, although every certificate in it is valid, and it verifies when its own issuer
+    /// `ca-3` is the trust anchor. The script `tests/fixtures/ek-chain/make.sh` generates these
+    /// certificates, because review 2026-11-24 L5 found no fixture longer than the limit.
+    #[test]
+    fn an_ek_chain_longer_than_max_links_is_refused() {
+        let pem = |bytes: &[u8]| certs_of(bytes).unwrap().remove(0);
+        let root = [pem(include_bytes!("../../tests/fixtures/ek-chain/root.pem"))];
+        let pool = [
+            pem(include_bytes!("../../tests/fixtures/ek-chain/ca-1.pem")),
+            pem(include_bytes!("../../tests/fixtures/ek-chain/ca-2.pem")),
+            pem(include_bytes!("../../tests/fixtures/ek-chain/ca-3.pem")),
+        ];
+        let ek_3 = pem(include_bytes!("../../tests/fixtures/ek-chain/ek-3.pem"));
+        let ek_4 = pem(include_bytes!("../../tests/fixtures/ek-chain/ek-4.pem"));
+        let at = ChainTime::At(1_800_000_000); // 2027-01-15
+        assert_eq!(verify(&ek_3, &root, &pool, at).unwrap().anchor_spki, root[0].spki().unwrap());
+        let e =
+            verify(&ek_4, &root, &pool, at).err().expect("verify accepted a chain with more than MAX_LINKS signatures");
+        let longer = format!("longer than {MAX_LINKS} links");
+        assert!(matches!(&e, KmError::Conflict(m) if m.contains(&longer)), "{e}");
+        let ca_3 = [Cert::from_der(pool[2].der().to_vec()).unwrap()];
+        assert_eq!(verify(&ek_4, &ca_3, &pool, at).unwrap().anchor_spki, ca_3[0].spki().unwrap());
+    }
+
     /// A NV certificate whose chain reaches no anchor is first use; one whose chain reaches an
     /// anchor but is out of its dates is refused under a `check` time, warned of otherwise.
     /// (The AMD fixture's intermediate stands in as the anchor of a NV certificate.)

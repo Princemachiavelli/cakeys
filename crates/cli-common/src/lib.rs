@@ -70,8 +70,11 @@ fn embedded_count() -> usize {
 }
 
 /// Run a command line's `dispatch`, its notes going to stderr as they are said (review
-/// 2026-11-23 C-7), and map the result to the documented exit code: an error's own, else
-/// [`LOCK_WRITTEN`] when the run wrote the lock, else 0.
+/// 2026-11-23 C-7), and map the result to the documented exit code. The code is
+/// [`LOCK_WRITTEN`] (22) if the run wrote the lock, even if a later pair failed; otherwise it is
+/// the error's own code, or 0 if there was no error. A failure after a write exits 22 because a
+/// script that reviews the lock only on exit 22 would otherwise miss the written lock; the failed
+/// pair's row and a note on stderr still give the failure's code (review 2026-11-24 L5).
 pub fn main(dispatch: impl FnOnce(&mut Notes) -> anyhow::Result<()>) -> ExitCode {
     let mut notes = Notes::streaming();
     match dispatch(&mut notes) {
@@ -79,7 +82,15 @@ pub fn main(dispatch: impl FnOnce(&mut Notes) -> anyhow::Result<()>) -> ExitCode
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e:#}");
-            ExitCode::from(e.downcast_ref::<KmError>().map_or(1, KmError::exit_code))
+            let code = e.downcast_ref::<KmError>().map_or(1, KmError::exit_code);
+            if !notes.wrote_lock() {
+                return ExitCode::from(code);
+            }
+            eprintln!(
+                "note: the run exits {LOCK_WRITTEN}, not {code}, because it wrote the lock before this failure. \
+                 Review and commit the lock, then retry the failed pairs; each failed row shows its exit code."
+            );
+            ExitCode::from(LOCK_WRITTEN)
         }
     }
 }
@@ -356,6 +367,41 @@ mod tests {
         let help = with_exit_codes(clap::Command::new("t")).render_help().to_string();
         for (code, means) in EXIT_CODES {
             assert!(help.contains(&format!("{code:>2}  {means}")), "{code} is not in\n{help}");
+        }
+    }
+
+    /// This test checks that `main` returns exit 22 exactly when the run wrote the lock. A run
+    /// that wrote the lock and then failed must exit 22, not 0 and not the failure's code, and a
+    /// run that wrote nothing must exit 0 or with the failure's code. Before review 2026-11-24 L5,
+    /// a `lock`, `create`, `delete` or camigrate run of several pairs that failed after a write
+    /// exited with the failure's code although the lock had changed.
+    #[test]
+    fn a_run_exits_22_exactly_when_it_wrote_the_lock() {
+        let path = Path::new("keys.lock");
+        let failure = |code: u8| match code {
+            13 => Some(anyhow::Error::from(KmError::Conflict("pair 2".into()))),
+            21 => Some(KmError::LockUnwritable("pair 2".into()).into()),
+            1 => Some(anyhow::anyhow!("pair 2: no KmError")),
+            _ => None,
+        };
+        for (wrote, failed, want) in [
+            (false, 0, 0),
+            (true, 0, LOCK_WRITTEN),
+            (false, 13, 13),
+            (true, 13, LOCK_WRITTEN),
+            (false, 21, 21),
+            (true, 21, LOCK_WRITTEN),
+            (false, 1, 1),
+            (true, 1, LOCK_WRITTEN),
+        ] {
+            let code = main(|notes| {
+                if wrote {
+                    notes.lock_written(path);
+                }
+                failure(failed).map_or(Ok(()), Err)
+            });
+            let want = format!("{:?}", ExitCode::from(want));
+            assert_eq!(format!("{code:?}"), want, "wrote the lock: {wrote}, failed with {failed}");
         }
     }
 

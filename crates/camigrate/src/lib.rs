@@ -190,7 +190,9 @@ enum Cmd {
     /// in a file (`origin = "file"`), from its object's `migrate.file` (docs/FILE.md). Each
     /// checked against the lock before the token is touched and recorded with where it came
     /// from, each on its own: one that fails leaves nothing, the others still import, and the
-    /// run exits with the first failure. Prints each object's outcome, as a JSON array.
+    /// run exits with the code of the first failure, or with 22 if it recorded any object in the
+    /// lock; the row of each failed object shows that object's exit code. Prints each object's
+    /// outcome, as a JSON array.
     Import {
         /// Without --in: the objects to import from their files; default: every one a pair on
         /// --to says `origin = "file"` for.
@@ -552,8 +554,9 @@ impl MoveCtx<'_> {
 /// A verb's run over its objects (review D8: `import`, `migrate` and `import` from files each
 /// kept their own): each object on its own, so one that fails leaves nothing and the others
 /// still move. Each object's outcome, printed as the run's result (review 2026-11-23 C-7);
-/// whether any changed the lock; and the first failure, which the run exits with once the lock
-/// is saved. A row is cakeys' ([`cakeys_cli_common::Outcome`]: its exit, the rule that refused it
+/// whether any changed the lock; and the first failure. The run exits with the code of the
+/// first failure, unless it changed the lock, in which case it exits with 22 and the failure's
+/// code appears only in that object's row. A row is cakeys' ([`cakeys_cli_common::Outcome`]: its exit, the rule that refused it
 /// and whether the device failed), with the method the object moved by beside it.
 #[derive(Default)]
 struct Tally {
@@ -631,9 +634,10 @@ impl Tally {
     /// on a token the lock does not record, and on ykcs11 cakeys cannot remove it. A save that
     /// fails is the object's failure, 21 (`lock-writable`), saying how to record it once the lock
     /// can be written (`hint`: [`public::unrecorded_hint`]); `false` then, and the run moves
-    /// nothing more. [`Tally::finish`] still prints every row and exits with the first failure
-    /// (review 2026-11-24 D-9: a failed save returned before it, the rows and an earlier
-    /// object's failure lost).
+    /// nothing more. [`Tally::finish`] still prints every row. The run then exits with the code
+    /// of the first failure, or with 22 if an earlier object was recorded in the lock (review
+    /// 2026-11-24 D-9: a failed save used to return early and lose the rows and the failure of
+    /// an earlier object).
     fn record(
         &mut self,
         run: &Run<'_>,
@@ -662,8 +666,9 @@ impl Tally {
     }
 
     /// Print each object's outcome, say the lock was written if anything moved, then exit with
-    /// the first failure. Each move saved it already ([`Tally::record`]): never a second write
-    /// only to say so (review 2026-11-23 C-21).
+    /// the first failure. `cakeys_cli_common::main` turns that failure into exit 22 if any object
+    /// moved, because the lock was then written. Each move has already saved the lock
+    /// ([`Tally::record`]), so this function does not write it again (review 2026-11-23 C-21).
     fn finish(self, run: &Run<'_>, notes: &mut Notes) -> anyhow::Result<()> {
         print(&self.results)?;
         if self.changed {
@@ -783,7 +788,8 @@ impl Run<'_> {
     /// `import`: read the bundle, then each key on its own: check it against the lock and the
     /// token, and (without --dry-run) import it under the spec that realises its object on
     /// `token` and record it. A key that fails leaves nothing and is reported; the others still
-    /// import, the lock records them, and the run exits with the first failure.
+    /// import, and the lock records them. The run exits with the code of the first failure, or
+    /// with 22 if it recorded any key in the lock.
     fn import(
         &mut self,
         token: &str,
@@ -869,8 +875,9 @@ impl Run<'_> {
     /// when an object cannot move or needs a method not built yet, then move each object and
     /// record it: a public object as it is (phase 2), a key sealed to the target's transport key,
     /// the bundle in memory (phase 3). Each object on its own: one that fails is undone and
-    /// said, the others still move and are recorded, and the run exits with the first failure
-    /// (it stopped there until review D8). Never a copy left on the target without its
+    /// reported, and the others still move and are recorded (before review D8, the run stopped at
+    /// the first failure). The run exits with the code of the first failure, or with 22 if it
+    /// recorded any object in the lock. A copy is never left on the target without its
     /// realisation.
     fn migrate(
         &mut self,

@@ -5,7 +5,7 @@
 # as it is.
 
 cakeys-aws-cloudhsm = 4
-cakeys-cli-common = 8
+cakeys-cli-common = 9
 "cakeys-cli-common::provider_contract" = 9
 cakeys-core = 110
 "cakeys-core::checks" = 1
@@ -25,20 +25,20 @@ cakeys-pkcs11 = 65
 cakeys-profile = 44
 "cakeys-profile::answers" = 3
 "cakeys-profile::properties" = 2
-cakeys-tpm2-pkcs11 = 35
+cakeys-tpm2-pkcs11 = 37
 cakeys-ykcs11 = 10
 "cakeys::cloud" = 2
-"cakeys::fault" = 92
+"cakeys::fault" = 93
 "cakeys::ftpm" = 4
 "cakeys::harness" = 14
-"cakeys::kryoptic" = 79
+"cakeys::kryoptic" = 80
 "cakeys::liar_lint" = 3
 "cakeys::liars" = 9
 "cakeys::offline" = 3
 "cakeys::p11kit" = 3
 "cakeys::references" = 5
 "cakeys::rules" = 5
-"cakeys::softhsm" = 79
+"cakeys::softhsm" = 80
 "cakeys::surface" = 1
 "cakeys::tpm2" = 23
 "cakeys::validate" = 5
