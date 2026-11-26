@@ -131,8 +131,9 @@ what it needs, and when it must pass.
   without an edit of the manifest.
 - **Every commit says what ran.** Write the `Ran:` and `Not run:` trailers, and follow the fix
   protocol in [REVIEWING.md](REVIEWING.md).
-- **On GitHub, `checks / light` is a required status check for `main`,** and `checks / vm` is
-  recommended. This is a setting of the repository, not a file in it.
+- **On GitHub, no check is required.** The workflows `checks` and `mutants` run on every pull
+  request, but a failing check does not block a merge, so read their results before you merge.
+  Requiring a check is a setting of the repository, not a file in it.
 
 ## Hardware rules
 
@@ -302,7 +303,8 @@ may stay, so that a change cannot add an unchecked decision without a reason.
 **CI** (`.github/workflows/mutants.yml`, x86_64 Linux):
 
 - On a pull request, the gate mutates only the lines that the change touches (`--in-diff`). The
-  unit tier is the job `unit`, which is meant to become a required check beside `checks / light`.
+  unit tier is the job `unit`. Like the other checks, it is not required, so a new survivor fails
+  the job but does not block a merge.
   The token tier is T1, in 4 shards. It fails when the first pass leaves more than 120 mutants,
   instead of testing a sample. In that case, split the change, or run the token tier on a Linux
   builder (below) and record the run in `Ran:`.
@@ -351,8 +353,9 @@ with that reason instead, and raise `max` by one in the same commit.
    `enforce = false` to `enforce = true`, run `nix fmt -- nix/mutants-baseline.toml`, and commit
    with the run's URL in `Ran:`. Commit it before other Rust changes reach `main`, because the
    seed lists the survivors of the commit that the sweep ran on.
-4. In the repository's settings, make the job `unit` of the workflow `mutants` a required status
-   check for `main`.
+4. Optionally, make the job `unit` of the workflow `mutants` a required status check for `main`
+   in the repository's settings. No check is required today, so without this step a new survivor
+   fails the job but does not block a merge.
 
 ### Golden files
 

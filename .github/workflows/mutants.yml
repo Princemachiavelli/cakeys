@@ -117,8 +117,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # The required check on a pull request: it runs, and passes at once, when no Rust source
-  # changed (so every step is guarded, not the job).
+  # The unit tier on a pull request. When no Rust source changed, the job still runs and passes
+  # at once, because each step has its own condition and the job has none.
   unit:
     needs: plan
     name: ${{ matrix.shard && format('unit {0}', matrix.shard) || 'unit' }}
