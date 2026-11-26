@@ -11,6 +11,7 @@ use cakeys_core::config::{AttrValue, Immutables, ObjectCfg};
 use cakeys_core::known::{Known, Permission, Restriction, Why};
 use cakeys_core::migrate::{Exposure, Method, OaepHash};
 use cakeys_core::types::ObjectClass;
+use cakeys_pkcs11::ops::Rule;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -260,10 +261,11 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     }
     let Ways { mut candidates, blocked } = ways;
     candidates.sort_by_key(|c| c.exposure);
-    let Some(Candidate { method, exposure }) = candidates.into_iter().next() else {
+    let Some(Candidate { method, exposure, deferred }) = candidates.into_iter().next() else {
         return Plan::impossible(m, blocked);
     };
     let mut plan = Plan::ready(m, method, exposure);
+    plan.deferred.extend(deferred);
     if matches!(exposure, Exposure::Host | Exposure::File) {
         // Why it could not stay sealed: a profile or a mechanism may be the fix, not the flag.
         plan.notes.extend(blocked.into_iter().map(|why| format!("not sealed: {why}")));
@@ -281,6 +283,9 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
 struct Candidate {
     method: Method,
     exposure: Exposure,
+    /// A rule the plan cannot decide and the run will: the way rests on a probed yes only the
+    /// module says (`Rule::Capability`).
+    deferred: Option<&'static str>,
 }
 
 /// What the planner found for one object: the ways it could move, and why others cannot.
@@ -292,7 +297,14 @@ struct Ways {
 
 impl Ways {
     fn offer(&mut self, method: Method, exposure: Exposure) {
-        self.candidates.push(Candidate { method, exposure });
+        self.candidates.push(Candidate { method, exposure, deferred: None });
+    }
+
+    /// [`Self::offer`] of a way a probed yes only the module says opens (`unverified`): the
+    /// plan defers the capability to the run.
+    fn offer_unless(&mut self, method: Method, exposure: Exposure, unverified: bool) {
+        let deferred = unverified.then(|| Rule::Capability.name());
+        self.candidates.push(Candidate { method, exposure, deferred });
     }
 
     fn block(&mut self, why: String) {
@@ -350,6 +362,12 @@ fn describe(ty: &ObjectCfg) -> String {
 
 /// The `sealed` (or `enforced`) methods between two PKCS#11 modules.
 fn sealed(m: &Material, from: &Side, dst: &Side, trusted_only: bool, allow: Allow, ways: &mut Ways) {
+    // A yes the module alone says (`by = "unverified"`: its own round trip, no blob decoded on
+    // the host) is taken, and the capability deferred to the run (review 2026-11-24 E-3).
+    let unverified = [ProbedWays::of(&dst.probed.unwrap, m.ty), ProbedWays::of(&from.probed.export_sealed, m.ty)]
+        .into_iter()
+        .flatten()
+        .any(|r| r.yes && r.unverified);
     match ProbedWays::of(&dst.probed.unwrap, m.ty) {
         Some(r) if !r.yes => {
             ways.block(format!(
@@ -425,9 +443,9 @@ fn sealed(m: &Material, from: &Side, dst: &Side, trusted_only: bool, allow: Allo
         ((from.kwp() && from.has("CKM_AES_KEY_GEN")) || rsa_aes(from)) && unwraps_composed
     };
     if composed {
-        ways.offer(Method::RsaOaepAesKwp(hash), exposure);
+        ways.offer_unless(Method::RsaOaepAesKwp(hash), exposure, unverified);
     } else if m.ty.class == ObjectClass::SecretKey && m.ty.value_len.is_some_and(|n| n <= OAEP_DIRECT_MAX) {
-        ways.offer(Method::RsaOaep(hash), exposure);
+        ways.offer_unless(Method::RsaOaep(hash), exposure, unverified);
     } else {
         ways.block(if trusted_only {
             format!(
@@ -496,7 +514,11 @@ fn host(m: &Material, from: &Side, dst: &Side, ways: &mut Ways) {
             return;
         }
     };
-    ways.offer(method, Exposure::Host);
+    // A yes the module alone says (a secret key checked by its own commitment) is taken, and the
+    // capability deferred to the run (review 2026-11-24 E-3).
+    let unverified =
+        [probed, ProbedWays::of(&from.probed.export_host, ty)].into_iter().flatten().any(|r| r.yes && r.unverified);
+    ways.offer_unless(method, Exposure::Host, unverified);
 }
 
 /// What the target changes about the object, whatever moves it.
@@ -944,6 +966,7 @@ mod tests {
                 yes,
                 via: via.map(str::to_owned),
                 unknown: None,
+                unverified: false,
             }]
         };
         let host = Allow { host_plaintext: true, ..Allow::default() };
@@ -1002,6 +1025,7 @@ mod tests {
                     yes: false,
                     via: None,
                     unknown: None,
+                    unverified: false,
                 }],
                 ..ProbedWays::default()
             },
@@ -1009,5 +1033,44 @@ mod tests {
         };
         let p = plan_of(&cert, &[], &softhsm(), &To::Token(&no_certs), host);
         assert!(!p.ready && p.reasons.iter().any(|r| r.contains("its create.* row says no")), "{p:?}");
+    }
+
+    /// A way a probed yes only the module says opens (`by = "unverified"`: the sealed export of
+    /// the source, the unwrap of the target, the target's import on the host path) plans ready,
+    /// and defers the capability to the run; a yes the host checked defers nothing (review
+    /// 2026-11-24 E-3, P2's leftover).
+    #[test]
+    fn an_unverified_probed_yes_defers_the_capability() {
+        use crate::side::{Probed, ProbedWays};
+        let ext = [("CKA_EXTRACTABLE", true)];
+        let rows = |unverified| {
+            vec![Probed {
+                covers: Accept { curves: vec!["secp256r1"], ..Accept::key(ObjectClass::PrivateKey, &[KeyType::Ec]) },
+                yes: true,
+                via: Some("rsa-oaep-sha256+aes-kwp".into()),
+                unknown: None,
+                unverified,
+            }]
+        };
+        let capability = Rule::Capability.name();
+        for unverified in [false, true] {
+            let to = Side { probed: ProbedWays { unwrap: rows(unverified), ..ProbedWays::default() }, ..kryoptic() };
+            let from =
+                Side { probed: ProbedWays { export_sealed: rows(unverified), ..ProbedWays::default() }, ..kryoptic() };
+            for (from, to) in [(&kryoptic(), &to), (&from, &kryoptic())] {
+                let p = plan_of(&p256(), &ext, from, &To::Token(to), Allow::default());
+                assert_eq!((p.exposure, p.ready), (Some(Exposure::Sealed), true), "{p:?}");
+                assert_eq!(p.deferred.contains(&capability), unverified, "{p:?}");
+            }
+            let to = Side {
+                unwraps: false,
+                probed: ProbedWays { import: rows(unverified), ..ProbedWays::default() },
+                ..kryoptic()
+            };
+            let host = Allow { host_plaintext: true, ..Allow::default() };
+            let p = plan_of(&p256(), &ext, &kryoptic(), &To::Token(&to), host);
+            assert_eq!((p.exposure, p.ready), (Some(Exposure::Host), true), "{p:?}");
+            assert_eq!(p.deferred.contains(&capability), unverified, "{p:?}");
+        }
     }
 }

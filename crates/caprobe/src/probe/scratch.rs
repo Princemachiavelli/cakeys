@@ -194,8 +194,8 @@ pub(super) fn destroy_all(made: &mut Made, profile: &mut Draft) {
         Ok(rows) => {
             // The host counted what is left after `C_DestroyObject`: its finding either way.
             for (class, deleted, why) in rows {
-                if deleted {
-                    profile.yes(Capability::Delete(class), Checked::Host, None);
+                if let Some(checked) = Checked::same(&deleted, &true) {
+                    profile.yes(Capability::Delete(class), checked, None);
                 } else {
                     profile.wrong(
                         Capability::Delete(class),

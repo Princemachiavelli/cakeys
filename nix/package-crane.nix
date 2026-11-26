@@ -237,95 +237,21 @@ let
       }
     );
 
-  # The gate's two tiers (docs/archive/REVIEW-2026-11-24/phase2-3-design.md §5.1), by which tests
-  # can catch a mutant. `unit`: code whose package's own tests are its tests. `tokens`: code only
-  # the token suites reach. Left out, each for its reason there: the key-file parser (fuzzed),
-  # printing, measurement and loading, caprobe's reports, the CLI glue, ykcs11's library and the
-  # test infrastructure.
-  mutantsScopes = {
-    unit = [
-      {
-        package = "cakeys-core";
-        files = [ "crates/core/src/**/*.rs" ];
-      }
-      {
-        package = "cakeys-profile";
-        files = [ "crates/profile/src/**/*.rs" ];
-      }
-      {
-        package = "camigrate";
-        files = map (f: "crates/camigrate/src/${f}.rs") [
-          "plan"
-          "bundle"
-          "file"
-          "transport"
-        ];
-      }
-    ];
-    tokens = [
-      {
-        package = "cakeys-pkcs11";
-        files = map (f: "crates/pkcs11/src/${f}.rs") [
-          "token/possession"
-          "ops/mod"
-          "token/identity"
-          "token/policy"
-          "provider"
-          "token/generate"
-          "ops/capabilities"
-          "templates"
-          "token/login"
-          "ops/planner"
-          "gate"
-          "token/rv"
-          "token/host"
-          "registry"
-          "token/public"
-        ];
-      }
-      {
-        package = "cakeys-pkcs11";
-        name = "cakeys-pkcs11-lookup";
-        files = [
-          "crates/pkcs11/src/resolution.rs"
-          "crates/pkcs11/src/token/mod.rs"
-        ];
-        re = "clear_hardware_rows|select_in|named_in|find|locate";
-      }
-      {
-        package = "camigrate";
-        files = map (f: "crates/camigrate/src/${f}.rs") [
-          "tokens"
-          "sealed"
-          "landing"
-          "file_verbs"
-          "public"
-          "host"
-        ];
-      }
-      {
-        package = "caprobe";
-        files = map (f: "crates/caprobe/src/probe/${f}.rs") [
-          "moves"
-          "secrets"
-          "asymmetric"
-          "extras"
-          "bound"
-          "wraps"
-        ];
-      }
-      {
-        package = "caprobe";
-        name = "caprobe-probe";
-        files = [ "crates/caprobe/src/probe.rs" ];
-        re = "check_slot|mark_slot|Draft::|finish";
-      }
-      {
-        package = "cakeys-cli-common";
-        files = [ "crates/cli-common/src/**/*.rs" ];
-      }
-    ];
-  };
+  # The gate's two tiers, `unit` and `tokens`, as nix/mutants-scopes.toml lists them
+  # (docs/archive/REVIEW-2026-11-24/phase2-3-design.md §5.1). A `unit` scope's mutants meet only
+  # their own package's tests. A `tokens` scope holds code that only the token suites reach. The
+  # file's `left-out` table, the files that no tier mutates, is for checks.mutants-scopes only. A
+  # scope whose package this build leaves out is dropped here, because cargo cannot build it:
+  # `common.cargoScope` excludes cakeys-tpm2-pkcs11 where the tpm2 feature is off, as on darwin.
+  mutantsScopes =
+    let
+      listed = builtins.fromTOML (builtins.readFile ./mutants-scopes.toml);
+      built = lib.filter (s: !(lib.elem s.package common.cargoScope));
+    in
+    {
+      unit = built listed.unit;
+      tokens = built listed.tokens;
+    };
 
   # One tier of the gate, whole or over a diff, sharded or not:
   # - "unit": its scopes against their packages' own tests;

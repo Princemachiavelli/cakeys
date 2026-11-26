@@ -52,11 +52,26 @@ nothing about what ran.
 - **Start from what runs.** Read CI's state for the reviewed commit, run the first tier, and
   read the [ledger](CAPROBE.md#the-ledger) for what is stale. A review that does not know what
   is red reviews the wrong tree.
+- **Start from the survivors.** A survivor is a mutant that no test caught: a small change that
+  cargo-mutants made to the code, such as `==` replaced by `!=`, with which every test still
+  passed. A survivor marks a decision in the code that no test checks.
+  - Read `missed.md` from the last monthly sweep (the artifact `mutants-missed` of
+    `.github/workflows/mutants.yml`) and the entries with `reviewed = false` in
+    `nix/mutants-baseline.toml`, for the files under review. `missed.md` lists the `Check` and
+    `Rule` variants that each function names, so start with the functions that make a named
+    security decision.
+  - Turn each survivor into exactly one of three things. The first is a test that fails on the
+    mutant and was seen failing, in a commit that also deletes the entry and lowers `max` by one.
+    The second is a finding, because the decision is unguarded. The third is a reviewed reason:
+    replace the seeded `why` with the reason that the mutant needs no test, and set
+    `reviewed = true`.
+  - [DEVELOPMENT.md](DEVELOPMENT.md#mutation-testing) describes the mutation gate.
 - **Ask why each finding escaped.** Every finding names its escape codes, its siblings (counted)
   and a class fix as well as an instance fix. The template is the 2026-11-24 review's
   [criteria](archive/REVIEW-2026-11-24/criteria.md).
-- **Do a mutation pass.** For each security- or correctness-critical decision in a file, ask:
-  if it were flipped, which test would fail? A decision with no failing test is a finding even
+- **Do a mutation pass by hand only where no tier mutates.** For each security- or
+  correctness-critical decision in a file that `nix/mutants-scopes.toml` leaves out, ask: if the
+  decision were flipped, which test would fail? A decision with no failing test is a finding even
   when the code is right.
 - **Audit the entry points.** For each rule, list every path that reaches the same operation. A
   rule enforced on only some of them is a finding.

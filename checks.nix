@@ -191,6 +191,28 @@
       python3 -I ${src}/nix/oracle-count-tests.py
       python3 -I ${src}/nix/oracle-count.py ${src} | tee $out
     '';
+  # Every source file of a workspace crate is in a scope of the mutation gate's tiers or is left
+  # out with a reason, every pattern in nix/mutants-scopes.toml matches a file, and every part of
+  # a scope's `re` matches a function (nix/mutants-scopes.py, its fixture tests first). So a new
+  # crate or file, and a renamed file or function, fail here until the scopes decide them.
+  mutants-scopes =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./Cargo.toml
+          ./crates
+          ./nix/mutants-scopes.toml
+          ./nix/mutants-scopes.py
+          ./nix/mutants-scopes-tests.py
+        ];
+      };
+    in
+    pkgs.runCommand "cakeys-mutants-scopes" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      set -o pipefail
+      python3 -I ${src}/nix/mutants-scopes-tests.py
+      python3 -I ${src}/nix/mutants-scopes.py ${src} | tee $out
+    '';
   # CI builds the three parts flake.nix splits the checks into, each once
   # (.github/workflows/checks.yml): a part the workflow stops naming is never built there.
   ci-jobs = pkgs.runCommand "cakeys-ci-jobs" { nativeBuildInputs = [ pkgs.ripgrep ]; } ''

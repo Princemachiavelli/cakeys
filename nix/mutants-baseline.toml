@@ -1,14 +1,19 @@
-# The mutants no test catches that may stay, each with why (docs/REVIEWING.md), by file, keyed
-# as nix/mutants-baseline.py keys them. A pull request's gate fails on a survivor of its diff
-# not listed here; the monthly sweep (.github/workflows/mutants.yml) also on an entry that no
-# longer survives. `--write` removes entries, never adds them, and never raises `max`.
+# The survivors that may stay: the mutants that no test catches, each with the reason that it may
+# stay (docs/DEVELOPMENT.md, "Mutation testing"; docs/REVIEWING.md, "Start from the survivors").
+# The entries are grouped in one table per file, and each key is the key that
+# nix/mutants-baseline.py gives the mutant. A pull request's gate fails on a survivor in its diff
+# that this file does not list. The monthly sweep (.github/workflows/mutants.yml) also fails on
+# an entry that is no longer a survivor. `--write` removes entries, never adds them, and never
+# raises `max`.
 #
 #   ["crates/core/src/reconcile.rs"]
 #   "compare: BinaryOperator ==→!=" = "a changed locator: lock.qnt leaves locators out (A-6)"
 #   "record: FnValue →Ok(())" = { why = "seeded 2026-12-07", reviewed = false }
 #
-# Report mode until the first sweep seeds it (the sweep uploads the seeded file): the gate
-# prints what would fail and passes. The commit that seeds it sets `enforce = true`.
+# `enforce = false` is report mode: the gate prints what would fail and exits 0. The gate stays
+# in report mode until the first sweep seeds this file. The commit that adds the seeded file sets
+# `enforce = true` (docs/DEVELOPMENT.md, "Mutation testing", lists the steps).
 enforce = false
-# The entry count's ceiling: it only goes down, and a raise is a visible diff with its why.
+# The most entries this file may have. Only a hand edit raises it, so each raise is a visible diff
+# with the new entry's reason.
 max = 0

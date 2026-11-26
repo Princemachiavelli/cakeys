@@ -103,8 +103,7 @@ fn aes_key(s: &Session, extra: &[Attribute]) -> Option<ObjectHandle> {
 /// `CKA_ALLOWED_MECHANISMS` (`via = "enforced"` when a mechanism outside the list is then
 /// refused). A module that cannot generate AES leaves these to `[untested]`'s neighbours: no row.
 pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
-    let s = made.session;
-    let aes = KeyKind::Aes;
+    let (s, aes) = (made.session, KeyKind::Aes);
     let Some(key) = aes_key(s, &[Attribute::Encrypt(true), Attribute::Decrypt(true)]) else {
         made.undetermined.push("no attribute rows: the probe could not generate an AES key".into());
         return;
@@ -125,10 +124,12 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
     let get = |t: AttributeType| attrs.iter().find(|a| a.attribute_type() == t);
     let row = |attr: &str, answer: Option<(bool, String)>, profile: &mut Draft, undetermined: &mut Vec<String>| {
         let cap = Capability::Attr { read: true, attr: attr.into(), key_type: aes.clone() };
-        match (&failed, answer) {
+        // The answer is checked before the match, because the workspace's rust-version (1.89) has
+        // no `if let` guards in match arms.
+        match (&failed, answer.map(|(truthful, why)| (Checked::same(&truthful, &true), why))) {
             (Some((rv, why)), _) => profile.refused(undetermined, cap, *rv, why.clone()),
-            (None, Some((true, _))) => profile.yes(cap, Checked::Host, None),
-            (None, Some((false, why))) => profile.wrong(cap, why),
+            (None, Some((Some(c), _))) => profile.yes(cap, c, None),
+            (None, Some((None, why))) => profile.wrong(cap, why),
             (None, None) => profile.wrong(cap, "the module does not return it".into()),
         }
     };
@@ -202,7 +203,9 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
                 };
                 // Kept to or not, the host saw it; untold, the module's word alone (review
                 // 2026-11-24 E-4).
-                let checked = if via.is_some() { Checked::Host } else { Checked::Unverified };
+                let checked =
+                    via.and(Checked::same(&back, &Some(Attribute::AllowedMechanisms(vec![MechanismType::AES_ECB]))));
+                let checked = checked.unwrap_or_else(Checked::unverified);
                 profile.yes(cap, checked, via.map(Into::into));
             } else {
                 profile.wrong(cap, format!("it reads back {back:?}"));
@@ -316,7 +319,7 @@ pub(super) fn montgomery_ecdh(
     if let (Some(a), Some(b)) = (point(public_a), point(public_b)) {
         match (secret(private_a, &b), secret(private_b, &a)) {
             // Both sides on this one module (review 2026-11-24 E-3).
-            (Ok(x), Ok(y)) if x == y => profile.yes(cap, Checked::Unverified, None),
+            (Ok(x), Ok(y)) if x == y => profile.yes(cap, Checked::unverified(), None),
             (Ok(_), Ok(_)) => profile.wrong(cap, "the two sides derive different secrets".into()),
             (Err(e), _) | (_, Err(e)) => profile.refused(&mut made.undetermined, cap, e.rv(), e.to_string()),
         }
@@ -483,7 +486,7 @@ fn sign_rows(
             Err(e) => profile.refused(&mut made.undetermined, cap, token::rv_of(&e), ckr(&e)),
             // Signed and verified by the module: the host has no verifier (review 2026-11-24 E-3).
             Ok(sig) => match s.verify(&mech, public, MSG, &sig) {
-                Ok(()) => profile.yes(cap, Checked::Unverified, None),
+                Ok(()) => profile.yes(cap, Checked::unverified(), None),
                 Err(e) => profile.refused(
                     &mut made.undetermined,
                     cap,
@@ -534,7 +537,7 @@ fn kem_row(made: &mut Made, profile: &mut Draft, set: &str, public: ObjectHandle
             Ok(decapsulated) => {
                 match (value(encapsulated), value(decapsulated)) {
                     // Both sides on this one module (review 2026-11-24 E-3).
-                    (Some(ours), Some(theirs)) if ours == theirs => profile.yes(cap, Checked::Unverified, None),
+                    (Some(ours), Some(theirs)) if ours == theirs => profile.yes(cap, Checked::unverified(), None),
                     (Some(_), Some(_)) => profile.wrong(cap, "the two sides derive different secrets".into()),
                     _ => made.undetermined.push(format!("no {cap} row: the shared secrets are unreadable")),
                 }

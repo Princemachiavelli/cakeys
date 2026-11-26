@@ -1,6 +1,7 @@
 //! The liar tables' rules (docs/archive/REVIEW-2026-11-24/phase2-3-design.md §1.6), with no token:
 //! no rule of the plan (`cakeys_pkcs11::ops::Rule`) without a cell that fires it, a unit test
-//! that does, or an exemption that says why none can; no name that is no rule; every (lie class,
+//! that does, or an exemption that says why none can; no name that is no rule (the plan's, or
+//! one a tool's table says its source defines: camigrate's `unwraps`); every (lie class,
 //! verb, object class) of a table covered by a cell or decided with why; and a table of the
 //! shape its runner reads (`tests/common/liars.rs`). Pure: plain `cargo test`, on every system.
 
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 /// The tables, each read by its tool's runner.
 fn tables() -> Vec<Table> {
-    vec![Table::cakeys(), Table::tpm2()]
+    vec![Table::cakeys(), Table::camigrate(), Table::caprobe(), Table::tpm2()]
 }
 
 /// Every rule a plan can refuse by is named by a cell of some table (its `rule`, or a dry run's
@@ -26,8 +27,23 @@ fn every_rule_has_a_liar_that_fires_it() {
         names.iter().copied().filter(|r| tables.iter().all(|t| t.uncovered(&[r]).contains(r))).collect();
     assert!(uncovered.is_empty(), "no cell, unit row or exemption names these rules: {uncovered:?}");
     for t in &tables {
-        let unknown: Vec<String> = t.named_rules().into_iter().filter(|r| Rule::named(r).is_none()).collect();
+        let unknown: Vec<String> =
+            t.named_rules().into_iter().filter(|r| Rule::named(r).is_none() && !t.rules.contains_key(r)).collect();
         assert!(unknown.is_empty(), "{}: names no rule: {unknown:?}", t.path.display());
+        // A tool's own rule is one its source defines, by that name.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for (rule, file) in &t.rules {
+            let text = std::fs::read_to_string(root.join(file)).unwrap_or_default();
+            assert!(
+                text.contains(&format!(": &str = \"{rule}\";")),
+                "{}: rule {rule}: {file} defines no constant of that name",
+                t.path.display()
+            );
+            assert!(Rule::named(rule).is_none(), "{}: rule {rule} is the plan's, not the tool's own", t.path.display());
+        }
+        let own: Vec<&str> = t.rules.keys().map(String::as_str).collect();
+        let uncovered = t.uncovered(&own);
+        assert!(uncovered.is_empty(), "{}: its own rules no cell names: {uncovered:?}", t.path.display());
     }
 }
 

@@ -64,6 +64,9 @@ pub(crate) struct Probed {
     /// Why the probe could not decide it (`Profile::unknown`: a legacy no citing a device
     /// failure, an `[untested]` entry), naming the re-probe owed: a no that is not the module's.
     pub(crate) unknown: Option<String>,
+    /// Its yes rests on the module alone (`by = "unverified"`): the plan may take it, and defers
+    /// the capability to the run, which shows it (review 2026-11-24 E-3, P2's leftover).
+    pub(crate) unverified: bool,
 }
 
 impl Probed {

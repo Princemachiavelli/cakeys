@@ -1,12 +1,15 @@
 """nix/mutants-baseline.py's own tests, on reports and baselines written for each
 (packages.mutants-gate runs them first).
 
-Usage: python3 -I nix/mutants-baseline-tests.py [SCRIPT]. SCRIPT, nix/mutants-baseline.py by
-default, is the script under test: a changed copy shows which test holds which rule.
+Usage: python3 -I nix/mutants-baseline-tests.py [SCRIPT [BASELINE]]. SCRIPT, nix/mutants-baseline.py by
+default, is the script under test: a changed copy shows which test holds which rule. BASELINE,
+nix/mutants-baseline.toml by default, is the committed baseline, which the `Committed` tests seed
+in a copy.
 """
 
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,6 +17,7 @@ import tomllib
 import unittest
 
 SCRIPT = pathlib.Path(sys.argv.pop(1) if len(sys.argv) > 1 else pathlib.Path(__file__).with_name("mutants-baseline.py"))
+BASELINE = pathlib.Path(sys.argv.pop(1) if len(sys.argv) > 1 else pathlib.Path(__file__).with_name("mutants-baseline.toml"))
 
 FILE = "crates/x/lib.rs"
 SOURCE = "pub fn same(a: u32, b: u32) -> bool {\n    a == b\n}\n\npub fn small(a: u32) -> bool {\n    a == 1 || a == 2\n}\n"
@@ -25,14 +29,14 @@ SAME_EQ = "same: BinaryOperator ==→!="
 SMALL_EQ = "small: BinaryOperator ==→!="
 
 
-def mutant(function, genre, line, col, end, replacement, shift=0):
+def mutant(function, genre, line, col, end, replacement, shift=0, original="=="):
     """A mutant as cargo-mutants' outcomes.json and `--list --json` give it."""
     line += shift
     span = {"start": {"line": line, "column": col}, "end": {"line": line, "column": end}}
     if genre == "FnValue":
         what = f"replace {function} -> bool with {replacement}"
     else:
-        what = f"replace == with {replacement} in {function}"
+        what = f"replace {original} with {replacement} in {function}"
     return {
         "name": f"{FILE}:{line}:{col}: {what}",
         "package": "x",
@@ -71,11 +75,12 @@ class Case(unittest.TestCase):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text)
 
-    def report(self, outcomes, shift=0, listed=None):
-        """A report of one scope: `outcomes` maps a mutant of `mutants()` to its summary;
-        `listed`, the scope's every mutant (all-mutants.json), is all of `mutants()` by default."""
+    def report(self, outcomes, shift=0, listed=None, ms=None):
+        """A report of one scope: `outcomes` maps a mutant of `ms` (`mutants(shift)` by default)
+        to its summary; `listed`, the scope's every mutant (all-mutants.json), is all of `ms` by
+        default."""
         self.reports += 1
-        ms = mutants(shift)
+        ms = ms or mutants(shift)
         scope = self.root / f"report-{self.reports}" / "x"
         scope.mkdir(parents=True)
         rows = [{"scenario": "Baseline", "summary": "Success"}]
@@ -224,6 +229,96 @@ class Write(Case):
         (self.root / "nix/mutants-baseline.toml").write_text(text.replace("enforce = false", "enforce = true"))
         got = self.gate("sweep", r)
         self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+
+
+class Committed(Case):
+    """The committed baseline (BASELINE), as the gate and the seeding sweep read it."""
+
+    def report_mode(self):
+        """The committed baseline's text before its first file table, with `enforce = false` and
+        `max = 0`: the file that the first sweep seeds, whether or not it is seeded already."""
+        text = BASELINE.read_text().split("\n[", 1)[0]
+        text = re.sub(r"(?m)^enforce = true\b", "enforce = false", text)
+        return re.sub(r"(?m)^(max\s*=\s*)\d+", r"\g<1>0", text)
+
+    def test_the_committed_baseline_loads_within_its_max(self):
+        (self.root / "nix").mkdir()
+        (self.root / "nix/mutants-baseline.toml").write_text(BASELINE.read_text())
+        got = self.gate("diff", self.report({}))
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+        self.assertNotIn("FAIL", got.stdout)
+
+    def test_a_seeded_baseline_passes_and_one_new_survivor_fails(self):
+        (self.root / "nix").mkdir()
+        path = self.root / "nix/mutants-baseline.toml"
+        path.write_text(self.report_mode())
+        sweep = {"same=true": "MissedMutant", "same==": "CaughtMutant", "small==1": "MissedMutant", "small==2": "MissedMutant"}
+        r = self.report(sweep)
+        got = self.gate("sweep", r, extra=["--seed"])
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+        seeded = self.read_baseline()
+        self.assertEqual((seeded["enforce"], seeded["max"]), (False, 3))
+        self.assertEqual(sorted(seeded[FILE]), [SAME_TRUE, SMALL_EQ, SMALL_EQ + " #2"])
+        # The committed file's comments stay above the seeded entries.
+        self.assertTrue(path.read_text().startswith(BASELINE.read_text().split("\n", 1)[0]))
+        # The commit that seeds the baseline turns the gate on.
+        path.write_text(path.read_text().replace("enforce = false", "enforce = true"))
+
+        for mode in ["diff", "touched", "sweep"]:
+            with self.subTest(seeded=mode):
+                got = self.gate(mode, r)
+                self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+                self.assertIn("3 missed (3 listed)", got.stdout)
+
+        # The test that caught `same`'s == is gone: that mutant survives now, and only it fails.
+        r = self.report({**sweep, "same==": "MissedMutant"})
+        for mode in ["diff", "touched", "sweep"]:
+            with self.subTest(new=mode):
+                got = self.gate(mode, r)
+                self.assertEqual(got.returncode, 1, got.stdout + got.stderr)
+                self.assertEqual(re.findall(r'(?m)^  \S+: "(.*)"$', got.stdout), [SAME_EQ])
+
+
+# `same` names a Check and two Rules, one of them the list of every rule, and a comment names
+# another Check; `small` names none.
+DECIDING = (
+    "pub fn same(a: u32, b: u32) -> bool {\n    let _ = (Check::PopSign, Rule::Placement, Rule::ALL); // not Check::InComment\n"
+    "    a == b\n}\n\n"
+    "pub fn small(a: u32) -> bool {\n    a == 1 || a == 2\n}\n"
+)
+
+
+class Missed(Case):
+    def test_missed_lists_each_survivor_by_function_with_its_status(self):
+        self.source(DECIDING)
+        ms = mutants(shift=1)
+        ms["small||"] = mutant("small", "BinaryOperator", 6, 12, 14, "&&", shift=1, original="||")
+        for m in ms.values():
+            start, end = {"same": (1, 4), "small": (6, 8)}[m["function"]["function_name"]]
+            m["function"]["span"] = {"start": {"line": start, "column": 1}, "end": {"line": end, "column": 2}}
+        (self.root / "nix").mkdir()
+        (self.root / "nix/mutants-baseline.toml").write_text(
+            f'enforce = true\nmax = 2\n\n["{FILE}"]\n"{SAME_TRUE}" = {{ why = "seeded 2026-12-07", reviewed = false }}\n'
+            f'"{SMALL_EQ}" = "a reviewed why"\n'
+        )
+        outcomes = {"same=true": "MissedMutant", "same==": "MissedMutant", "small==1": "MissedMutant"}
+        r = self.report({**outcomes, "small==2": "CaughtMutant", "small||": "MissedMutant"}, ms=ms)
+        got = self.gate("diff", r, extra=["--missed", str(self.root / "missed.md")])
+        self.assertEqual(got.returncode, 1, got.stdout + got.stderr)
+        text = (self.root / "missed.md").read_text()
+        same, small = text.split("### `same`, line 1\n", 1)[1].split("### `small`, line 6\n")
+        self.assertIn(f"## `{FILE}`", text)
+        self.assertIn("names: `Check::PopSign`, `Rule::Placement`.", same)
+        self.assertNotIn("Rule::ALL", same)
+        self.assertNotIn("Check::InComment", same)
+        self.assertIn("| 3 | `BinaryOperator ==→!=` | new |", same)
+        self.assertIn("| 3 | `FnValue →true` | not reviewed: seeded 2026-12-07 |", same)
+        self.assertIn("names no `Check` and no `Rule`", small)
+        self.assertIn("| 7 | `BinaryOperator ==→!=` | reviewed: a reviewed why |", small)
+        # A `|` in a key would end its table cell.
+        self.assertIn("| 7 | `BinaryOperator \\|\\|→&&` | new |", small)
+        # The caught mutant is no survivor.
+        self.assertEqual(text.count("| 7 |"), 2)
 
 
 if __name__ == "__main__":

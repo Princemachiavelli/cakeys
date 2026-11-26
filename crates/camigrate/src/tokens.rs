@@ -15,7 +15,7 @@ use cakeys_core::{KmError, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::resolution::{self, Resolved, moduleless_info};
 use cakeys_pkcs11::{Registry, Token};
-use cakeys_profile::{Capability, KeyKind, Move, On, PlaintextKind, Profile, Way};
+use cakeys_profile::{By, Capability, KeyKind, Move, On, PlaintextKind, Profile, Way};
 use std::collections::BTreeSet;
 use std::str::FromStr;
 
@@ -342,7 +342,8 @@ fn probed_of(module: &Profile, stack: &Resolved, usable: &BTreeSet<String>) -> P
         if yes && hidden {
             continue;
         }
-        rows.push(Probed { covers, yes: yes && !gone, via, unknown });
+        let unverified = row.is_some_and(|r| r.by == Some(By::Unverified));
+        rows.push(Probed { covers, yes: yes && !gone, via, unknown, unverified });
     }
     ways
 }

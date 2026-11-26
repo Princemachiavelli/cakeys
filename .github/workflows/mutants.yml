@@ -1,6 +1,6 @@
 # Mutation testing as a gate (docs/archive/REVIEW-2026-11-24/phase2-3-design.md §5): the mutants
 # no test catches, held by nix/mutants-baseline.py (`packages.mutants-gate`) to
-# nix/mutants-baseline.toml. Two tiers (nix/package-crane.nix, `mutantsScopes`):
+# nix/mutants-baseline.toml. Two tiers, which nix/mutants-scopes.toml lists:
 # - `unit`: code whose package's own tests are its tests, seconds a mutant;
 # - the token tier: its files under their package's own tests first (`tokens-first`), then what
 #   that left (`tokens`) under every crate's tests with the token suites, minutes a mutant.
@@ -16,6 +16,10 @@
 #
 # The gate is in report mode until the first sweep seeds the baseline (`enforce = false`): it
 # prints what would fail and passes, and the sweep uploads the seeded baseline to commit.
+# Every gate also writes missed.md, the survivors grouped by file and function with their baseline
+# status (nix/mutants-baseline.py --missed). A pull request's and a week's missed.md go into the
+# job summary. A sweep's is uploaded as the artifact `mutants-missed`, which a review starts from
+# (docs/REVIEWING.md).
 #
 # Each report job builds with the read-only token and hands its report on as an artifact; the
 # badge's publish job, the only one that may write, runs no repository code (as reports.yml).
@@ -194,15 +198,17 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       # A pull request's or a week's unit tier is one job: its gate is here. A sweep's is below.
-      # The gate's verdict in the log and the job's summary; its exit is the step's.
+      # The gate's verdict and missed.md go into the log and the job's summary; the gate's exit
+      # code is the step's.
       - &gate
         name: Gate
         if: env.SKIP != 'true' && env.KIND != 'sweep'
         run: |
           set +e
-          nix run .#mutants-gate -- --mode "$MODE" "$RUNNER_TEMP"/reports/* | tee "$RUNNER_TEMP/gate.txt"
+          nix run .#mutants-gate -- --mode "$MODE" --missed "$RUNNER_TEMP/missed.md" "$RUNNER_TEMP"/reports/* | tee "$RUNNER_TEMP/gate.txt"
           status=${PIPESTATUS[0]}
           { echo "### mutants gate: $TIER"; echo '```text'; cat "$RUNNER_TEMP/gate.txt"; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
+          if [ -f "$RUNNER_TEMP/missed.md" ]; then cat "$RUNNER_TEMP/missed.md" >>"$GITHUB_STEP_SUMMARY"; fi
           exit "$status"
 
   tokens-first:
@@ -300,8 +306,9 @@ jobs:
           path: ${{ runner.temp }}/reports
       - *gate
 
-  # The monthly sweep's gate over every shard of both tiers, the badge (the mutants caught, of
-  # the viable ones) and, while the baseline is in report mode, the seeded baseline.
+  # The monthly sweep's gate over every shard of both tiers, its missed.md, the badge (the
+  # mutants caught, of the viable ones) and, while the baseline is in report mode, the seeded
+  # baseline.
   sweep:
     needs: [plan, unit, tokens-first, tokens]
     if: needs.plan.outputs.kind == 'sweep'
@@ -319,9 +326,18 @@ jobs:
       - id: gate
         run: |
           set +e
-          nix run .#mutants-gate -- --mode sweep --merged "$RUNNER_TEMP/merged" "$RUNNER_TEMP"/reports/* | tee "$RUNNER_TEMP/gate.txt"
+          mkdir -p "$RUNNER_TEMP/missed"
+          nix run .#mutants-gate -- --mode sweep --merged "$RUNNER_TEMP/merged" --missed "$RUNNER_TEMP/missed/missed.md" \
+            "$RUNNER_TEMP"/reports/* | tee "$RUNNER_TEMP/gate.txt"
           echo "status=${PIPESTATUS[0]}" >>"$GITHUB_OUTPUT"
           { echo "### mutants gate: sweep"; echo '```text'; cat "$RUNNER_TEMP/gate.txt"; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
+      # The survivors to review, until the next sweep replaces them.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutants-missed
+          path: ${{ runner.temp }}/missed/missed.md
+          if-no-files-found: error
+          retention-days: 90
       - id: badge
         run: |
           mkdir -p "$RUNNER_TEMP/badge"

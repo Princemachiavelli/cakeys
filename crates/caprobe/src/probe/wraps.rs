@@ -65,9 +65,9 @@ pub(super) fn probe_wrapping(
                 }
                 let cap = Capability::WrapOaep(name.to_owned());
                 match host_blob(made, &mech, wraps, unwraps, hash) {
-                    HostBlob::Decodes => {
+                    HostBlob::Decodes(checked) => {
                         round_trips.push((name, hash));
-                        profile.yes(cap, Checked::Host, None);
+                        profile.yes(cap, checked, None);
                     }
                     HostBlob::Refused(why, rv) => failed(made, profile, name, why, rv),
                     HostBlob::Untold(why) => {
@@ -75,7 +75,7 @@ pub(super) fn probe_wrapping(
                             "wrap.rsa-oaep.{name} rests on the module's own round trip, not a host-made blob: {why}"
                         ));
                         round_trips.push((name, hash));
-                        profile.yes(cap, Checked::Unverified, None);
+                        profile.yes(cap, Checked::unverified(), None);
                     }
                 }
             }
@@ -100,13 +100,16 @@ pub(super) fn probe_wrapping(
             return;
         }
     };
+    // A session key: SoftHSM refuses the template (CKR_ATTRIBUTE_READ_ONLY) and keeps the token
+    // object it began, unlabelled, which no cleanup can name; a session one goes with the session
+    // (review 2026-11-24 L4b-5, caprobe's liar table).
     let label = made.scratch.label();
     let with_len = session.unwrap_key(
         &mech,
         unwraps,
         &wrapped,
         &[
-            Attribute::Token(true),
+            Attribute::Token(false),
             Attribute::Label(label.as_bytes().to_vec()),
             Attribute::Class(ObjectClass::SECRET_KEY),
             Attribute::KeyType(KeyType::AES),
@@ -271,8 +274,8 @@ pub(super) fn same_key(session: &Session, a: ObjectHandle, b: ObjectHandle) -> O
 
 /// What a blob the host made says of the module's RSA-OAEP with one hash ([`host_blob`]).
 pub(super) enum HostBlob {
-    /// It unwrapped to the key the host wrapped.
-    Decodes,
+    /// It unwrapped to the key the host wrapped, as the host checked.
+    Decodes(Checked),
     /// It did not: the module does not decode OAEP with this hash, whatever its own round trip.
     /// The return value of its refusal; `None`: the host found another key.
     Refused(String, Option<u64>),
@@ -327,8 +330,8 @@ pub(super) fn host_blob(
             return HostBlob::Refused(why, token::rv_of(&e));
         }
     };
-    let verdict = match moves::same_aes(made, h, value) {
-        Ok(()) => HostBlob::Decodes,
+    let verdict = match Checked::verified(moves::same_aes(made, h, value)) {
+        Ok(checked) => HostBlob::Decodes(checked),
         Err(KmError::Conflict(_)) => HostBlob::Refused("unwraps a host-made blob to another key".into(), None),
         Err(e) => HostBlob::Untold(evidence(made.tok, &e)),
     };

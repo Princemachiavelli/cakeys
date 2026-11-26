@@ -37,6 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod asymmetric;
 mod bound;
+mod checked;
 mod extras;
 mod moves;
 mod scratch;
@@ -46,6 +47,7 @@ mod wraps;
 pub(crate) use asymmetric::RSA_SIZES;
 use asymmetric::{montgomery, operate, probe_curves, probe_rsa};
 use bound::probe_bound;
+use checked::Checked;
 use scratch::{Scratch, write_probes};
 use wraps::{probe_key_wraps, probe_wrapping, rsa_aes_key_wrap};
 
@@ -242,11 +244,15 @@ fn target(tok: &Token, cfg: &TokenCfg) -> Result<Target> {
 }
 
 /// Refuse a scratch slot the probe did not leave: one holding anything, unless it holds the
-/// probe's own certificate ([`moves::SLOT_MARKER`], written at the end of every slot run) and
-/// beside it only what the module keeps beside any key (`Provider::scratch_companion`: ykcs11's
-/// attestation certificate). `scratchId` is one hex string, and a typo must never overwrite a
-/// real key: a module's own placeholder certificate is no mark, since every key it generates
-/// carries one, a real key `cakeys create` made included (review 2026-11-23 D-1).
+/// probe's own certificate over its key ([`moves::slot_mark`], written at the end of every slot
+/// run), every key beside it a key a mark names or one of the probe's test keys (a module that
+/// keeps every key it was given under one `CKA_ID`), and beside them only the probe's test certificate and
+/// what the module keeps beside any key (`Provider::scratch_companion`: ykcs11's attestation
+/// certificate). `scratchId` is one hex
+/// string, and a typo must never overwrite a real key: a module's own placeholder certificate is
+/// no mark, since every key it generates carries one, a real key `cakeys create` made included
+/// (review 2026-11-23 D-1); nor is a mark issued over another key than the one there, as a key put
+/// into a probed slot without a certificate leaves it (review 2026-11-24 E-6).
 fn check_slot(tok: &Token, id: &[u8]) -> Result<()> {
     let s = tok.raw();
     let find =
@@ -264,16 +270,37 @@ fn check_slot(tok: &Token, id: &[u8]) -> Result<()> {
         };
         certs.push(der);
     }
-    let marker = |c: &Vec<u8>| c.as_slice() == moves::SLOT_MARKER;
-    if certs.iter().any(marker) && certs.iter().filter(|c| !marker(c)).all(|c| tok.provider.scratch_companion(id, c)) {
+    // The slot's keys by their public key; one whose public key cannot be read is told by
+    // another's beside it (a private key whose module keeps its point on the public key object
+    // only), and with none readable the slot is refused.
+    let (mut keys, mut unread) = (Vec::new(), 0);
+    for class in [ObjectClass::PUBLIC_KEY, ObjectClass::PRIVATE_KEY] {
+        for h in find(&[Attribute::Class(class), Attribute::Id(id.to_vec())])? {
+            match tok.material_spki(h) {
+                Ok(Some(spki)) => keys.push(spki),
+                _ => unread += 1,
+            }
+        }
+    }
+    let mark_of = |c: &Vec<u8>| cakeys_core::id::cert_spki(c).ok().filter(|k| moves::slot_mark(k).as_ref() == Some(c));
+    let marks: Vec<Vec<u8>> = certs.iter().filter_map(mark_of).collect();
+    // Beside the mark: the device's companion, and the certificate the create probe writes (a
+    // module that keeps every certificate it was given under one `CKA_ID`).
+    let (others, tested) =
+        (certs.iter().filter(|c| mark_of(c).is_none() && c.as_slice() != moves::CERTIFICATE), moves::test_keys());
+    if !marks.is_empty()
+        && others.into_iter().all(|c| tok.provider.scratch_companion(id, c))
+        && keys.iter().all(|k| marks.contains(k) || tested.contains(k))
+        && (unread == 0 || !keys.is_empty())
+    {
         return Ok(());
     }
     let shown = cakeys_core::hex::encode(id);
     Err(KmError::Validation(
         format!(
             "token '{}': probe.scratchId {shown} holds objects caprobe did not leave there (a slot it probed \
-             holds its own certificate, CN=cakeys-probe), so it may hold a real key: refusing to overwrite it; \
-             empty the slot or name another",
+             holds its own certificate, CN=cakeys-probe, over the key beside it), so it may hold a real key: \
+             refusing to overwrite it; empty the slot or name another",
             tok.name
         )
         .into(),
@@ -343,15 +370,6 @@ impl Refusal {
     }
 }
 
-/// What checked a `yes` ([`Draft::yes`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Checked {
-    /// The host: a signature verified, a key compared, a value computed again.
-    Host,
-    /// Nothing outside the module: its own round trip (review 2026-11-24 E-3).
-    Unverified,
-}
-
 /// How ECDH derived: into a sealed secret, and in a read-only session. (A base key that
 /// derived while reporting `CKA_DERIVE = false` is a note: the provider repairs the read.)
 #[derive(Default)]
@@ -381,11 +399,7 @@ impl Draft {
 
     /// `c` worked, as `checked` showed.
     fn yes(&mut self, c: Capability, checked: Checked, via: Option<String>) {
-        let by = match checked {
-            Checked::Host => By::Host,
-            Checked::Unverified => By::Unverified,
-        };
-        self.out.set(c, Row { answer: Answer::Yes, by: Some(by), evidence: None, via });
+        self.out.set(c, Row { answer: Answer::Yes, by: Some(checked.by()), evidence: None, via });
     }
 
     /// The module answered, and the host found the answer wrong (another key, another value):
@@ -1457,7 +1471,7 @@ mod tests {
         // A yes another try saw stands over an undecided one (a size under two bindings).
         let mut draft = Draft::new(Profile::new("t/1".into(), Mode::Observed));
         draft.refused(&mut Vec::new(), cap(), Some(device[0]), "device".into());
-        draft.yes(cap(), Checked::Host, None);
+        draft.yes(cap(), Checked::same(&1, &1).unwrap(), None);
         let p = draft.finish();
         assert!(p.capabilities[&cap()].answer.yes() && !p.untested.contains_key(&cap().to_string()));
     }
