@@ -173,10 +173,6 @@ verbs = ["create", "create --dry-run"]
 objects = ["new", "new-aes"]
 expect = { exit = 16 }
 
-[[block.override]]
-verbs = ["create --dry-run"]
-expect = { exit = 16, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
-
 # ── OTHER: another object than the one asked for.
 
 # A second object under the locator.
@@ -1125,15 +1121,11 @@ verbs = ["lock --dry-run", "create", "create --dry-run"]
 objects = ["ec-sign"]
 expect = { exit = 16, device = true }
 
-[[block.override]]
-verbs = ["create --dry-run"]
-expect = { exit = 16, device = true, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
-
 [[block]]
 lies = ["dev.find"]
 verbs = ["create --dry-run"]
 objects = ["new-aes"]
-expect = { exit = 16, device = true, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
+expect = { exit = 16, device = true }
 
 [[block]]
 lies = ["dev.find"]
@@ -1333,15 +1325,11 @@ verbs = ["delete --dry-run", "create --dry-run"]
 objects = ["ec-sign"]
 expect = { exit = 16, device = true }
 
-[[block.override]]
-verbs = ["create --dry-run"]
-expect = { exit = 16, device = true, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
-
 [[block]]
 lies = ["loss.find"]
 verbs = ["create --dry-run"]
 objects = ["new"]
-expect = { exit = 16, device = true, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
+expect = { exit = 16, device = true }
 
 # ── Grid points no cell covers, each decided.
 
