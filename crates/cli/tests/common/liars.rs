@@ -73,6 +73,9 @@ pub struct Object {
     /// Whether it is put on the token through the module and recorded by `lock`, never
     /// created (a certificate, a data object, a public key).
     pub adopted: bool,
+    /// The exit every honest run on it has, where that is not the verb's own ([`Fixture::honest`]):
+    /// a refusal of its token's options, which no lie changes, or a lock of one not yet locked.
+    pub honest: Option<i32>,
 }
 
 /// A verb: an entry path a cell runs.
@@ -84,6 +87,9 @@ pub struct Verb {
     pub form: Form,
     /// Whether the runner puts `--json` before its arguments (default: a [`Form::Rows`] verb).
     pub json: bool,
+    /// The pairs it runs (default 1): a refused run's rows end at the refused one, the rows
+    /// before it passing; a passing run prints one per pair.
+    pub pairs: usize,
 }
 
 /// What a verb prints that the oracle reads (`rows = true`, or `form = "<form>"`).
@@ -349,8 +355,9 @@ impl Table {
                 let token = t.get("token").and_then(toml::Value::as_str).unwrap_or("ref").to_owned();
                 let made = t.get("made").and_then(toml::Value::as_bool).unwrap_or(true);
                 let adopted = t.get("adopted").and_then(toml::Value::as_bool).unwrap_or(false);
+                let honest = t.get("honest").and_then(toml::Value::as_integer).map(|n| i32::try_from(n).unwrap());
                 let class = string(t, "class", &format!("objects.{name}"));
-                (name, Object { class, token, made, adopted })
+                (name, Object { class, token, made, adopted, honest })
             })
             .collect();
         let verbs = section("verbs")
@@ -367,7 +374,8 @@ impl Table {
                     (_, Some(f)) => panic!("verbs.{name}: no form {f}"),
                 };
                 let json = t.get("json").and_then(toml::Value::as_bool).unwrap_or(form == Form::Rows);
-                (name, Verb { args, form, json })
+                let pairs = t.get("pairs").and_then(toml::Value::as_integer).map_or(1, |n| usize::try_from(n).unwrap());
+                (name, Verb { args, form, json, pairs })
             })
             .collect();
         let lies = section("lies")
@@ -431,6 +439,11 @@ impl Table {
     /// caprobe's table.
     pub fn caprobe() -> Table {
         Table::load("../caprobe/tests/liars/caprobe.toml")
+    }
+
+    /// The table of tpm2-pkcs11's own attestation (`CKM_TPM2_CERTIFY`), run by `tests/tpm2.rs`.
+    pub fn tpm2() -> Table {
+        Table::load("tests/liars/tpm2.toml")
     }
 
     /// Every cell, in the table's order.
@@ -544,6 +557,9 @@ impl Table {
         let e = &c.expect;
         let refused = e.exit.iter().any(|x| !matches!(x, 0 | 22));
         let rows = verb.form == Form::Rows;
+        if verb.pairs == 0 || (verb.pairs > 1 && !rows) {
+            out.push(format!("{id}: {} runs {} pairs, and its rows say which", c.verb, verb.pairs));
+        }
         if !rows && (e.rule.is_some() || e.device || e.outcome.is_some()) {
             out.push(format!("{id}: {} prints no row to name a rule, a device or an outcome", c.verb));
         }
@@ -827,6 +843,11 @@ impl Fixture {
         }
     }
 
+    /// The shim's module, for each run: the process's `P11_FAULT_MODULE` is the liar suite's only.
+    fn module(&self) -> (&'static str, &Path) {
+        ("P11_FAULT_MODULE", Path::new(&self.real))
+    }
+
     /// The lock file.
     pub fn lock(&self) -> PathBuf {
         self.w.dir.join("keys.lock")
@@ -867,8 +888,10 @@ impl Tool for Fixture {
         args.iter().map(|a| a.replace("{spec}", object).replace("{token}", token)).collect()
     }
 
+    /// Each run names the shim's module itself ([`Fixture::module`]).
     fn run(&self, args: &[&str], env: &[(&str, &Path)]) -> Output {
-        self.w.km_env(args, env)
+        let env: Vec<(&str, &Path)> = std::iter::once(self.module()).chain(env.iter().copied()).collect();
+        self.w.km_env(args, &env)
     }
 
     /// The lock and the token, now.
@@ -881,10 +904,12 @@ impl Tool for Fixture {
         if what == self.lock().display().to_string() { "lock" } else { "token" }.to_owned()
     }
 
-    /// 22 for a verb that writes (a delete, a creation of an object not made), else 0.
+    /// The object's own ([`Object::honest`]), else 22 for a verb that writes (a delete, a
+    /// creation of an object not made), else 0.
     fn honest_exit(&self, table: &Table, verb: &str, object: &str) -> i32 {
-        let writes = verb == "delete" || (verb == "create" && !table.objects[object].made);
-        if writes { 22 } else { 0 }
+        let o = &table.objects[object];
+        let writes = verb == "delete" || (verb == "create" && !o.made);
+        o.honest.unwrap_or(if writes { 22 } else { 0 })
     }
 
     /// It exits 22 exactly when it changed the lock, and a `check` changes nothing.
@@ -1033,7 +1058,7 @@ pub fn judge(tool: &impl Tool, table: &Table, cell: &Cell, n: usize) -> Vec<Stri
     }
     let refused = exit.is_some_and(|x| !matches!(x, 0 | 22));
     match verb.form {
-        Form::Rows => wrong.extend(judge_rows(e, &out, exit, refused)),
+        Form::Rows => wrong.extend(judge_rows(e, &out, exit, refused, verb.pairs)),
         Form::Plan => wrong.extend(judge_plan(e, &out)),
         Form::Profile => wrong.extend(judge_profile(e, &out, refused)),
         Form::Nothing if refused && !out.stdout.is_empty() => {
@@ -1048,34 +1073,40 @@ pub fn judge(tool: &impl Tool, table: &Table, cell: &Cell, n: usize) -> Vec<Stri
     wrong.into_iter().map(|w| format!("{id}: {w}: {}", said())).collect()
 }
 
-/// The one row of a verb that prints a row per pair: a refused one names the cell's rule and
-/// device bit, a passing one its outcome and deferrals.
-fn judge_rows(e: &Expect, out: &Output, exit: Option<i32>, refused: bool) -> Vec<String> {
+/// The rows of a verb that prints a row per pair, one per pair it runs ([`Verb::pairs`]): a
+/// refused run's end at the refused one, which names the cell's rule and device bit, the rows
+/// before it passing; a passing run's each name its outcome and deferrals.
+fn judge_rows(e: &Expect, out: &Output, exit: Option<i32>, refused: bool, pairs: usize) -> Vec<String> {
     let mut wrong = Vec::new();
     match serde_json::from_slice::<Vec<Row>>(&out.stdout) {
         Err(err) => wrong.push(format!("no rows on stdout ({err})")),
-        Ok(rows) => match rows.as_slice() {
-            [row] if refused => {
+        Ok(rows) => match rows.split_last() {
+            Some((row, passed)) if refused && rows.len() <= pairs => {
                 let got = (i32::from(row.exit), row.rule.as_deref(), row.device);
                 let want = (exit.unwrap_or(-1), e.rule.as_deref(), e.device);
                 if got != want {
                     wrong.push(format!("the row says (exit, rule, device) {got:?}, not {want:?}"));
                 }
-            }
-            [row] => {
-                if row.exit != 0 || row.rule.is_some() {
-                    wrong.push(format!("a passing run's row is refused: {row:?}"));
-                }
-                if let Some(o) = e.outcome.as_deref().filter(|o| *o != row.outcome) {
-                    wrong.push(format!("the row's outcome is {}, not {o}", row.outcome));
-                }
-                if let Some(d) = &e.deferred
-                    && !row.deferred.iter().any(|r| &r.rule == d)
-                {
-                    wrong.push(format!("the dry run defers {:?}, not {d}", row.deferred));
+                if let Some(row) = passed.iter().find(|r| r.exit != 0 || r.rule.is_some()) {
+                    wrong.push(format!("a row before the refused one is refused: {row:?}"));
                 }
             }
-            rows => wrong.push(format!("{} rows, not one", rows.len())),
+            Some(_) if !refused && rows.len() == pairs => {
+                for row in &rows {
+                    if row.exit != 0 || row.rule.is_some() {
+                        wrong.push(format!("a passing run's row is refused: {row:?}"));
+                    }
+                    if let Some(o) = e.outcome.as_deref().filter(|o| *o != row.outcome) {
+                        wrong.push(format!("the row's outcome is {}, not {o}", row.outcome));
+                    }
+                    if let Some(d) = &e.deferred
+                        && !row.deferred.iter().any(|r| &r.rule == d)
+                    {
+                        wrong.push(format!("the dry run defers {:?}, not {d}", row.deferred));
+                    }
+                }
+            }
+            _ => wrong.push(format!("{} rows, of {pairs} pairs", rows.len())),
         },
     }
     wrong
@@ -1177,13 +1208,28 @@ pub fn run_table<T: Tool>(table: &Table, class: &str, plant: impl FnOnce(&str, &
     assert!(!cells.is_empty(), "no cell of class {class}: its points are na, and its test goes");
     let mut wrong = Vec::new();
     let Some(f) = plant(&format!("liars-{}", class.to_lowercase()), &mut wrong) else { return };
+    wrong.extend(run_cells(table, &cells, &f));
+    assert!(
+        wrong.is_empty(),
+        "{} wrong in the {} cells of {class} and their runs:\n{}",
+        wrong.len(),
+        cells.len(),
+        wrong.join("\n")
+    );
+}
+
+/// [`run_table`]'s runs of `cells` on the fixture `f` planted of `table`, with no assertion: what
+/// is wrong. What an honest run leaves as it was (every run but a write, a refusal too) is run
+/// before and after the cells; the writes last, `f` restored after each.
+pub fn run_cells<T: Tool>(table: &Table, cells: &[Cell], f: &T) -> Vec<String> {
+    let mut wrong = Vec::new();
     let met: BTreeSet<(&str, &str)> = cells.iter().map(|c| (c.verb.as_str(), c.object.as_str())).collect();
-    let reads: Vec<(&str, &str)> = met.iter().copied().filter(|(v, o)| f.honest_exit(table, v, o) == 0).collect();
+    let reads: Vec<(&str, &str)> = met.iter().copied().filter(|(v, o)| f.honest_exit(table, v, o) != 22).collect();
     for (verb, object) in &reads {
-        wrong.extend(honest(&f, table, verb, object));
+        wrong.extend(honest(f, table, verb, object));
     }
     for (n, cell) in cells.iter().enumerate() {
-        let judged = judge(&f, table, cell, n);
+        let judged = judge(f, table, cell, n);
         match &cell.expect.red {
             None => wrong.extend(judged),
             Some(red) if judged.is_empty() => wrong.push(format!("{}: marked red ({red}), and passes", cell.id())),
@@ -1192,17 +1238,11 @@ pub fn run_table<T: Tool>(table: &Table, class: &str, plant: impl FnOnce(&str, &
         f.restore(table);
     }
     for (verb, object) in &reads {
-        wrong.extend(honest(&f, table, verb, object));
+        wrong.extend(honest(f, table, verb, object));
     }
     for (verb, object) in met.iter().filter(|(v, o)| f.honest_exit(table, v, o) == 22) {
-        wrong.extend(honest(&f, table, verb, object));
+        wrong.extend(honest(f, table, verb, object));
         f.restore(table);
     }
-    assert!(
-        wrong.is_empty(),
-        "{} wrong in the {} cells of {class} and their runs:\n{}",
-        wrong.len(),
-        cells.len(),
-        wrong.join("\n")
-    );
+    wrong
 }
