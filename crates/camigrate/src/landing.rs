@@ -155,8 +155,8 @@ pub(crate) fn import_checks(
 /// 2026-11-24 D-2), the attestation that the spec opts into, and no attestation of an imported
 /// key where the provider attests only keys that the device generated (PIV, docs/CAMIGRATE.md
 /// D8). When the target's provider cannot be resolved (for example, because it is not in this
-/// build), these rules are deferred, and the notes say so. `dst` is the landing pair: the target's one import pair for the object, or the
-/// pair that `--spec` names.
+/// build), these rules are deferred, and the notes say so. `dst` is the landing pair: the target's
+/// one import pair for the object, or the pair that `--spec` names.
 fn landing_checks(
     p: &mut plan::Plan,
     dst: &Target,
