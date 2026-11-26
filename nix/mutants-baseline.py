@@ -2,7 +2,7 @@
 caught, held to nix/mutants-baseline.toml, the survivors that may stay, each with why.
 
 Usage: python3 -I nix/mutants-baseline.py --mode diff|touched|sweep [--source DIR]
-           [--baseline FILE] [--write | --seed] [--merged DIR] REPORT...
+           [--baseline FILE] [--write | --seed] [--merged DIR] [--missed FILE] REPORT...
 
 Each REPORT is an output of cakeys-crane's `mutants` (nix/package-crane.nix): a directory per
 scope, holding cargo-mutants' outcomes.json and its lists, and all-mutants.json, the scope's
@@ -29,6 +29,14 @@ survivor not listed, as `{ why = "seeded <date>", reviewed = false }`, and sets 
 count. --merged DIR writes DIR/all/{caught,missed,timeout,unviable}.txt, one line per mutant of
 the run, for scripts/badges.sh.
 
+--missed FILE writes the run's survivors as Markdown, for a review to start from
+(docs/REVIEWING.md, "Start from the survivors"). The survivors are grouped by file and by
+function. Each function lists the `Check::` and `Rule::` variants that its code names (its
+comments left out), which are the named security decisions that the function makes. Each survivor shows its line,
+its key without the function, and its baseline status: "new" when the baseline does not list it,
+"not reviewed" for an entry with `reviewed = false`, and "reviewed" otherwise, each with the
+entry's why.
+
 Exits 0 when the gate passes, 1 when it fails, 2 on bad input.
 """
 
@@ -43,6 +51,10 @@ import tomllib
 # An original longer than this is cut: the key stays readable, and #k tells apart what the cut
 # makes identical.
 ORIGINAL_MAX = 120
+# A `Check` or `Rule` variant that a function's code names, read with its comments removed
+# (cargo-mutants' span of a function starts at its doc comment). `Rule::ALL` is the list of all
+# rules, not one rule.
+DECISION = re.compile(r"\b(?:Check|Rule)::(?!ALL\b)[A-Z]\w*")
 # What a mutant's outcome is when several reports examined it: caught (or unviable, the same
 # code) wins, then a timeout, then missed.
 RANK = {"CaughtMutant": 3, "Unviable": 3, "Timeout": 2, "MissedMutant": 1}
@@ -89,13 +101,20 @@ class Source:
     def __init__(self, root):
         self.root, self.files = pathlib.Path(root), {}
 
-    def text(self, file, span):
+    def load(self, file):
         if file not in self.files:
             path = self.root / file
             if not path.is_file():
                 raise Bad(f"{path}: the reports' source is not here (--source)")
             self.files[file] = path.read_text(encoding="utf-8").split("\n")
-        lines, (s, e) = self.files[file], (span["start"], span["end"])
+        return self.files[file]
+
+    def lines(self, file, first, last):
+        """Lines `first` to `last` of the file, counted from 1, both included."""
+        return "\n".join(self.load(file)[first - 1 : last])
+
+    def text(self, file, span):
+        lines, (s, e) = self.load(file), (span["start"], span["end"])
         try:
             if s["line"] == e["line"]:
                 return lines[s["line"] - 1][s["column"] - 1 : e["column"] - 1]
@@ -196,6 +215,62 @@ def rewrite(path, remove, add, ceiling):
     tomllib.loads(path.read_text())
 
 
+def cell(text):
+    """Text for a Markdown table cell: a `|` would end the cell."""
+    return text.replace("|", "\\|")
+
+
+def missed_markdown(survivors, key, known, entries, source, summary):
+    """missed.md: the survivors (mutant names) by file and function, with each function's `Check`
+    and `Rule` variants and each survivor's baseline status."""
+    functions = {}
+    for name in survivors:
+        m = known[name]
+        f = m.get("function") or {}
+        start = (f.get("span") or m["span"])["start"]["line"] if f else 0
+        functions.setdefault((m["file"], start, f.get("function_name", "")), []).append(name)
+    out = [
+        "# Surviving mutants",
+        "",
+        f"{summary}",
+        "",
+        "Each row is a mutant that no test caught: the code changed as the row says, and every test",
+        "still passed. The baseline column says whether nix/mutants-baseline.toml lists the mutant:",
+        '"new" when it does not (the gate fails on it), "not reviewed" for an entry that a sweep',
+        'seeded, and "reviewed" for an entry that a person wrote or reviewed. Each new or not reviewed',
+        "row needs a test that is seen failing on the mutant, a finding, or a reviewed why",
+        '(docs/REVIEWING.md, "Start from the survivors").',
+    ]
+    last_file = None
+    for (file, start, function), names in sorted(functions.items()):
+        if file != last_file:
+            out += ["", f"## `{file}`"]
+            last_file = file
+        named = []
+        if function:
+            span = known[names[0]]["function"]["span"]
+            code = re.sub(r"//.*", "", source.lines(file, span["start"]["line"], span["end"]["line"]))
+            named = sorted(set(DECISION.findall(code)))
+        out += ["", f"### `{function}`, line {start}" if function else "### Outside any function", ""]
+        if named:
+            out += [f"The checks and rules that the function names: {', '.join(f'`{n}`' for n in named)}.", ""]
+        else:
+            out += ["The function names no `Check` and no `Rule`.", ""]
+        out += ["| Line | Mutant | Baseline |", "|---:|---|---|"]
+        for name in sorted(names, key=lambda n: (known[n]["span"]["start"]["line"], known[n]["span"]["start"]["column"], n)):
+            file_, k = key[name]
+            entry = entries.get((file_, k))
+            if entry is None:
+                status = "new"
+            elif isinstance(entry, str):
+                status = f"reviewed: {entry}"
+            else:
+                status = f"{'reviewed' if entry.get('reviewed', True) else 'not reviewed'}: {entry['why']}"
+            shown = k.split(": ", 1)[1] if function and k.startswith(f"{function}: ") else k
+            out.append(f"| {known[name]['span']['start']['line']} | `{cell(shown)}` | {cell(status)} |")
+    return "\n".join(out) + "\n"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--mode", required=True, choices=["diff", "touched", "sweep"])
@@ -205,6 +280,7 @@ def main():
     edit.add_argument("--write", action="store_true")
     edit.add_argument("--seed", action="store_true")
     ap.add_argument("--merged", type=pathlib.Path)
+    ap.add_argument("--missed", type=pathlib.Path)
     ap.add_argument("reports", nargs="+", type=pathlib.Path)
     a = ap.parse_args()
     baseline = a.baseline or a.source / "nix/mutants-baseline.toml"
@@ -239,11 +315,14 @@ def main():
         stale = {e for e in stale if e in entries}
 
     caught_n = len(by_status["CaughtMutant"]) + len(earlier - outcome.keys())
-    print(
+    summary = (
         f"mutants gate ({a.mode}): {len(outcome)} examined: {caught_n} caught, {len(survivors)} missed "
         f"({len(survivors & entries.keys())} listed), {len(by_status['Timeout'])} timeout, "
         f"{len(by_status['Unviable'])} unviable; the baseline has {len(entries)} entries, max = {ceiling}"
     )
+    print(summary)
+    if a.missed:
+        a.missed.write_text(missed_markdown(by_status["MissedMutant"], key, known, entries, source, summary))
     failures = 0
 
     def section(title, items, fail):
