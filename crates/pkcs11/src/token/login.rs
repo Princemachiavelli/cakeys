@@ -1,5 +1,5 @@
-//! Logging in: the PIN guard, the session a token opens, and the SO steps (review 2026-11-23
-//! B-5).
+//! The login code: the PIN guard, the session that a token opens, and the SO steps (review
+//! 2026-11-23 B-5).
 
 #[allow(
     clippy::wildcard_imports,
@@ -7,26 +7,28 @@
 )]
 use super::*;
 
-/// The PIN counters `C_GetTokenInfo` reports (M2): a login on the final try or a locked PIN is
-/// refused before it is attempted, so a wrong PIN file never spends the last retry (PIV allows
-/// few).
+/// The PIN counters that `C_GetTokenInfo` reports (M2). A login on the final try, or with a
+/// locked PIN, is refused before it is attempted, so that a wrong PIN file never uses up the last
+/// retry (PIV allows only a few retries).
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct PinState {
     pub(super) user: Pin,
     pub(super) so: Pin,
 }
 
-/// One PIN's counters.
+/// The counters of one PIN.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Pin {
     pub(super) locked: bool,
     pub(super) final_try: bool,
-    /// A login failed since the last success, but retries remain: a warning, never a refusal.
+    /// A login has failed since the last success, but retries remain. This is a warning, and it
+    /// never causes a refusal.
     pub(super) count_low: bool,
 }
 
 impl Pin {
-    /// Refuse a login as `who` (user or SO) the counters say must not be tried.
+    /// Refuses a login as `who` (the user or the SO) with `Unavailable` when the counters say
+    /// that the PIN is locked or that only the final try is left.
     fn guard(self, token: &str, who: &str) -> Result<()> {
         let Pin { locked, final_try, .. } = self;
         if locked {
@@ -54,18 +56,21 @@ impl Pin {
 }
 
 impl Token {
-    /// Run `step` in a Security Officer session (`soCredentialFile`/`soCredentialEnv`), for modules that
-    /// create and destroy objects only as SO, then return to the user session. Login state is
-    /// per token, so the user is logged out first. The admin credential is read here, never at
-    /// open, and zeroized when the step ends. A step already in the SO session runs as it is:
-    /// `Token::create` and the destroys enter it before the provider's override, which may ask
-    /// again ([`Token::managing`]).
+    /// Runs `step` in a Security Officer session (`soCredentialFile` or `soCredentialEnv`), for
+    /// modules that create and destroy objects only as the SO, and then returns to the user
+    /// session. The login state belongs to the token, so the user is logged out first. The admin
+    /// credential is read here, never at open, and it is zeroized when the step ends. A step that
+    /// is already in the SO session runs directly. `Token::create` and the destroys enter the SO
+    /// session before the provider's override runs, and the override may ask for it again
+    /// ([`Token::managing`]).
     ///
     /// # Errors
     ///
-    /// `Unsupported` without an admin credential configured; `Unavailable` when the SO login,
-    /// the logout or the return to the user session fails, or the PIN counters refuse a login;
-    /// else whatever `step` returns.
+    /// - `Unsupported` when no admin credential is configured.
+    /// - `Unavailable` when the SO login, the logout or the return to the user session fails,
+    ///   when the PIN counters refuse a login, or when the SO credential was already refused
+    ///   earlier in this run.
+    /// - Otherwise, whatever `step` returns.
     pub fn as_so<T>(&self, what: &str, step: impl FnOnce() -> Result<T>) -> Result<T> {
         use std::sync::atomic::Ordering;
         if self.in_so.load(Ordering::Relaxed) {
@@ -131,14 +136,15 @@ impl Token {
     }
 }
 
-/// Whether `session` shows the login `who` the module just accepted: a module that answers
-/// `CKR_OK` to `C_Login` and leaves the session public hides every private object, so a search
-/// would read a key it cannot see as absent (review 2026-11-24, lead-found through the Phase 2
-/// design). `C_GetSessionInfo` says which it is.
+/// Checks that `session` shows the login as `who` that the module just accepted. A module that
+/// answers `CKR_OK` to `C_Login` but leaves the session public hides every private object, so a
+/// search would report a key that it cannot see as absent (review 2026-11-24, found by the lead
+/// through the Phase 2 design). `C_GetSessionInfo` reports the session's state.
 ///
 /// # Errors
 ///
-/// `Unavailable` (16) when the session is not in `who`'s state, or the state cannot be read.
+/// `Unavailable` (exit 16) when the session is not in the state of `who`, or when the state
+/// cannot be read.
 pub(super) fn logged_in_as(session: &Session, who: UserType, token: &str) -> Result<()> {
     use cryptoki::session::SessionState;
     let state = session.get_session_info().map_err(ck("C_GetSessionInfo"))?.session_state();
@@ -158,11 +164,12 @@ pub(super) fn logged_in_as(session: &Session, who: UserType, token: &str) -> Res
     ))
 }
 
-/// What [`Token::as_so`] answers once the session is put back (`after`: the SO logout, then the
-/// user's login): the step's own result first. A step that failed is reported as it failed,
-/// never as the session trouble after it; a step that succeeded and a session that could not be
-/// restored is an error that says the step was done, so a caller never takes a key it made (or
-/// a trusted copy) for one that was not.
+/// Returns the result of [`Token::as_so`] after the session is restored (`after` is the result of
+/// the SO logout and then of the user's login). The step's own result comes first. A step that
+/// failed is reported with its own error, and never with the session error that followed it.
+/// When the step succeeded but the session could not be restored, the error says that the step
+/// was done, so that a caller never believes that a key it made (or a trusted copy) was not
+/// made.
 pub(super) fn so_outcome<T>(what: &str, token: &str, step: Result<T>, after: Result<()>) -> Result<T> {
     match (step, after) {
         (Ok(v), Ok(())) => Ok(v),
@@ -181,10 +188,11 @@ pub(super) fn so_outcome<T>(what: &str, token: &str, step: Result<T>, after: Res
     }
 }
 
-/// Whether `access` opens a read-write session on token `name`, `write_protected` or not:
-/// only to write, or for scratch objects where the token allows it. A write on a
-/// write-protected token is refused (15), and so is its dry run, which opens read-only: it
-/// refuses what its run refuses (review 2026-11-24 L4a-3).
+/// Returns whether `access` opens a read-write session on the token `name`, given whether the
+/// token is `write_protected`. A session is read-write only for a write, or for scratch objects
+/// when the token allows it. A write on a write-protected token is refused (exit 15). Its dry run
+/// is refused too, although it opens read-only, because a dry run refuses what its real run
+/// refuses (review 2026-11-24 L4a-3).
 fn read_write(access: Access, write_protected: bool, name: &str) -> Result<bool> {
     match access {
         Access::Write | Access::DryWrite if write_protected => Err(KmError::Unsupported(
@@ -200,8 +208,8 @@ fn read_write(access: Access, write_protected: bool, name: &str) -> Result<bool>
     }
 }
 
-/// Open the session `access` asks for (M1, [`read_write`]) and log in as the user when a PIN is
-/// configured — unless the counters say the login must not be tried (M2).
+/// Opens the session that `access` asks for (M1, [`read_write`]), and logs in as the user when a
+/// PIN is configured. The login is refused when the counters say that it must not be tried (M2).
 #[expect(clippy::too_many_arguments, reason = "the open's parts, as Token::open has them")]
 pub(super) fn session(
     ctx: &Pkcs11,
@@ -226,8 +234,9 @@ pub(super) fn session(
             Ok(()) => {
                 logins.insert(slot.id(), Zeroizing::new(pin.to_owned()));
             }
-            // Kept only when this process logged in with the same PIN: the PIN is used again
-            // where a wrong one costs (a PIV context login, the TPM unseal).
+            // An existing login is kept only when this process logged in with the same PIN,
+            // because the PIN is used again in places where a wrong PIN uses up a retry (a PIV
+            // context login, the TPM unseal).
             Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _))
                 if logins.get(&slot.id()).is_some_and(|p| p.as_str() == pin) => {}
             Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {
@@ -246,23 +255,24 @@ pub(super) fn session(
     Ok((session, pin))
 }
 
-/// The user PIN (`pinEnv`, else `pinFile`, its `$NAME` resolved now).
+/// Reads the user PIN from `pinEnv`, or otherwise from `pinFile`, whose `$NAME` variables are
+/// resolved at this point.
 pub(super) fn read_pin(name: &str, cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
-    // `pinEnv` wins: an unset `pinFile` variable is no error then.
+    // `pinEnv` takes precedence, so an unset variable in `pinFile` is not an error in that case.
     let file = if cfg.pin_env.is_some() { None } else { cfg.pin_path(name, &|var| std::env::var(var).ok())? };
     cakeys_core::secret::read("PIN", cfg.pin_env.as_deref(), file.as_deref())
 }
 
-/// Whether keys.toml gives the token an admin (Security Officer) credential, which [`Token::as_so`]
-/// reads.
+/// Returns whether keys.toml gives the token an admin (Security Officer) credential, which
+/// [`Token::as_so`] reads.
 #[must_use]
 pub fn has_admin(cfg: &TokenCfg) -> bool {
     cfg.so_credential_file.is_some() || cfg.so_credential_env.is_some()
 }
 
-/// The admin credential (`soCredentialEnv`, else `soCredentialFile`), read only for an SO step. The format
-/// is the module's: ykcs11 takes the PIV management key in hex, or the PIN on devices whose
-/// management key is PIN-protected.
+/// Reads the admin credential from `soCredentialEnv`, or otherwise from `soCredentialFile`. It is
+/// read only for an SO step. The module defines the format: ykcs11 takes the PIV management key
+/// in hex, or the PIN on devices whose management key is PIN-protected.
 pub(super) fn read_so_credential(name: &str, cfg: &TokenCfg) -> Result<Option<Zeroizing<String>>> {
     let file = if cfg.so_credential_env.is_some() {
         None
@@ -276,11 +286,11 @@ pub(super) fn read_so_credential(name: &str, cfg: &TokenCfg) -> Result<Option<Ze
 mod tests {
     use super::*;
 
-    /// Every access, on a token write-protected or not: a dry run of a write refuses exactly
-    /// what the write refuses (15), and never opens read-write; only a write and scratch work
-    /// open read-write, scratch never on a write-protected token; a read refuses nothing (review
-    /// 2026-11-24 L4a-3: `create --dry-run` and `delete --dry-run` passed a write-protected
-    /// token).
+    /// Tests every access on a write-protected token and on a token that is not. A dry run of a
+    /// write refuses exactly what the write refuses (exit 15), and it never opens a read-write
+    /// session. Only a write and scratch work open read-write sessions, and scratch work never
+    /// does so on a write-protected token. A read refuses nothing (review 2026-11-24 L4a-3:
+    /// `create --dry-run` and `delete --dry-run` used to pass on a write-protected token).
     #[test]
     fn a_dry_run_refuses_the_token_its_write_refuses() {
         for access in [Access::Read, Access::Write, Access::Scratch, Access::DryWrite] {
@@ -308,9 +318,9 @@ mod tests {
         }
     }
 
-    /// `as_so` reports the step first (token/mod.rs F2): a step that succeeded is never dropped
-    /// for a failed logout or re-login without saying it was done, and a step that failed is
-    /// never hidden behind the session trouble after it.
+    /// `as_so` reports the step's result first (token/mod.rs F2). When a step succeeded and the
+    /// logout or the login that follows fails, the error says that the step was done. A step that
+    /// failed is never hidden behind the session error that followed it.
     #[test]
     fn the_so_step_is_reported_before_the_session_trouble() {
         let trouble = || Err(KmError::Unavailable("C_Logout (SO): CKR_DEVICE_ERROR".into()));
