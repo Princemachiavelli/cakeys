@@ -112,13 +112,30 @@ pub fn snapshot(files: &[&Path], tokens: &[TokenView]) -> Snapshot {
 ///
 /// When a file or a token changed, or the two snapshots are not of the same things.
 pub fn assert_unchanged(before: &Snapshot, after: &Snapshot, context: &str) {
+    if let Some((what, lines)) = changes(before, after, context).first() {
+        panic!("{context} changed {what}:\n{lines}");
+    }
+}
+
+/// What changed from `before` to `after` in `context` (the run): each thing's name (a file's
+/// path, `token <name>`) and the lines that differ. For a caller that judges each thing by
+/// itself, or names every wrong cell of a table before it fails ([`super::liars`]).
+///
+/// # Panics
+///
+/// When the two snapshots are not of the same things.
+pub fn changes(before: &Snapshot, after: &Snapshot, context: &str) -> Vec<(String, String)> {
     let names = |s: &Snapshot| s.0.iter().map(|(what, _)| what.clone()).collect::<Vec<_>>();
     assert_eq!(names(before), names(after), "{context}: two snapshots of different things");
+    let mut out = Vec::new();
     for ((what, was), (_, now)) in before.0.iter().zip(&after.0) {
-        let changed: Vec<&str> =
-            was.lines().filter(|l| !now.contains(l)).chain(now.lines().filter(|l| !was.contains(l))).collect();
-        assert!(was == now, "{context} changed {what}:\n{}", changed.join("\n"));
+        if was != now {
+            let changed: Vec<&str> =
+                was.lines().filter(|l| !now.contains(l)).chain(now.lines().filter(|l| !was.contains(l))).collect();
+            out.push((what.clone(), changed.join("\n")));
+        }
     }
+    out
 }
 
 /// What a run must leave as it was on token `t`: every object as `pkcs11-tool` lists it, logged

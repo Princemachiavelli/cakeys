@@ -11,7 +11,7 @@
 "crates/caprobe/tests/reference.rs" = 6
 "crates/caprobe/tests/supports.rs" = 6
 "crates/caprobe/tests/yubikey.rs" = 2
-"crates/cli/tests/fault.rs" = 19
+"crates/cli/tests/fault.rs" = 18
 "crates/cli/tests/ftpm.rs" = 1
 "crates/cli/tests/offline.rs" = 1
 "crates/cli/tests/p11kit.rs" = 2

@@ -324,10 +324,15 @@ caller saw and the reason under `"fatal"`.
 
 ## What cakeys tests with it
 
-One table in `tests/fault.rs` (`a_lying_module_is_refused`): a rule, a verb, the exit code and
-the message, on a token holding a signing, a deriving, a decrypting and an unwrapping key, each
-beside another key of its kind. Every row asserts in the trace that its rule fired, and the
-lock is unchanged at the end. As run on SoftHSM [run]:
+The liar matrix (`tests/liars.rs`, its table `tests/liars/cakeys.toml`, its runner
+`tests/common/liars.rs`): each lie a plan, told to each verb of cakeys about each kind of object
+(five private-key bindings, four secret-key commitments, a certificate, two data objects and a
+public key, each beside another of its kind), one test per class of lie. Every cell asserts its
+exit, the rule and device bit of its row, that the lock and the token are as it found them (or
+how they changed, with why), and that its rule fired in the trace; `liar_lint.rs` holds every
+rule of the plan to a cell, a unit test or an exemption, and every (lie class, verb, object
+class) to a cell or an `na` row with its why. It took in `tests/fault.rs`'s table of lies, whose
+rows read, on SoftHSM [run]:
 
 | The lie | `check` gives |
 |---|---|
@@ -407,7 +412,7 @@ cannot make (`add_label` skips a handle the search already returned), but a deco
 - One more output of the same build, `p11fault` (as `caprobe` and `camigrate` are), holding
   `lib/libp11_fault.so`: `packages.p11-fault`. The `cakeys` output's closure does not carry it.
 - The per-test runner (`nix/test-tokens.sh`) points `P11_FAULT_MODULE` at the test's own SoftHSM
-  token for `tests/fault.rs`.
+  token for `tests/fault.rs` and `tests/liars.rs`.
 
 ## The 3.x interface, later
 
