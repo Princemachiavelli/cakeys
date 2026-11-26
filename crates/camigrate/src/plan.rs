@@ -1,9 +1,10 @@
-//! Export and import planning (docs/CAMIGRATE.md): which method can move an object from one token to
-//! another, at which exposure, and why not when it cannot. Pure: the facts come from the lock
-//! (the object's type, the source realisation's policy) and from each side's capabilities (a
-//! [`Side`], built by the token's provider), so `--dry-run` and the real run share this one
-//! decision (docs/CAMIGRATE.md D9). The names it decides between — methods and exposure levels — are
-//! the lock's, in `cakeys_core::migrate`.
+//! Export and import planning (docs/CAMIGRATE.md): which method can move an object from one token
+//! to another, at which exposure, and the reasons when no method can. The planning is pure. The
+//! facts come from the lock (the object's type and the source realisation's policy) and from the
+//! capabilities of each side (a [`Side`], built from the token's profiles by `tokens::side`).
+//! Therefore, `--dry-run` and the real run share this one decision (docs/CAMIGRATE.md D9). The
+//! names of the methods and of the exposure levels that it chooses between are the lock's names,
+//! in `cakeys_core::migrate`.
 
 use crate::side::{PlaintextImport, ProbedWays, Side};
 use cakeys_core::KmError;
@@ -31,8 +32,8 @@ pub(crate) enum To<'a> {
     File(FileFormat),
 }
 
-/// What the planner knows about the object: its type (from the lock) and the source
-/// realisation's recorded policy and immutables.
+/// What the planner knows about the object: its type (from the lock), and the policy and the
+/// immutable attributes that the source realisation records.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Material<'a> {
     pub object: &'a str,
@@ -42,8 +43,9 @@ pub(crate) struct Material<'a> {
 }
 
 impl Material<'_> {
-    /// A flag as the source's lock recorded it, or that it did not (review 2026-11-24 D-7: an
-    /// unrecorded one was read as `false`).
+    /// Returns the boolean attribute `name` as the source's lock recorded it, or `Unrecorded` when
+    /// the lock did not record it. Before review 2026-11-24 D-7, an unrecorded attribute was read
+    /// as `false`.
     fn known(&self, name: &str) -> Known<bool> {
         Known::or(
             match self.policy.get(name) {
@@ -54,23 +56,23 @@ impl Material<'_> {
         )
     }
 
-    /// Whether restriction `r` holds: unrecorded, it does.
+    /// Returns whether the restriction `r` holds. An unrecorded restriction holds.
     fn restricted(&self, r: Restriction) -> bool {
         self.known(r.attr()).restricts()
     }
 
-    /// Whether permission `p` is granted: unrecorded, it is not.
+    /// Returns whether the permission `p` is granted. An unrecorded permission is not granted.
     fn permitted(&self, p: Permission) -> bool {
         self.known(p.attr()).permits()
     }
 }
 
-/// What the caller allows.
+/// What the caller allows the plan to use.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Allow {
-    /// `--allow-host-plaintext`: the `host` and `file` paths.
+    /// `--allow-host-plaintext`, which allows the `host` and `file` paths.
     pub host_plaintext: bool,
-    /// The transport key is marked `CKA_TRUSTED` on the source (phase 3b).
+    /// Whether the transport key is marked `CKA_TRUSTED` on the source (phase 3b).
     pub trusted_transport: bool,
 }
 
@@ -78,24 +80,25 @@ pub(crate) struct Allow {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct Plan {
     pub object: String,
-    /// The method that would be used, also when a flag is missing; `None` when nothing fits.
+    /// The method that would be used, also when a flag is missing. `None` when no method fits.
     #[serde(serialize_with = "method_name")]
     pub method: Option<Method>,
     pub exposure: Option<Exposure>,
-    /// Whether it can run as invoked.
+    /// Whether the move can run as invoked.
     pub ready: bool,
-    /// Why not (or what is missing), when not ready.
+    /// The reasons why the move cannot run (or what is missing), when it is not ready.
     pub reasons: Vec<String>,
-    /// What changes on the way (attestation, a declared vendor level, ...).
+    /// What changes during the move (for example, attestation or a declared vendor level).
     pub notes: Vec<String>,
-    /// The rules only the run decides (`ops::Deferred`, by name): the run may end with one of
-    /// them where the plan was ready, and by nothing else (docs/archive/REVIEW-2026-11-24/
-    /// phase1-design.md §1.4). The notes say why.
+    /// The names of the rules that only the run decides (`ops::Deferred`). When the plan was
+    /// ready, the run may end with one of these rules, and with no other refusal
+    /// (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4). The notes give the reasons.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub deferred: Vec<&'static str>,
-    /// The refusal that blocked it, where a rule the write asks did (placement 17, an occupied
-    /// locator 13): the run would end with it, so the plan does ([`Refused::error`]; review
-    /// 2026-11-24 D-2, D-3). `None`: ready, or blocked for a reason of the plan's own (15).
+    /// The refusal that blocked the plan, when a rule that the write asks blocked it (for
+    /// example, a placement with 17, or an occupied locator with 13). The run would end with this
+    /// refusal, so the plan ends with it too ([`Refused::error`]; review 2026-11-24 D-2, D-3).
+    /// `None` when the plan is ready, or when it was blocked for a reason of its own (15).
     #[serde(skip)]
     pub refused: Option<Refused>,
 }
@@ -104,7 +107,7 @@ pub(crate) struct Plan {
 #[derive(Debug, Clone)]
 pub(crate) struct Refused(KmError);
 
-/// Two refusals are the same when their exit code, rule, check and message are.
+/// Two refusals are equal when their exit codes, rules, checks and messages are equal.
 impl PartialEq for Refused {
     fn eq(&self, other: &Refused) -> bool {
         let said = |e: &KmError| (e.exit_code(), e.rule(), e.check(), e.to_string());
@@ -115,9 +118,9 @@ impl PartialEq for Refused {
 impl Eq for Refused {}
 
 impl Refused {
-    /// `text` as the error the run ends with: this refusal's exit code, rule and check, and no
-    /// return value. A plan's rules refuse with 13, 14, 16 and 17, and a refusal of another code
-    /// ends the run with 15.
+    /// Returns `text` as the error that the run ends with. The error has this refusal's exit code,
+    /// rule and check, and no return value. A plan's rules refuse with 13, 14, 16 or 17. A refusal
+    /// with any other code ends the run with 15.
     pub(crate) fn error(self, text: String) -> KmError {
         let Refused(e) = self;
         if matches!(e.exit_code(), 13 | 14 | 16 | 17) {
@@ -144,15 +147,15 @@ fn method_name<S: serde::Serializer>(m: &Option<Method>, s: S) -> Result<S::Ok, 
 }
 
 impl Plan {
-    /// Block the plan: the run would refuse it, for `why` (review 2026-11-23 C-23: each rule
-    /// wrote both lines out).
+    /// Blocks the plan, because the run would refuse it for the reason `why`. Before review
+    /// 2026-11-23 C-23, each rule cleared `ready` and added its reason itself.
     pub(crate) fn block(&mut self, why: impl Into<String>) {
         self.ready = false;
         self.reasons.push(why.into());
     }
 
-    /// [`Self::block`] for the refusal `e` of a rule the write asks: the plan, if it was ready,
-    /// ends with `e`'s exit code and rule ([`Self::refused`]).
+    /// Blocks the plan ([`Self::block`]) for the refusal `e` of a rule that the write asks. If the
+    /// plan was ready, it then ends with `e`'s exit code and rule ([`Self::refused`]).
     pub(crate) fn refuse(&mut self, e: KmError) {
         if self.ready {
             self.refused = Some(Refused(e.clone()));
@@ -160,9 +163,9 @@ impl Plan {
         self.block(crate::trust::reason(e));
     }
 
-    /// `text` as the error that a run ends with for this blocked plan: the error of its refusal
-    /// ([`Refused::error`]), or `Unsupported` (15) when the plan was blocked for a reason of its
-    /// own.
+    /// Returns `text` as the error that a run ends with for this blocked plan. It is the error of
+    /// the plan's refusal ([`Refused::error`]), or `Unsupported` (15) when the plan was blocked for
+    /// a reason of its own.
     pub(crate) fn refusal(&self, text: String) -> KmError {
         match self.refused.clone() {
             Some(r) => r.error(text),
@@ -170,9 +173,9 @@ impl Plan {
         }
     }
 
-    /// The plan of `object` when the run could not plan it, for `why`: it has no method, and it
-    /// is blocked. A run that fails before its plans exist still shows one plan for each object
-    /// (review 2026-11-24 L4b-1: such a dry run printed no plan).
+    /// Returns the plan of `object` when the run could not plan it, with `why` as the reason. The
+    /// plan has no method, and it is blocked. A run that fails before its plans exist still shows
+    /// one plan for each object. Before review 2026-11-24 L4b-1, such a dry run printed no plan.
     pub(crate) fn unplanned(object: &str, why: String) -> Plan {
         Plan {
             object: object.into(),
@@ -186,7 +189,8 @@ impl Plan {
         }
     }
 
-    /// [`Self::block`], `why` said first: what keeps the object home outranks how it would move.
+    /// Blocks the plan as [`Self::block`] does, but puts `why` first among the reasons. A reason
+    /// that keeps the object on its token matters more than the reasons about how it would move.
     pub(crate) fn block_first(&mut self, why: impl Into<String>) {
         self.ready = false;
         self.reasons.insert(0, why.into());
@@ -219,15 +223,16 @@ impl Plan {
     }
 }
 
-/// Decide how `m` moves from `from` to `to`, strongest exposure first: a provider method that
-/// declares a stronger level, then the built-ins. A method that needs a flag the caller did not
-/// give is still named, with `ready = false` and the flag in `reasons`.
+/// Decides how `m` moves from `from` to `to`. The candidate methods are sorted by exposure, and
+/// the method with the strongest exposure is taken. A method that needs a flag that the caller did
+/// not give is still named, with `ready = false` and the flag in `reasons`.
 #[must_use]
 pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     let ty = m.ty;
-    // A private data object's value is a secret, and the public method would write it into a
-    // bundle and recreate it under whatever CKA_PRIVATE the target defaults to (docs/OPEN.md).
-    // One the lock does not record as public is not known to be public, so it is not (D-7).
+    // A private data object's value is a secret. The public method would write the value into a
+    // bundle and recreate the object with whatever `CKA_PRIVATE` value the target uses by default
+    // (docs/OPEN.md). A data object that the lock does not record as public is treated as
+    // private (D-7).
     if ty.class == ObjectClass::Data && m.restricted(Restriction::Private) {
         return Plan::impossible(
             m,
@@ -244,27 +249,30 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     if let Some(why) = stays(from, ty) {
         return Plan::impossible(m, vec![why]);
     }
-    // CKA_NEVER_EXTRACTABLE true is a key once made non-extractable: CKA_EXTRACTABLE true, as
-    // it must be known here, says it was not; unrecorded, it decides nothing more.
+    // The lock must record `CKA_EXTRACTABLE = true`. A key whose `CKA_NEVER_EXTRACTABLE` is
+    // recorded as true was non-extractable when it was created, so it is refused even when it
+    // reports `CKA_EXTRACTABLE = true`. An unrecorded `CKA_NEVER_EXTRACTABLE` decides nothing more.
     if !m.permitted(Permission::Extractable) || m.immutables.never_extractable == Some(true) {
         return Plan::impossible(
             m,
             vec!["not extractable: exportability is fixed when a key is created (CKA_EXTRACTABLE = false; docs/CAMIGRATE.md D1)".into()],
         );
     }
-    // Unrecorded, it restricts: only a trusted transport key may wrap the key (D-7).
+    // An unrecorded `CKA_WRAP_WITH_TRUSTED` counts as true, so that only a trusted transport key
+    // may wrap the key (D-7).
     let trusted_only = m.restricted(Restriction::WrapWithTrusted);
     let mut ways = Ways::default();
     match to {
-        // Before anything is offered: a target that takes the type in by no import.
+        // Before any method is offered, check whether the target refuses the type for every
+        // import.
         To::Token(dst) if dst.refuses.iter().any(|a| a.covers(ty)) => ways.block(format!(
             "{} ({}) takes in no {} by any import (its profile's migration.refuses)",
             dst.token,
             dst.provider,
             describe(ty)
         )),
-        // A provider's own method (D10, `Method::Vendor`) is offered by none yet: no profile or
-        // provider declares one (review 2026-11-23 C-17).
+        // No profile or provider declares a method of its own (D10, `Method::Vendor`) yet, so no
+        // vendor method is offered here (review 2026-11-23 C-17).
         To::Token(dst) => {
             sealed(m, from, dst, trusted_only, allow, &mut ways);
             if trusted_only {
@@ -302,7 +310,8 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     let mut plan = Plan::ready(m, method, exposure);
     plan.deferred.extend(deferred);
     if matches!(exposure, Exposure::Host | Exposure::File) {
-        // Why it could not stay sealed: a profile or a mechanism may be the fix, not the flag.
+        // Add the reasons why the move could not stay sealed, because the fix may be a profile or
+        // a mechanism instead of the flag.
         plan.notes.extend(blocked.into_iter().map(|why| format!("not sealed: {why}")));
         if !allow.host_plaintext {
             plan.block(format!("the {exposure} path needs --allow-host-plaintext (docs/CAMIGRATE.md D2)"));
@@ -314,16 +323,17 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     plan
 }
 
-/// One way an object could move, and what is said of it in the plan.
+/// One way in which an object could move, and what the plan says about it.
 struct Candidate {
     method: Method,
     exposure: Exposure,
-    /// A rule the plan cannot decide and the run will: the way rests on a probed yes only the
-    /// module says (`Rule::Capability`).
+    /// A rule that the plan cannot decide and that the run decides. It is set when the way depends
+    /// on a probed yes that only the module reported (`Rule::Capability`).
     deferred: Option<&'static str>,
 }
 
-/// What the planner found for one object: the ways it could move, and why others cannot.
+/// What the planner found for one object: the ways in which it could move, and the reasons why
+/// the other ways cannot move it.
 #[derive(Default)]
 struct Ways {
     candidates: Vec<Candidate>,
@@ -335,8 +345,8 @@ impl Ways {
         self.candidates.push(Candidate { method, exposure, deferred: None });
     }
 
-    /// [`Self::offer`] of a way a probed yes only the module says opens (`unverified`): the
-    /// plan defers the capability to the run.
+    /// Offers a way as [`Self::offer`] does. When the way depends on a probed yes that only the
+    /// module reported (`unverified`), the plan defers the capability to the run.
     fn offer_unless(&mut self, method: Method, exposure: Exposure, unverified: bool) {
         let deferred = unverified.then(|| Rule::Capability.name());
         self.candidates.push(Candidate { method, exposure, deferred });
@@ -347,8 +357,8 @@ impl Ways {
     }
 }
 
-/// A public object's plan: created from its value where the target's probed `create.*` row
-/// says so, else where its claims accept the class.
+/// Returns a public object's plan. The object is created from its value when the target's probed
+/// `create.*` row says yes, or, when no row covers it, when the target's claims accept the class.
 fn public(m: &Material, to: &To) -> Plan {
     let ty = m.ty;
     match to {
@@ -364,8 +374,9 @@ fn public(m: &Material, to: &To) -> Plan {
     }
 }
 
-/// Why a key of type `ty` never leaves `from`, if it does not: its probed `export.*` rows decide
-/// for the type they name, the module's claim for the rest.
+/// Returns the reason why a key of type `ty` never leaves `from`, or `None` when it can leave. The
+/// probed `export.*` rows decide for the types that they cover, and the module's claim decides for
+/// the other types.
 fn stays(from: &Side, ty: &ObjectCfg) -> Option<String> {
     let rows = [&from.probed.export_host, &from.probed.export_sealed].map(|rows| ProbedWays::of(rows, ty));
     let leaves = rows.map(|r| r.map(|r| r.yes));
@@ -395,10 +406,12 @@ fn describe(ty: &ObjectCfg) -> String {
     }
 }
 
-/// The `sealed` (or `enforced`) methods between two PKCS#11 modules.
+/// Offers the `sealed` (or `enforced`) methods between two PKCS#11 modules, or records why they
+/// cannot move the object.
 fn sealed(m: &Material, from: &Side, dst: &Side, trusted_only: bool, allow: Allow, ways: &mut Ways) {
-    // A yes the module alone says (`by = "unverified"`: its own round trip, no blob decoded on
-    // the host) is taken, and the capability deferred to the run (review 2026-11-24 E-3).
+    // A yes that only the module reported (`by = "unverified"`: its own round trip, with no blob
+    // decoded on the host) is accepted, and the capability is deferred to the run (review
+    // 2026-11-24 E-3).
     let unverified = [ProbedWays::of(&dst.probed.unwrap, m.ty), ProbedWays::of(&from.probed.export_sealed, m.ty)]
         .into_iter()
         .flatten()
@@ -467,9 +480,10 @@ fn sealed(m: &Material, from: &Side, dst: &Side, trusted_only: bool, allow: Allo
         ways.block(format!("no RSA-OAEP hash both {} and {} implement", from.token, dst.token));
         return;
     };
-    // Enforced, the transport key is the only trusted key: CKM_RSA_AES_KEY_WRAP does both wraps
-    // under it (its output is the composed method's, so the target unwraps it the same way). A
-    // side without RFC 5649 of its own takes the same mechanism instead (`sealed`).
+    // For an enforced key, the transport key is the only trusted key, so `CKM_RSA_AES_KEY_WRAP`
+    // performs both wraps under it. Its output has the same form as the output of the composed
+    // method, so the target unwraps it in the same way. A side that has no RFC 5649 key wrap of
+    // its own uses the same mechanism instead (see the module `sealed`).
     let rsa_aes = |s: &Side| cfg!(feature = "kwp") && s.has("CKM_RSA_AES_KEY_WRAP");
     let unwraps_composed = dst.kwp() || rsa_aes(dst);
     let composed = if trusted_only {
@@ -501,21 +515,22 @@ fn sealed(m: &Material, from: &Side, dst: &Side, trusted_only: bool, allow: Allo
     }
 }
 
-/// The largest secret key RSA-OAEP carries directly under a 2048-bit transport key with SHA-256
-/// (256 - 2 × 32 - 2 bytes); larger transport keys carry more, and none is smaller
-/// (`sealed::check_transport_size`).
+/// The largest secret key, in bytes, that RSA-OAEP with SHA-256 carries directly under a 2048-bit
+/// transport key (256 - 2 × 32 - 2 bytes). Larger transport keys carry more, and no transport key
+/// is smaller (`sealed::check_transport_size`).
 const OAEP_DIRECT_MAX: u64 = 190;
 
-/// Whether the source can hand the material to the host: wrapped under a session key cakeys
-/// knows, then unwrapped in memory. Every class by RFC 5649, the one wrap `Token::extract`
-/// undoes; RFC 3394 alone (`CKM_AES_KEY_WRAP`) is not taken. A probed `export.host.*` row for
-/// the type decides.
+/// Returns whether the source can hand the material to the host. The source wraps the material
+/// under a session key that cakeys knows, and cakeys unwraps it in memory. Every class uses RFC
+/// 5649, which is the one wrap that `Token::extract` undoes; RFC 3394 alone (`CKM_AES_KEY_WRAP`)
+/// is not used. A probed `export.host.*` row for the type decides when there is one.
 fn host_extractable(from: &Side, ty: &ObjectCfg) -> bool {
     ProbedWays::of(&from.probed.export_host, ty).map_or_else(|| from.kwp(), |r| r.yes)
 }
 
-/// The `host` methods into a token: a probed `import.*` row for the type decides, its `via` the
-/// path; else the module's claimed path.
+/// Offers the `host` methods into a token, or records why they cannot move the object. A probed
+/// `import.*` row for the type decides, and its `via` names the path. Without such a row, the
+/// module's claimed path is used.
 fn host(m: &Material, from: &Side, dst: &Side, ways: &mut Ways) {
     let ty = m.ty;
     let probed = ProbedWays::of(&dst.probed.import, ty);
@@ -549,14 +564,14 @@ fn host(m: &Material, from: &Side, dst: &Side, ways: &mut Ways) {
             return;
         }
     };
-    // A yes the module alone says (a secret key checked by its own commitment) is taken, and the
-    // capability deferred to the run (review 2026-11-24 E-3).
+    // A yes that only the module reported (for example, a secret key checked by its own
+    // commitment) is accepted, and the capability is deferred to the run (review 2026-11-24 E-3).
     let unverified =
         [probed, ProbedWays::of(&from.probed.export_host, ty)].into_iter().flatten().any(|r| r.yes && r.unverified);
     ways.offer_unless(method, Exposure::Host, unverified);
 }
 
-/// What the target changes about the object, whatever moves it.
+/// Returns notes on what the target changes about the object, whichever method moves it.
 fn target_notes(dst: &Side, plan: &Plan) -> Vec<String> {
     match plan.method {
         Some(Method::PivImport) => {
@@ -580,8 +595,9 @@ fn target_notes(dst: &Side, plan: &Plan) -> Vec<String> {
     }
 }
 
-/// What a source's SO runs to trust the target's transport key (docs/CAMIGRATE.md D2), as a
-/// refusal for want of that trusted copy names it: `object` the transport key's, when known.
+/// Returns the command that a source's SO runs to trust the target's transport key
+/// (docs/CAMIGRATE.md D2). A refusal for a missing trusted copy names this command. `object` is
+/// the transport key's object, when it is known.
 pub(crate) fn trust_command(object: Option<&str>, source: &str) -> String {
     let object = object.map(|o| format!(" {o}")).unwrap_or_default();
     format!("camigrate transport{object} --token <target> --trust-on {source}")
@@ -597,9 +613,10 @@ mod tests {
         ObjectCfg::new(class, kt)
     }
 
-    /// The command line a refusal tells its reader to run (the first backticked span, its
-    /// `<placeholders>` filled in), parsed as camigrate parses its own: a refusal never names a
-    /// verb or flag the tool does not have (the 2026-11-23 renames left `--trusted` in two).
+    /// Parses the command line that a refusal tells its reader to run, as camigrate parses its own
+    /// command line. The command is the first span in backticks, with the angle brackets of its
+    /// `<placeholders>` removed. A refusal must never name a verb or a flag that the tool does not
+    /// have; the renames of 2026-11-23 left `--trusted` in two refusals.
     fn suggested(reason: &str) -> clap::ArgMatches {
         let line = reason.split('`').nth(1).unwrap_or_else(|| panic!("no command in {reason:?}"));
         let mut words: Vec<&str> = line.split_whitespace().map(|w| w.trim_matches(['<', '>'])).collect();
@@ -634,16 +651,16 @@ mod tests {
         Side { trusted_wrap: false, ..Side::pkcs11("kryoptic", "kryoptic", mech.map(String::from)) }
     }
 
-    /// AWS `CloudHSM` once its profile subtracts the AES key wraps it lists but refuses \[run\]:
-    /// RFC 5649 only inside `CKM_RSA_AES_KEY_WRAP`.
+    /// AWS `CloudHSM` after its profile subtracts the AES key wraps that it lists but refuses
+    /// \[run\]. It has RFC 5649 only inside `CKM_RSA_AES_KEY_WRAP`.
     fn cloudhsm() -> Side {
         let mech = ["CKM_RSA_PKCS_OAEP", "CKM_AES_KEY_GEN", "CKM_RSA_AES_KEY_WRAP"];
         Side::pkcs11("cloudhsm", "aws-cloudhsm", mech.map(String::from))
     }
 
-    /// The plan of an object whose source realisation records `flags`, and
-    /// `CKA_WRAP_WITH_TRUSTED = false` where they do not name it, as every reference module
-    /// records it ([`plan_exact`] records only `flags`).
+    /// Returns the plan of an object whose source realisation records `flags`. When `flags` does
+    /// not name `CKA_WRAP_WITH_TRUSTED`, the realisation also records it as false, as every
+    /// reference module records it. [`plan_exact`] records only `flags`.
     fn plan_of(ty: &ObjectCfg, flags: &[(&str, bool)], from: &Side, to: &To, allow: Allow) -> Plan {
         let mut flags = flags.to_vec();
         if !flags.iter().any(|(n, _)| *n == "CKA_WRAP_WITH_TRUSTED") {
@@ -658,8 +675,9 @@ mod tests {
         plan(&Material { object: "k", ty, policy: &policy, immutables: &immutables }, from, to, allow)
     }
 
-    /// Between the software references, the composed method with the strongest common OAEP
-    /// hash: SHA-1 with `SoftHSM` (it implements no other), SHA-256 between kryoptic tokens.
+    /// Checks that the software references use the composed method with the strongest common
+    /// OAEP hash: SHA-1 with `SoftHSM`, which implements no other, and SHA-256 between kryoptic
+    /// tokens.
     #[test]
     fn sealed_between_software_references() {
         let ext = [("CKA_EXTRACTABLE", true)];
@@ -691,10 +709,11 @@ mod tests {
         assert!(!p.ready && p.reasons[0].contains("not extractable"));
     }
 
-    /// What the source's lock does not record restricts (review 2026-11-24 D-7): a data object
-    /// whose `CKA_PRIVATE` it did not record is never planned public, whatever is allowed; a key
-    /// whose `CKA_WRAP_WITH_TRUSTED` it did not record leaves only under a trusted transport key,
-    /// never through the host nor into a file. Recorded `false`, each moves.
+    /// Checks that an attribute that the source's lock does not record counts as a restriction
+    /// (review 2026-11-24 D-7). A data object whose `CKA_PRIVATE` the lock does not record is never
+    /// planned as public, whatever is allowed. A key whose `CKA_WRAP_WITH_TRUSTED` the lock does
+    /// not record leaves only under a trusted transport key, and never through the host or into a
+    /// file. When each attribute is recorded as false, the object moves.
     #[test]
     fn unrecorded_restrictions_restrict() {
         let everything = Allow { host_plaintext: true, trusted_transport: false };
@@ -721,13 +740,14 @@ mod tests {
         let cert = obj(ObjectClass::Certificate, None);
         let p = plan_of(&cert, &[], &softhsm(), &To::Token(&kryoptic()), Allow::default());
         assert_eq!((p.method, p.exposure, p.ready), (Some(Method::Public), Some(Exposure::Public), true));
-        // A PIV-like target takes certificates only.
+        // A target like PIV accepts only certificates.
         let piv = Side { public_import: vec![Accept::class(ObjectClass::Certificate)], ..kryoptic() };
         let data = obj(ObjectClass::Data, None);
         assert!(!plan_of(&data, &[], &softhsm(), &To::Token(&piv), Allow::default()).ready);
         let p = plan_of(&data, &[("CKA_PRIVATE", false)], &softhsm(), &To::Token(&kryoptic()), Allow::default());
         assert_eq!((p.method, p.ready), (Some(Method::Public), true));
-        // A private data object's value is a secret: no method, whatever is allowed.
+        // A private data object's value is a secret, so the object gets no method, whatever is
+        // allowed.
         let everything = Allow { host_plaintext: true, trusted_transport: true };
         for to in [To::Token(&kryoptic()), To::File(FileFormat::Pkcs8)] {
             let p = plan_of(&data, &[("CKA_PRIVATE", true)], &softhsm(), &to, everything);
@@ -736,8 +756,9 @@ mod tests {
         }
     }
 
-    /// Through p11-kit (no AES key wrap): a small secret key goes directly under OAEP; a private
-    /// key has no sealed path, and the host path needs AES key wrap on the source too.
+    /// Checks the plans from p11-kit, which has no AES key wrap. A small secret key moves directly
+    /// under OAEP. A private key has no sealed path, and the host path also needs an AES key wrap on
+    /// the source.
     #[test]
     fn without_aes_key_wrap_only_small_secrets_are_sealed() {
         let p11kit = Side::pkcs11("p11kit", "p11-kit", ["CKM_RSA_PKCS_OAEP".to_owned()]);
@@ -757,8 +778,8 @@ mod tests {
         assert!(p.reasons.iter().any(|r| r.contains("RFC 5649")), "{p:?}");
     }
 
-    /// A target that imports only plaintext: the host path, named even without the flag, and
-    /// refused for a type it cannot take.
+    /// Checks a target that imports only plaintext. The plan names the host path even without the
+    /// flag, and it refuses a type that the target cannot take.
     #[test]
     fn host_paths_need_the_flag_and_a_type_the_target_takes() {
         let piv = Side {
@@ -781,14 +802,15 @@ mod tests {
         k1.curve = Some("secp256k1".into());
         let p = plan_of(&k1, &ext, &softhsm(), &To::Token(&piv), allowed);
         assert!(!p.ready && p.reasons.iter().any(|r| r.contains("cannot import")), "{p:?}");
-        // And such a token never exports.
+        // Such a token also never exports.
         let p = plan_of(&p256(), &ext, &piv, &To::Token(&kryoptic()), allowed);
         assert!(p.reasons[0].contains("never lets a key leave"), "{p:?}");
     }
 
-    /// `enforced` (docs/CAMIGRATE.md D2): a source that can trust a transport key and holds a trusted
-    /// copy of it, `CKM_RSA_AES_KEY_WRAP` for a key OAEP cannot carry alone (only the patched
-    /// cryptoki names it: the `kwp` feature), and never a host path or a file.
+    /// Checks what `enforced` needs (docs/CAMIGRATE.md D2). The source must be able to trust a
+    /// transport key and must hold a trusted copy of it. A key that OAEP cannot carry alone needs
+    /// `CKM_RSA_AES_KEY_WRAP`, which only the patched cryptoki names (the `kwp` feature). An
+    /// enforced key never takes a host path and never goes into a file.
     #[test]
     fn wrap_with_trusted_needs_a_trusted_transport_and_never_goes_through_the_host() {
         let flags = [("CKA_EXTRACTABLE", true), ("CKA_WRAP_WITH_TRUSTED", true)];
@@ -817,20 +839,23 @@ mod tests {
         let mut aes = obj(ObjectClass::SecretKey, Some(KeyType::Aes));
         aes.value_len = Some(32);
         let p = plan_of(&aes, &flags, &softhsm(), &To::Token(&kryoptic()), trusted);
-        // An AES key fits under OAEP alone: CKM_RSA_AES_KEY_WRAP where this build names it, else direct.
+        // An AES key fits under OAEP alone. It moves by `CKM_RSA_AES_KEY_WRAP` when this build
+        // names that mechanism, and directly under OAEP otherwise.
         let method =
             if cfg!(feature = "kwp") { Method::RsaOaepAesKwp(OaepHash::Sha1) } else { Method::RsaOaep(OaepHash::Sha1) };
         assert_eq!((p.method, p.exposure, p.ready), (Some(method), Some(Exposure::Enforced), true));
         assert!(!plan_of(&p256(), &flags, &softhsm(), &To::File(FileFormat::Pkcs8), trusted).ready);
-        // A source that cannot trust an RSA key (kryoptic): never, whatever is trusted.
+        // A source that cannot trust an RSA key (kryoptic) never moves the key, whatever is
+        // trusted.
         let p = plan_of(&p256(), &flags, &kryoptic(), &To::Token(&softhsm()), trusted);
         assert!(!p.ready && p.reasons.iter().any(|r| r.contains("move.trusted-wrap row says no")), "{p:?}");
     }
 
-    /// A side whose RFC 5649 is only `CKM_RSA_AES_KEY_WRAP` (`CloudHSM`) takes the composed method
-    /// through it, in and out: where this build names the mechanism (the `kwp` feature). Without
-    /// it, a source with RFC 5649 of its own still reaches the host path, which needs its flag;
-    /// one without has no way out and says why.
+    /// Checks that a side whose only RFC 5649 is inside `CKM_RSA_AES_KEY_WRAP` (`CloudHSM`) uses the
+    /// composed method through that mechanism, as a source and as a target, when this build names
+    /// the mechanism (the `kwp` feature). Without the feature, a source with an RFC 5649 key wrap of
+    /// its own still reaches the host path, which needs its flag. A source without one has no way
+    /// to move the key, and the plan says why.
     #[test]
     fn rsa_aes_key_wrap_stands_in_for_rfc_5649() {
         let ext = [("CKA_EXTRACTABLE", true)];
@@ -847,8 +872,9 @@ mod tests {
         }
     }
 
-    /// A target whose profile refuses a key kind (`migration.refuses`: `CloudHSM`'s Ed25519 \[run\])
-    /// is blocked with that reason, whatever wrap both sides share; other keys still move.
+    /// Checks that a move to a target whose profile refuses a key kind (`migration.refuses`, such
+    /// as `CloudHSM`'s Ed25519 \[run\]) is blocked with that reason, whatever wrap both sides share.
+    /// Other keys still move.
     #[test]
     fn a_refused_key_kind_is_blocked_at_the_target() {
         let ext = [("CKA_EXTRACTABLE", true)];
@@ -862,7 +888,7 @@ mod tests {
             plan_of(&ed, &ext, &kryoptic(), &To::Token(&refusing), Allow { host_plaintext: true, ..Allow::default() });
         assert!(!p.ready && p.reasons.iter().any(|r| r.contains("migration.refuses")), "{p:?}");
         assert!(plan_of(&p256(), &ext, &kryoptic(), &To::Token(&refusing), Allow::default()).ready);
-        // As a source it still exports.
+        // As a source, the same token still exports that key kind.
         assert!(plan_of(&ed, &ext, &refusing, &To::Token(&kryoptic()), Allow::default()).ready);
     }
 
@@ -883,12 +909,12 @@ mod tests {
         assert!(!p.ready && p.reasons.iter().any(|r| r.contains("offers no RFC 5649 key wrap")), "{p:?}");
     }
 
-    /// Each fact the planner names decides on its own (the mutation report's gaps): a secret
-    /// key needs a target that reports its length; the composed method needs RFC 5649 on both
-    /// sides and a KEK the source can make; without it only a small secret goes directly; the
-    /// host path creates a private key from PKCS#8 and a secret from its value, and a tool
-    /// import takes only what it lists; a file carries private keys only. Refusals name the
-    /// object's type.
+    /// Checks that each fact that the planner names decides on its own, which closes gaps that the
+    /// mutation report found. A secret key needs a target that reports its length. The composed
+    /// method needs RFC 5649 on both sides and a KEK that the source can make; without the
+    /// composed method, only a small secret key moves directly. The host path creates a private key
+    /// from PKCS#8 and a secret key from its value, and a tool import takes only what it lists. A
+    /// file carries only private keys. Refusals name the object's type.
     #[test]
     fn each_fact_the_planner_names_decides() {
         let ext = [("CKA_EXTRACTABLE", true)];
@@ -903,12 +929,13 @@ mod tests {
             |ty: &ObjectCfg, from: &Side, to: &Side| plan_of(ty, &ext, from, &To::Token(to), Allow::default());
         let composed = Some(Method::RsaOaepAesKwp(OaepHash::Sha256));
         assert_eq!(sealed_to(&p256(), &both, &both).method, composed);
-        // A target that reports no length for an unwrapped secret takes private keys only.
+        // A target that reports no length for an unwrapped secret key takes only private keys.
         let lengthless = Side { secret_unwraps: false, plaintext_import: None, ..both.clone() };
         assert_eq!(sealed_to(&p256(), &both, &lengthless).method, composed);
         let p = sealed_to(&aes, &both, &lengthless);
         assert!(!p.ready && p.reasons.iter().any(|r| r.contains("without its length")), "{p:?}");
-        // The composed method: RFC 5649 on the source, on the target, and a KEK to generate.
+        // The composed method needs RFC 5649 on the source and on the target, and a KEK that the
+        // source can generate.
         let no_import = |s: Side| Side { plaintext_import: None, ..s };
         for (from, to) in [
             (side("src", &["CKM_RSA_PKCS_OAEP", "CKM_AES_KEY_GEN"]), both.clone()),
@@ -919,7 +946,7 @@ mod tests {
             let p = sealed_to(&p256(), &from, &to);
             assert!(!p.ready && p.reasons.iter().any(|r| r.contains("share no RFC 5649")), "{p:?}");
             assert!(p.reasons.iter().any(|r| r.contains("CKO_PRIVATE_KEY CKK_EC secp256r1")), "{p:?}");
-            // Directly under OAEP: a small secret, never a large one.
+            // A small secret key moves directly under OAEP, but a large one never does.
             assert_eq!(sealed_to(&aes, &from, &to).method, Some(Method::RsaOaep(OaepHash::Sha256)));
             let p = sealed_to(&big, &from, &to);
             assert!(!p.ready && p.reasons.iter().any(|r| r.contains("CKO_SECRET_KEY CKK_GENERIC_SECRET")), "{p:?}");
@@ -939,15 +966,15 @@ mod tests {
         assert_eq!(host_to(&p256(), &takes_ec).method, Some(Method::Tpm2Ptool));
         let p = host_to(&aes, &takes_ec);
         assert!(!p.ready && p.reasons.iter().any(|r| r.contains("cannot import a CKO_SECRET_KEY CKK_AES")), "{p:?}");
-        // A file carries private keys, in either format.
+        // A file in either format carries only private keys.
         for format in [FileFormat::Pkcs8, FileFormat::Pkcs12] {
             let p = plan_of(&aes, &ext, &both, &To::File(format), allowed);
             assert!(!p.ready && p.reasons.iter().any(|r| r.contains("carry private keys")), "{p:?}");
         }
     }
 
-    /// `enforced` needs `CKM_RSA_AES_KEY_WRAP` on the source and RFC 5649 on the target, each on
-    /// its own: without either a private key cannot leave under the trusted transport key.
+    /// Checks that `enforced` needs both `CKM_RSA_AES_KEY_WRAP` on the source and RFC 5649 on the
+    /// target. Without either one, a private key cannot leave under the trusted transport key.
     #[test]
     fn the_enforced_composed_method_needs_both_sides() {
         let flags = [("CKA_EXTRACTABLE", true), ("CKA_WRAP_WITH_TRUSTED", true)];
@@ -964,12 +991,14 @@ mod tests {
         assert_eq!(p.ready, cfg!(feature = "kwp"), "{p:?}");
     }
 
-    /// A key that goes by the host path says why no sealed way would carry it: the fix may be a
-    /// profile or a mechanism rather than --allow-host-plaintext (review plan.rs F2).
+    /// Checks that the plan of a key on the host path says why no sealed way would carry it,
+    /// because the fix may be a profile or a mechanism instead of --allow-host-plaintext (review
+    /// plan.rs F2).
     #[test]
     fn a_host_plan_says_why_it_is_not_sealed() {
         let ext = [("CKA_EXTRACTABLE", true)];
-        // A target that unwraps nothing: only the host path, through its create-object import.
+        // A target that unwraps nothing leaves only the host path, through its create-object
+        // import.
         let plain_only = Side {
             unwraps: false,
             plaintext_import: Some(PlaintextImport::CreateObject),
@@ -989,7 +1018,7 @@ mod tests {
         assert!(allowed.ready && allowed.notes.iter().any(|n| n.starts_with("not sealed: ")), "{allowed:?}");
     }
 
-    /// A probed row decides for the type it covers, before the module's claims
+    /// Checks that a probed row decides for the type that it covers, before the module's claims
     /// (`docs/archive/CAPROBE_MIGRATION.md`, M4), and only for that type.
     #[test]
     fn probed_rows_decide_before_the_claims_for_their_type() {
@@ -1005,8 +1034,8 @@ mod tests {
             }]
         };
         let host = Allow { host_plaintext: true, ..Allow::default() };
-        // The target claims C_CreateObject; its import row for P-256 says no: no host path,
-        // and a P-384 key, which no row covers, still takes the claim.
+        // The target claims `C_CreateObject`, but its import row for P-256 says no, so there is no
+        // host path for P-256. A P-384 key, which no row covers, still follows the claim.
         let no_import = Side {
             unwraps: false,
             probed: ProbedWays { import: p256_rows(false, None), ..ProbedWays::default() },
@@ -1017,7 +1046,8 @@ mod tests {
         let p384 = ObjectCfg { curve: Some("secp384r1".into()), ..p256() };
         let p = plan_of(&p384, &ext, &softhsm(), &To::Token(&no_import), host);
         assert_eq!((p.method, p.ready), (Some(Method::HostPkcs8), true), "{:?}", p.reasons);
-        // The target claims to unwrap nothing; its unwrap row for P-256 says yes: sealed.
+        // The target claims to unwrap nothing, but its unwrap row for P-256 says yes, so the move
+        // is sealed.
         let unwraps = Side {
             unwraps: false,
             probed: ProbedWays { unwrap: p256_rows(true, Some("rsa-oaep-sha1+aes-kwp")), ..ProbedWays::default() },
@@ -1025,7 +1055,8 @@ mod tests {
         };
         let p = plan_of(&p256(), &ext, &softhsm(), &To::Token(&unwraps), Allow::default());
         assert_eq!((p.exposure, p.ready), (Some(Exposure::Sealed), true), "{:?}", p.reasons);
-        // An import row's path is the method: a module whose claim is tpm2_ptool for nothing.
+        // An import row's path decides the method, even for a module whose claim is `tpm2_ptool`
+        // for no type at all.
         let ptool = Side {
             unwraps: false,
             plaintext_import: Some(PlaintextImport::Tpm2Ptool(vec![])),
@@ -1034,7 +1065,8 @@ mod tests {
         };
         let p = plan_of(&p256(), &ext, &softhsm(), &To::Token(&ptool), host);
         assert_eq!(p.method, Some(Method::Tpm2Ptool), "{:?}", p.reasons);
-        // The source claims to export; both its export rows for P-256 say no: the key stays.
+        // The source claims to export, but both of its export rows for P-256 say no, so the key
+        // stays.
         let keeps = Side {
             probed: ProbedWays {
                 export_host: p256_rows(false, None),
@@ -1051,7 +1083,7 @@ mod tests {
                     .any(|r| r.contains("its export.host.* row says no; its export.sealed.* row says no")),
             "{p:?}"
         );
-        // A public object: the create row decides over the claimed classes.
+        // For a public object, the create row decides before the claimed classes.
         let cert = obj(ObjectClass::Certificate, None);
         let no_certs = Side {
             probed: ProbedWays {
@@ -1070,10 +1102,11 @@ mod tests {
         assert!(!p.ready && p.reasons.iter().any(|r| r.contains("its create.* row says no")), "{p:?}");
     }
 
-    /// A way a probed yes only the module says opens (`by = "unverified"`: the sealed export of
-    /// the source, the unwrap of the target, the target's import on the host path) plans ready,
-    /// and defers the capability to the run; a yes the host checked defers nothing (review
-    /// 2026-11-24 E-3, P2's leftover).
+    /// Checks that a way that depends on a probed yes that only the module reported
+    /// (`by = "unverified"`) plans as ready and defers the capability to the run. This applies to
+    /// the sealed export of the source, the unwrap of the target, and the target's import on the
+    /// host path. A yes that the host checked defers nothing (review 2026-11-24 E-3, P2's
+    /// leftover).
     #[test]
     fn an_unverified_probed_yes_defers_the_capability() {
         use crate::side::{Probed, ProbedWays};
