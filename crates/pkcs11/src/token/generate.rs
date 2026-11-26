@@ -235,7 +235,7 @@ impl Token {
     }
 
     /// Destroy exactly `handles` (what a failed import created), as `object` under `loc` would be:
-    /// the provider's [`Provider::deletion`], the session it writes in, its `destroy`, then a look
+    /// the provider's [`Provider::deletion`](crate::provider::Provider::deletion), the session it writes in, its `destroy`, then a look
     /// under `loc` for any of `handles` left (`delete-kept`).
     ///
     /// # Errors

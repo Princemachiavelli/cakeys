@@ -225,7 +225,7 @@ impl Verdicts {
 /// write just before it writes ([`create`]: the same function, so a race between them is caught
 /// the same way). A creation's, `verb` [`Verb::Create`]: a key under the locator the lock does
 /// not pin (`unpinned-exists`, 19; one it pins is verified instead, which no rule decides); what
-/// the open token lists ([`check_capabilities`], each refusal with its rule); a session without
+/// the open token lists (`check_capabilities`, each refusal with its rule); a session without
 /// login where the object needs one (`needs-login`, 16); material the lock pins and the token
 /// lost, which a generation could never match (`pinned-lost`, 14, D1); any session without
 /// login, which cannot see a private object of another class under the locator (16); anything
