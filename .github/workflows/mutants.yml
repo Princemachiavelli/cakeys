@@ -12,7 +12,7 @@
 #   the gate fails on new survivors and on stale entries, and the README's badge is published.
 # - By hand: either scheduled run, on any branch (the badge only from main); or `calibrate`, the
 #   token tier's time per mutant (phase2-3-design.md §5.5): both passes over
-#   crates/pkcs11/src/token/policy.rs as if it were new, 66 mutants, the token pass in 2 shards.
+#   crates/pkcs11/src/token/policy.rs as if it were new, 67 mutants, the token pass in 2 shards.
 #
 # The gate is in report mode until the first sweep seeds the baseline (`enforce = false`): it
 # prints what would fail and passes, and the sweep uploads the seeded baseline to commit.
