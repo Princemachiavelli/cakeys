@@ -160,6 +160,32 @@ impl Plan {
         self.block(crate::trust::reason(e));
     }
 
+    /// `text` as the error that a run ends with for this blocked plan: the error of its refusal
+    /// ([`Refused::error`]), or `Unsupported` (15) when the plan was blocked for a reason of its
+    /// own.
+    pub(crate) fn refusal(&self, text: String) -> KmError {
+        match self.refused.clone() {
+            Some(r) => r.error(text),
+            None => KmError::Unsupported(text.into()),
+        }
+    }
+
+    /// The plan of `object` when the run could not plan it, for `why`: it has no method, and it
+    /// is blocked. A run that fails before its plans exist still shows one plan for each object
+    /// (review 2026-11-24 L4b-1: such a dry run printed no plan).
+    pub(crate) fn unplanned(object: &str, why: String) -> Plan {
+        Plan {
+            object: object.into(),
+            method: None,
+            exposure: None,
+            ready: false,
+            reasons: vec![why],
+            notes: vec![],
+            deferred: vec![],
+            refused: None,
+        }
+    }
+
     /// [`Self::block`], `why` said first: what keeps the object home outranks how it would move.
     pub(crate) fn block_first(&mut self, why: impl Into<String>) {
         self.ready = false;

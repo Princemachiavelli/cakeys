@@ -82,8 +82,13 @@ pub(crate) fn ptool_free(dst: &Target, occupied: &Occupied) -> Result<()> {
 }
 
 /// The key `src` names on `from`, verified against the lock first: its handle, and a private
-/// key's canonical SPKI.
-fn source_key(src: &Target, from: &Token, lock: &Lock, notes: &mut Notes) -> Result<(ObjectHandle, Option<Vec<u8>>)> {
+/// key's canonical SPKI. A dry run reads the source with it too ([`crate::landing::search`]).
+pub(crate) fn source_key(
+    src: &Target,
+    from: &Token,
+    lock: &Lock,
+    notes: &mut Notes,
+) -> Result<(ObjectHandle, Option<Vec<u8>>)> {
     ops::verify(src, from, lock, notes)?;
     let loc = &src.on_token.locator;
     let h = from.find_key(&src.object, loc, false)?.ok_or_else(|| KmError::NotFound(src.to_string().into()))?;

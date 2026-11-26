@@ -389,3 +389,38 @@ fn an_import_the_provider_cannot_attest_is_refused_before_the_write() {
         "the refused key reached the token"
     );
 }
+
+/// A file import that ends before its first object still prints a row for each object, with the
+/// exit code of the refusal (review 2026-11-24 L4b-1: the bundle's import and `migrate` printed
+/// no row then, and the imports from files had the same early returns). A `--spec` that selects
+/// nothing is refused (17) before the target opens. The table holds both entry paths from files:
+/// the objects born in files (`import --to`), each object of which has a row, and a key file
+/// (`import --in`), whose key, the one object, has a row. Each dry run is checked the same way
+/// first ([`Env::km`]).
+#[test]
+fn a_file_import_that_ends_before_its_objects_prints_a_row_for_each() {
+    let Some(e) = env("from-files-rows") else { return };
+    let soft = &e.refs[0];
+    e.config(&body(&[soft], "p256.bundle.pem"));
+    let rows = |o: &std::process::Output| -> Vec<(String, String, u8)> {
+        state::rows(o).into_iter().map(|r| (r.object, r.outcome, r.exit)).collect()
+    };
+    let failed = |objects: &[&str]| -> Vec<(String, String, u8)> {
+        objects.iter().map(|o| ((*o).to_owned(), "failed".to_owned(), 17)).collect()
+    };
+    let key_file = fixture("p256.pkcs8.pem").display().to_string();
+    let table: [(&str, &[&str], &[&str]); 2] = [
+        ("objects born in files", &[], &["kek", "web", "note", "web-cert"]),
+        ("a key file", &["--in", &key_file], &["web"]),
+    ];
+    // A key file's key is the one the lock pins: the objects are imported from their files first.
+    let o = e.km(soft, &["import", "--to", "softhsm", "--allow-host-plaintext"]);
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
+    for (what, input, objects) in table {
+        let mut args = vec!["import", "--to", "softhsm", "--spec", "no-such-spec", "--allow-host-plaintext"];
+        args.extend_from_slice(input);
+        let o = e.km(soft, &args);
+        assert_eq!(code(&o), 17, "{what}: {}", stderr(&o));
+        assert_eq!(rows(&o), failed(objects), "{what}: {}", stderr(&o));
+    }
+}

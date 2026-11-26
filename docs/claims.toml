@@ -901,3 +901,27 @@ doc = "docs/DESIGN.md"
 says = "a private-key realisation records its `binding`, and no other class has one."
 kind = "enforced"
 tests = ["a_binding_is_recorded_for_private_keys_and_no_other_class"]
+
+# camigrate's rows and dry runs, closed by F3 (review 2026-11-24 L4b-1 and L4b-3). The liar
+# cells of other.find (12) and of ok.login, dev.find, dev.open and the flag lies (15, 16) check
+# them on the source and on the target. The file import test checks the imports from files, and
+# the dry-run test checks the search without the fault shim, after a refused verdict too.
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = """so a second object under the locator is refused with 12 by both. A dry run that fails
+  before its plans exist prints a blocked plan for each object"""
+kind = "enforced"
+tests = ["liars_other", "liars_dev", "the_dry_run_searches_the_source_once_the_verdict_lets_the_plans_go"]
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "A run that ends before it moves the first object prints these rows too"
+kind = "enforced"
+tests = [
+  "liars_ok",
+  "liars_flag",
+  "liars_dev",
+  "a_file_import_that_ends_before_its_objects_prints_a_row_for_each",
+  "the_dry_run_searches_the_source_once_the_verdict_lets_the_plans_go",
+]
