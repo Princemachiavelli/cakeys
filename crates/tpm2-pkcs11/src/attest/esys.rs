@@ -1,20 +1,20 @@
 //! The native `TPM2_Certify` attestation path for tpm2-pkcs11 tokens (docs/DESIGN.md §3.7).
 //!
-//! (For a module that has the `CKM_TPM2_CERTIFY` vendor mechanism see [`super::vendor`]: this is
-//! the path for the others, and the one whose checks both share.)
+//! (For a module that has the `CKM_TPM2_CERTIFY` vendor mechanism, see [`super::vendor`]. This
+//! file is the path for the other modules, and it holds the checks that both paths share.)
 //!
-//! tpm2-pkcs11 exposes no attestation through PKCS#11, so cakeys reaches the TPM itself:
-//! the object's TPM blobs are read from the module's store, loaded under the token's primary
-//! parent, and certified by an Attestation Key (AK) that cakeys provisions in the owner
-//! hierarchy. `TPM2_Load` revalidates the private blob's integrity under the parent, and
-//! `TPM2_Certify` signs the object's Name — so a store that lies about what it holds cannot
-//! produce a matching attestation.
+//! tpm2-pkcs11 exposes no attestation through PKCS#11, so cakeys reaches the TPM itself. It
+//! reads the object's TPM blobs from the module's store, loads them under the token's primary
+//! parent, and has them certified by an Attestation Key (AK) that cakeys provisions in the
+//! owner hierarchy. `TPM2_Load` checks the integrity of the private blob under the parent
+//! again, and `TPM2_Certify` signs the object's Name, so a store that misrepresents what it
+//! holds cannot produce a matching attestation.
 //!
-//! Everything the host can check, it checks itself: the attestation is verified with `RustCrypto`
-//! against the AK's public key, its Name is recomputed from the store's public blob, and the
-//! key material that blob holds (never `TPM2_ReadPublic`'s unauthenticated copy) is
-//! cross-checked against the object's SPKI. The qualifying data is a
-//! fresh random nonce, so the response proves the object is *currently loaded in that TPM*.
+//! The host checks everything that it can check itself. It verifies the attestation with
+//! `RustCrypto` against the AK's public key, recomputes the Name from the store's public blob,
+//! and compares the key material in that blob (never the unauthenticated copy from
+//! `TPM2_ReadPublic`) with the object's SPKI. The qualifying data is a new random nonce, so the
+//! response proves that the object is *currently loaded in that TPM*.
 
 use super::credential;
 use super::store::{Parent, Store, TObject};
@@ -43,60 +43,67 @@ use tss_esapi::structures::{
 use tss_esapi::traits::{Marshall, UnMarshall};
 use zeroize::Zeroizing;
 
-/// What a certify run proved, host-verified.
+/// What a certify run proved, as verified by the host.
 pub(crate) struct Certified {
-    /// The attested Name (`nameAlg ‖ H(TPMT_PUBLIC)`), as the commitment hashes it.
+    /// The attested Name (`nameAlg ‖ H(TPMT_PUBLIC)`), in the form that the commitment hashes.
     pub name: Vec<u8>,
-    /// The attested qualified Name: where the object sits under the AK's hierarchy.
+    /// The attested qualified Name, which identifies the object's position in the AK's
+    /// hierarchy.
     pub qualified_name: Vec<u8>,
-    /// The canonical SPKI of the AK: the anchor the lock pins when no EK certificate verifies.
+    /// The canonical SPKI of the AK. The lock pins it as the anchor when no EK certificate
+    /// verifies.
     pub ak_spki: Vec<u8>,
-    /// The signed `objectAttributes`, as the module derives `CKA_LOCAL` and `CKA_EXTRACTABLE`.
+    /// The `CKA_LOCAL` value that the module derives from the signed `objectAttributes`
+    /// (sensitiveDataOrigin).
     pub local: bool,
-    /// The signed `objectAttributes`' `CKA_EXTRACTABLE`.
+    /// The `CKA_EXTRACTABLE` value that the module derives from the signed `objectAttributes`
+    /// (neither fixedTPM nor fixedParent).
     pub(crate) extractable: bool,
 }
 
-/// Open a context to the same TPM the module talks to.
+/// Opens a context to the same TPM that the module uses.
 ///
 /// # Errors
 ///
-/// `Unavailable` when the TCTI connection cannot be made.
+/// Returns `Unavailable` when the TCTI connection cannot be made.
 pub(crate) fn context(conf: &tss_esapi::Tcti) -> Result<Context> {
     Context::new(conf.clone()).map_err(|e| KmError::Unavailable(format!("connecting to the TPM: {e}").into()))
 }
 
-/// Run `f` with the transient object `handle`, then flush it whatever `f` returned. Without a
-/// resource manager (`swtpm:`, `device:/dev/tpm0`) a transient object outlives the connection,
-/// and the TPM runs out of object slots after a few runs.
+/// Runs `f` with the transient object `handle`, and then flushes the object whatever `f`
+/// returned. Without a resource manager (`swtpm:`, `device:/dev/tpm0`), a transient object
+/// remains after the connection closes, and the TPM runs out of object slots after a few runs.
 fn flushing<T>(ctx: &mut Context, handle: KeyHandle, f: impl FnOnce(&mut Context) -> Result<T>) -> Result<T> {
     let out = f(ctx);
     let _ = ctx.flush_context(handle.into());
     out
 }
 
-/// The attestation key: a persistent restricted signing key in the owner hierarchy with empty
-/// auth, provisioned by cakeys on first attest and pinned by the realisation's
-/// `attestation.root`. Owner auth must be empty (swtpm, and most desktop TPMs). Returns its
-/// handle, public area and *qualified name* (the `TPMS_ATTEST.qualifiedSigner` it signs).
+/// Returns the attestation key: a persistent restricted signing key in the owner hierarchy with
+/// an empty auth value. cakeys provisions it on the first attestation, and the realisation's
+/// `attestation.root` pins it. The owner auth must be empty (as on swtpm and most desktop TPMs).
+/// Returns the key's handle, its public area and its *qualified name* (the
+/// `TPMS_ATTEST.qualifiedSigner` in the statements that it signs).
 ///
-/// A key already at the handle is used only if it *is* such a key — the public area of cakeys'
-/// template, restricted signing, fixedTPM: an unrestricted key there could sign a forged
-/// `TPMS_ATTEST`, and the lock would pin it on first use. Only `provision` (set under `lock`)
-/// creates one; a read never changes the TPM.
+/// A key that is already at the handle is used only if it *is* such a key: it must have the
+/// public area of cakeys' template, be a restricted signing key, and be fixedTPM. An
+/// unrestricted key at the handle could sign a forged `TPMS_ATTEST`, and the lock would pin
+/// that key on first use. Only `provision` (set under `lock`) creates a key, and a read never
+/// changes the TPM.
 ///
 /// # Errors
 ///
-/// `Validation` for a malformed handle; `Unavailable` when no key sits there and `provision`
-/// is off, when the TPM cannot be asked what sits there, or when creating/evicting one fails;
-/// `Conflict` when the object at the handle is not a cakeys Attestation Key.
+/// Returns `Validation` for a malformed handle. Returns `Unavailable` when no key is at the
+/// handle and `provision` is off, when the TPM cannot be asked what is at the handle, or when
+/// creating or evicting the key fails. Returns `Conflict` when the object at the handle is not a
+/// cakeys Attestation Key.
 pub(crate) fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -> Result<(KeyHandle, Public, Name)> {
     let persistent = PersistentTpmHandle::new(handle)
         .map_err(|e| KmError::Validation(format!("akHandle {handle:#010x}: {e}").into()))?;
     let template = ak_template()?;
     if let Some(tr) = ak_at(handle, ctx.tr_from_tpm_public(TpmHandle::Persistent(persistent)))? {
-        // Already provisioned: read the key where it sits. (Evicting a persistent object again
-        // would be a no-op that retires the handle.)
+        // The key is already provisioned, so read it at its handle. (Evicting a persistent
+        // object again would remove the object from the handle and do nothing else.)
         let key = KeyHandle::from(tr);
         let (public, _name, qualified_name) = read_public(ctx, key)?;
         check_ak(&public, &template, handle)?;
@@ -117,7 +124,8 @@ pub(crate) fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -
             )
         })?
         .key_handle;
-    // The persistent copy is the key from now on; the transient one is flushed either way.
+    // From now on, the persistent copy is the key. The transient copy is flushed whether or not
+    // the eviction succeeds.
     let persisted = flushing(ctx, transient, |ctx| {
         ctx.execute_with_session(Some(AuthSession::Password), |ctx| {
             ctx.evict_control(Provision::Owner, transient.into(), Persistent::Persistent(persistent))
@@ -132,14 +140,14 @@ pub(crate) fn attestation_key(ctx: &mut Context, handle: u32, provision: bool) -
     read_public(ctx, key).map(|(public, _name, qualified_name)| (key, public, qualified_name))
 }
 
-/// What `Esys_TR_FromTPMPublic` found at the AK handle: the object, or `None` when the TPM
-/// says no object is there (`TPM_RC_HANDLE`). Any other failure (the transport, a TPM in
-/// failure mode) is no answer, so it is never taken for an empty handle that `lock` would then
-/// provision.
+/// Returns what `Esys_TR_FromTPMPublic` found at the AK handle: the object, or `None` when the
+/// TPM returns `TPM_RC_HANDLE` because no object is there. Any other failure (of the transport,
+/// or of a TPM in failure mode) does not answer the question, so it is never treated as an
+/// empty handle that `lock` would then provision.
 ///
 /// # Errors
 ///
-/// `Unavailable` for any failure but `TPM_RC_HANDLE`.
+/// Returns `Unavailable` for any failure other than `TPM_RC_HANDLE`.
 fn ak_at<T>(handle: u32, found: tss_esapi::Result<T>) -> Result<Option<T>> {
     use tss_esapi::constants::response_code::Tss2ResponseCodeKind;
     match found {
@@ -151,9 +159,9 @@ fn ak_at<T>(handle: u32, found: tss_esapi::Result<T>) -> Result<Option<T>> {
     }
 }
 
-/// The Attestation Key's public area as cakeys provisions it (`unique` left for the TPM). A
-/// restricted signing key may sign only TPM-generated structures (`TPM2_Certify` among them),
-/// never caller-chosen data.
+/// Returns the Attestation Key's public area as cakeys provisions it (`unique` is left for the
+/// TPM to fill). A restricted signing key may sign only structures that the TPM generates (such
+/// as those of `TPM2_Certify`), never data that the caller chooses.
 fn ak_template() -> Result<Public> {
     let params = PublicEccParametersBuilder::new()
         .with_ecc_scheme(EccScheme::EcDsa(HashScheme::new(HashingAlgorithm::Sha256)))
@@ -184,9 +192,10 @@ fn ak_template() -> Result<Public> {
         .map_err(|e| KmError::Validation(format!("AK public area: {e}").into()))
 }
 
-/// Whether the key found at the AK handle is one cakeys would have provisioned: everything of
-/// the template but `unique` (the key itself) — the attributes (restricted, sign-only,
-/// fixedTPM/fixedParent, TPM-generated), the scheme and curve, the name algorithm, no policy.
+/// Checks that the key found at the AK handle is a key that cakeys would have provisioned. Every
+/// part of the template except `unique` (the key itself) must match: the attributes
+/// (restricted, sign-only, fixedTPM and fixedParent, generated by the TPM), the scheme and
+/// curve, the name algorithm, and the absence of a policy.
 fn check_ak(public: &Public, template: &Public, handle: u32) -> Result<()> {
     let same = match (public, template) {
         (
@@ -212,12 +221,12 @@ fn read_public(ctx: &mut Context, key: KeyHandle) -> Result<(Public, Name, Name)
     ctx.read_public(key).map_err(|e| KmError::Unavailable(format!("TPM2_ReadPublic: {e}").into()))
 }
 
-/// The seal object's auth value: SHA-256(PIN ‖ salt) truncated to 16 bytes, *as the hex string
-/// encoding them* — tpm2-pkcs11 authorizes with the ASCII hex text, not the raw digest
-/// (utils.c `ssl_util_hash_pass` + `set_esys_auth`).
+/// Returns the seal object's auth value: SHA-256(PIN ‖ salt) truncated to 16 bytes, *as the hex
+/// string that encodes those bytes*. tpm2-pkcs11 authorizes with the ASCII hex text, not with
+/// the raw digest (utils.c `ssl_util_hash_pass` and `set_esys_auth`).
 ///
-/// It unseals the wrapping key as the PIN does, so the digest is wiped and the hex text is
-/// returned in the one buffer `Zeroizing` wipes.
+/// This value unseals the wrapping key just as the PIN does, so the digest is wiped, and the hex
+/// text is returned in a single buffer that `Zeroizing` wipes.
 fn seal_auth(pin: &[u8], salt: &str) -> Zeroizing<Vec<u8>> {
     use sha2::Digest;
     use zeroize::Zeroize;
@@ -225,21 +234,23 @@ fn seal_auth(pin: &[u8], salt: &str) -> Zeroizing<Vec<u8>> {
     h.update(pin);
     h.update(salt.as_bytes());
     let mut digest = h.finalize();
-    // `into_bytes` keeps the string's buffer: the hex text is never copied.
+    // `into_bytes` reuses the string's buffer, so the hex text is never copied.
     let auth = Zeroizing::new(cakeys_core::hex::encode(&digest[..16]).into_bytes());
     digest.as_mut_slice().zeroize();
     auth
 }
 
-/// Load the seal object and unseal the token's wrapping key with the user PIN — the same
-/// protocol the module runs at login (`backend_token_unseal_wrapping_key`): the sealed payload
-/// is the wrapping key *as a hex string*, the AES key is its 32 decoded bytes. Through `auth`:
-/// a salted session encrypts the unsealed key on its way back.
+/// Loads the seal object and unseals the token's wrapping key with the user PIN. This is the
+/// same protocol that the module runs at login (`backend_token_unseal_wrapping_key`): the sealed
+/// payload is the wrapping key *as a hex string*, and the AES key is the 32 decoded bytes. The
+/// unseal is authorized through `auth`, and a salted session encrypts the unsealed key on its
+/// way back.
 ///
 /// # Errors
 ///
-/// `Unavailable` when the seal object cannot be loaded or the unseal fails (a wrong PIN, in
-/// practice); `Conflict` when the unsealed payload is not 32 bytes of hex text.
+/// Returns `Unavailable` when the seal object cannot be loaded or the unseal fails (in practice,
+/// because of a wrong PIN). Returns `Conflict` when the unsealed payload is not 32 bytes of hex
+/// text.
 pub(crate) fn wrapping_key(
     ctx: &mut Context,
     store: &Store,
@@ -249,8 +260,9 @@ pub(crate) fn wrapping_key(
     let session = auth;
     let auth = Auth::try_from(seal_auth(pin, &store.seal.auth_salt).as_slice())
         .map_err(|e| KmError::Unavailable(format!("seal auth: {e}").into()))?;
-    // `TPM2_Load` needs no session beyond the parent's, and `Esys_TR_FromTPMPublic` runs
-    // `TPM2_ReadPublic`, which takes none at all: keep both outside the unseal's session.
+    // `TPM2_Load` needs no session other than the parent's, and `Esys_TR_FromTPMPublic` runs
+    // `TPM2_ReadPublic`, which takes no session at all, so both stay outside the unseal's
+    // session.
     let seal = load(ctx, &store.parent, &store.seal.priv_blob, &store.seal.pub_blob, session)?;
     let unsealed = flushing(ctx, seal, |ctx| {
         ctx.tr_set_auth(seal.into(), auth)
@@ -280,13 +292,14 @@ pub(crate) fn wrapping_key(
     Ok(key)
 }
 
-/// The GCM-wrapped object auth (`<iv>:<tag>:<ct>` hex) under the token's wrapping key, as the
-/// module's `aes256_gcm_decrypt` reads it. The plaintext is the object's authValue.
+/// Decrypts the object auth that is wrapped with GCM (`<iv>:<tag>:<ct>` in hex) under the
+/// token's wrapping key, as the module's `aes256_gcm_decrypt` reads it. The plaintext is the
+/// object's authValue.
 ///
 /// # Errors
 ///
-/// `Conflict` when the value is not `<iv>:<tag>:<ct>` with the right lengths, or does not
-/// decrypt under the token's wrapping key.
+/// Returns `Conflict` when the value is not `<iv>:<tag>:<ct>` with the right lengths, or does
+/// not decrypt under the token's wrapping key.
 pub(crate) fn unwrap_objauth(wrapping_key: &[u8], wrapped: &str) -> Result<Zeroizing<Vec<u8>>> {
     let bad = || KmError::Conflict(Reason::malformed("CKA_TPM2_OBJAUTH_ENC is not <iv>:<tag>:<ct>"));
     let mut parts = wrapped.split(':');
@@ -306,8 +319,8 @@ pub(crate) fn unwrap_objauth(wrapping_key: &[u8], wrapped: &str) -> Result<Zeroi
     })
 }
 
-/// `TPM2_Load` a key blob under the token's primary parent, the parent authorized through
-/// `auth` (tpm2-pkcs11's default primary has an empty auth value).
+/// Runs `TPM2_Load` for a key blob under the token's primary parent, with the parent authorized
+/// through `auth` (the default primary of tpm2-pkcs11 has an empty auth value).
 fn load(ctx: &mut Context, parent: &Parent, priv_blob: &[u8], pub_blob: &[u8], auth: AuthSession) -> Result<KeyHandle> {
     let parent_tr = ctx
         .tr_from_tpm_public(TpmHandle::Persistent(
@@ -326,26 +339,28 @@ fn load(ctx: &mut Context, parent: &Parent, priv_blob: &[u8], pub_blob: &[u8], a
         .map_err(|e| KmError::Unavailable(format!("TPM2_Load of the object's blob: {e}").into()))
 }
 
-/// The content of one size-prefixed store blob, with the prefix checked.
+/// Returns the content of one store blob that has a size prefix, after checking the prefix.
 fn blob_content<'a>(blob: &'a [u8], what: &str) -> Result<&'a [u8]> {
     let truncated = || KmError::Conflict(Reason::malformed(format!("the store's {what} blob is truncated")));
     let size = u16::from_be_bytes(*blob.first_chunk::<2>().ok_or_else(truncated)?) as usize;
     blob.get(2..2 + size).ok_or_else(truncated)
 }
 
-/// The store's marshaled `TPM2B_PRIVATE` / `TPM2B_PUBLIC` as tss-esapi values: its buffer types
-/// carry the content without the size prefix, so the prefix is checked and stripped.
+/// Converts the store's marshaled `TPM2B_PRIVATE` and `TPM2B_PUBLIC` into tss-esapi values. The
+/// buffer types of tss-esapi hold the content without the size prefix, so the function checks
+/// and removes the prefix.
 fn blobs(priv_blob: &[u8], pub_blob: &[u8]) -> Result<(Private, Public)> {
     let private = Private::try_from(blob_content(priv_blob, "private")?.to_vec())
         .map_err(|e| KmError::Conflict(Reason::malformed(format!("the store's private blob: {e}"))))?;
     Ok((private, unmarshal_public(pub_blob)?))
 }
 
-/// Unmarshal a marshaled `TPM2B_PUBLIC` (as the store holds it) into a tss-esapi `Public`.
+/// Unmarshals a marshaled `TPM2B_PUBLIC` (as the store holds it) into a tss-esapi `Public`.
 ///
 /// # Errors
 ///
-/// `Conflict` when the blob does not unmarshal, or is not a public area tss-esapi accepts.
+/// Returns `Conflict` when the blob does not unmarshal, or is not a public area that tss-esapi
+/// accepts.
 pub(crate) fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
     PublicBuffer::unmarshall(pub_blob)
         .map_err(|e| KmError::Conflict(Reason::malformed(format!("the store's public blob does not unmarshal: {e}"))))
@@ -355,14 +370,15 @@ pub(crate) fn unmarshal_public(pub_blob: &[u8]) -> Result<Public> {
         })
 }
 
-/// Certify the loaded `key` with the AK: a fresh random nonce as qualifying data (freshness),
-/// the object's authorization through `auth`, the AK's (empty) by password.
+/// Certifies the loaded `key` with the AK. The qualifying data is a new random nonce, which
+/// proves freshness. The object is authorized through `auth`, and the AK's empty auth value is
+/// sent as a password.
 ///
 /// # Errors
 ///
-/// `Unavailable` when the OS RNG, the auth setup or `TPM2_Certify` fails; `Conflict` when the
-/// response is not a certify statement for this run's nonce — never another statement or a
-/// replay.
+/// Returns `Unavailable` when the OS RNG, the auth setup or `TPM2_Certify` fails. Returns
+/// `Conflict` when the response is not a certify statement for this run's nonce, so another
+/// statement or a replayed statement is never accepted.
 pub(crate) fn certify(
     ctx: &mut Context,
     key: KeyHandle,
@@ -383,7 +399,8 @@ pub(crate) fn certify(
             ctx.certify(key.into(), ak, data, SignatureScheme::Null)
         })
         .map_err(|e| KmError::Unavailable(format!("TPM2_Certify: {e}").into()))?;
-    // A certify statement for this run's nonce — never another statement or a replay.
+    // The response must be a certify statement for this run's nonce, never another statement or
+    // a replayed one.
     if attest.attestation_type() != AttestationType::Certify {
         return Err(KmError::Conflict(Reason::check(
             Check::AttestTpmStatement,
@@ -399,30 +416,31 @@ pub(crate) fn certify(
     Ok((attest, signature))
 }
 
-/// The exact bytes the TPM signed: the `TPMS_ATTEST` re-marshaled. TPM marshaling is canonical
-/// and the magic field — which the safe view drops — is part of the signature, so an
-/// attestation that did not come from a TPM never verifies.
+/// Returns the exact bytes that the TPM signed, which is the `TPMS_ATTEST` marshaled again. TPM
+/// marshaling is canonical, and the magic field, which the safe view drops, is part of the
+/// signed bytes, so an attestation that did not come from a TPM never verifies.
 ///
 /// # Errors
 ///
-/// `Unavailable` if the attestation cannot be re-marshaled (a TPM2 command error code).
+/// Returns `Unavailable` if the attestation cannot be marshaled again (a TPM2 command error
+/// code).
 pub(crate) fn attest_bytes(attest: &Attest) -> Result<Vec<u8>> {
     attest.marshall().map_err(|e| KmError::Unavailable(format!("marshaling the attestation: {e}").into()))
 }
 
-/// Verify the AK's ECDSA-SHA256 signature over the attestation bytes, on the host: the TPM
-/// offers `TPM2_VerifySignature`, but verification must not be the prover's.
+/// Verifies the AK's ECDSA-SHA256 signature over the attestation bytes on the host. The TPM
+/// offers `TPM2_VerifySignature`, but the party that produces the proof must not also verify it.
 ///
 /// # Errors
 ///
-/// `Unsupported` when the AK signed with something other than ECDSA-SHA256 (another scheme,
-/// or ECDSA over another hash); `Conflict` when
-/// the signature does not verify against the pinned AK, or a component is too long for P-256.
+/// Returns `Unsupported` when the AK signed with something other than ECDSA-SHA256 (another
+/// scheme, or ECDSA over another hash). Returns `Conflict` when the signature does not verify
+/// against the pinned AK, or when a component is too long for P-256.
 pub(crate) fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u8]) -> Result<()> {
     use cakeys_core::sig::{self, Encoding, HashAlg};
     let (r, s) = match signature {
-        // The AK's restricted scheme makes the TPM sign with SHA-256; a signature naming another
-        // hash would not verify as SHA-256 either, but this says why.
+        // The AK's restricted scheme makes the TPM sign with SHA-256. A signature that names
+        // another hash would also fail to verify as SHA-256, but this error states the reason.
         Signature::EcDsa(ecc) if ecc.hashing_algorithm() != HashingAlgorithm::Sha256 => {
             return Err(KmError::Unsupported(
                 format!("the AK signed with ECDSA over {:?}, not ECDSA-SHA256", ecc.hashing_algorithm()).into(),
@@ -431,8 +449,8 @@ pub(crate) fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u
         Signature::EcDsa(ecc) => (ecc.signature_r().value().to_vec(), ecc.signature_s().value().to_vec()),
         s => return Err(KmError::Unsupported(format!("the AK signed with {s:?}, not ECDSA-SHA256").into())),
     };
-    // r and s are minimal big-endian integers: left-pad each to the 32-byte field size. Longer
-    // is no P-256 signature (an error, never a panic).
+    // r and s are minimal big-endian integers, so each is padded on the left to the 32-byte
+    // field size. A longer value is not a P-256 signature (an error, never a panic).
     let mut raw = [0u8; 64];
     for (half, v) in raw.as_chunks_mut::<32>().0.iter_mut().zip([&r, &s]) {
         let at = 32usize.checked_sub(v.len()).ok_or_else(|| {
@@ -455,23 +473,24 @@ pub(crate) fn verify_signature(signature: &Signature, ak_spki: &[u8], bytes: &[u
     }
 }
 
-/// The canonical SPKI of a TPM public area plus the `objectAttributes` it carries (for the
-/// cross-check against what the module reports): ECC points from `unique`, RSA modulus and
-/// exponent (0 meaning 65537, TPM 2.0 §12.2.3.4).
+/// The canonical SPKI of a TPM public area and the `objectAttributes` that the area carries,
+/// for the comparison with what the module reports. The SPKI is built from the ECC point in
+/// `unique`, or from the RSA modulus and exponent (where an exponent of 0 means 65537, TPM 2.0
+/// §12.2.3.4).
 pub(crate) struct Material {
-    /// The canonical SPKI; `None` for a secret key.
+    /// The canonical SPKI, or `None` for a secret key.
     pub(crate) spki: Option<Vec<u8>>,
     /// The `objectAttributes` of the public area.
     pub(crate) attributes: ObjectAttributes,
 }
 
-/// The canonical SPKI and signed attributes of a public area: what the module's objects can be
-/// cross-checked against.
+/// Returns the canonical SPKI and the signed attributes of a public area, against which the
+/// module's objects can be checked.
 ///
 /// # Errors
 ///
-/// `Unsupported` for a TPM curve cakeys encodes no SPKI for; `Conflict` when the unique field
-/// is not a valid point or RSA key.
+/// Returns `Unsupported` for a TPM curve for which cakeys encodes no SPKI, and `Conflict` when
+/// the unique field is not a valid point or RSA key.
 pub(crate) fn material_of(public: &Public) -> Result<Material> {
     match public {
         Public::Ecc { object_attributes, parameters, unique, .. } => {
@@ -497,35 +516,36 @@ pub(crate) fn material_of(public: &Public) -> Result<Material> {
             };
             Ok(Material { spki: Some(id::rsa_spki(unique.value(), &exponent)?), attributes: *object_attributes })
         }
-        // Symmetric and keyed-hash objects expose no public key to cross-check; their identity
-        // stays the portable commitment plus the attested Name.
+        // Symmetric and keyed-hash objects expose no public key to compare. Their identity
+        // remains the portable commitment together with the attested Name.
         Public::KeyedHash { object_attributes, .. } | Public::SymCipher { object_attributes, .. } => {
             Ok(Material { spki: None, attributes: *object_attributes })
         }
     }
 }
 
-/// Recompute the Name of a public blob on the host — `nameAlg ‖ H(TPMT_PUBLIC)` over the
-/// store's own marshaled bytes (the blob content after its size prefix) — independently of
-/// both the TPM and tss-esapi's view of it.
+/// Recomputes the Name of a public blob on the host, as `nameAlg ‖ H(TPMT_PUBLIC)` over the
+/// store's own marshaled bytes (the blob content after its size prefix). The result does not
+/// depend on the TPM or on the way tss-esapi parses the blob.
 ///
 /// # Errors
 ///
-/// `Conflict` when the blob is truncated (a size prefix past its end); `Unsupported` for a
-/// `nameAlg` that is not SHA-256/384/512.
+/// Returns `Conflict` when the blob is truncated (its size prefix points past its end), and
+/// `Unsupported` for a `nameAlg` that is not SHA-256, SHA-384 or SHA-512.
 pub(crate) fn recompute_name(pub_blob: &[u8]) -> Result<Vec<u8>> {
     let truncated = || KmError::Conflict(Reason::malformed("the store's public blob is truncated"));
     let size = u16::from_be_bytes(*pub_blob.first_chunk::<2>().ok_or_else(truncated)?) as usize;
     tpmt_name(pub_blob.get(2..2 + size).ok_or_else(truncated)?)
 }
 
-/// The Name of a marshaled `TPMT_PUBLIC`, `nameAlg ‖ H(TPMT_PUBLIC)`: the one computation behind
-/// [`recompute_name`] and the credential's `name_of` (review 2026-11-23 B-23).
+/// Returns the Name of a marshaled `TPMT_PUBLIC`, `nameAlg ‖ H(TPMT_PUBLIC)`. Both
+/// [`recompute_name`] and the credential's `name_of` use this one computation (review
+/// 2026-11-23 B-23).
 ///
 /// # Errors
 ///
-/// `Conflict` when the bytes are too short to name an algorithm; `Unsupported` for a `nameAlg`
-/// that is not SHA-256/384/512.
+/// Returns `Conflict` when the bytes are too short to name an algorithm, and `Unsupported` for
+/// a `nameAlg` that is not SHA-256, SHA-384 or SHA-512.
 pub(crate) fn tpmt_name(tpmt: &[u8]) -> Result<Vec<u8>> {
     use sha2::Digest;
     let name_alg = u16::from_be_bytes(
@@ -544,20 +564,20 @@ pub(crate) fn tpmt_name(tpmt: &[u8]) -> Result<Vec<u8>> {
     Ok(name)
 }
 
-/// What the certified object must be: the key the object's `rfc7093m4` names (an asymmetric
-/// key, its SPKI cross-checked against the attested public area), or the secret key whose HMAC
-/// commitment the TPM computes again with the object it certified (review 2026-11-23 B-1: a
-/// secret key's attestation was bound to no material).
+/// What the certified object must be. It is either the key that the object's `rfc7093m4` names
+/// (an asymmetric key, whose SPKI is compared with the attested public area), or the secret key
+/// whose HMAC commitment the TPM computes again with the object that it certified (review
+/// 2026-11-23 B-1: before this, a secret key's attestation was bound to no material).
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Expected<'a> {
     /// The canonical SPKI.
     Spki(&'a [u8]),
-    /// One HMAC commitment the run computed through PKCS#11.
+    /// One HMAC commitment that the run computed through PKCS#11.
     Commitment(Bind<'a>),
 }
 
 impl<'a> Expected<'a> {
-    /// The SPKI the attested public area must hold, `None` for a secret key.
+    /// Returns the SPKI that the attested public area must hold, or `None` for a secret key.
     fn spki(self) -> Option<&'a [u8]> {
         match self {
             Expected::Spki(spki) => Some(spki),
@@ -566,23 +586,24 @@ impl<'a> Expected<'a> {
     }
 }
 
-/// A secret key's HMAC commitment, as the TPM computes it: the hash, the input the token signed
-/// (`Commit::input`), and the ID its output gave through PKCS#11.
+/// A secret key's HMAC commitment, in the form that the TPM computes it: the hash, the input
+/// that the token signed (`Commit::input`), and the ID that the output produced through
+/// PKCS#11.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Bind<'a> {
-    /// The HMAC's hash ([`hmac_algorithm`]).
+    /// The hash of the HMAC ([`hmac_algorithm`]).
     pub hash: HashingAlgorithm,
-    /// The bytes the commitment covers.
+    /// The bytes that the commitment covers.
     pub input: &'a [u8],
     /// The SRI digest of the commitment's output, as the lock records it.
     pub id: &'a str,
 }
 
-/// The TPM's name of an HMAC commitment's hash.
+/// Returns the TPM's algorithm for the hash of an HMAC commitment.
 ///
 /// # Errors
 ///
-/// `Unsupported` for SHA-224, which the TPM does not define.
+/// Returns `Unsupported` for SHA-224, which the TPM does not define.
 pub(crate) fn hmac_algorithm(hash: id::HmacHash) -> Result<HashingAlgorithm> {
     match hash {
         id::HmacHash::Sha1 => Ok(HashingAlgorithm::Sha1),
@@ -597,15 +618,16 @@ pub(crate) fn hmac_algorithm(hash: id::HmacHash) -> Result<HashingAlgorithm> {
     }
 }
 
-/// The secret key's binding to the certified object: the TPM computes the key's HMAC commitment
-/// with the very object it loaded and certified, `key` (its auth set by [`certify`]), authorized
-/// through `auth`, and the result must be the commitment the run computed through PKCS#11.
-/// Without it, a module or a store row pointing at another TPM object would have that object's
-/// attestation pinned for this key.
+/// Binds the secret key to the certified object. The TPM computes the key's HMAC commitment with
+/// the same object that it loaded and certified, `key` (whose auth [`certify`] set), authorized
+/// through `auth`. The result must equal the commitment that the run computed through PKCS#11.
+/// Without this check, a module or a store row that points to another TPM object would cause
+/// that object's attestation to be pinned for this key.
 ///
 /// # Errors
 ///
-/// `Unavailable` when `TPM2_HMAC` fails; `Conflict` when it gives another commitment.
+/// Returns `Unavailable` when `TPM2_HMAC` fails, and `Conflict` when it returns a different
+/// commitment.
 fn bound(ctx: &mut Context, key: KeyHandle, bind: Bind<'_>, auth: AuthSession) -> Result<()> {
     let buffer = MaxBuffer::try_from(bind.input.to_vec())
         .map_err(|e| KmError::Unavailable(format!("the commitment's input: {e}").into()))?;
@@ -622,23 +644,26 @@ fn bound(ctx: &mut Context, key: KeyHandle, bind: Bind<'_>, auth: AuthSession) -
     )))
 }
 
-/// Load, certify, verify and pin one key of the token (§3.7): the store row `tobj` whose
-/// PKCS#11 object is being attested, held to `want`: an asymmetric key's SPKI is cross-checked
-/// against the attestation (the attested key must be the key the object's `rfc7093m4` names),
-/// and a secret key's HMAC commitment is computed again by the certified object ([`bound`]).
-/// `provision` lets a missing Attestation Key be created (`lock` only).
+/// Loads, certifies, verifies and pins one key of the token (§3.7). The key is the store row
+/// `tobj` whose PKCS#11 object is being attested, and it must match `want`. For an asymmetric
+/// key, the SPKI is compared with the attestation (the attested key must be the key that the
+/// object's `rfc7093m4` names). For a secret key, the certified object computes the HMAC
+/// commitment again ([`bound`]). `provision` allows a missing Attestation Key to be created
+/// (only under `lock`).
+///
 /// With `ek`, the public key of a verified EK certificate, every authorization of the run goes
-/// through a session salted to that EK ([`salted_session`]: the auth values never cross the
-/// transport, the unsealed wrapping key crosses it encrypted, and the responses are
-/// authenticated), and the AK that signed is then proven to reside in that EK's TPM
-/// ([`activate`]). Without one, password sessions, as before.
+/// through a session salted to that EK ([`salted_session`]). In that session, the auth values
+/// never cross the transport, the unsealed wrapping key crosses it encrypted, and the responses
+/// are authenticated. The run then proves that the AK that signed resides in that EK's TPM
+/// ([`activate`]). Without `ek`, the run uses password sessions, as before.
 ///
 /// # Errors
 ///
-/// `Unavailable` without a PIN to unseal the object's auth value, or when any TPM call
-/// fails; `Conflict` when the store row or the attestation disagrees (a Name that is not the
-/// blob's, another signer, other material than `want`) or the activation does; `Unsupported`
-/// when the store object has no private blob to certify.
+/// Returns `Unavailable` without a PIN to unseal the object's auth value, or when any TPM call
+/// fails. Returns `Conflict` when the store row or the attestation does not match (a Name that
+/// is not the blob's, another signer, or material other than `want`), or when the activation
+/// fails its check. Returns `Unsupported` when the store object has no private blob to
+/// certify.
 #[expect(
     clippy::too_many_arguments,
     reason = "the store row, its PIN, the AK and what to check it against, all from attest()"
@@ -667,8 +692,8 @@ pub(crate) fn certify_key(
         let session = salted_session(ctx, ek)?;
         let out = certify_under(ctx, store, tobj, pin, ak_handle, provision, want, session).and_then(
             |(certified, ak, ak_public)| {
-                // The public area whose key verified the certify is the one the credential is
-                // bound to.
+                // The credential is bound to the public area whose key verified the certify
+                // statement.
                 activate(ctx, ak, &ak_public, ek, ek_spki).map(|()| certified)
             },
         );
@@ -677,8 +702,8 @@ pub(crate) fn certify_key(
     })
 }
 
-/// [`certify_key`]'s run, every authorization of the token's objects through `auth`: the AK's
-/// handle and public area too, for the activation.
+/// Runs [`certify_key`] with every authorization of the token's objects through `auth`. It also
+/// returns the AK's handle and public area, which the activation needs.
 #[expect(clippy::too_many_arguments, reason = "certify_key's arguments, and the session it chose")]
 fn certify_under(
     ctx: &mut Context,
@@ -699,7 +724,8 @@ fn certify_under(
         .priv_blob
         .as_deref()
         .ok_or_else(|| KmError::Unsupported("the store object carries no private blob to certify".into()))?;
-    // The AK first: it is persistent, so nothing is left to flush if it is missing.
+    // The AK is read first, because it is persistent, so nothing is left to flush if it is
+    // missing.
     let (ak, ak_public, ak_qualified_name) = attestation_key(ctx, ak_handle, provision)?;
     let key = load(ctx, &store.parent, priv_blob, &tobj.pub_blob, auth)?;
     let certified = flushing(ctx, key, |ctx| {
@@ -708,9 +734,10 @@ fn certify_under(
     Ok((certified, ak, ak_public))
 }
 
-/// The certify and its host verification, for the object `key` loaded from `tobj`, authorized
-/// through `auth`; `ak` is the AK's handle, public area and qualified Name. A secret key's
-/// commitment is computed again by the same loaded object once the statement verified.
+/// Runs the certify and its host verification for the object `key` that was loaded from `tobj`,
+/// authorized through `auth`. `ak` is the AK's handle, public area and qualified Name. For a
+/// secret key, the same loaded object computes the commitment again after the statement
+/// verified.
 fn certify_loaded(
     ctx: &mut Context,
     key: KeyHandle,
@@ -730,18 +757,20 @@ fn certify_loaded(
     Ok(certified)
 }
 
-/// The host verification of a certify statement: the AK's signature over the exact attestation
-/// bytes, the attested Names against both the store's public blob and the loaded object (`live`,
-/// what `TPM2_ReadPublic` answered), the signer, and the material cross-check.
+/// Verifies a certify statement on the host. The function checks the AK's signature over the
+/// exact attestation bytes, the attested Names against both the store's public blob and the
+/// loaded object (`live`, which `TPM2_ReadPublic` returned), the signer, and the material.
 ///
-/// The material and attributes come from `pub_blob`, the bytes whose Name was signed. `live`'s
-/// public area is unauthenticated (no session covers `ReadPublic`, and ESYS does not
-/// recompute its Name), so it only has to agree: an interposer that answers `ReadPublic` with
-/// another key's public area beside the certified object's Name is refused (13).
+/// The material and attributes come from `pub_blob`, which holds the bytes whose Name was
+/// signed. The public area in `live` is unauthenticated (no session covers `ReadPublic`, and
+/// ESYS does not recompute its Name), so it only has to agree. An interposer that answers
+/// `ReadPublic` with another key's public area together with the certified object's Name is
+/// refused (13).
 ///
 /// # Errors
 ///
-/// `Conflict` when the attestation, its signer, its Names or the material disagree.
+/// Returns `Conflict` when the attestation, its signer, its Names or the material do not
+/// match.
 fn verify_certified(
     attest: &Attest,
     signature: &Signature,
@@ -786,8 +815,8 @@ fn verify_certified(
             "the attestation was signed by another key than the AK",
         )));
     }
-    // The attested public area is the store blob the signed Name hashes, never ReadPublic's
-    // unauthenticated copy: the material cross-check is made on it.
+    // The attested public area is the store blob that the signed Name hashes, never the
+    // unauthenticated copy from ReadPublic, and the material check uses it.
     let attested = unmarshal_public(pub_blob)?;
     if *live_public != attested {
         return Err(KmError::Conflict(Reason::check(
@@ -800,13 +829,15 @@ fn verify_certified(
     Ok(certified(name, qualified_name, ak_spki, &material))
 }
 
-/// The material cross-check (§3.7): the attested public area must be the same key the object's
-/// rfc7093m4 hashes — what verifies the identity on any other token. A symmetric PKCS#11 object
-/// backed by an asymmetric TPM object (or the reverse) is a different object.
+/// Checks the material (§3.7): the attested public area must hold the same key that the
+/// object's rfc7093m4 hashes, which is the value that verifies the identity on any other token.
+/// A symmetric PKCS#11 object backed by an asymmetric TPM object (or the reverse) is a
+/// different object.
 ///
 /// # Errors
 ///
-/// `Conflict` when the attested material is another key than `spki`, or of another kind.
+/// Returns `Conflict` when the attested material is a key other than `spki`, or a key of
+/// another kind.
 pub(crate) fn cross_check(material: &Material, spki: Option<&[u8]>) -> Result<()> {
     match (spki, &material.spki) {
         (Some(want), Some(attested)) if want != attested.as_slice() => Err(KmError::Conflict(Reason::check(
@@ -829,9 +860,10 @@ pub(crate) fn cross_check(material: &Material, spki: Option<&[u8]>) -> Result<()
     }
 }
 
-/// What a certify run proved, from the Names it attested and the signed attributes, as the module
-/// derives its immutables from them (tpm2-pkcs11: `CKA_LOCAL` = sensitiveDataOrigin,
-/// `CKA_EXTRACTABLE` = !(fixedTPM|fixedParent)).
+/// Returns what a certify run proved, from the Names that it attested and from the signed
+/// attributes. The attributes are converted as the module derives its immutable attributes from
+/// them (tpm2-pkcs11: `CKA_LOCAL` = sensitiveDataOrigin, `CKA_EXTRACTABLE` =
+/// !(fixedTPM|fixedParent)).
 #[must_use]
 pub(crate) fn certified(name: Vec<u8>, qualified_name: Vec<u8>, ak_spki: Vec<u8>, material: &Material) -> Certified {
     let attributes = material.attributes;
@@ -844,13 +876,14 @@ pub(crate) fn certified(name: Vec<u8>, qualified_name: Vec<u8>, ak_spki: Vec<u8>
     }
 }
 
-/// The EK certificate the TPM keeps in NV (TCG EK Credential Profile §2.2.1.4): the P-256 one
-/// at 0x01c0000a, else the RSA-2048 one at 0x01c00002; `None` when neither index is defined.
-/// Only read: cakeys never defines or writes an NV index.
+/// Returns the EK certificate that the TPM keeps in NV (TCG EK Credential Profile §2.2.1.4):
+/// the P-256 certificate at 0x01c0000a, or otherwise the RSA-2048 certificate at 0x01c00002.
+/// Returns `None` when neither index is defined. The function only reads: cakeys never defines
+/// or writes an NV index.
 ///
 /// # Errors
 ///
-/// `Unavailable` when the TPM cannot be asked or an index that exists cannot be read.
+/// Returns `Unavailable` when the TPM cannot be queried or an index that exists cannot be read.
 pub(crate) fn nv_ek_certificate(ctx: &mut Context) -> Result<Option<Vec<u8>>> {
     use tss_esapi::constants::response_code::Tss2ResponseCodeKind;
     for (alg, index) in [
@@ -870,15 +903,17 @@ pub(crate) fn nv_ek_certificate(ctx: &mut Context) -> Result<Option<Vec<u8>>> {
     Ok(None)
 }
 
-/// The TPM's endorsement key, recreated from the TCG default template (empty endorsement auth)
-/// for the key of a verified EK certificate, `ek_spki`. Its public area must be that key: ESYS
-/// encrypts the session salt ([`salted_session`]) to the public area `CreatePrimary` answered, so
-/// one the certificate does not name would salt the session to whoever answered.
+/// Creates the TPM's endorsement key again from the TCG default template (with an empty
+/// endorsement auth) for the key of a verified EK certificate, `ek_spki`. The public area must
+/// hold that key, because ESYS encrypts the session salt ([`salted_session`]) to the public
+/// area that `CreatePrimary` returned. A public area that the certificate does not name would
+/// salt the session to whichever party answered.
 ///
 /// # Errors
 ///
-/// `Unsupported` for an EK that is neither RSA-2048 nor P-256; `Unavailable` when the EK cannot
-/// be created (endorsement auth not empty); `Conflict` when its key is not the certificate's.
+/// Returns `Unsupported` for an EK that is neither RSA-2048 nor P-256, `Unavailable` when the
+/// EK cannot be created (the endorsement auth is not empty), and `Conflict` when its key is not
+/// the certificate's key.
 pub(crate) fn endorsement_key(ctx: &mut Context, ek_spki: &[u8]) -> Result<KeyHandle> {
     let alg = match id::KeyAlg::of_spki(ek_spki) {
         Ok(id::KeyAlg::Rsa) => AsymmetricAlgorithmSelection::Rsa(RsaKeyBits::Rsa2048),
@@ -909,15 +944,17 @@ pub(crate) fn endorsement_key(ctx: &mut Context, ek_spki: &[u8]) -> Result<KeyHa
     Ok(ek)
 }
 
-/// An HMAC session salted to the endorsement key `ek` (from [`endorsement_key`], so salted to
-/// the certificate's key): only the TPM holding that EK learns the session key. Its
-/// authorizations never send an auth value (the PIN-derived seal auth, the object's auth), every
-/// response it covers carries an HMAC ESYS checks, and with `encrypt` set (the unseal) the
-/// response parameter is encrypted (AES-128-CFB). Flushed by the caller.
+/// Starts an HMAC session salted to the endorsement key `ek` (from [`endorsement_key`], so the
+/// salt is encrypted to the certificate's key). Only the TPM that holds that EK learns the
+/// session key. The session's authorizations never send an auth value (neither the seal auth
+/// derived from the PIN nor the object's auth), and every response that it covers carries an
+/// HMAC that ESYS checks. With `encrypt` set (for the unseal), the response parameter is
+/// encrypted (AES-128-CFB). The caller flushes the session.
 ///
 /// # Errors
 ///
-/// `Unavailable` when the TPM starts no session (it cannot decrypt the salt: another EK).
+/// Returns `Unavailable` when the TPM does not start the session (because it cannot decrypt
+/// the salt, which means it holds another EK).
 pub(crate) fn salted_session(ctx: &mut Context, ek: KeyHandle) -> Result<AuthSession> {
     let session = ctx
         .start_auth_session(
@@ -937,9 +974,9 @@ pub(crate) fn salted_session(ctx: &mut Context, ek: KeyHandle) -> Result<AuthSes
     Ok(session)
 }
 
-/// Set `session`'s attributes: continued, and response encryption as `encrypt` says (the unseal
-/// takes it; a command with no response parameter to encrypt must not ask). A password session
-/// has none to set.
+/// Sets the attributes of `session`: continueSession, and response encryption when `encrypt` is
+/// set (the unseal uses it, and a command with no response parameter to encrypt must not ask
+/// for it). A password session has no attributes to set.
 fn session_attributes(ctx: &mut Context, session: AuthSession, encrypt: bool) -> Result<()> {
     if session == AuthSession::Password {
         return Ok(());
@@ -949,16 +986,17 @@ fn session_attributes(ctx: &mut Context, session: AuthSession, encrypt: bool) ->
         .map_err(|e| KmError::Unavailable(format!("setting the salted session's attributes: {e}").into()))
 }
 
-/// Prove that the AK at `ak` (public area `ak_public`) resides in the TPM whose endorsement key
-/// is `ek_spki` (a verified EK certificate's), loaded at `ek` ([`endorsement_key`]): make a
-/// credential to it on the host bound to the AK's Name ([`credential::make_credential`]), and
-/// have the TPM activate it. Only a TPM holding both that EK and an object of that Name recovers
-/// the secret, and an AK that is fixedTPM (as [`check_ak`] requires) never left it.
+/// Proves that the AK at `ak` (with the public area `ak_public`) resides in the TPM whose
+/// endorsement key is `ek_spki` (the key of a verified EK certificate), loaded at `ek`
+/// ([`endorsement_key`]). The host makes a credential to that EK, bound to the AK's Name
+/// ([`credential::make_credential`]), and has the TPM activate it. Only a TPM that holds both
+/// that EK and an object with that Name can recover the secret, and an AK that is fixedTPM (as
+/// [`check_ak`] requires) has never left that TPM.
 ///
 /// # Errors
 ///
-/// `Unavailable` when the TPM cannot be reached; `Conflict` when the TPM refuses or answers the
-/// credential wrongly.
+/// Returns `Unavailable` when the TPM cannot be reached, and `Conflict` when the TPM refuses
+/// the credential or returns a wrong secret.
 pub(crate) fn activate(
     ctx: &mut Context,
     ak: KeyHandle,
@@ -981,9 +1019,9 @@ pub(crate) fn activate(
     Ok(())
 }
 
-/// `TPM2_ActivateCredential` with the AK (empty auth) and the EK, whose default policy is
-/// `PolicySecret(TPM_RH_ENDORSEMENT)`: a policy session satisfied with the endorsement
-/// hierarchy's (empty) auth, flushed whatever happens.
+/// Runs `TPM2_ActivateCredential` with the AK (empty auth) and the EK. The EK's default policy
+/// is `PolicySecret(TPM_RH_ENDORSEMENT)`, so the function satisfies a policy session with the
+/// endorsement hierarchy's (empty) auth, and flushes the session whatever happens.
 fn activate_with_ek(
     ctx: &mut Context,
     ak: KeyHandle,
@@ -1023,8 +1061,8 @@ fn activate_with_ek(
         })
         .map(|digest| Zeroizing::new(digest.value().to_vec()))
         .map_err(|e| match e {
-            // The TPM checked the credential and refused it: its HMAC does not hold for the AK's
-            // Name, or its seed was not encrypted to this EK.
+            // The TPM checked the credential and refused it: either its HMAC does not match the
+            // AK's Name, or its seed was not encrypted to this EK.
             tss_esapi::Error::Tss2Error(rc)
                 if matches!(
                     rc.kind(),
@@ -1056,14 +1094,15 @@ pub(crate) mod tests {
     use cakeys_core::testing::assert_fires;
     use tss_esapi::structures::{EccParameter, EccSignature, PublicKeyRsa, RsaSignature};
 
-    /// A P-256 key's `TPM2B_PUBLIC` from the store fixture (tests/fixtures/tobject-private.yaml).
+    /// The `TPM2B_PUBLIC` of a P-256 key from the store fixture
+    /// (tests/fixtures/tobject-private.yaml).
     const PUB_BLOB: &str = "00560023000b000600720000001000100003001000204fabc9186000e8016add3f0bd535700c7b7cab33c93f6c65271254321d58e4c200207a0468724ee74b1cf1496b782172a37bd56f583e4866963a76640c74a7891e90";
 
     fn pub_blob() -> Vec<u8> {
         crate::attest::store::hex(PUB_BLOB).unwrap()
     }
 
-    /// A secret key's HMAC commitment is computed again in the TPM by its hash's TPM name;
+    /// The TPM computes a secret key's HMAC commitment again with the TPM algorithm of its hash.
     /// SHA-224, which the TPM does not define, would leave the attestation unbound, so it is
     /// refused (review 2026-11-23 B-1). An `Expected` names an SPKI only for an asymmetric key.
     #[test]
@@ -1082,8 +1121,9 @@ pub(crate) mod tests {
         assert_eq!(Expected::Spki(b"spki").spki(), Some(&b"spki"[..]));
     }
 
-    /// The Name is the `nameAlg` and its digest of the public area, for each hash tpm2-pkcs11
-    /// may use; any other algorithm and a truncated blob are refused.
+    /// The Name is the `nameAlg` followed by the digest of the public area with that algorithm,
+    /// for each hash that tpm2-pkcs11 may use. Any other algorithm and a truncated blob are
+    /// refused.
     #[test]
     fn names_are_recomputed_by_their_name_alg() {
         let with_alg = |alg: u16| {
@@ -1099,8 +1139,8 @@ pub(crate) mod tests {
         assert!(matches!(recompute_name(&pub_blob()[..40]), Err(KmError::Conflict(_))));
     }
 
-    /// The wrapped object auth is `<iv>:<tag>:<ct>` under the token's wrapping key: it round-trips,
-    /// and another shape or another key is refused (13).
+    /// The wrapped object auth is `<iv>:<tag>:<ct>` under the token's wrapping key. It decrypts
+    /// to the value that was encrypted, and another shape or another key is refused (13).
     #[test]
     fn object_auth_unwraps_only_in_its_own_shape_and_key() {
         let key = [7u8; 32];
@@ -1119,8 +1159,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// The AK's signature is checked on the host: an ECDSA one that does not verify, one too long
-    /// for P-256, an AK that is no EC key, and a signature of another scheme are each refused.
+    /// The host checks the AK's signature. Each of these is refused: an ECDSA signature that does
+    /// not verify, a signature that is too long for P-256, an AK that is not an EC key, and a
+    /// signature of another scheme.
     #[test]
     fn attestation_signatures_are_verified_on_the_host() {
         let ak = material_of(&unmarshal_public(&pub_blob()).unwrap()).unwrap().spki.unwrap();
@@ -1141,7 +1182,8 @@ pub(crate) mod tests {
         let rsa_ak = id::rsa_spki(&[0xc5; 256], &[1, 0, 1]).unwrap();
         let not_ec = verify_signature(&ecdsa(vec![1; 32], vec![1; 32]), &rsa_ak, b"attest");
         assert!(matches!(not_ec, Err(KmError::Conflict(m)) if m.contains("not an ECDSA key")));
-        // ECDSA over another hash than the AK's SHA-256: named, not a bare "does not verify".
+        // ECDSA over a hash other than the AK's SHA-256 gets an error that names the hash, not
+        // only "does not verify".
         let sha384 = Signature::EcDsa(
             EccSignature::create(
                 HashingAlgorithm::Sha384,
@@ -1161,27 +1203,28 @@ pub(crate) mod tests {
         assert!(matches!(other, Err(KmError::Unsupported(m)) if m.contains("not ECDSA-SHA256")));
     }
 
-    /// The seal auth is tpm2-pkcs11's: the hex text of SHA-256(PIN ‖ salt)'s first 16 bytes,
-    /// held where it is wiped (esys.rs F2). The known answer was computed apart from the code
-    /// (`printf 123456abcd | sha256sum`).
+    /// The seal auth matches the one tpm2-pkcs11 computes: the hex text of the first 16 bytes of
+    /// SHA-256(PIN ‖ salt), held in a buffer that is wiped (esys.rs F2). The known answer was
+    /// computed separately from the code (`printf 123456abcd | sha256sum`).
     #[test]
     fn the_seal_auth_is_the_modules_and_wiped() {
         let auth: Zeroizing<Vec<u8>> = seal_auth(b"123456", "abcd");
         assert_eq!(auth.as_slice(), b"7eb6640227367c8ff142d877496ca3ec");
     }
 
-    /// Only the TPM's `TPM_RC_HANDLE` means no AK at the handle (`lock` then provisions one);
-    /// any other failure of `Esys_TR_FromTPMPublic` is unavailable (16), naming the handle and
-    /// the error, never "no AK" (esys.rs F3).
+    /// Only the TPM's `TPM_RC_HANDLE` means that there is no AK at the handle (and `lock` then
+    /// provisions one). Any other failure of `Esys_TR_FromTPMPublic` is unavailable (16), and
+    /// the error names the handle and the failure, never "no AK" (esys.rs F3).
     #[test]
     fn only_tpm_rc_handle_means_no_attestation_key() {
         use tss_esapi::WrapperErrorKind;
         use tss_esapi::constants::response_code::Tss2ResponseCode;
         let tss = |rc: u32| Err::<u8, _>(tss_esapi::Error::Tss2Error(Tss2ResponseCode::from(rc)));
         assert_eq!(ak_at(0x8100_0100, Ok(7u8)).unwrap(), Some(7));
-        // TPM_RC_HANDLE + TPM_RC_1: TPM2_ReadPublic's handle names no object.
+        // TPM_RC_HANDLE + TPM_RC_1 means that the handle of TPM2_ReadPublic names no object.
         assert_eq!(ak_at(0x8100_0100, tss(0x18b)).unwrap(), None);
-        // TPM_RC_FAILURE, TPM_RC_RETRY, a TCTI I/O error, and a wrapper error.
+        // These failures are TPM_RC_FAILURE, TPM_RC_RETRY, a TCTI I/O error, and a wrapper
+        // error.
         let wrapper = Err(tss_esapi::Error::WrapperError(WrapperErrorKind::InternalError));
         for found in [tss(0x101), tss(0x922), tss(0x000a_000a), wrapper] {
             let e = ak_at(0x8100_0100, found).unwrap_err();
@@ -1189,20 +1232,22 @@ pub(crate) mod tests {
         }
     }
 
-    /// The fixture's P-256 public blob with its `unique` point replaced by `key`'s.
+    /// Returns the fixture's P-256 public blob with its `unique` point replaced by the point of
+    /// `key`.
     pub(crate) fn blob_of(key: &p256::ecdsa::SigningKey) -> Vec<u8> {
         use p256::pkcs8::EncodePublicKey;
         let spki = key.verifying_key().to_public_key_der().unwrap();
         let point = &spki.as_bytes()[spki.as_bytes().len() - 64..];
         let mut blob = pub_blob();
         let n = blob.len();
-        // The blob ends `0020 ‖ x ‖ 0020 ‖ y`.
+        // The blob ends with `0020 ‖ x ‖ 0020 ‖ y`.
         blob[n - 66..n - 34].copy_from_slice(&point[..32]);
         blob[n - 32..].copy_from_slice(&point[32..]);
         blob
     }
 
-    /// A `TPMS_ATTEST` certifying `name`/`qn`, signed by `ak` as the TPM would.
+    /// Returns a `TPMS_ATTEST` that certifies `name` and `qn`, signed by `ak` as the TPM would
+    /// sign it.
     pub(crate) fn certify_statement(
         ak: &p256::ecdsa::SigningKey,
         ak_qn: &[u8],
@@ -1234,10 +1279,11 @@ pub(crate) mod tests {
         (attest, Signature::EcDsa(ecc.unwrap()))
     }
 
-    /// The material and attributes are the store blob's — the bytes the signed Name hashes —
-    /// never `TPM2_ReadPublic`'s public area, which nothing authenticates: an interposer that
-    /// answers `ReadPublic` with a victim key's public area beside the certified object's Names
-    /// is refused, also when the object's SPKI is the victim's (esys.rs F1).
+    /// The material and attributes come from the store blob, which holds the bytes that the
+    /// signed Name hashes, and never from the public area of `TPM2_ReadPublic`, which nothing
+    /// authenticates. An interposer that answers `ReadPublic` with a victim key's public area
+    /// together with the certified object's Names is refused, also when the object's SPKI is
+    /// the victim's SPKI (esys.rs F1).
     #[test]
     fn the_material_is_the_attested_blobs_not_read_publics() {
         let ak = p256::ecdsa::SigningKey::from_slice(&[1; 32]).unwrap();
@@ -1255,21 +1301,24 @@ pub(crate) mod tests {
             let live = (live.clone(), names.0.clone(), names.1.clone());
             verify_certified(&attest, &signature, &blob, &live, &ak_public, &ak_qn, Some(spki))
         };
-        // An honest ReadPublic: the blob's key passes, with the blob's signed attributes.
+        // When ReadPublic returns the correct public area, the blob's key passes, with the
+        // blob's signed attributes.
         let honest = verify(&unmarshal_public(&blob).unwrap(), &key_spki).unwrap();
         assert_eq!((honest.local, honest.extractable), (true, false));
-        // ReadPublic swapped for the victim's public area: refused, whichever SPKI is asked.
+        // When ReadPublic returns the victim's public area instead, the result is refused,
+        // whichever SPKI is expected.
         for spki in [&victim_spki, &key_spki] {
             assert_fires(&verify(&victim_public, spki).map(|_| ()), Check::AttestTpmName);
         }
-        // The victim's SPKI against the honest blob: the cross-check refuses it.
+        // The material check refuses the victim's SPKI against the correct blob.
         assert_fires(&verify(&unmarshal_public(&blob).unwrap(), &victim_spki).map(|_| ()), Check::AttestTpmMaterial);
     }
 
-    /// A statement is the AK's only when the AK signed it as itself (review 2026-11-24 B-12, the
-    /// other signer): one another key signed is refused by the signature, under the AK's
-    /// qualified Name or its own; and one the AK's key signed naming another qualified signer is
-    /// refused by that Name. The AK's own statement of the same object verifies.
+    /// A statement counts as the AK's statement only when the AK signed it under its own name
+    /// (review 2026-11-24 B-12, "the other signer"). The signature check refuses a statement
+    /// that another key signed, whether it names the AK's qualified Name or the other key's own.
+    /// The Name check refuses a statement that the AK's key signed but that names another
+    /// qualified signer. The AK's own statement of the same object verifies.
     #[test]
     fn a_statement_by_another_signer_is_refused() {
         let ak = p256::ecdsa::SigningKey::from_slice(&[1; 32]).unwrap();

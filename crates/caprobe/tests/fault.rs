@@ -1,9 +1,10 @@
-//! caprobe against a module that fails or lies (`crates/p11-fault`, `docs/FAULT_SHIM.md`):
-//! `SoftHSM` behind the shim, probed with `--write-probes`. The probe records what it met as the
-//! module's behaviour, or says what it could not determine; it never guesses.
+//! Tests of caprobe against a module that fails or returns false answers (`crates/p11-fault`,
+//! `docs/FAULT_SHIM.md`): `SoftHSM` behind the shim, probed with `--write-probes`. The probe
+//! records what it saw as the module's behavior, or says what it could not determine. It never
+//! guesses.
 //!
-//! Needs `P11_FAULT_MODULE` naming `SoftHSM`, which the per-test runner (nix/test-tokens.sh)
-//! sets; skipped without it.
+//! The tests need `P11_FAULT_MODULE` to name `SoftHSM`. The per-test runner (nix/test-tokens.sh)
+//! sets it, and the tests are skipped without it.
 
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
@@ -12,7 +13,8 @@ use common::*;
 use cryptoki::mechanism::Mechanism;
 use cryptoki::object::Attribute;
 
-/// A scratch token on the shim, with a P-256 key pair `decoy` no probe made.
+/// Creates a scratch token on the shim, with a P-256 key pair labeled `decoy` that no probe
+/// made.
 fn scratch(name: &str) -> Option<Workdir> {
     let real = suite_var("P11_FAULT_MODULE", "CAKEYS_FAULT_REQUIRE", name)?;
     let w = Workdir::new(name);
@@ -28,8 +30,9 @@ fn scratch(name: &str) -> Option<Workdir> {
     Some(w)
 }
 
-/// `caprobe probe --token ref --write-probes` under `plan`: the profile, the notes, and how many calls
-/// each rule decided (the trace's `rule`, from 1), in the plan's order.
+/// Runs `caprobe probe --token ref --write-probes` under `plan`. Returns the exit code, the
+/// profile, the notes, and the number of calls that each rule decided (from the trace's `rule`
+/// field, which counts from 1), in the order of the plan's rules.
 fn probed(w: &Workdir, name: &str, plan: &str, more: &[&str]) -> (i32, String, String, Vec<usize>) {
     let (path, trace) = (w.dir.join(format!("{name}.toml")), w.dir.join(format!("{name}.jsonl")));
     std::fs::write(&path, plan).unwrap();
@@ -46,16 +49,16 @@ fn probed(w: &Workdir, name: &str, plan: &str, more: &[&str]) -> (i32, String, S
     (code(&o), stdout(&o), stderr(&o), fired)
 }
 
-/// The plan's rules.
+/// Returns the plan's rules.
 fn rules(plan: &str) -> Vec<toml::Value> {
     let plan: toml::Value = toml::from_str(plan).unwrap();
     plan.get("rule").and_then(toml::Value::as_array).cloned().unwrap_or_default()
 }
 
-/// Each rule fired as often as it says: a rule numbered by `call` decides that one call, once
-/// (review fault.rs F2: any firing passed, so a numbered rule could land on another step, or
-/// a plan's second rule never fire); one without `call` decides every call it matches, at least
-/// one.
+/// Checks that each rule fired as often as it should. A rule with a `call` number decides
+/// exactly that one call, once. A rule without `call` decides every call that it matches, and
+/// must decide at least one. (Review fault.rs F2: before this check, any firing passed, so a
+/// numbered rule could hit another step, or a plan's second rule could never fire.)
 fn assert_fired(name: &str, plan: &str, fired: &[usize], said: &str) {
     for (i, (rule, n)) in rules(plan).iter().zip(fired).enumerate() {
         if rule.get("call").is_some() {
@@ -66,21 +69,22 @@ fn assert_fired(name: &str, plan: &str, fired: &[usize], said: &str) {
     }
 }
 
-/// One fault case: its name, the plan, what the profile then holds, what the probe says it
-/// could not determine, and the rows of the committed `SoftHSM` profile (what the honest module
-/// earns) the profile must then not hold.
+/// One fault case: its name, the plan, what the profile then holds, what the probe says that it
+/// could not determine, and the rows of the committed `SoftHSM` profile that the profile must
+/// then not hold. The committed rows are what `SoftHSM` earns without a fault.
 type Case<'a> = (&'a str, String, &'a [&'a str], &'a str, &'a [&'a str]);
 
-/// The rows the honest module earns that a case takes away.
+/// The rows that `SoftHSM` earns without a fault and that a case takes away.
 const POP_SIGN: &str = "\"prove.pop-sign.CKK_EC.secp256r1\" = { answer = \"yes\", by = \"host\" }";
 const POP_ECDH: &str = "\"prove.pop-ecdh.CKK_EC.secp256r1\" = { answer = \"yes\", by = \"host\" }";
 const SEALED: &str = "\"derive.ecdh.sealed\" = { answer = \"yes\", by = \"host\" }";
 const READ_ONLY: &str = "\"derive.ecdh.read-only\" = { answer = \"yes\", by = \"host\" }";
 const OAEP_SHA1: &str = "\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\", by = \"host\" }";
 
-/// The calls the first key's proofs of possession make before the probes of its mechanisms (it
-/// proves first, as the verbs do right after generating): pop-sign's `C_SignInit`, pop-ecdh's
-/// sealed `C_DeriveKey` and the `C_SignInit` of its HMAC.
+/// The calls that the first key's proofs of possession make before the probes of its mechanisms.
+/// The probe proves possession first, as the verbs do right after they generate a key. The two
+/// `C_SignInit` calls are the one of pop-sign and the one of pop-ecdh's HMAC, and the one
+/// `C_DeriveKey` call (`DERIVES`) is the sealed derivation of pop-ecdh.
 const SIGN_INITS: u64 = 2;
 const DERIVES: u64 = 1;
 
@@ -88,14 +92,16 @@ fn rule(text: &str) -> String {
     format!("[[rule]]\n{text}\n")
 }
 
-/// Probe under each case's plan: the probe succeeds, its rule fired, the profile and the notes
-/// hold what the case says, and the profile holds none of the rows the honest module would have
-/// earned (review fault.rs F1: only presence was checked, so a probe that noted the lie and
-/// still wrote the row passed). Each of those is a row of the committed profile, so the check
-/// cannot pass on a row no probe writes.
+/// Probes under each case's plan and checks the result. The probe succeeds, its rules fired, the
+/// profile and the notes hold what the case says, and the profile holds none of the rows that
+/// `SoftHSM` would have earned without the fault. (Review fault.rs F1: only the presence of
+/// rows was checked, so a probe that noted the fault and still wrote the row passed.) Each of
+/// those rows is a row of the committed profile, so the check cannot pass on a row that no probe
+/// writes.
 fn probe_cases(w: &Workdir, cases: &[Case]) {
     let honest = std::fs::read_to_string(committed_profile(SOFTHSM.profile.1)).unwrap();
-    // The decoy pairs no probe made (one per `scratch`, on the one reference token).
+    // Counts the decoy pairs that no probe made (one for each `scratch` call, all on the one
+    // reference token).
     let real = std::env::var("P11_FAULT_MODULE").unwrap();
     let decoys = || open_session(&real, "kmtest", "1234").labelled("decoy").len();
     let planted = decoys();
@@ -108,32 +114,36 @@ fn probe_cases(w: &Workdir, cases: &[Case]) {
             assert!(profile.contains(row), "{name}: expected {row:?} in\n{profile}");
         }
         assert!(said.contains(undetermined), "{name}: expected {undetermined:?} in {said}");
-        // What the probe wrote loads: no row's `by` contradicts its answer, the module's no
-        // never cites a device failure, and an undecided capability is no row too (E-2).
+        // The profile that the probe wrote must load. This means that no row's `by` contradicts
+        // its answer, that no `no` row by the module cites a device failure, and that an
+        // undecided capability has no row (E-2).
         let loaded = cakeys_profile::Profile::from_toml(&profile).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(loaded.untested_problems(), Vec::<String>::new(), "{name}");
         for row in *earned {
             assert!(honest.contains(row), "{name}: {row:?} is no row of the committed profile");
             assert!(!profile.contains(row), "{name}: the honest module's {row:?} in\n{profile}");
         }
-        // Whatever the lie made the probe do, the pairs no probe made are left alone: no cleanup,
-        // stale sweep or rollback reaches an object it did not make (review 2026-11-23 D-19).
+        // Whatever the fault made the probe do, the pairs that no probe made are untouched. No
+        // cleanup, stale sweep or rollback reaches an object that the probe did not make (review
+        // 2026-11-23 D-19).
         assert_eq!(decoys(), planted, "{name}: a decoy was touched");
     }
 }
 
-/// What the write probes record when the module refuses or lies: a row of the profile and a
-/// note saying what was seen, or a note of what could not be probed. Never the row a
-/// well-behaved module would have earned.
+/// Checks what the write probes record when the module refuses or gives a false answer: a row
+/// of the profile and a note that says what was seen, or a note that says what could not be
+/// probed. The probe never writes the row that a correctly behaving module would have earned.
 #[test]
 fn the_probe_records_what_a_misbehaving_module_does() {
     let Some(w) = scratch("fault-probe") else { return };
-    // (the lie, what the profile then holds, what the probe says it could not determine)
+    // Each case is (the fault, what the profile then holds, what the probe says that it could
+    // not determine, the committed rows that it must not hold).
     let cases: &[Case] = &[
         (
-            // Every try with the usage attributes: the template as asked, then once without each
-            // of the probe's own policy defaults (public CKA_PRIVATE, private CKA_SENSITIVE),
-            // which a template refusal may be about; the fourth, without usage, is let through.
+            // The plan refuses every try with the usage attributes: the template as asked, and
+            // then the template without each of the probe's own policy defaults (CKA_PRIVATE on
+            // the public key, CKA_SENSITIVE on the private key), which a template refusal may be
+            // about. The fourth try, without the usage attributes, is let through.
             "usage refused at generation",
             (1..=3)
                 .map(|n| rule(&format!("fn = \"C_GenerateKeyPair\"\ncall = {n}\nrv = \"CKR_TEMPLATE_INCONSISTENT\"")))
@@ -150,9 +160,10 @@ fn the_probe_records_what_a_misbehaving_module_does() {
             &[POP_SIGN, POP_ECDH],
         ),
         (
-            // An operation probe has no row of its own: the mechanism is usable for the keys it
-            // verified on, and the failure is its note (`Ops::record` puts each outcome in one
-            // place). The proofs, before it, are the honest module's.
+            // An operation probe has no row of its own. The mechanism is usable for the keys on
+            // which it verified, and the failure becomes its note (`Ops::record` puts each
+            // outcome in one place). The proofs of possession run before the fault, so they keep
+            // the rows that SoftHSM earns without a fault.
             "another key signs",
             rule(&format!("fn = \"C_SignInit\"\ncall = {}\nuse_label = \"decoy\"", SIGN_INITS + 1)),
             &["secp256r1: the signature does not verify", POP_SIGN],
@@ -167,8 +178,9 @@ fn the_probe_records_what_a_misbehaving_module_does() {
             &[SEALED],
         ),
         (
-            // Every try of the sealed template `derive_any` makes: as asked, with CKA_VALUE_LEN,
-            // and each without one of its two policy defaults (CKA_SENSITIVE, CKA_EXTRACTABLE).
+            // The plan refuses every try of the sealed template that `derive_any` makes: the
+            // template as asked, the template with CKA_VALUE_LEN, and each of those without one
+            // of its two policy defaults (CKA_SENSITIVE, CKA_EXTRACTABLE).
             "a sealed derived secret refused",
             (DERIVES + 1..=DERIVES + 6)
                 .map(|n| rule(&format!("fn = \"C_DeriveKey\"\ncall = {n}\nrv = \"CKR_ATTRIBUTE_VALUE_INVALID\"")))
@@ -188,16 +200,18 @@ fn the_probe_records_what_a_misbehaving_module_does() {
             &[SEALED, READ_ONLY, POP_ECDH],
         ),
         (
-            // The key derives, as the honest module's does: its rows stand, the lie is a note.
+            // The key derives, as it does without the fault, so its rows stay, and the false
+            // CKA_DERIVE value becomes a note.
             "derives while reporting CKA_DERIVE false",
             rule("fn = \"C_GetAttributeValue\"\nattribute = \"CKA_DERIVE\"\nvalue = \"00\""),
             &["derives although the key reports CKA_DERIVE = false"],
             "",
             &[],
         ),
-        // A session an earlier operation left busy decides nothing, by the return value the
-        // module gave (KmError::rv), not by the words of a message: an operation probe, then
-        // the first key's proof of possession.
+        // A session that an earlier operation left busy decides nothing. The probe recognizes
+        // this by the return value that the module gave (KmError::rv), not by the words of a
+        // message. The two cases are an operation probe and the first key's proof of
+        // possession.
         (
             "an operation meets a busy session",
             rule(&format!("fn = \"C_SignInit\"\ncall = {}\nrv = \"CKR_OPERATION_ACTIVE\"", SIGN_INITS + 1)),
@@ -212,14 +226,16 @@ fn the_probe_records_what_a_misbehaving_module_does() {
             "no prove.pop-sign.CKK_EC.secp256r1 row",
             &[POP_SIGN],
         ),
-        // A device failure is no answer of the module's: no `no` row, an `[untested]` entry
-        // naming it (review 2026-11-24 E-2: this case asserted the two `no` rows).
+        // A device failure is not an answer from the module, so it produces no `no` row, but an
+        // `[untested]` entry that names it (review 2026-11-24 E-2: this case used to assert the
+        // two `no` rows).
         (
             "wraps but does not unwrap",
             rule("fn = \"C_UnwrapKey\"\nrv = \"CKR_DEVICE_ERROR\""),
             &[
                 "\"wrap.rsa-oaep.SHA-1\" = { why = \"device\", note = \"wraps but does not unwrap: CKR_DEVICE_ERROR\" }",
-                // SoftHSM's own no, at the wrap, before any unwrap: still the module's.
+                // SoftHSM itself refuses the SHA-256 wrap before any unwrap, so that row is still
+                // the module's no.
                 "\"wrap.rsa-oaep.SHA-256\" = { answer = \"no\", by = \"module\", evidence = \"wrapping fails: CKR_ARGUMENTS_BAD\" }",
             ],
             "no wrap.rsa-oaep.SHA-1 row: wraps but does not unwrap: CKR_DEVICE_ERROR (the device failed",
@@ -236,22 +252,19 @@ fn the_probe_records_what_a_misbehaving_module_does() {
         ),
     ];
     probe_cases(&w, cases);
-    // Against the committed profile, such a module drifts (15): the conformance check would
-    // not let its profile stand for SoftHSM's.
+    // Compared with the committed profile, such a module drifts (exit code 15), so the
+    // conformance check would not accept its profile as SoftHSM's.
     let (exit, _, said, _) = probed(&w, "drift", &cases[4].1, &["--diff", SOFTHSM.profile.0]);
     assert_eq!(exit, 15, "{said}");
     assert!(said.contains("derive.ecdh.sealed"), "{said}");
 }
 
-/// `derive_any`'s tries, in order, each taken when those before it are refused for their
-/// template, and the one that took is the profile's note: `CKA_VALUE_LEN` added; then each
-/// policy default dropped from the template as asked; then from the one with `CKA_VALUE_LEN`. A
-/// refusal that is not about the template ends the tries, first or later.
-/// A device failure on every call of each function the probe's answers come from, one function
-/// at a time: no row the probe writes is a no on a device failure (review 2026-11-24 E-2,
-/// phase1-design §2.3). What it writes loads, which a `module` no citing one would not, no `no`
-/// row of any provenance cites one, and the steps the device failed are `[untested]` `device`
-/// entries.
+/// Makes every call of one function fail with a device failure, for each function from which
+/// the probe's answers come, one function at a time. No row that the probe writes is a no on a
+/// device failure (review 2026-11-24 E-2, phase1-design §2.3). The profile that the probe writes
+/// loads, which it would not if a `no` row by the module cited a device failure. No `no` row of
+/// any provenance cites one, and the steps that the device failed are `[untested]` entries with
+/// the reason `device`.
 #[test]
 fn a_device_failure_is_never_a_no() {
     use cakeys_profile::{Answer, Why, names_device_failure};
@@ -282,6 +295,11 @@ fn a_device_failure_is_never_a_no() {
     }
 }
 
+/// Checks the tries of `derive_any`, in order. Each try is made when the tries before it are
+/// refused for their template, and the profile's note names the try that worked. The tries
+/// add `CKA_VALUE_LEN`, then drop each policy default from the template as asked, and then drop
+/// each policy default from the template with `CKA_VALUE_LEN`. A refusal that is not about the
+/// template ends the tries, whether it comes first or later.
 #[test]
 fn the_probe_notes_which_derive_template_took() {
     let Some(w) = scratch("fault-probe-derive") else { return };
@@ -311,7 +329,8 @@ fn the_probe_notes_which_derive_template_took() {
             "",
             &[],
         ),
-        // A device failure of the sealed derivation is no `derive.ecdh.sealed = no` (E-2).
+        // A device failure of the sealed derivation does not produce `derive.ecdh.sealed = no`
+        // (E-2).
         (
             "the sealed derivation fails",
             rule(&format!("fn = \"C_DeriveKey\"\ncall = {}\nrv = \"CKR_DEVICE_ERROR\"", DERIVES + 1)),
@@ -335,13 +354,14 @@ fn the_probe_notes_which_derive_template_took() {
     probe_cases(&w, cases);
 }
 
-/// An OAEP hash counts only when a blob the host made with it unwraps to the host's key: a
-/// module whose own wrap round trip works but which decodes no peer's blob (here the shim swaps
-/// another RSA key in for the host-made blob's unwrap) gets no `wrap.rsa-oaep` yes for that hash
-/// (review 2026-11-23 D-3: its own round trip was enough). The call is found in a clean run's
-/// trace: the OAEP SHA-1 unwrap that follows the wrap and round trip of the same hash (a wrap,
-/// the round trip's unwrap, then the host blob's). Earlier SHA-1 unwraps of other probes have no
-/// wrap before them, and are not it.
+/// An OAEP hash counts only when a blob that the host made with that hash unwraps to the host's
+/// key. A module whose own wrap round trip works, but which decodes no blob from another party,
+/// gets no `wrap.rsa-oaep` yes for that hash. In this test, the shim puts another RSA key in
+/// place of the unwrapping key for the unwrap of the host-made blob. (Review 2026-11-23 D-3:
+/// the module's own round trip used to be enough.) The test finds the call in the trace of a
+/// clean run: it is the OAEP SHA-1 unwrap that follows the wrap and the round-trip unwrap of the
+/// same hash (a wrap, the round trip's unwrap, and then the unwrap of the host's blob). Earlier
+/// SHA-1 unwraps by other probes have no wrap before them, so they do not match.
 #[test]
 fn an_oaep_hash_counts_only_when_a_host_made_blob_decodes() {
     let Some(w) = scratch("fault-probe-host-blob") else { return };
@@ -378,7 +398,8 @@ fn an_oaep_hash_counts_only_when_a_host_made_blob_decodes() {
     assert_fired("blob", &plan, &fired, &said);
     let unwraps: String =
         std::fs::read_to_string(w.dir.join("blob.jsonl")).unwrap().lines().collect::<Vec<_>>().join("\n");
-    // No yes: the module's no, or (a device-failure return value) no row at all.
+    // The row is not a yes. It is the module's no, or no row at all when the return value is a
+    // device failure.
     assert!(
         !profile.contains(OAEP_SHA1),
         "{plan}\nfired {fired:?}\nunwraps in the blob run:\n{unwraps}\n{said}\n{profile}"
@@ -386,11 +407,11 @@ fn an_oaep_hash_counts_only_when_a_host_made_blob_decodes() {
     assert!(profile.contains("unwraps its own blob but not one the host made"), "{profile}");
 }
 
-/// `CKA_ALLOWED_MECHANISMS` is "enforced" only when the key encrypts by what its list allows
-/// and the module then refuses CBC, outside it: when the in-list ECB call fails too, the CBC
-/// refusal tells nothing, and the row says nothing of enforcement (review 2026-11-23 D-5: any
-/// CBC failure was "enforced"). The call is the clean run's ECB `C_EncryptInit` just before
-/// the CBC one.
+/// `CKA_ALLOWED_MECHANISMS` is "enforced" only when the key encrypts with a mechanism that its
+/// list allows and the module then refuses CBC, which is outside the list. When the ECB call,
+/// which is in the list, also fails, the CBC refusal shows nothing, and the row says nothing
+/// about enforcement (review 2026-11-23 D-5: any CBC failure used to count as "enforced"). The
+/// plan fails the clean run's ECB `C_EncryptInit` that comes just before the CBC one.
 #[test]
 fn allowed_mechanisms_are_enforced_only_beside_a_working_control() {
     let Some(w) = scratch("fault-probe-allowed") else { return };
@@ -402,7 +423,8 @@ fn allowed_mechanisms_are_enforced_only_beside_a_working_control() {
     let trace = std::fs::read_to_string(w.dir.join("clean.jsonl")).unwrap();
     let calls: Vec<serde_json::Value> = trace.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let inits: Vec<&serde_json::Value> = calls.iter().filter(|c| c["fn"] == "C_EncryptInit").collect();
-    // CKM_AES_ECB (0x1081), then CKM_AES_CBC (0x1082) refused: the list kept to, not a mode probe.
+    // CKM_AES_ECB (0x1081) followed by a refused CKM_AES_CBC (0x1082) is the allowed-mechanisms
+    // check, not a mode probe.
     let pair = |p: &&[&serde_json::Value]| {
         p[0]["mechanism"] == 0x1081 && p[1]["mechanism"] == 0x1082 && p[1]["rv"] != "CKR_OK"
     };
@@ -412,7 +434,8 @@ fn allowed_mechanisms_are_enforced_only_beside_a_working_control() {
     let (exit, profile, said, fired) = probed(&w, "control", &plan, &[]);
     assert_eq!(exit, 0, "{said}");
     assert_fired("control", &plan, &fired, &said);
-    // Taken, its enforcement untold: the module's word alone (review 2026-11-24 E-4).
+    // The attribute is accepted, but its enforcement is not determined, so the yes rests on the
+    // module's answer alone (review 2026-11-24 E-4).
     assert!(
         profile.contains("\"attr.set.CKA_ALLOWED_MECHANISMS.CKK_AES\" = { answer = \"yes\", by = \"unverified\" }"),
         "{profile}"
@@ -420,9 +443,9 @@ fn allowed_mechanisms_are_enforced_only_beside_a_working_control() {
     assert!(said.contains("whether it is enforced is not told"), "{said}");
 }
 
-/// A pair the module made but the probe cannot find under its locator (probe.rs F3) is no
-/// refusal: no `cannot` row, no "generation refused" evidence, and a note saying what was seen.
-/// The first probe pair is hidden from every search.
+/// A key pair that the module made but that the probe cannot find under its locator (probe.rs
+/// F3) is not a refusal: there is no `cannot` row and no "generation refused" evidence, and a
+/// note says what was seen. The plan hides the first probe pair from every search.
 #[test]
 fn a_pair_made_but_not_found_is_no_refusal() {
     let Some(w) = scratch("fault-probe-lost") else { return };
@@ -434,8 +457,8 @@ fn a_pair_made_but_not_found_is_no_refusal() {
     assert!(!profile.contains("not under its locator"), "a refusal row for a pair the module made:\n{profile}");
 }
 
-/// Objects an interrupted probe left under its own labels are removed by the next one, which
-/// says so: they are no row of the profile.
+/// The next probe removes the objects that an interrupted probe left under its own labels, and
+/// says so in a note. The removal is not a row of the profile.
 #[test]
 fn the_probe_clears_what_an_interrupted_run_left() {
     let Some(w) = scratch("fault-probe-stale") else { return };
@@ -451,9 +474,10 @@ fn the_probe_clears_what_an_interrupted_run_left() {
     assert_eq!(open_session(&real, "kmtest", "1234").labelled("cakeys-probe-stale").len(), 0);
 }
 
-/// A probe that an error ends still destroys what it made (review D7): the first lookup after the
-/// third generation fails with `CKR_DEVICE_ERROR`, which ends the run, and nothing under a probe
-/// label is left. Before, every key made so far stayed for the next run's stale check.
+/// A probe that an error ends still destroys what it made (review D7). The first lookup after the
+/// third key-pair generation fails with `CKR_DEVICE_ERROR`, which ends the run, and nothing is
+/// left under a probe label. Before the fix, every key made so far stayed for the next run's
+/// stale check.
 #[test]
 fn a_probe_an_error_ends_destroys_what_it_made() {
     let Some(w) = scratch("fault-probe-ends") else { return };

@@ -1,9 +1,10 @@
-//! What checked a probe's `yes` (`by` in the profile, docs/archive/REVIEW-2026-11-24
-//! phase2-3-design §3.1): the host, by a check of its own, or nothing outside the module. A
-//! [`Checked`] is made only here, by the host's checks themselves (a comparison with what the
-//! host knows, a verification it ran) or as [`Checked::unverified`], so no probe family says the
-//! host checked what it did not (review 2026-11-24 E-3, E-4). `checked_is_made_only_here` keeps
-//! its constructor in this file.
+//! What checked a probe's `yes` (the `by` field in the profile; docs/archive/REVIEW-2026-11-24
+//! phase2-3-design §3.1): the host, with a check of its own, or nothing outside the module. Only
+//! this file makes a [`Checked`] value. The host's checks make it (a comparison with what the
+//! host knows, or a verification that the host ran), or [`Checked::unverified`] makes it. No
+//! probe family can therefore record that the host checked something that it did not check
+//! (review 2026-11-24 E-3, E-4). The test `checked_is_made_only_here` keeps the constructor in
+//! this file.
 
 use cakeys_profile::By;
 
@@ -14,28 +15,30 @@ pub(crate) struct Checked {
 }
 
 impl Checked {
-    /// What the module gave (`got`), compared on the host with what the host knows (`want`): a
-    /// value read back, a key's public key, a check value, a count. `None` when they differ.
+    /// Compares on the host what the module gave (`got`) with what the host knows (`want`): a
+    /// value read back, a key's public key, a check value or a count. Returns a host check when
+    /// they are equal, and `None` when they differ.
     pub(crate) fn same<T: PartialEq + ?Sized>(got: &T, want: &T) -> Option<Checked> {
         (got == want).then_some(Checked { by: By::Host })
     }
 
-    /// A check the host ran: a signature or proof of possession it verified, a value it
-    /// computed again. Its error when it did not pass.
+    /// Converts the result of a check that the host ran (a signature or a proof of possession
+    /// that it verified, or a value that it computed again) into a host check.
     ///
     /// # Errors
     ///
-    /// `check`'s own.
+    /// Returns the error of `check` when the check did not pass.
     pub(crate) fn verified<E>(check: Result<(), E>) -> Result<Checked, E> {
         check.map(|()| Checked { by: By::Host })
     }
 
-    /// Nothing outside the module checked it: its own round trip, its own commitment.
+    /// Records that nothing outside the module checked the result, for example when only the
+    /// module's own round trip or its own commitment shows it.
     pub(crate) const fn unverified() -> Checked {
         Checked { by: By::Unverified }
     }
 
-    /// Who checked it, as the profile says it.
+    /// Returns who checked the result, as the profile records it.
     pub(crate) const fn by(self) -> By {
         self.by
     }
@@ -45,9 +48,9 @@ impl Checked {
 mod tests {
     use super::*;
 
-    /// The constructor is this file's: every other source of the crate makes a [`Checked`] by
-    /// one of the functions above, never by the literal (phase2-3-design §3.1, 2: "`Checked`
-    /// cannot be faked").
+    /// Only this file uses the constructor. Every other source file of the crate makes a
+    /// [`Checked`] with one of the functions above, and never with the struct literal
+    /// (phase2-3-design §3.1, 2: "`Checked` cannot be faked").
     #[test]
     fn checked_is_made_only_here() {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

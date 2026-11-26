@@ -3,7 +3,8 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    // `COMPLETE=<shell> caprobe` prints the shell's completion script; the script calls back here per tab.
+    // `COMPLETE=<shell> caprobe` prints the completion script for the shell, and the script calls
+    // this binary again for each completion request.
     clap_complete::CompleteEnv::with_factory(caprobe::command).complete();
     caprobe::main(&caprobe::default_registry())
 }

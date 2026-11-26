@@ -1,7 +1,8 @@
-//! Which endorsement key the AK is proven against (review D5): the EK certificate the token names
-//! (`ekCertificate`), else the one the TPM keeps in NV, verified to a manufacturer root. With
-//! one, the attestation's anchor is that root and every attestation activates a credential to
-//! the EK (`esys::activate`); without one, the AK is trusted on first use, as before.
+//! The choice of the endorsement key against which the AK is proven (review D5). It is the EK
+//! certificate that the token names (`ekCertificate`), or otherwise the certificate that the TPM
+//! keeps in NV, verified to a manufacturer root. With such a certificate, the attestation's
+//! anchor is that root, and every attestation activates a credential to the EK
+//! (`esys::activate`). Without one, the AK is trusted on first use, as before.
 
 use super::Tpm2Options;
 use super::esys;
@@ -11,7 +12,7 @@ use cakeys_pkcs11::ChainTime;
 use std::sync::LazyLock;
 use tss_esapi::Context;
 
-/// The manufacturer roots built in (roots/README.md), pinned by build.rs.
+/// The built-in manufacturer roots (roots/README.md), which build.rs pins.
 static ROOTS: LazyLock<Vec<Cert>> = LazyLock::new(|| {
     let mut roots =
         pem_certs(include_str!("../../roots/amd-ftpm-rsa-root.pem")).expect("embedded AMD fTPM RSA root parses");
@@ -21,33 +22,34 @@ static ROOTS: LazyLock<Vec<Cert>> = LazyLock::new(|| {
     roots
 });
 
-/// The CA links an EK chain may have above the EK certificate: a manufacturer's root, its
-/// per-product intermediate, and one more for the hierarchies that split by plant.
+/// The number of CA links that an EK chain may have above the EK certificate: a manufacturer's
+/// root, its intermediate for each product, and one more for the hierarchies that split by
+/// plant.
 const MAX_LINKS: u8 = 3;
 
-/// A verified EK certificate: the EK's public key, and the anchor its chain reached.
+/// A verified EK certificate: the EK's public key, and the anchor that its chain reached.
 pub(crate) struct Trusted {
     /// The canonical SPKI of the EK the certificate is for.
     pub(crate) spki: Vec<u8>,
-    /// The canonical SPKI of the anchor: what the lock pins as the attestation's root.
+    /// The canonical SPKI of the anchor, which the lock pins as the attestation's root.
     pub(crate) anchor_spki: Vec<u8>,
-    /// The chain's dated failure, accepted under [`ChainTime::Warn`].
+    /// The chain's failure of a date check, accepted under [`ChainTime::Warn`].
     pub(crate) warning: Option<String>,
 }
 
-/// The EK to prove the AK against, when there is one to trust.
+/// Returns the EK against which the AK is proven, when there is an EK to trust.
 ///
-/// `ekCertificate` (a PEM bundle, leaf first, or one DER certificate) must verify to a built-in
-/// root or one of `ekRoots`, or the attestation is refused: naming a certificate demands it. A
-/// certificate only found in NV that reaches no anchor (a manufacturer cakeys pins no root for,
-/// or one whose intermediates NV does not hold) leaves the AK trusted on first use, as a TPM
-/// with no certificate does.
+/// `ekCertificate` (a PEM bundle with the leaf first, or one DER certificate) must verify to a
+/// built-in root or to one of `ekRoots`, or the attestation is refused, because naming a
+/// certificate requires it to verify. A certificate that is found only in NV and reaches no
+/// anchor (from a manufacturer for which cakeys pins no root, or whose intermediates NV does not
+/// hold) leaves the AK trusted on first use, as for a TPM with no certificate.
 ///
 /// # Errors
 ///
-/// `Unavailable` when a named file cannot be read or NV cannot be; `Validation` when a named file
-/// holds no certificate; `Conflict` when `ekCertificate` does not verify; whatever the chain's
-/// dates refuse under `time`.
+/// Returns `Unavailable` when a named file or NV cannot be read, `Validation` when a named file
+/// holds no certificate, and `Conflict` when `ekCertificate` does not verify. Also returns the
+/// error for a chain whose dates `time` refuses.
 pub(crate) fn trusted(token: &str, opts: &Tpm2Options, time: ChainTime, esys: &mut Context) -> Result<Option<Trusted>> {
     let mut anchors: Vec<Cert> = ROOTS.iter().map(|c| Cert::from_der(c.der().to_vec())).collect::<Result<_>>()?;
     if let Some(path) = &opts.ek_roots {
@@ -67,9 +69,10 @@ pub(crate) fn trusted(token: &str, opts: &Tpm2Options, time: ChainTime, esys: &m
     }
 }
 
-/// An EK certificate read from NV: first use (`None`) only when its chain links to no anchor at
-/// all. One that links but fails its dates is that failure, as for `ekCertificate`, so `check`
-/// never reports it as an anchor that changed.
+/// Verifies an EK certificate that was read from NV. Returns `None` (trust on first use) only
+/// when its chain links to no anchor at all. A chain that links to an anchor but fails its date
+/// checks returns that failure, as for `ekCertificate`, so `check` never reports it as an anchor
+/// that changed.
 fn from_nv(leaf: &Cert, anchors: &[Cert], time: ChainTime) -> Result<Option<Trusted>> {
     if verify(leaf, anchors, &[], ChainTime::Unchecked).is_err() {
         return Ok(None);
@@ -77,9 +80,9 @@ fn from_nv(leaf: &Cert, anchors: &[Cert], time: ChainTime) -> Result<Option<Trus
     verify(leaf, anchors, &[], time).map(Some)
 }
 
-/// `leaf` verified to one of `anchors` through `pool`, its dates judged by `time`. A leaf that
-/// names its purposes names an EK's (`tcg-kp-EKCertificate`): another certificate the same CA
-/// issued is no EK credential (review 2026-11-23 A-3).
+/// Verifies `leaf` to one of `anchors` through `pool`, with its dates judged by `time`. A leaf
+/// that names its purposes must name the EK purpose (`tcg-kp-EKCertificate`), because another
+/// certificate that the same CA issued is not an EK credential (review 2026-11-23 A-3).
 fn verify(leaf: &Cert, anchors: &[Cert], pool: &[Cert], time: ChainTime) -> Result<Trusted> {
     if !leaf.serves(&TCG_KP_EK_CERTIFICATE)? {
         return Err(KmError::Conflict(Reason::check(
@@ -93,7 +96,7 @@ fn verify(leaf: &Cert, anchors: &[Cert], pool: &[Cert], time: ChainTime) -> Resu
     Ok(Trusted { spki: leaf.spki()?, anchor_spki, warning })
 }
 
-/// The certificates in the file an option names.
+/// Returns the certificates in the file that an option names.
 fn read_certs(token: &str, option: &str, path: &str) -> Result<Vec<Cert>> {
     let file = super::expand_home(path);
     let bytes = std::fs::read(&file)
@@ -113,9 +116,9 @@ fn empty(token: &str, option: &str, path: &str) -> KmError {
 mod tests {
     use super::*;
 
-    /// The development machine's AMD fTPM EK certificates (tests/fixtures, fetched from AMD's
-    /// key distribution server), each with its PRG-RN intermediate, verify to the built-in roots
-    /// at a time within their validity, and name the root of their own algorithm.
+    /// The AMD fTPM EK certificates of the development machine (tests/fixtures, fetched from
+    /// AMD's key distribution server), each with its PRG-RN intermediate, verify to the built-in
+    /// roots at a time within their validity, and each names the root of its own algorithm.
     #[test]
     fn the_amd_ftpm_chains_verify_to_the_pinned_roots() {
         let at = ChainTime::At(1_800_000_000); // 2027-01-15
@@ -130,16 +133,18 @@ mod tests {
             assert_eq!(trusted.anchor_spki, ROOTS[root].spki().unwrap());
             assert_eq!(trusted.spki, leaf.spki().unwrap());
             assert!(trusted.warning.is_none());
-            // Without the intermediate, or with only the other algorithm's root, nothing verifies.
+            // Without the intermediate, or with only the root of the other algorithm, nothing
+            // verifies.
             assert!(verify(&leaf, &ROOTS, &[], at).is_err());
             let other = Cert::from_der(ROOTS[1 - root].der().to_vec()).unwrap();
             assert!(verify(&leaf, std::slice::from_ref(&other), &pool, at).is_err());
         }
     }
 
-    /// An EK certificate that names its purposes must name an EK's (tcg-kp-EKCertificate): a
-    /// TLS server certificate under the same anchor is no EK credential, whatever its chain
-    /// (review 2026-11-23 A-3). The fixtures are core's chain-rules chains.
+    /// An EK certificate that names its purposes must name the EK purpose (tcg-kp-EKCertificate).
+    /// A TLS server certificate under the same anchor is not an EK credential, whatever its
+    /// chain (review 2026-11-23 A-3). The fixtures are the chain-rules chains of the core
+    /// crate.
     #[test]
     fn an_ek_certificate_names_the_ek_purpose_or_none() {
         let pem = |bytes: &[u8]| certs_of(bytes).unwrap().remove(0);
@@ -183,9 +188,10 @@ mod tests {
         assert_eq!(verify(&ek_4, &ca_3, &pool, at).unwrap().anchor_spki, ca_3[0].spki().unwrap());
     }
 
-    /// A NV certificate whose chain reaches no anchor is first use; one whose chain reaches an
-    /// anchor but is out of its dates is refused under a `check` time, warned of otherwise.
-    /// (The AMD fixture's intermediate stands in as the anchor of a NV certificate.)
+    /// An NV certificate whose chain reaches no anchor means trust on first use. An NV
+    /// certificate whose chain reaches an anchor but is outside its dates is refused under a
+    /// `check` time, and produces a warning otherwise. (The intermediate of the AMD fixture
+    /// serves as the anchor of an NV certificate.)
     #[test]
     fn a_nv_certificate_is_first_use_only_when_it_links_to_nothing() {
         let bundle = certs_of(include_bytes!("../../tests/fixtures/amd-ftpm-ek-ecc.pem")).unwrap();
@@ -200,9 +206,9 @@ mod tests {
         assert!(warned.warning.is_some());
     }
 
-    /// The roots are the files roots/README.md records: their SPKI digests (what a lock pins as
-    /// the attestation's root, computed with openssl) pinned here as well as their file hashes in
-    /// build.rs, so a substituted root fails twice.
+    /// The roots are the files that roots/README.md records. This test pins their SPKI digests
+    /// (what a lock pins as the attestation's root, computed with openssl), and build.rs pins
+    /// their file hashes, so a substituted root fails twice.
     #[test]
     fn the_amd_ftpm_roots_are_pinned() {
         let sri: Vec<String> = ROOTS.iter().map(|c| cakeys_core::id::sri(&c.spki().unwrap())).collect();

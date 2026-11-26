@@ -1,5 +1,5 @@
-//! The `supports` query (docs/CAPROBE.md): what the capability profiles say a module
-//! supports. Pure data — no token is touched.
+//! The `supports` query (docs/CAPROBE.md) answers what the capability profiles say that a
+//! module supports. It reads only data and touches no token.
 
 use cakeys_core::config::{Config, LOCK_VERSION, Lock};
 use cakeys_core::{KmError, Result};
@@ -20,33 +20,33 @@ pub(crate) struct Query<'a> {
     pub ask: Ask<'a>,
     /// The module profile, by name or family.
     pub profile: Option<&'a str>,
-    /// Else the token in keys.toml whose `provider` names the profile family.
+    /// Otherwise, the token in keys.toml whose `provider` names the profile family.
     pub token: Option<&'a str>,
     /// Delta layers on top of the binding layer, which is always in the stack.
     pub layers: &'a [String],
-    /// An RSA modulus size to ask about (with a `CKK_RSA` name).
+    /// An RSA modulus size to ask about (together with the name `CKK_RSA`).
     pub bits: Option<u32>,
 }
 
-/// What a [`Query`] resolved and answered.
+/// What a [`Query`] resolved and what it answered.
 pub(crate) struct Support {
-    /// The resolved module profile's name ("(none)" without one).
+    /// The name of the resolved module profile, or "(none)" when there is no module profile.
     pub module: String,
-    /// The stack's layer names, the binding layer first.
+    /// The layer names of the stack, with the binding layer first.
     pub layers: Vec<String>,
-    /// One verdict per asked name.
+    /// One verdict for each name that was asked about.
     pub verdicts: Vec<(String, Verdict)>,
-    /// What resolving the token's stack noticed (`gate::stack`).
+    /// The notes from the resolution of the token's stack (`gate::stack`).
     pub notes: Vec<String>,
 }
 
 impl Support {
-    /// The verdicts as one outcome.
+    /// Combines the verdicts into one outcome.
     ///
     /// # Errors
     ///
-    /// `Unsupported` (15) when any verdict is no; `Unavailable` (16) when the profiles do not
-    /// decide one.
+    /// Returns `Unsupported` (15) when any verdict is no, and `Unavailable` (16) when the profiles
+    /// do not decide a verdict.
     pub(crate) fn outcome(&self) -> Result<()> {
         let no: Vec<&str> =
             self.verdicts.iter().filter(|(_, v)| matches!(v, Verdict::No { .. })).map(|(n, _)| n.as_str()).collect();
@@ -62,21 +62,23 @@ impl Support {
     }
 }
 
-/// Answer `q` from `set`: the module profile (named, or a token's stack as `cakeys validate`
-/// resolves it, `gate::stack`), the delta layers on top, and the verdicts. caprobe never reads
-/// keys.lock, so a token's stack is what keys.toml says of it (review D4).
+/// Answers `q` from `set` with the module profile, the delta layers on top of it, and the
+/// verdicts. The module profile is the named profile, or the profile of a token's stack as
+/// `cakeys validate` resolves it (`gate::stack`). caprobe never reads keys.lock, so a token's
+/// stack is what keys.toml says about the token (review D4).
 ///
 /// # Errors
 ///
-/// `Validation` (17) for an unknown profile, layer, class or token, or a token whose module
-/// keys.toml does not say.
+/// Returns `Validation` (17) for an unknown profile, layer, class or token, and for a token whose
+/// module keys.toml does not name.
 pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
     let find = |name: &str| set.find(name).map_err(|e| KmError::Validation(e.into()));
-    // A family with pairs on several kinds of hardware (tpm2-pkcs11/1.10+swtpm, +amd-ftpm):
-    // the hardware layer asked for names the pair. That is a naming convention, not a match:
-    // a pair is named `<module>+<hardware profile>` (docs/CAPROBE.md D10), and token
-    // resolution (`resolution::choose`) picks a pair by the same suffix, over the same
-    // resolved layer names, so the two cannot disagree.
+    // A family can have pairs on several kinds of hardware (tpm2-pkcs11/1.10+swtpm and
+    // tpm2-pkcs11/1.10+amd-ftpm). The hardware layer that was asked for selects the pair. This
+    // relies on a naming convention, not on a match of the contents: a pair is named
+    // `<module>+<hardware profile>` (docs/CAPROBE.md D10). Token resolution
+    // (`resolution::choose`) picks a pair by the same suffix over the same resolved layer names,
+    // so the two cannot disagree.
     let find_module = |name: &str, hardware: &[String]| {
         set.find(name)
             .or_else(|e| {
@@ -91,15 +93,16 @@ pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
             })
             .map_err(|e| KmError::Validation(e.into()))
     };
-    // The cryptoki binding layer is always in the stack (docs/CAPROBE.md): what it
-    // subtracts is decided by the build this binary runs against, so an explicit `--layer
-    // cryptoki/0.12` adds nothing it has not already decided.
+    // The cryptoki binding layer is always in the stack (docs/CAPROBE.md). The build that this
+    // binary runs against decides what the layer subtracts, so an explicit `--layer
+    // cryptoki/0.12` adds nothing that the build has not already decided.
     let binding = || cakeys_pkcs11::binding::layer().map_err(|e| KmError::Validation(e.into()));
     let (module, mut resolved, notes) = match (q.profile, q.token) {
         (Some(p), _) => (Some(find_module(p, q.layers)?.clone()), vec![binding()?], Vec::new()),
         (None, Some(t)) => {
             let token = cfg.tokens.get(t).ok_or_else(|| KmError::Validation(format!("unknown token '{t}'").into()))?;
-            // The stack `cakeys validate` and `create`'s gate resolve, from keys.toml alone.
+            // This is the stack that `cakeys validate` and the gate of `create` resolve, from
+            // keys.toml alone.
             let lock = Lock { version: LOCK_VERSION, ..Lock::default() };
             let stack = cakeys_pkcs11::gate::stack(t, token, &lock)?.map_err(|why| {
                 KmError::Validation(format!("{why}; set tokens.{t}.provider or pass --profile").into())
@@ -144,9 +147,9 @@ pub(crate) fn supports(cfg: &Config, set: &Set, q: &Query) -> Result<Support> {
 mod tests {
     use super::*;
 
-    /// A `--layer` names a hardware pair by the layer's resolved profile name, as token
-    /// resolution does: a hardware layer asked for by family picks the pair named after its
-    /// full name (review supports F2).
+    /// A `--layer` selects a hardware pair by the layer's resolved profile name, as token
+    /// resolution does. A hardware layer that is asked for by family picks the pair that is
+    /// named after the layer's full name (review supports F2).
     #[test]
     fn a_hardware_layer_names_its_pair_by_its_profile_name() {
         let dir = std::env::temp_dir().join(format!("caprobe-supports-pair-{}", std::process::id()));
@@ -159,7 +162,8 @@ mod tests {
         for (name, text) in files {
             std::fs::write(dir.join(name), text).unwrap();
         }
-        // The binding layer comes from the process's set, activated as `main_from` does.
+        // The binding layer comes from the process's set, which is activated here as
+        // `main_from` activates it.
         crate::activate(&Config::default(), None, &mut cakeys_pkcs11::ops::Notes::default()).unwrap();
         let set = Set::embedded().unwrap().with_dir(&dir);
         std::fs::remove_dir_all(&dir).unwrap();

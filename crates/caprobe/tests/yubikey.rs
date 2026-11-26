@@ -1,13 +1,13 @@
-//! caprobe against a real `YubiKey` (PIV, through ykcs11), opt-in; `cakeys`' yubikey suite
-//! describes the device's slots and the environment.
+//! Tests of caprobe against a real `YubiKey` (PIV, through ykcs11), which run only when they are
+//! opted in. The yubikey suite of `cakeys` describes the device's slots and the environment.
 //!
-//! Needs `CAKEYS_TEST_YUBIKEY_MODULE` (path to libykcs11.so); the write probe also
-//! `CAKEYS_TEST_YUBIKEY_PIN` and `CAKEYS_TEST_YUBIKEY_MGM` (paths to files holding the PIV PIN
-//! and the admin credential). Skipped when they are unset — never in the Nix build — and the
-//! secrets are only ever read by caprobe from these paths. The write probe replaces only retired
-//! slot 94 (`CKA_ID` 17, `scratchId`). Opted in, both need the patched cryptoki
-//! (scripts/local-tests.sh, `nix run .#coverage-full`): a plain cargo build fails, naming the
-//! patch.
+//! The tests need `CAKEYS_TEST_YUBIKEY_MODULE` (the path to libykcs11.so). The write probe also
+//! needs `CAKEYS_TEST_YUBIKEY_PIN` and `CAKEYS_TEST_YUBIKEY_MGM` (the paths to files that hold
+//! the PIV PIN and the admin credential). The tests are skipped when these variables are unset,
+//! so they never run in the Nix build, and only caprobe reads the secrets, from these paths. The
+//! write probe replaces only the retired slot 94 (`CKA_ID` 17, `scratchId`). When they are opted
+//! in, both tests need the patched cryptoki (scripts/local-tests.sh, `nix run .#coverage-full`):
+//! a plain cargo build fails and names the patch.
 
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
@@ -15,33 +15,35 @@ mod common;
 use common::*;
 use std::time::Duration;
 
-/// The write probe generates every curve and RSA size it tries in one run (74 s measured on a
-/// `YubiKey` 5.7.4, RSA-4096 included).
+/// The time limit of the write probe, which generates every curve and RSA size that it tries in
+/// one run (74 s measured on a `YubiKey` 5.7.4, including RSA-4096).
 const PROBE_LIMIT: Duration = Duration::from_secs(300);
-/// Every other run: a touch or PIN prompt would hang it, so the bound turns one into a failure.
+/// The time limit of every other run. A touch or PIN prompt would make the run wait forever, so
+/// the limit turns such a prompt into a failure.
 const RUN_LIMIT: Duration = Duration::from_secs(60);
 
-/// The committed ykcs11/2.7 profile is probe output (docs/CAPROBE.md): a fresh write
-/// probe in the scratch slot conforms, and regenerating the file changes no byte — its
-/// `[migration]` claims and `[manual]` findings preserved. A slot holding anything but the probe's
-/// own certificate (and the slot's attestation) is refused before anything is written: empty
-/// slot 94 once after a run that stopped part way, or one from before the probe marked its slot
-/// (the reference suite and crates/ykcs11/src/lib.rs cover the rules). Another firmware, or a device not in
-/// FIPS-approved mode, drifts by design (exit 15, the rows named): probe it and record a new
-/// pair.
+/// The committed ykcs11/2.7 profile is probe output (docs/CAPROBE.md). A new write probe in the
+/// scratch slot conforms to it, and regenerating the file changes no byte, with its
+/// `[migration]` claims and `[manual]` findings kept. A slot that holds anything other than the
+/// probe's own certificate (and the slot's attestation) is refused before anything is written.
+/// Empty slot 94 once after a run that stopped part way, or after a run from before the probe
+/// marked its slot (the reference suite and crates/ykcs11/src/lib.rs cover the rules). Another
+/// firmware, or a device that is not in FIPS-approved mode, drifts by design (exit code 15, with
+/// the rows named). In that case, probe the device and record a new pair.
 #[test]
 fn the_write_probe_conforms_and_regenerates_the_committed_profile() {
     let Some([module, pin, mgm]) = yubikey_opted_in("the write probe") else { return };
-    // Opted in, an unpatched build fails rather than passing with nothing compared: it drops
-    // mechanisms it cannot name (review ftpm.rs F1). Run through scripts/local-tests.sh.
+    // When the test is opted in, an unpatched build fails instead of passing with nothing
+    // compared, because an unpatched build drops the mechanisms that it cannot name (review
+    // ftpm.rs F1). Run the test through scripts/local-tests.sh.
     cryptoki_hmac_types_fixed(true);
     let turn = YubikeyTurn::take();
     let w = Workdir::new("yubikey_write_probe");
     w.write_config(&yubikey_token(&module, &pin, &mgm, "probe = { scratchId = \"17\" }"));
     let config = w.dir.join("keys.toml");
-    // The shared conformance check: one write probe, which diffs and regenerates in the same run
-    // (review yubikey.rs F2: two, each every curve and RSA size on the device). Hand findings
-    // belong in the profile's [manual].
+    // The shared conformance check runs one write probe, which compares and regenerates in the
+    // same run. (Review yubikey.rs F2: there were two probes, and each generated every curve and
+    // RSA size on the device.) Findings made by hand belong in the profile's [manual].
     assert_profile_conforms(
         |args| turn.checked(run_within(&config, args, PROBE_LIMIT)),
         "yubikey",
@@ -51,11 +53,12 @@ fn the_write_probe_conforms_and_regenerates_the_committed_profile() {
     );
 }
 
-/// The read-only probe of the device here (docs/CAPROBE.md D10): ykcs11/2.7's match keys,
-/// advertisement and reported RSA range are what this `YubiKey` shows, and the write probes are
-/// refused without a scratch slot — `probe = { scratch = true }` cannot mark a device that holds real keys
-/// beside it. Needs only `CAKEYS_TEST_YUBIKEY_MODULE`: no PIN, nothing written. The diff needs
-/// the patched cryptoki (the Nix build's); an unpatched build fails.
+/// The read-only probe of the attached device (docs/CAPROBE.md D10). The match keys,
+/// advertisement and reported RSA range of ykcs11/2.7 are what this `YubiKey` shows, and the
+/// write probes are refused without a scratch slot, because `probe = { scratch = true }` cannot
+/// mark a device that also holds real keys. The test needs only `CAKEYS_TEST_YUBIKEY_MODULE`:
+/// no PIN is used and nothing is written. The diff needs the patched cryptoki (as the Nix build
+/// has it), and an unpatched build fails.
 #[test]
 fn the_read_only_probe_conforms() {
     let Ok(module) = std::env::var("CAKEYS_TEST_YUBIKEY_MODULE") else {
@@ -63,7 +66,8 @@ fn the_read_only_probe_conforms() {
         return;
     };
     let w = Workdir::new("yubikey-probe");
-    // No credentials: the read-only probe needs none, and the write probes must not get far.
+    // The configuration has no credentials, because the read-only probe needs none and the
+    // write probes must be refused early.
     w.write_config(&format!(
         "[tokens.yubikey]\nmodule = \"{module}\"\ntokenLabel = \"{}\"\nprobe = {{ scratch = true }}\n",
         yubikey_label(&module)

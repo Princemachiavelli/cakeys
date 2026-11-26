@@ -1,22 +1,24 @@
-//! `TPM2_MakeCredential` on the host (TPM 2.0 Part 1 §24, Part 3 §12.6, Part 1 §11.4.9-10):
-//! a secret only the TPM holding the endorsement key can recover, and only for the object whose
-//! Name the credential is bound to. `TPM2_ActivateCredential` with the AK and the EK hands it back
-//! (`esys::activate`), which proves the AK resides in the TPM the EK certificate names — what
-//! closes the AK's first use (review D5).
+//! `TPM2_MakeCredential` on the host (TPM 2.0 Part 1 §24, Part 3 §12.6, Part 1 §11.4.9-10). The
+//! credential carries a secret that only the TPM that holds the endorsement key can recover, and
+//! only for the object whose Name the credential is bound to. `TPM2_ActivateCredential` with the
+//! AK and the EK returns the secret (`esys::activate`), which proves that the AK resides in the
+//! TPM that the EK certificate names. This proof removes the need to trust the AK on first use
+//! (review D5).
 //!
-//! The host, never the TPM under test, makes the credential: a TPM that made it knows the secret
-//! and could hand it back without holding the EK.
+//! The host makes the credential, never the TPM under test, because a TPM that made the
+//! credential knows the secret and could return it without holding the EK.
 //!
-//! Everything here is the TCG default EK template's: nameAlg SHA-256, AES-128 in CFB mode as the
-//! symmetric definition, RSA-2048 (OAEP) or NIST P-256 (ECDH) for the seed. The labels carry
-//! their terminating NUL, as the reference implementation hashes them.
+//! Every parameter here comes from the TCG default EK template: nameAlg SHA-256, AES-128 in CFB
+//! mode as the symmetric definition, and RSA-2048 (OAEP) or NIST P-256 (ECDH) for the seed. The
+//! labels include their terminating NUL, because the reference implementation hashes them that
+//! way.
 
 use cakeys_core::{KmError, Result};
 use hmac::{Hmac, KeyInit as _, Mac as _};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-/// SHA-256's TPM algorithm ID, the nameAlg the AK and the EK templates name.
+/// The TPM algorithm ID of SHA-256, which is the nameAlg that the AK and EK templates name.
 const SHA256_ALG: u16 = 0x000B;
 const IDENTITY: &[u8] = b"IDENTITY\0";
 const STORAGE: &[u8] = b"STORAGE\0";
@@ -29,14 +31,14 @@ pub(crate) struct Credential {
     pub(crate) secret: Vec<u8>,
 }
 
-/// The Name of a public area, `nameAlg ‖ SHA-256(TPMT_PUBLIC)`, from the marshaled `TPMT_PUBLIC`
-/// bytes the host itself holds: never a Name the TPM reports, which an interposer could pair with
-/// another key.
+/// Returns the Name of a public area, `nameAlg ‖ SHA-256(TPMT_PUBLIC)`, computed from the
+/// marshaled `TPMT_PUBLIC` bytes that the host itself holds. It never uses a Name that the TPM
+/// reports, because an interposer could pair such a Name with another key.
 ///
 /// # Errors
 ///
-/// `Conflict` when the bytes are too short to name an algorithm; `Unsupported` for a nameAlg
-/// other than SHA-256.
+/// Returns `Conflict` when the bytes are too short to name an algorithm, and `Unsupported` for a
+/// nameAlg other than SHA-256.
 pub(crate) fn name_of(tpmt_public: &[u8]) -> Result<Vec<u8>> {
     let name = super::esys::tpmt_name(tpmt_public)?;
     let alg = u16::from_be_bytes([name[0], name[1]]);
@@ -46,22 +48,24 @@ pub(crate) fn name_of(tpmt_public: &[u8]) -> Result<Vec<u8>> {
     Ok(name)
 }
 
-/// Make a credential carrying `secret` to the EK whose public key is `ek_spki` (the verified EK
-/// certificate's), bound to the object whose marshaled `TPMT_PUBLIC` is `ak_public`: its Name is
-/// computed here, from those bytes.
+/// Makes a credential that carries `secret` to the EK whose public key is `ek_spki` (the key of
+/// the verified EK certificate), bound to the object whose marshaled `TPMT_PUBLIC` is
+/// `ak_public`. The function computes the object's Name from those bytes.
 ///
 /// # Errors
 ///
-/// `Unsupported` for an EK that is neither RSA-2048 nor P-256, or a nameAlg other than SHA-256;
-/// `Unavailable` when the OS random number generator or the encryption fails.
+/// Returns `Unsupported` for an EK that is neither RSA-2048 nor P-256, or for a nameAlg other
+/// than SHA-256. Returns `Unavailable` when the OS random number generator or the encryption
+/// fails.
 pub(crate) fn make_credential(ek_spki: &[u8], ak_public: &[u8], secret: &[u8]) -> Result<Credential> {
     let name = name_of(ak_public)?;
     let (seed, encrypted_seed) = seed_for(ek_spki)?;
     Ok(Credential { blob: wrap(&seed, &name, secret)?, secret: encrypted_seed })
 }
 
-/// The seed and how it travels to the EK: OAEP-encrypted for RSA, the ephemeral ECDH point for
-/// P-256 (Part 1 §11.4.10.3 and Annex C.6.1 of the ECC key exchange).
+/// Returns the seed and the form in which it travels to the EK: encrypted with OAEP for RSA, or
+/// as the ephemeral ECDH point for P-256 (Part 1 §11.4.10.3, and Annex C.6.1 for the ECC key
+/// exchange).
 fn seed_for(ek_spki: &[u8]) -> Result<(Zeroizing<Vec<u8>>, Vec<u8>)> {
     use cakeys_core::id::{Curve, KeyAlg};
     let rng_failed =
@@ -93,7 +97,7 @@ fn seed_for(ek_spki: &[u8]) -> Result<(Zeroizing<Vec<u8>>, Vec<u8>)> {
             let (eph_x, eph_y) = (&eph_point.as_bytes()[1..33], &eph_point.as_bytes()[33..65]);
             let ek_x = &ek_point.as_bytes()[1..33];
             let seed = Zeroizing::new(kdfe(z.raw_secret_bytes(), IDENTITY, eph_x, ek_x));
-            // TPMS_ECC_POINT: x and y, each a TPM2B.
+            // A TPMS_ECC_POINT holds x and y, each as a TPM2B.
             let mut point = Vec::with_capacity(4 + 64);
             for coordinate in [eph_x, eph_y] {
                 point.extend_from_slice(&u16::try_from(coordinate.len()).unwrap_or(32).to_be_bytes());
@@ -107,17 +111,18 @@ fn seed_for(ek_spki: &[u8]) -> Result<(Zeroizing<Vec<u8>>, Vec<u8>)> {
     }
 }
 
-/// The `TPM2B_ID_OBJECT` contents: `integrityHMAC ‖ encIdentity` (Part 1 §24.4-24.5).
+/// Returns the contents of the `TPM2B_ID_OBJECT`: `integrityHMAC ‖ encIdentity` (Part 1
+/// §24.4-24.5).
 fn wrap(seed: &[u8], name: &[u8], secret: &[u8]) -> Result<Vec<u8>> {
     let too_long = || KmError::Unsupported("a credential longer than a TPM2B allows".into());
-    // encIdentity: the credential as a TPM2B_DIGEST, AES-128-CFB under a key from the seed and
-    // the Name, from a zero IV.
+    // encIdentity is the credential as a TPM2B_DIGEST, encrypted with AES-128-CFB from a zero IV
+    // under a key derived from the seed and the Name.
     let mut identity = u16::try_from(secret.len()).map_err(|_| too_long())?.to_be_bytes().to_vec();
     identity.extend_from_slice(secret);
     let identity = Zeroizing::new(identity);
     let sym = Zeroizing::new(kdfa(seed, STORAGE, name, &[], 128));
     let enc_identity = aes128_cfb(&sym, &identity);
-    // outerHMAC over encIdentity ‖ Name, under a key from the seed alone.
+    // The outer HMAC covers encIdentity ‖ Name, under a key derived from the seed alone.
     let hmac_key = Zeroizing::new(kdfa(seed, INTEGRITY, &[], &[], 256));
     let mut mac = <Hmac<Sha256>>::new_from_slice(&hmac_key).map_err(|_| too_long())?;
     mac.update(&enc_identity);
@@ -129,14 +134,14 @@ fn wrap(seed: &[u8], name: &[u8], secret: &[u8]) -> Result<Vec<u8>> {
     Ok(blob)
 }
 
-/// `KDFa` with SHA-256 (Part 1 §11.4.10.2, SP 800-108 counter mode): `bits` of
-/// `HMAC(key, i ‖ label ‖ contextU ‖ contextV ‖ bits)` for i = 1, 2, ...
+/// `KDFa` with SHA-256 (Part 1 §11.4.10.2, SP 800-108 counter mode). Returns `bits` bits of
+/// `HMAC(key, i ‖ label ‖ contextU ‖ contextV ‖ bits)` for i = 1, 2, and so on.
 fn kdfa(key: &[u8], label: &[u8], context_u: &[u8], context_v: &[u8], bits: u32) -> Vec<u8> {
     let bytes = (bits / 8) as usize;
     let mut out = Vec::with_capacity(bytes + 32);
     let mut counter = 1u32;
     while out.len() < bytes {
-        // HMAC takes a key of any length.
+        // HMAC accepts a key of any length, so this cannot fail.
         let mut mac = <Hmac<Sha256>>::new_from_slice(key).expect("HMAC takes any key length");
         for part in [&counter.to_be_bytes()[..], label, context_u, context_v, &bits.to_be_bytes()[..]] {
             mac.update(part);
@@ -148,7 +153,7 @@ fn kdfa(key: &[u8], label: &[u8], context_u: &[u8], context_v: &[u8], bits: u32)
     out
 }
 
-/// `KDFe` with SHA-256 for 256 bits (Part 1 §11.4.10.3, SP 800-56A's one-step KDF):
+/// `KDFe` with SHA-256 for 256 bits (Part 1 §11.4.10.3, the one-step KDF of SP 800-56A):
 /// `SHA-256(1 ‖ Z ‖ label ‖ partyU ‖ partyV)`.
 fn kdfe(z: &[u8], label: &[u8], party_u: &[u8], party_v: &[u8]) -> Vec<u8> {
     let mut h = Sha256::new();
@@ -158,7 +163,8 @@ fn kdfe(z: &[u8], label: &[u8], party_u: &[u8], party_v: &[u8]) -> Vec<u8> {
     h.finalize().to_vec()
 }
 
-/// AES-128 in CFB mode (full-block feedback) from a zero IV, as the TPM's credential takes it.
+/// Encrypts with AES-128 in CFB mode (full-block feedback) from a zero IV, as the TPM's
+/// credential requires.
 fn aes128_cfb(key: &[u8], data: &[u8]) -> Vec<u8> {
     use aes::cipher::{BlockCipherEncrypt as _, KeyInit as _};
     let cipher = aes::Aes128::new_from_slice(key).expect("a 128-bit key from KDFa");
@@ -169,7 +175,8 @@ fn aes128_cfb(key: &[u8], data: &[u8]) -> Vec<u8> {
         cipher.encrypt_block(&mut stream);
         let start = out.len();
         out.extend(chunk.iter().zip(stream.iter()).map(|(p, k)| p ^ k));
-        // The next block's feedback is this ciphertext block (a short last block needs none).
+        // The feedback for the next block is this ciphertext block (a short last block needs no
+        // feedback).
         feedback[..chunk.len()].copy_from_slice(&out[start..]);
     }
     out
@@ -179,8 +186,9 @@ fn aes128_cfb(key: &[u8], data: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    /// `KDFa` is HMAC-SHA256 in counter mode: one block for up to 256 bits, two above, the
-    /// counter, label, contexts and length all hashed (a recomputation, block by block).
+    /// `KDFa` is HMAC-SHA256 in counter mode: one block for up to 256 bits, and two blocks above
+    /// that, with the counter, the label, the contexts and the length all hashed. The test
+    /// recomputes the output block by block.
     #[test]
     fn kdfa_is_the_counter_mode_hmac() {
         let block = |i: u32, bits: u32| {
@@ -196,8 +204,9 @@ mod tests {
         assert_eq!(long[32..], block(2, 384)[..16]);
     }
 
-    /// CFB from a zero IV: the first block is the plaintext XOR E(0), and each later block XORs
-    /// the encryption of the ciphertext before it (FIPS SP 800-38A F.3.13's key and data).
+    /// CFB from a zero IV: the first block is the plaintext XOR E(0), and each later block is
+    /// the plaintext XOR the encryption of the ciphertext block before it (with the key and
+    /// data of FIPS SP 800-38A F.3.13).
     #[test]
     fn cfb_is_the_sp800_38a_vector() {
         use aes::cipher::{BlockCipherEncrypt as _, KeyInit as _};
@@ -205,8 +214,8 @@ mod tests {
         let key: Vec<u8> = hex("2b7e151628aed2a6abf7158809cf4f3c");
         let plain: Vec<u8> = hex("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51");
         let iv: Vec<u8> = hex("000102030405060708090a0b0c0d0e0f");
-        // The vector's IV v, from a zero IV: a lead block v ⊕ E(0) encrypts to v, which then
-        // feeds back as the IV would.
+        // The test vector uses the IV v, but this function starts from a zero IV. A leading
+        // block v ⊕ E(0) encrypts to v, which then feeds back as the IV would.
         let mut e0 = aes::Block::default();
         aes::Aes128::new_from_slice(&key).unwrap().encrypt_block(&mut e0);
         let mut input: Vec<u8> = iv.iter().zip(e0.iter()).map(|(a, b)| a ^ b).collect();
@@ -216,8 +225,8 @@ mod tests {
         assert_eq!(out[16..], hex("3b3fd92eb72dad20333449f8e83cfb4ac8a64537a0b3a93fcde3cdad9f1ce58b")[..]);
     }
 
-    /// The Name is SHA-256 over exactly the bytes given, behind the algorithm ID; another
-    /// nameAlg is refused rather than hashed as SHA-256.
+    /// The Name is the algorithm ID followed by SHA-256 over exactly the given bytes. Another
+    /// nameAlg is refused instead of being hashed as SHA-256.
     #[test]
     fn the_name_is_the_hosts() {
         let public = [0x00, 0x23, 0x00, 0x0B, 0xAA];
@@ -228,8 +237,8 @@ mod tests {
         assert!(name_of(&[0x00]).is_err());
     }
 
-    /// The blob is `TPM2B(HMAC) ‖ encIdentity`, the HMAC over encIdentity and the Name, so a
-    /// credential bound to one Name does not verify for another.
+    /// The blob is `TPM2B(HMAC) ‖ encIdentity`, with the HMAC over encIdentity and the Name, so a
+    /// credential bound to one Name does not verify for another Name.
     #[test]
     fn the_blob_is_bound_to_the_name() {
         let blob = wrap(&[7; 32], b"\x00\x0bname-a", b"secret").unwrap();

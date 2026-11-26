@@ -1,5 +1,5 @@
-//! The wrap probes: key wrapping and unwrapping under the transport key, and the host's
-//! own blobs they must agree with (docs/CAPROBE.md).
+//! The wrap probes (docs/CAPROBE.md): key wrapping and unwrapping under the transport key, and
+//! the check that the module also unwraps blobs that the host made.
 
 use super::{
     Attribute, Capability, Checked, CkError, Draft, KeyType, KmError, Kt, Made, Mechanism, MechanismType, OaepHash,
@@ -7,10 +7,12 @@ use super::{
     evidence, moves, pop, refused, secret_template, token,
 };
 
-/// The OAEP hashes the module actually implements — wrap the fresh AES key to the fresh RSA
-/// transport key (public half) and unwrap it back with the private half, only a round trip
-/// counts — and the unwrap-template rule: a template carrying `CKA_VALUE_LEN`, refused with
-/// `CKR_ATTRIBUTE_READ_ONLY` by `SoftHSM`.
+/// Finds the OAEP hashes that the module actually implements, and probes the unwrap-template
+/// rule. For each hash, the probe wraps the new AES key under the public half of the new RSA
+/// transport key and unwraps it again with the private half, and only a complete round trip
+/// counts. The module must also unwrap a blob that the host made with the same hash
+/// ([`host_blob`]). The unwrap-template rule is whether the module accepts an unwrap template
+/// that carries `CKA_VALUE_LEN`, which `SoftHSM` refuses with `CKR_ATTRIBUTE_READ_ONLY`.
 pub(super) fn probe_wrapping(
     made: &mut Made,
     profile: &mut Draft,
@@ -19,15 +21,17 @@ pub(super) fn probe_wrapping(
 ) {
     let session = made.session;
     let (wraps, unwraps) = transport;
-    // MGF1 of the same hash: the parameter sets a transport wrap uses (`OaepHash`).
+    // Each parameter set uses MGF1 with the same hash, as a transport wrap does (`OaepHash`).
     let oaep_of = |hash| {
         let (params, name) = token::oaep_of(hash);
         (Mechanism::RsaPkcsOaep(params), name)
     };
     let mut round_trips = Vec::new();
     let mut failures = Vec::new();
-    // Each hash's row is written here: yes by the host's blob (or, untold, the module's own round
-    // trip), no by the module's refusal or the host's finding; any other failure no row (E-2).
+    // The row of each hash is written in this loop. It is a yes when the host's blob decodes, or
+    // an unverified yes from the module's own round trip when the host's blob cannot decide. It
+    // is a no for the module's refusal or for the host's finding, and any other failure writes no
+    // row (E-2).
     let mut failed = |made: &mut Made, profile: &mut Draft, name: &str, why: String, rv: Option<u64>| {
         failures.push(format!("{name}: {why}"));
         let cap = Capability::WrapOaep(name.to_owned());
@@ -38,7 +42,7 @@ pub(super) fn probe_wrapping(
     };
     for hash in [OaepHash::Sha1, OaepHash::Sha256] {
         let (mech, name) = oaep_of(hash);
-        // Wrapping is encryption: the public half wraps, the private half unwraps.
+        // Wrapping is encryption, so the public half wraps and the private half unwraps.
         let wrapped = match session.wrap_key(&mech, wraps, aes) {
             Ok(w) => w,
             Err(e) => {
@@ -56,9 +60,10 @@ pub(super) fn probe_wrapping(
         match session.unwrap_key(&mech, unwraps, &wrapped, &template) {
             Ok(h) => {
                 made.scratch.track(&[h], &label);
-                // Only the key that went in counts as coming back, and a module that wraps and
-                // unwraps with another hash than asked passes its own round trip: a blob the
-                // host made with this hash must decode too (review 2026-11-23 D-3).
+                // Only the key that was wrapped counts as the key that came back. A module that
+                // wraps and unwraps with another hash than the one asked for passes its own round
+                // trip, so a blob that the host made with this hash must also decode (review
+                // 2026-11-23 D-3).
                 if same_key(session, aes, h) == Some(false) {
                     failed(made, profile, name, "unwraps its own blob to another key".into(), None);
                     continue;
@@ -82,27 +87,31 @@ pub(super) fn probe_wrapping(
             Err(e) => failed(made, profile, name, format!("wraps but does not unwrap: {}", ckr(&e)), token::rv_of(&e)),
         }
     }
-    // One note under "oaep": what `--oaep` verdicts cite.
+    // All the failures go into one note under "oaep", which the `--oaep` verdicts cite.
     if !failures.is_empty() {
         profile.note("oaep".into(), failures.join("; "));
     }
-    // Probed: `[]` when no hash round-trips, distinct from never probed.
+    // An empty list means that the probe ran and no hash completed a round trip, which differs
+    // from `None` (never probed).
     profile.wrap_oaep = Some(round_trips.iter().map(|(name, ..)| (*name).to_owned()).collect());
-    // The unwrap-template rule, with the first hash that round-trips; unprobed without one.
+    // The unwrap-template rule is probed with the first hash that completed a round trip, and it
+    // stays unprobed when there is none.
     let Some((mech, _)) = round_trips.first().map(|(_, hash)| oaep_of(*hash)) else {
         return;
     };
     let wrapped = match session.wrap_key(&mech, wraps, aes) {
         Ok(wrapped) => wrapped,
-        // It wrapped a moment ago: the row stays unprobed, and says why.
+        // The key wrapped a moment ago, so this failure leaves the row unprobed, with a note that
+        // says why.
         Err(e) => {
             profile.note("unwrap-template".into(), format!("CKA_VALUE_LEN: wrapping the key again: {}", ckr(&e)));
             return;
         }
     };
-    // A session key: SoftHSM refuses the template (CKR_ATTRIBUTE_READ_ONLY) and keeps the token
-    // object it began, unlabelled, which no cleanup can name; a session one goes with the session
-    // (review 2026-11-24 L4b-5, caprobe's liar table).
+    // The unwrapped key is a session key. SoftHSM refuses the template (CKR_ATTRIBUTE_READ_ONLY)
+    // but keeps the token object that it started to create, without a label, so no cleanup can
+    // find that object. A session object goes away with the session (review 2026-11-24 L4b-5,
+    // caprobe's liar table).
     let label = made.scratch.label();
     let with_len = session.unwrap_key(
         &mech,
@@ -125,20 +134,24 @@ pub(super) fn probe_wrapping(
             profile.unwrap_refused = Some(vec!["CKA_VALUE_LEN".into()]);
             profile.note("CKA_VALUE_LEN".into(), "CKR_ATTRIBUTE_READ_ONLY in an unwrap template".into());
         }
-        // Neither accepted nor the refusal the rule names: the row stays unprobed.
+        // The module neither accepted the template nor gave the refusal that the rule names, so
+        // the row stays unprobed.
         Err(e) => {
             profile.note("unwrap-template".into(), format!("CKA_VALUE_LEN: {}", ckr(&e)));
         }
     }
 }
 
-/// The key wraps the module advertises, each round-tripped: the AES key wrapped and unwrapped
-/// back, under a fresh AES key-encryption key (`CKM_AES_KEY_WRAP`, `_PAD`, and `_KWP` where this
-/// build names it) or under the RSA transport key (`CKM_RSA_AES_KEY_WRAP`, either OAEP hash). A
-/// mechanism the module refuses as such (`CKR_MECHANISM_INVALID`, `CKR_FUNCTION_NOT_SUPPORTED`)
-/// is a `subtract` row: AWS `CloudHSM` lists `CKM_AES_KEY_WRAP` and `_PAD` with
-/// `CKF_WRAP | CKF_UNWRAP` and refuses both \[run\]. Any other refusal is a note, never a
-/// subtraction: it may be the probe's template or key, not the mechanism.
+/// Tests each key wrap that the module advertises with a round trip: the AES key is wrapped and
+/// unwrapped again, under a new AES key-encryption key (`CKM_AES_KEY_WRAP`,
+/// `CKM_AES_KEY_WRAP_PAD`, and `CKM_AES_KEY_WRAP_KWP`) or under the RSA transport key
+/// (`CKM_RSA_AES_KEY_WRAP`, with either OAEP hash). `CKM_AES_KEY_WRAP_KWP` and
+/// `CKM_RSA_AES_KEY_WRAP` are tried only when this build has the `kwp` feature. A mechanism that
+/// the module refuses as a mechanism (`CKR_MECHANISM_INVALID`, `CKR_FUNCTION_NOT_SUPPORTED`)
+/// becomes a `subtract` row: AWS `CloudHSM` lists `CKM_AES_KEY_WRAP` and `CKM_AES_KEY_WRAP_PAD`
+/// with `CKF_WRAP | CKF_UNWRAP` and refuses both \[run\]. Any other refusal becomes a note and
+/// never a subtraction, because the probe's template or key may have caused it, not the
+/// mechanism.
 pub(super) fn probe_key_wraps(
     made: &mut Made,
     profile: &mut Draft,
@@ -147,7 +160,8 @@ pub(super) fn probe_key_wraps(
 ) {
     let session = made.session;
     let kek = wrapping_kek(made);
-    // Each wrap's variants (CKM_RSA_AES_KEY_WRAP's by OAEP hash), its wrapping and unwrapping key.
+    // For each wrap: its name, its variants (one for each OAEP hash for CKM_RSA_AES_KEY_WRAP),
+    // its wrapping key and its unwrapping key.
     let mut wraps: Vec<(&str, Vec<KeyWrap>, ObjectHandle, ObjectHandle)> = Vec::new();
     if let Some(kek) = kek {
         wraps.push(("CKM_AES_KEY_WRAP", vec![KeyWrap::Aes(Mechanism::AesKeyWrap)], kek, kek));
@@ -199,7 +213,8 @@ pub(super) fn probe_key_wraps(
             match session.unwrap_key(mech, unwraps_with, &wrapped, &template) {
                 Ok(h) => {
                     made.scratch.track(&[h], &label);
-                    // The key that went in, not any key (review 2026-11-23 D-3).
+                    // The unwrapped key must be the key that was wrapped, not any key (review
+                    // 2026-11-23 D-3).
                     match same_key(session, aes, h) {
                         Some(true) => round_trip = true,
                         Some(false) => wrong_key = true,
@@ -237,8 +252,9 @@ pub(super) fn probe_key_wraps(
     profile.out.subtract.mechanisms.dedup();
 }
 
-/// A scratch AES-256 key that wraps and unwraps, for [`probe_key_wraps`]' AES wraps; `None`,
-/// said as undetermined, when the token will not make one.
+/// Generates a scratch AES-256 key that wraps and unwraps, for the AES wraps of
+/// [`probe_key_wraps`]. Returns `None`, and adds a line to the undetermined list, when the token
+/// does not make one.
 pub(super) fn wrapping_kek(made: &mut Made) -> Option<ObjectHandle> {
     let label = made.scratch.label();
     let template = vec![
@@ -265,28 +281,31 @@ pub(super) fn wrapping_kek(made: &mut Made) -> Option<ObjectHandle> {
     }
 }
 
-/// Whether the AES keys `a` and `b` on the token are one key: the same check value (`CKM_AES_ECB`
-/// of a zero block). `None` when that cannot be told: no ECB, or a key that may not encrypt.
+/// Returns whether the AES keys `a` and `b` on the token are the same key, by comparing their
+/// check values (`CKM_AES_ECB` of a zero block). Returns `None` when a check value cannot be
+/// computed: the module has no ECB, or a key may not encrypt.
 pub(super) fn same_key(session: &Session, a: ObjectHandle, b: ObjectHandle) -> Option<bool> {
     let kcv = |h| session.encrypt(&Mechanism::AesEcb, h, &[0; 16]).ok();
     Some(kcv(a)? == kcv(b)?)
 }
 
-/// What a blob the host made says of the module's RSA-OAEP with one hash ([`host_blob`]).
+/// What a blob that the host made shows about the module's RSA-OAEP with one hash
+/// ([`host_blob`]).
 pub(super) enum HostBlob {
-    /// It unwrapped to the key the host wrapped, as the host checked.
+    /// The blob unwrapped to the key that the host wrapped, as the host checked.
     Decodes(Checked),
-    /// It did not: the module does not decode OAEP with this hash, whatever its own round trip.
-    /// The return value of its refusal; `None`: the host found another key.
+    /// The blob did not unwrap to that key, so the module does not decode OAEP with this hash,
+    /// whatever its own round trip showed. The values are the reason and the return value of the
+    /// module's refusal, which is `None` when the host found another key.
     Refused(String, Option<u64>),
-    /// It could not be told: why.
+    /// The probe could not decide, and the value says why.
     Untold(String),
 }
 
-/// The host OAEP-encrypts a known AES key ([`moves::AES_KEYS`]) to the transport key `public`
-/// with `hash`; the token must unwrap it with `mech` and `unwraps` to that key (review
-/// 2026-11-23 D-3: a module using another hash than asked passed its own round trip). The
-/// unwrapped session key is destroyed again.
+/// The host encrypts a known AES key ([`moves::AES_KEYS`]) to the transport key `public` with
+/// RSA-OAEP and `hash`, and the token must unwrap the blob with `mech` and `unwraps` to that key
+/// (review 2026-11-23 D-3: a module that used another hash than the one asked for passed its own
+/// round trip). The function destroys the unwrapped session key afterwards.
 pub(super) fn host_blob(
     made: &Made,
     mech: &Mechanism,
@@ -310,9 +329,10 @@ pub(super) fn host_blob(
         Attribute::KeyType(KeyType::AES),
         Attribute::Encrypt(true),
     ];
-    // Its own blob unwrapped a moment ago: a refusal of this one is the blob's (modules say so
-    // as CKR_ENCRYPTED_DATA_INVALID, CKR_WRAPPED_KEY_INVALID or CKR_GENERAL_ERROR), unless it is
-    // about the template, which differs from the round trip's.
+    // The module's own blob unwrapped a moment ago, so a refusal of this blob is caused by the
+    // blob (modules report it as CKR_ENCRYPTED_DATA_INVALID, CKR_WRAPPED_KEY_INVALID or
+    // CKR_GENERAL_ERROR). The exception is a refusal of the template, because this template
+    // differs from the template of the round trip.
     let h = match made.session.unwrap_key(mech, unwraps, &blob, &template) {
         Ok(h) => h,
         Err(
@@ -339,15 +359,16 @@ pub(super) fn host_blob(
     verdict
 }
 
-/// One key wrap [`probe_key_wraps`] tries: an AES key wrap, or `CKM_RSA_AES_KEY_WRAP` with
-/// RSA-OAEP of this hash (MGF1 of the same).
+/// One key wrap that [`probe_key_wraps`] tries: an AES key wrap, or `CKM_RSA_AES_KEY_WRAP` with
+/// RSA-OAEP of the given hash and the given MGF1 function, which uses the same hash.
 pub(super) enum KeyWrap {
     Aes(Mechanism<'static>),
     RsaAes(MechanismType, PkcsMgfType),
 }
 
-/// `CKM_RSA_AES_KEY_WRAP` with an AES-256 key and `oaep`: only the patched cryptoki names it
-/// (the `kwp` feature).
+/// Returns `CKM_RSA_AES_KEY_WRAP` with a 256-bit AES key and the OAEP parameters `oaep`. Only the
+/// patched cryptoki names this mechanism, so this function returns it only with the `kwp`
+/// feature.
 #[cfg(feature = "kwp")]
 #[allow(clippy::unnecessary_wraps, reason = "the unpatched build's twin has nothing to return")]
 pub(super) fn rsa_aes_key_wrap<'a>(oaep: &'a PkcsOaepParams<'a>) -> Option<Mechanism<'a>> {
