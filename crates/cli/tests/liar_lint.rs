@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 /// The tables, each read by its tool's runner.
 fn tables() -> Vec<Table> {
-    vec![Table::cakeys()]
+    vec![Table::cakeys(), Table::tpm2()]
 }
 
 /// Every rule a plan can refuse by is named by a cell of some table (its `rule`, or a dry run's

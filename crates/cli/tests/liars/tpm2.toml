@@ -1,0 +1,187 @@
+# tpm2-pkcs11's own attestation told lies (review 2026-11-24 B-12; docs/archive/REVIEW-2026-11-24/
+# phase2-3-design.md §1.7, the forgery kit): the module that certifies a key itself
+# (CKM_TPM2_CERTIFY: the vendor module, nix/tpm2-pkcs11-vendor.nix) behind p11-fault, on the
+# suite's swtpm. tests/tpm2.rs's tpm2_vendor_attestation_liars plants it and runs every cell
+# (tests/common/liars.rs says what a cell asserts, cakeys.toml's head what an `expect` holds);
+# tests/liar_lint.rs holds it to its rules with no token.
+#
+# Each lie is a statement that passes every check cakeys makes of it but one (attest/vendor.rs's
+# certify: the nonce, the Name, the signature, the material), so its cell is that check's: with
+# the check removed, the run takes the forgery. A refused statement names no rule (its row's
+# `rule` is absent): a cell tells its check from the others by the lie alone.
+#
+# Not cells here, until a row can name a check as it names a rule (L2), and then [[unit]] rows:
+# - cakeys-tpm2-pkcs11 attest::esys::tests::a_statement_by_another_signer_is_refused: the store
+#   path's signature and qualified signer. The module path's qualified signer has no cell, nor a
+#   unit test: a TPM names its own AK, and vendor::certify's checks sit behind a session.
+# - cakeys-ykcs11 attest::tests::a_slot_certificate_signed_by_another_key_is_refused and
+#   a_chain_longer_than_three_is_refused (B-11: a PIV attestation's chain).
+
+# ── Objects: each a P-256 key or an AES key made by tpm2_ptool, its spec of its name adopted with
+# `attestation = true` (and `binding = "token-asserted"`: certify is a run's one C_Sign), its
+# locator's CKA_LABEL the name, beside a decoy "<name>-other" (tests/tpm2.rs's vendor_liars).
+# Tokens `tpm`, `tpm-b` and `tpm-ek` are the one token, told no store exists: the module certifies.
+
+[objects.ec-sign]
+token = "tpm"
+class = "private" # locked, also on tpm-b by spec ec-sign-b: a lock compares and writes nothing
+
+[objects.ec-adopt]
+token = "tpm"
+class = "private"
+# not locked: an honest lock pins it, a refused one writes nothing
+honest = 22
+
+[objects.aes]
+token = "tpm"
+class = "secret"
+# the module's certify cannot bind a secret key to its commitment
+honest = 15
+
+[objects.ec-ek]
+class = "private"
+token = "tpm-ek"
+# tpm-ek's ekCertificate, which the module's certify cannot chain the AK to
+honest = 15
+
+# ── Verbs. `lock --spec --spec` locks ec-sign on tpm, then spec ec-sign-b of the same object on
+# tpm-b: two certifies of one key in one process, so the shim holds the first statement when the
+# second is asked for.
+
+[verbs.lock]
+args = ["lock", "--spec", "{spec}", "--token", "{token}"]
+rows = true
+
+[verbs."lock --spec --spec"]
+args = ["lock", "--spec", "{spec}", "--spec", "{spec}-b"]
+rows = true
+pairs = 2
+
+# ── FORGE: a statement the AK did not make, or not for this run.
+
+# The signature: a byte of the statement's signature changed.
+[lies."forge.certify.corrupt"]
+class = "FORGE"
+plan = '''
+[[rule]]
+fn = "C_Sign"
+corrupt = true
+'''
+
+# The nonce: the statement the run's first certify returned, of the same key by the same AK,
+# returned for the second.
+[lies."forge.certify.replay"]
+class = "FORGE"
+plan = '''
+[[rule]]
+fn = "C_Sign"
+replay_output = 1
+'''
+
+# The Name: the key's public area (CKA_TPM2_PUB_BLOB) and its public key another key's, the
+# statement the real key's.
+[lies."forge.certify.blob"]
+class = "FORGE"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = 0x8F000002
+from_label = "{other}"
+
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_EC_POINT"
+from_label = "{other}"
+
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_PUBLIC_KEY_INFO"
+from_label = "{other}"
+'''
+
+# ── OTHER: another object certified, and its public area reported: the statement is the AK's
+# and names that area, whose material is not the key's.
+
+[lies."other.certify"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_SignInit"
+mechanism = 0x8F000001
+of_label = "{label}"
+use_label = "{other}"
+
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = 0x8F000002
+from_label = "{other}"
+'''
+
+# ── Cells. Each refusal is the check named; with it removed, the run takes the forgery: a lock
+# of ec-sign compares equal (0), one of ec-adopt pins it (22).
+
+# The signature (esys::verify_signature against the pinned AK).
+[[block]]
+lies = ["forge.certify.corrupt"]
+verbs = ["lock"]
+objects = ["ec-sign", "ec-adopt"]
+expect = { exit = 13 }
+
+# The nonce (the statement's extraData, this run's).
+[[block]]
+lies = ["forge.certify.replay"]
+verbs = ["lock --spec --spec"]
+objects = ["ec-sign"]
+expect = { exit = 13 }
+
+# The Name (the attested Name, the reported public area's).
+[[block]]
+lies = ["forge.certify.blob"]
+verbs = ["lock"]
+objects = ["ec-adopt"]
+expect = { exit = 13 }
+
+# The material (esys::cross_check: the certified area's key, the object's).
+[[block]]
+lies = ["other.certify"]
+verbs = ["lock"]
+objects = ["ec-adopt"]
+expect = { exit = 13 }
+
+# A secret key, and an ekCertificate, refused (15) before the module is asked to certify: the lie
+# never fires.
+[[block]]
+lies = ["other.certify"]
+verbs = ["lock"]
+objects = ["aes", "ec-ek"]
+expect = { exit = 15, fired = false }
+
+# ── Decided without a cell.
+
+[[na]]
+classes = ["OK", "FLAG", "CHANGE", "BLOB", "DEV", "LOSS"]
+verbs = "*"
+objects = "*"
+why = "cakeys.toml tells these to every verb, on SoftHSM; this table is the module's statement, which is another statement (FORGE) or another object's (OTHER), or a failure every verb meets alike"
+
+[[na]]
+classes = ["FORGE"]
+verbs = ["lock"]
+objects = ["secret"]
+why = "a secret key is refused (15) before the module certifies: other.certify's aes cell shows no lie reaches it"
+
+[[na]]
+classes = ["FORGE", "OTHER"]
+verbs = ["lock --spec --spec"]
+objects = ["secret"]
+why = "lock --spec --spec is the replay's: a statement of one key twice, through two specs; a secret key is refused before either"
+
+[[na]]
+classes = ["OTHER"]
+verbs = ["lock --spec --spec"]
+objects = ["private"]
+why = "another object certified on a pair is other.certify's lock cell: a second pair adds nothing"

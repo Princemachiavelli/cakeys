@@ -257,6 +257,62 @@ mod tests {
         assert!(e.to_string().contains("signature does not verify"), "{e}");
     }
 
+    /// A certificate of the forged chains (tests/fixtures/forged/make.sh): one of Yubico's shape,
+    /// root, attestation CA, PIV CA, device (f9) and slot, and the forgeries beside it.
+    fn forged(name: &str) -> Cert {
+        pem_certs(&String::from_utf8(fixture(&format!("forged/{name}.pem"))).unwrap()).unwrap().remove(0)
+    }
+
+    /// Slot certificate `slot` verified as device `device`'s attestation of the slot's own key, to
+    /// the forged root through its attestation and PIV CAs and the certificates `more` names.
+    fn verify_forged(slot: &str, device: &str, more: &[&str]) -> Result<PivAttested> {
+        let slot = forged(slot);
+        let pool: Vec<Cert> = ["attestation-ca", "piv-ca"].iter().chain(more).map(|n| forged(n)).collect();
+        verify_piv_attestation(slot.der(), forged(device).der(), &[forged("root")], &pool, &slot.spki().unwrap(), None)
+    }
+
+    /// Whether `e` is the refusal of a slot certificate the device's key did not sign.
+    fn unlinked(e: &KmError) -> bool {
+        matches!(e, KmError::Conflict(m) if m.contains("does not link to the device attestation certificate"))
+    }
+
+    /// A slot's attestation is the device's only when the device's key signed it (review
+    /// 2026-11-24 B-11): f9 certificates are public, so that one chains to a pinned root says
+    /// nothing of a slot certificate another key signed. Beside a genuine device three links below
+    /// the root, each forgery is a valid certificate of the key it names: one its key signed, one
+    /// whose issuer takes the device's name, and another device's genuine attestation of its own
+    /// key. Each is refused by the link to the device, where the genuine pairs verify.
+    #[test]
+    fn a_slot_certificate_signed_by_another_key_is_refused() {
+        verify_forged("slot", "f9", &[]).unwrap();
+        verify_forged("slot-b", "f9-b", &[]).unwrap();
+        for slot in ["slot-self", "slot-forged", "slot-b"] {
+            let e = verify_forged(slot, "f9", &[]).unwrap_err();
+            assert!(unlinked(&e), "{slot}: {e}");
+        }
+    }
+
+    /// A PIV attestation chain is the slot, the device, and at most three links from the device
+    /// to the root (UD-19). A device four links below it is refused, though the walk alone takes
+    /// that chain at four; and a slot one link below the device, under a CA the device issued, is
+    /// refused whichever of the two is shown as the device: by the link under f9, by the length
+    /// under the CA, each link of it otherwise valid.
+    #[test]
+    fn a_chain_longer_than_three_is_refused() {
+        let longer = |e: &KmError| matches!(e, KmError::Conflict(m) if m.contains("longer than 3 links"));
+        let deep = ["attestation-ca", "piv-ca", "piv-ca-deep"].map(forged);
+        chain_to_anchor(&forged("f9-deep"), Start::Intermediate, &[forged("root")], &deep, None, 4).unwrap();
+        let e = verify_forged("slot-deep", "f9-deep", &["piv-ca-deep"]).unwrap_err();
+        assert!(longer(&e), "{e}");
+
+        link(&forged("slot-sub"), Start::EndEntity, &forged("device-sub"), None).unwrap();
+        link(&forged("device-sub"), Start::Intermediate, &forged("f9"), None).unwrap();
+        let e = verify_forged("slot-sub", "f9", &[]).unwrap_err();
+        assert!(unlinked(&e), "{e}");
+        let e = verify_forged("slot-sub", "device-sub", &["f9"]).unwrap_err();
+        assert!(longer(&e), "{e}");
+    }
+
     /// The fuzz target's input format reaches the whole chain: the fixture chain, length-prefixed
     /// as `nix/fuzz.nix` seeds it, verifies; a short or cut input is refused, never a panic.
     #[test]
