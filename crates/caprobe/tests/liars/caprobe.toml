@@ -1,0 +1,171 @@
+# caprobe's liar matrix (docs/archive/REVIEW-2026-11-24/phase2-3-design.md §1.2–1.7): the lies a
+# module can tell the write probes (p11-fault plans, docs/FAULT_SHIM.md), each told to the verbs
+# and the objects of its blocks, every (lie, verb, object) a cell. tests/liars.rs runs it through
+# cakeys' runner (crates/cli/tests/common/liars.rs, which says what a cell asserts);
+# crates/cli/tests/liar_lint.rs holds it to its rules with no token.
+#
+# The fixture (tests/liars.rs): SoftHSM behind the shim (`ref`), probed as the reference suite
+# probes it. The probe makes its own keys under labels of its own, so an object here is the test
+# key a cell's rows are about, not a label a plan names: `aes` the AES-256 key, `ec` the P-256
+# pair. A cell asserts its exit, the rows (`row`: answer and `by`, or absent) and `[untested]`
+# entries it names, that the token is left as it was (CAPROBE.md: "Every run destroys what it
+# made"), and that the lie fired.
+
+state = ["token"]
+
+# ── Objects: the probe's test keys.
+
+[objects.aes]
+class = "secret" # AES-256: export.sealed.CKK_AES.32, wrapped by RSA-OAEP toward rsa-2048
+
+[objects.ec]
+class = "private" # P-256: export.sealed.CKK_EC.secp256r1 (RSA-OAEP, then KWP), prove.pop-sign
+
+# ── Verbs.
+
+[verbs."probe --write-probes"]
+args = ["probe", "--token", "ref", "--write-probes", "--rsa-max-bits", "2048"]
+form = "profile"
+
+[verbs.probe]
+args = ["probe", "--token", "ref"]
+form = "profile"
+
+# ── OK: a state, not a lie (no rule): the honest module, whose rows the others take away.
+
+# The sealed export wraps toward the imported rsa-2048 key, whose private half the host holds: the
+# host decodes the blob to the key (RFC 8017 OAEP, then RFC 5649 under the KEK), so the row is
+# the host's (review 2026-11-24 E-3).
+[lies.none]
+class = "OK"
+plan = ""
+
+[[block]]
+lies = ["none"]
+verbs = ["probe --write-probes"]
+objects = ["aes"]
+expect = { exit = 0, fired = false, row = [
+  { cap = "export.sealed.CKK_AES.32", answer = "yes", by = "host" },
+  { cap = "unwrap.CKK_AES.32", answer = "yes", by = "host" },
+] }
+
+[[block]]
+lies = ["none"]
+verbs = ["probe --write-probes"]
+objects = ["ec"]
+expect = { exit = 0, fired = false, row = [
+  { cap = "export.sealed.CKK_EC.secp256r1", answer = "yes", by = "host" },
+  { cap = "prove.pop-sign.CKK_EC.secp256r1", answer = "yes", by = "host" },
+] }
+
+# ── BLOB: a blob the module round-trips that is not what it made (E-3).
+
+# Every wrap padded, every unwrap unpadded before the module sees it: the module unwraps its own
+# blob as the key, so its round trip passes, but the host decodes none of what it wraps, and no
+# other token would either. The export is the host's no; the unwrap, of the module's own blob
+# alone, its word (by = "unverified"), which camigrate plans as deferred.
+[lies."blob.transcode"]
+class = "BLOB"
+plan = '''
+[[rule]]
+fn = "C_WrapKey"
+transcode = true
+'''
+
+[[block]]
+lies = ["blob.transcode"]
+verbs = ["probe --write-probes"]
+objects = ["aes"]
+expect = { exit = 0, row = [
+  { cap = "export.sealed.CKK_AES.32", answer = "no", by = "host" },
+  { cap = "unwrap.CKK_AES.32", answer = "yes", by = "unverified" },
+] }
+
+[[block]]
+lies = ["blob.transcode"]
+verbs = ["probe --write-probes"]
+objects = ["ec"]
+expect = { exit = 0, row = [
+  { cap = "export.sealed.CKK_EC.secp256r1", answer = "no", by = "host" },
+  { cap = "unwrap.CKK_EC.secp256r1", answer = "yes", by = "unverified" },
+] }
+
+# ── DEV: a call failing as a device, and the same call refused (E-2): a device failure is no
+# answer of the module's, so no row and an `[untested]` entry; a refusal is the module's no.
+
+[lies."dev.wrap"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_WrapKey"
+rv = "CKR_DEVICE_ERROR"
+'''
+
+[lies."dev.wrap-refused"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_WrapKey"
+rv = "CKR_KEY_NOT_WRAPPABLE"
+'''
+
+[[block]]
+lies = ["dev.wrap"]
+verbs = ["probe --write-probes"]
+objects = ["aes"]
+expect = { exit = 0, row = { cap = "export.sealed.CKK_AES.32", absent = true }, untested = [
+  "export.sealed.CKK_AES.32",
+] }
+
+[[block]]
+lies = ["dev.wrap-refused"]
+verbs = ["probe --write-probes"]
+objects = ["aes"]
+expect = { exit = 0, row = { cap = "export.sealed.CKK_AES.32", answer = "no", by = "module" } }
+
+# The first proof of possession: the first C_SignInit of the run is the P-256 key's pop-sign.
+[lies."dev.sign"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_SignInit"
+call = 1
+rv = "CKR_DEVICE_ERROR"
+'''
+
+[lies."dev.sign-refused"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_SignInit"
+call = 1
+rv = "CKR_KEY_FUNCTION_NOT_PERMITTED"
+'''
+
+[[block]]
+lies = ["dev.sign"]
+verbs = ["probe --write-probes"]
+objects = ["ec"]
+expect = { exit = 0, row = { cap = "prove.pop-sign.CKK_EC.secp256r1", absent = true }, untested = [
+  "prove.pop-sign.CKK_EC.secp256r1",
+] }
+
+[[block]]
+lies = ["dev.sign-refused"]
+verbs = ["probe --write-probes"]
+objects = ["ec"]
+expect = { exit = 0, row = { cap = "prove.pop-sign.CKK_EC.secp256r1", answer = "no", by = "module" } }
+
+# ── Decided without a cell.
+
+[[na]]
+classes = "*"
+verbs = ["probe"]
+objects = "*"
+why = "a read-only probe makes no key and asks nothing of one: it records the module's info and mechanism list (CAPROBE.md, The probe), which no lie about an object reaches; its rows are the write probes', whose cells these are"
+
+[[na]]
+classes = ["OTHER", "FLAG", "CHANGE", "FORGE", "LOSS"]
+verbs = ["probe --write-probes"]
+objects = "*"
+why = "tests/fault.rs tells these to the write probes, each case asserting the rows the honest module earns are then not written: another key signs or derives (OTHER), CKA_DERIVE reported false and a public key without its point (FLAG, CHANGE), a refused or forged derivation (FORGE), and the device failing at every call of each function the answers come from (LOSS); this table holds the cells §1.7 gives caprobe, E-3's and E-2's"
