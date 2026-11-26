@@ -1,0 +1,161 @@
+# The source files that the mutation gate mutates, in two tiers, and every other source file of
+# the workspace with the reason that no tier mutates it (docs/DEVELOPMENT.md, "Mutation testing";
+# docs/archive/REVIEW-2026-11-24/phase2-3-design.md §5.1). nix/package-crane.nix reads this file
+# as `mutantsScopes`. checks.mutants-scopes (nix/mutants-scopes.py) fails when a source file of a
+# workspace crate is in no scope and not left out, when a pattern here matches no file, and when
+# a part of a `re` matches no function in its scope's files. So a new crate, a new file, a renamed
+# file and a renamed function each fail that check until this file decides them.
+#
+# Each [[unit]] and [[tokens]] entry is one scope:
+# - `package` is the Cargo package whose files cargo-mutants mutates (`--package`).
+# - `files` are the files it mutates (`--file`), as paths from the repository root. `**` matches
+#   any number of directories and `*` any part of one name.
+# - `re`, if present, keeps only the mutants whose name matches this regular expression (`--re`),
+#   so only some functions of the files are mutated.
+# - `name`, if present, is the scope's directory in the report. It defaults to the package, so a
+#   second scope of one package needs a name.
+# A [[unit]] scope's mutants meet only the tests of their own package. A [[tokens]] scope's
+# mutants meet their own package's tests first, and the mutants those tests miss then meet every
+# crate's tests with the token suites. A scope whose package this system does not build
+# (cakeys-tpm2-pkcs11 on darwin) is skipped on this system.
+
+[[unit]]
+package = "cakeys-core"
+files = ["crates/core/src/**/*.rs"]
+
+[[unit]]
+package = "cakeys-names"
+files = ["crates/names/src/**/*.rs"]
+
+[[unit]]
+package = "cakeys-profile"
+files = ["crates/profile/src/**/*.rs"]
+
+[[unit]]
+package = "camigrate"
+files = [
+  "crates/camigrate/src/plan.rs",
+  "crates/camigrate/src/bundle.rs",
+  "crates/camigrate/src/file.rs",
+  "crates/camigrate/src/transport.rs",
+  "crates/camigrate/src/side.rs",
+  "crates/camigrate/src/trust.rs",
+]
+
+# The attestation verifiers, and fix_ec_point, which repairs a malformed P-521 point and which a
+# proptest of the crate tests. Linux only, because darwin does not build this crate.
+[[unit]]
+package = "cakeys-tpm2-pkcs11"
+files = ["crates/tpm2-pkcs11/src/attest/**/*.rs", "crates/tpm2-pkcs11/src/lib.rs"]
+
+[[unit]]
+package = "cakeys-kmsp11"
+files = ["crates/kmsp11/src/lib.rs"]
+
+[[unit]]
+package = "cakeys-aws-cloudhsm"
+files = ["crates/aws-cloudhsm/src/lib.rs"]
+
+[[unit]]
+package = "cakeys-ykcs11"
+files = ["crates/ykcs11/src/attest.rs"]
+
+[[tokens]]
+package = "cakeys-pkcs11"
+files = [
+  "crates/pkcs11/src/token/possession.rs",
+  "crates/pkcs11/src/ops/mod.rs",
+  "crates/pkcs11/src/token/identity.rs",
+  "crates/pkcs11/src/token/policy.rs",
+  "crates/pkcs11/src/provider.rs",
+  "crates/pkcs11/src/token/generate.rs",
+  "crates/pkcs11/src/ops/capabilities.rs",
+  "crates/pkcs11/src/templates.rs",
+  "crates/pkcs11/src/token/login.rs",
+  "crates/pkcs11/src/ops/planner.rs",
+  "crates/pkcs11/src/gate.rs",
+  "crates/pkcs11/src/token/rv.rs",
+  "crates/pkcs11/src/token/host.rs",
+  "crates/pkcs11/src/registry.rs",
+  "crates/pkcs11/src/token/public.rs",
+  "crates/pkcs11/src/ops/rules.rs",
+  "crates/pkcs11/src/ops/identity.rs",
+  "crates/pkcs11/src/chain_time.rs",
+  "crates/pkcs11/src/binding.rs",
+  "crates/pkcs11/src/providers.rs",
+  "crates/pkcs11/src/token/types.rs",
+]
+
+[[tokens]]
+package = "cakeys-pkcs11"
+name = "cakeys-pkcs11-lookup"
+files = ["crates/pkcs11/src/resolution.rs", "crates/pkcs11/src/token/mod.rs"]
+# Only the functions that decide which profile rows still apply on hardware that no profile was
+# measured on (clear_hardware_rows, and hardware_dependent, which P4 split out of it), and the
+# functions that find a token's objects and its slot (Token::find, find_any, find_key, find_slot).
+# select_in and named_in are in registry.rs, which the scope above mutates whole.
+re = "clear_hardware_rows|hardware_dependent|find"
+
+[[tokens]]
+package = "camigrate"
+files = [
+  "crates/camigrate/src/tokens.rs",
+  "crates/camigrate/src/sealed.rs",
+  "crates/camigrate/src/landing.rs",
+  "crates/camigrate/src/file_verbs.rs",
+  "crates/camigrate/src/public.rs",
+  "crates/camigrate/src/host.rs",
+]
+
+[[tokens]]
+package = "caprobe"
+files = [
+  "crates/caprobe/src/probe/moves.rs",
+  "crates/caprobe/src/probe/secrets.rs",
+  "crates/caprobe/src/probe/asymmetric.rs",
+  "crates/caprobe/src/probe/extras.rs",
+  "crates/caprobe/src/probe/bound.rs",
+  "crates/caprobe/src/probe/wraps.rs",
+  "crates/caprobe/src/probe/scratch.rs",
+]
+
+[[tokens]]
+package = "caprobe"
+name = "caprobe-probe"
+files = ["crates/caprobe/src/probe.rs"]
+# Only check_slot, which checks what occupies the scratch slot, and the functions that write the
+# profile's rows. The probe writes the slot's mark certificate in probe/moves.rs, which the scope
+# above mutates whole.
+re = "check_slot|Draft::|finish"
+
+[[tokens]]
+package = "cakeys-cli-common"
+files = ["crates/cli-common/src/**/*.rs"]
+
+# The plaintext import through tpm2_ptool, which only the tpm2 suite on swtpm runs. Linux only,
+# because darwin does not build this crate.
+[[tokens]]
+package = "cakeys-tpm2-pkcs11"
+files = ["crates/tpm2-pkcs11/src/ptool.rs"]
+
+# Each source file that no tier mutates, or a pattern of such files, with the reason.
+[left-out]
+"crates/camigrate/src/keyfile.rs" = "the key-file parser, which the fuzz target key_file covers"
+"crates/pkcs11/src/token/uri.rs" = "printing a PKCS#11 URI"
+"crates/pkcs11/src/token/measure.rs" = "measuring a module"
+"crates/pkcs11/src/token/library.rs" = "loading a module"
+"crates/pkcs11/src/lib.rs" = "module declarations and re-exports, which have no mutants"
+"crates/caprobe/src/emit.rs" = "report code, which golden files check"
+"crates/caprobe/src/diff.rs" = "report code, which golden files check"
+"crates/caprobe/src/coverage.rs" = "a #[cfg(test)] module that regenerates spec-coverage/cakeys.toml: cargo-mutants mutates no test code"
+"crates/caprobe/src/baseline.rs" = "a #[cfg(test)] module that regenerates the spec baseline: cargo-mutants mutates no test code"
+"crates/caprobe/src/supports.rs" = "report code, which golden files check"
+"crates/cli/src/lib.rs" = "the command line's parsing and dispatch; Phase 1 moved its decisions into the plan and execute steps"
+"crates/camigrate/src/lib.rs" = "the command line's parsing and dispatch, as in crates/cli/src/lib.rs; the plan and the verb files hold the decisions"
+"crates/caprobe/src/lib.rs" = "the command line's parsing and dispatch, as in crates/cli/src/lib.rs; the probe files hold the decisions"
+"crates/cli/src/main.rs" = "the entry point, which calls the library"
+"crates/camigrate/src/main.rs" = "the entry point, which calls the library"
+"crates/caprobe/src/main.rs" = "the entry point, which calls the library"
+"crates/ykcs11/src/lib.rs" = "only a ykcs11 persona can catch these mutants; the file joins a tier when L9 adds the persona"
+"crates/p11-fault/src/**/*.rs" = "test infrastructure"
+"crates/p11-names/src/**/*.rs" = "test infrastructure"
