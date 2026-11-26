@@ -1420,3 +1420,95 @@ fn tpm2_attestation_says_what_it_lacks() {
     config(&format!("{pin}\noptions = {{ akHandle = \"0x81000018\" }}"));
     refused(&e.km(&r), 16, "creating the Attestation Key in the owner hierarchy (is owner auth empty?)");
 }
+
+/// The module's own attestation (`CKM_TPM2_CERTIFY`) told lies (`tests/liars/tpm2.toml`, review
+/// 2026-11-24 B-12): the vendor module behind p11-fault on the suite's swtpm, each lie a statement
+/// that passes every check of it but one (another signature, another run's nonce, another public
+/// area, another object certified), each refused (13); a secret key and an `ekCertificate`
+/// refused (15) before any certify. Every cell as `tests/liars.rs` runs cakeys' table
+/// ([`liars::run_cells`]).
+#[test]
+fn tpm2_vendor_attestation_liars() {
+    let name = "vendor-liars";
+    let Some(module) = suite_var("CAKEYS_TPM_VENDOR_MODULE", "CAKEYS_TPM_VENDOR_REQUIRE", name) else { return };
+    if !swtpm_or_skip(
+        name,
+        "an attestation provisions the persistent Attestation Key, and this is not the suite's swtpm",
+    ) {
+        return;
+    }
+    let table = liars::Table::tpm2();
+    let (f, mut wrong) = vendor_liars(module, &table);
+    let cells = table.cells();
+    wrong.extend(liars::run_cells(&table, &cells, &f));
+    assert!(
+        wrong.is_empty(),
+        "{} wrong in the {} cells and their runs:\n{}",
+        wrong.len(),
+        cells.len(),
+        wrong.join("\n")
+    );
+}
+
+/// `tests/liars/tpm2.toml`'s fixture on the vendor `module`: each object made by `tpm2_ptool`
+/// beside its decoy `<name>-other`; tokens `tpm` and `tpm-b`, the one token behind the shim, told
+/// no store exists (the module certifies), and `tpm-ek` with an `ekCertificate`; `ec-sign` placed
+/// on both `tpm` and `tpm-b` and locked on both, which provisions the Attestation Key. What a
+/// planting run broke of the runner's invariants.
+fn vendor_liars(module: String, table: &liars::Table) -> (liars::Fixture, Vec<String>) {
+    use std::fmt::Write as _;
+    let w = Workdir::new("tpm2-vendor-liars");
+    let token = |name: &str, options: &str| {
+        format!(
+            "[tokens.{name}]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n\
+             options = {{ tpm2Store = \"/nonexistent\"{options} }}\n\n",
+            fault_shim(),
+            w.dir.join("pin").display()
+        )
+    };
+    let ek = concat!(env!("CARGO_MANIFEST_DIR"), "/../tpm2-pkcs11/tests/fixtures/amd-ftpm-ek-ecc.pem");
+    let mut config = token("tpm", "") + &token("tpm-b", "") + &token("tpm-ek", &format!(", ekCertificate = \"{ek}\""));
+    for (name, o) in &table.objects {
+        let (kind, attributes, algorithm, binding) = match o.class.as_str() {
+            "private" => (
+                "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"",
+                "CKA_SIGN = true",
+                "ecc256",
+                ", binding = \"token-asserted\"",
+            ),
+            "secret" => (
+                "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32",
+                "CKA_ENCRYPT = true, CKA_SENSITIVE = true",
+                "aes256",
+                "",
+            ),
+            class => panic!("the fixture has no {class} object"),
+        };
+        let _ = write!(
+            config,
+            "[objects.{name}]\n{kind}\n\n[specs.{name}]\nobject = \"{name}\"\nattributes = {{ {attributes} }}\n"
+        );
+        let tokens = if name == "ec-sign" { vec!["tpm", "tpm-b"] } else { vec![o.token.as_str()] };
+        for t in tokens {
+            let _ = writeln!(
+                config,
+                "tokens.{t} = {{ locator = {{ CKA_LABEL = \"{name}\" }}, origin = \"adopt\", attestation = true{binding} }}"
+            );
+        }
+        config.push('\n');
+        for label in [name.clone(), format!("{name}-other")] {
+            ptool(&["addkey", &format!("--algorithm={algorithm}"), &format!("--key-label={label}")]);
+        }
+    }
+    no_attestation_off_swtpm(&config);
+    w.write_config(&config);
+    let f = liars::Fixture { w, real: module, planted: Vec::new() };
+    let mut wrong = Vec::new();
+    for t in ["tpm", "tpm-b"] {
+        let (out, problems) = f.held(&["lock", "--spec", "ec-sign", "--token", t], None, None);
+        assert_eq!(code(&out), 22, "planting ec-sign on {t}: {}", stderr(&out));
+        wrong.extend(problems);
+    }
+    let planted = std::fs::read(f.lock()).unwrap();
+    (liars::Fixture { planted, ..f }, wrong)
+}
