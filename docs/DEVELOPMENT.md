@@ -36,8 +36,8 @@ Development happens on NixOS or on macOS with Determinate Nix. Neither provides 
   but in one process (plain `cargo test`), they share one token set and do not pass: the token
   suites need a token set per test, which only the per-test runner gives (OPEN.md,
   "Engineering"). A change to token behaviour is not tested until a Nix check has run.
-- Both builds (the checks' crane build and `packages.cakeys`) run the tests under
-  `cargo-nextest`, one process per test, each through `nix/test-tokens.sh`: a SoftHSM token and
+- The checks' crane build (`packages.cakeys-crane`; `packages.cakeys` is it without the check
+  phase) runs the tests under `cargo-nextest`, one process per test, each through `nix/test-tokens.sh`: a SoftHSM token and
   a kryoptic database of its own (copies of templates), and for the suites that use them its own
   `p11-kit server` and swtpm; there is no shared server or swtpm, so a suite the runner's lists
   leave out fails rather than sharing one. The tokens are set up by one script,

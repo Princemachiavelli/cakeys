@@ -154,6 +154,19 @@ class Docs(Case):
         self.assertEqual(got, ["docs/A.md:3: `no_test_of_four_words` is no fn in crates/ or fuzz/"])
 
 
+class Scripts(Case):
+    def test_a_script_keeping_an_exit_table_fails(self):
+        write(self.root, {"nix/demo.sh": 'declare -A meaning=(\n  [0]="ok" [17]="invalid"\n  [22]="done"\n)\n'})
+        got = self.misses()
+        self.assertEqual(len(got), 2, got)
+        self.assertTrue(got[0].startswith("nix/demo.sh:2: an exit code's meaning copied by hand"), got)
+        self.assertTrue(got[1].startswith("nix/demo.sh:3: "), got)
+
+    def test_a_script_naming_a_code_passes(self):
+        write(self.root, {"scripts/x.sh": '[ "$rc" = 0 ] || [ "$rc" = 22 ] || exit 17\nargs[1]=x\n'})
+        self.assertEqual(self.misses(), [])
+
+
 class Lists(Case):
     def test_a_listed_foreign_name_passes_and_an_unneeded_entry_fails(self):
         got = self.misses("/// `tpm2_ptool`\n", foreign_names={"tpm2_ptool": "a tool", "never_cited": "x", "to_der": "the code names it"})

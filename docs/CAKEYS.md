@@ -62,7 +62,9 @@ A run that wrote the lock exits 22, never 0 (see "Exit codes"), and `--dry-run` 
 ## Exit codes
 
 One code per failure, the same for every verb and all three tools (`KmError::exit_code`), each
-mapped onto an error programs already handle. The codes are frozen (DESIGN §10).
+mapped onto an error programs already handle. The codes are frozen (DESIGN §10). Each tool's
+`--help` ends with this table's codes and meanings (`EXIT_CODES`, held to the rows below by
+`the_exit_code_table_lists_every_code`), which scripts read rather than copy (`nix/demo.sh`).
 
 | Exit | Meaning | Like | Retry? | Typical cause |
 |---|---|---|---|---|
@@ -74,13 +76,13 @@ mapped onto an error programs already handle. The codes are frozen (DESIGN §10)
 | 14 | precondition failed: the realisation moved | 412 | after review | the spec or policy changed since recorded, a downgrade, a replaced object; camigrate's admin operations inside a Nix build |
 | 15 | unsupported: the token cannot do what the spec needs | 501, `ENOTSUP` | no | a mechanism or key type the module lacks; a delete of what the module does not remove (`delete-refused`) |
 | 16 | unavailable: the token cannot be used now | 503, `EIO` | sometimes | token absent, PIN locked or on its last try, module not loadable; an object only a login shows looked for without one (`needs-login`, below); a login the module accepted but the session does not show (`C_GetSessionInfo`); an object still there after the module said it destroyed it (`delete-kept`) |
-| 17 | invalid config, lock, spec or token options | 400, `EINVAL` | no | a schema error, a malformed reference, an unknown token; no lock at `--lock` (or beside keys.toml) without `--new-lock` |
+| 17 | invalid config, lock, spec or options | 400, `EINVAL` | no | a schema error, a malformed reference, an unknown token; no lock at `--lock` (or beside keys.toml) without `--new-lock` |
 | 18 | first use: the lock pins nothing to compare with yet; prints `got: sha256-…` | 428 | after `lock` records it | a key just created or adopted; a scheme the lock does not pin, asked for by name |
 | 19 | already exists: `create` found a key the lock does not pin under the locator and made nothing | `EEXIST`, 412 | no | `create --no-update-lock` run twice; a key something else put there (`lock` records it) |
 | 20 | objects failed: `check --token` found objects on the token that fail their check, or a plan (`validate`, `create`) was refused more than once; each is listed on stderr with its own code | 207 | per object | any of 10–18 for one of the token's objects, or for one pair of the plan |
-| 21 | lock cannot be written | 507, `EROFS` | after fixing the path | a writing run whose lock or its directory is read-only, or inside a Nix build sandbox (refused before any token is touched; `--dry-run` compares instead); a save that failed part-way, after which the token may hold what the lock does not record (`lock` records it) |
+| 21 | the lock cannot be written (read-only, or inside a Nix build) | 507, `EROFS` | after fixing the path | a writing run whose lock or its directory is read-only, or inside a Nix build sandbox (refused before any token is touched; `--dry-run` compares instead); a save that failed part-way, after which the token may hold what the lock does not record (`lock` records it) |
 | 22 | done, and the lock was written: review and commit it | 201 | no: it succeeded | a writing run (`lock`, `create`, `delete`, `gc`, camigrate's `import` and `migrate`) that recorded or removed something; 0 when it changed nothing. A failure's own code wins over 22 |
-| 1 | I/O or other | 500 | sometimes | the lock unreadable |
+| 1 | I/O or other failure | 500 | sometimes | the lock unreadable |
 | 2 | command-line usage | — | no | bad arguments |
 
 **Seen only after a login** (`needs-login`, review 2026-11-24 B-4). A session without login
