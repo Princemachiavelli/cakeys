@@ -1,9 +1,10 @@
-//! What the plan's rules do beyond a return value: the few functions whose arguments or
-//! outputs a rule changes. Each forwards to the real module itself and returns what the caller
-//! sees, with the rule (from 1) that changed it, if one did.
+//! What the plan's rules do besides changing a return value: the few functions whose arguments
+//! or outputs a rule changes. Each function forwards the call to the real module itself and
+//! returns what the caller sees, with the number of the rule (counted from 1) that changed it, if
+//! a rule did.
 //!
-//! Objects are named by `CKA_LABEL` and resolved through a session of the shim's own on the
-//! caller's slot, so a search the caller has open is never disturbed.
+//! Rules name objects by `CKA_LABEL`. The shim resolves a label through its own session on the
+//! caller's slot, so a search that the caller has open is never disturbed.
 
 use crate::plan::{Action, AttributeChange, Call};
 use crate::{Fatal, Shim};
@@ -17,20 +18,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::os::raw::c_void;
 use std::sync::{Mutex, PoisonError};
 
-/// What a hooked call returns: the caller's value, and the rule that changed something.
+/// What a hooked call returns: the value for the caller, and the rule that changed something.
 pub(crate) type Outcome = Result<(CK_RV, Option<usize>), Fatal>;
 
-/// `CK_UNAVAILABLE_INFORMATION`: the length of an attribute that cannot be given.
+/// `CK_UNAVAILABLE_INFORMATION`, which is the length of an attribute that cannot be given.
 const UNAVAILABLE: CK_ULONG = CK_ULONG::MAX;
 
-/// The real module's function `$name`, or why the call cannot be forwarded.
+/// Returns the real module's function `$name`, or the reason why the call cannot be
+/// forwarded.
 macro_rules! real {
     ($shim:expr, $name:ident) => {
         $shim.real.$name.ok_or_else(|| Fatal(format!("{} has no function", stringify!($name))))?
     };
 }
 
-/// `C_GetTokenInfo`: the real answer with a rule's flags set and cleared.
+/// `C_GetTokenInfo`: returns the real answer with a rule's flags set and cleared.
 pub(crate) unsafe fn token_info(shim: &Shim, call: &Call, slot: CK_SLOT_ID, info: *mut CK_TOKEN_INFO) -> Outcome {
     // SAFETY: the caller's arguments, forwarded unchanged.
     let rv = unsafe { real!(shim, C_GetTokenInfo)(slot, info) };
@@ -41,7 +43,7 @@ pub(crate) unsafe fn token_info(shim: &Shim, call: &Call, slot: CK_SLOT_ID, info
     Ok((rv, flags(shim, call, unsafe { &mut (*info).flags })))
 }
 
-/// `C_GetSlotInfo`: the real answer with a rule's flags set and cleared.
+/// `C_GetSlotInfo`: returns the real answer with a rule's flags set and cleared.
 pub(crate) unsafe fn slot_info(shim: &Shim, call: &Call, slot: CK_SLOT_ID, info: *mut CK_SLOT_INFO) -> Outcome {
     // SAFETY: the caller's arguments, forwarded unchanged.
     let rv = unsafe { real!(shim, C_GetSlotInfo)(slot, info) };
@@ -63,10 +65,11 @@ fn flags(shim: &Shim, call: &Call, flags: &mut CK_ULONG) -> Option<usize> {
     fired
 }
 
-/// `C_FindObjects`: the objects of a `hide_label` rule are not found; those of a
-/// `replace_label` rule are others; and where the real search found something and there is
-/// room, those of an `add_label` rule are found too. (Not where it found nothing: a client reads
-/// until a call returns no object, and would never stop.)
+/// `C_FindObjects`: the objects of a `hide_label` rule are not found, and the objects of a
+/// `replace_label` rule are replaced by other objects. When the real search found something and
+/// there is room, the objects of an `add_label` rule are also found. (They are not added when the
+/// search found nothing, because a client reads until a call returns no object, and it would
+/// never stop.)
 pub(crate) unsafe fn find_objects(
     shim: &Shim,
     call: &Call,
@@ -81,11 +84,12 @@ pub(crate) unsafe fn find_objects(
         return Ok((rv, None));
     }
     let room = usize::try_from(max).unwrap_or(0);
-    // SAFETY: `count` is not null and the real module wrote it; `out` holds `max` handles, of
-    // which the first `*count` are set. A module that reports more than `max` is not believed.
+    // SAFETY: `count` is not null and the real module wrote it. `out` holds `max` handles, of
+    // which the first `*count` are set. A count above `max` from the module is not trusted.
     let set = usize::try_from(unsafe { *count }).unwrap_or(0).min(room);
     let mut found = unsafe { std::slice::from_raw_parts(out, set).to_vec() };
-    // What the search returned in earlier batches, where a rule adds to it or replaces in it.
+    // What the search returned in earlier batches, which is tracked only when a rule adds to the
+    // search or replaces objects in it.
     let adds = shim.plan.rules().iter().any(|r| matches!(r.action, Action::AddLabel(_) | Action::ReplaceLabel { .. }));
     let earlier = if adds { shim.searches.returned(session) } else { BTreeSet::new() };
     let mut fired = None;
@@ -105,13 +109,13 @@ pub(crate) unsafe fn find_objects(
                 unsafe {
                     for h in named(shim, session, of, None)? {
                         let Some(at) = found.iter().position(|f| *f == h) else { continue };
-                        // Nothing under the label is the plan's mistake, as for `use_label`.
+                        // A label with no object is an error in the plan, as for `use_label`.
                         let other = named(shim, session, by, class_of(shim, session, h))?.first().copied();
                         let other = other.ok_or_else(|| {
                             let by = String::from_utf8_lossy(by);
                             Fatal(format!("replace_label: no object labelled {by} of the class of the one replaced"))
                         })?;
-                        // Found once per search, as an added object is.
+                        // The replacement is found once per search, as an added object is.
                         if found.contains(&other) || earlier.contains(&other) {
                             found.remove(at);
                         } else {
@@ -146,11 +150,12 @@ pub(crate) unsafe fn find_objects(
     Ok((rv, fired))
 }
 
-/// What each caller session's open search has returned so far, kept while a plan adds objects
-/// to searches (`add_label`): an added object is found once per search, never again in a later
-/// batch, nor when an earlier batch already returned it. PKCS#11 lets a module return a search's
-/// matches over several batches, and a client that reads until a batch comes back empty would
-/// otherwise see the object twice. Forgotten when the session starts or ends a search.
+/// What the open search of each caller session has returned so far. This is kept while a plan
+/// adds objects to searches (`add_label`), so that an added object is found once per search: it
+/// is not found again in a later batch, and it is not added when an earlier batch already
+/// returned it. PKCS#11 lets a module return a search's matches over several batches, and a
+/// client that reads until a batch comes back empty would otherwise see the object twice. The
+/// record is cleared when the session starts or ends a search.
 #[derive(Default)]
 pub(crate) struct Searches(Mutex<BTreeMap<CK_SESSION_HANDLE, BTreeSet<CK_OBJECT_HANDLE>>>);
 
@@ -172,7 +177,7 @@ impl Searches {
     }
 }
 
-/// `C_FindObjectsInit`: a new search on the session, which has returned nothing yet.
+/// `C_FindObjectsInit`: starts a new search on the session, which has returned nothing yet.
 pub(crate) unsafe fn find_objects_init(
     shim: &Shim,
     _call: &Call,
@@ -185,14 +190,15 @@ pub(crate) unsafe fn find_objects_init(
     Ok((unsafe { real!(shim, C_FindObjectsInit)(session, template, count) }, None))
 }
 
-/// `C_FindObjectsFinal`: the session's search is over.
+/// `C_FindObjectsFinal`: ends the session's search.
 pub(crate) unsafe fn find_objects_final(shim: &Shim, _call: &Call, session: CK_SESSION_HANDLE) -> Outcome {
     shim.searches.end(session);
     // SAFETY: the caller's argument, forwarded unchanged.
     Ok((unsafe { real!(shim, C_FindObjectsFinal)(session) }, None))
 }
 
-/// `C_GetMechanismList`: the mechanisms of a `hide_mechanisms` rule are not listed.
+/// `C_GetMechanismList`: returns the real list without the mechanisms of a `hide_mechanisms`
+/// rule.
 pub(crate) unsafe fn mechanism_list(
     shim: &Shim,
     call: &Call,
@@ -200,17 +206,17 @@ pub(crate) unsafe fn mechanism_list(
     list: *mut CK_MECHANISM_TYPE,
     count: *mut CK_ULONG,
 ) -> Outcome {
-    // The caller's room, before the real module overwrites `count` with the length.
-    // SAFETY: read only when not null.
+    // This reads the caller's room before the real module overwrites `count` with the length.
+    // SAFETY: `count` is read only when it is not null.
     let room = if count.is_null() { 0 } else { usize::try_from(unsafe { *count }).unwrap_or(0) };
     // SAFETY: the caller's arguments, forwarded unchanged.
     let rv = unsafe { real!(shim, C_GetMechanismList)(slot, list, count) };
     if rv != CKR_OK || list.is_null() || count.is_null() {
-        // The length alone: the real module's, which a shorter list may fall short of.
+        // A length query returns the real module's length, which a shorter list may not fill.
         return Ok((rv, None));
     }
-    // SAFETY: `count` is not null and the real module wrote it and that many mechanisms; `list`
-    // holds `room`. A module that reports more than `room` is not believed.
+    // SAFETY: `count` is not null, and the real module wrote it and that many mechanisms. `list`
+    // holds `room` entries. A count above `room` from the module is not trusted.
     let written = usize::try_from(unsafe { *count }).unwrap_or(0).min(room);
     let mut listed = unsafe { std::slice::from_raw_parts(list, written).to_vec() };
     let mut fired = None;
@@ -233,16 +239,17 @@ pub(crate) unsafe fn mechanism_list(
     Ok((rv, fired))
 }
 
-/// What `transcode` puts on every byte of a wrapped key, and `C_UnwrapKey` takes off.
+/// The value that `transcode` XORs into every byte of a wrapped key, and that `C_UnwrapKey`
+/// removes again.
 const PAD: u8 = 0x5a;
 
-/// A function returning bytes into the caller's buffer `out` of `*len` bytes, forwarded by
-/// `real`, with what it returned changed where a rule says ([`change_output`]).
+/// Forwards a function that returns bytes into the caller's buffer `out` of `*len` bytes, with
+/// `real`, and changes what it returned where a rule says so ([`change_output`]).
 ///
 /// # Safety
 ///
-/// `len` is null or readable and writable, and `out` null or `*len` writable bytes, as the
-/// function's contract requires; `real` makes the real call with them.
+/// `len` is null or readable and writable, and `out` is null or `*len` writable bytes, as the
+/// function's contract requires. `real` makes the real call with them.
 pub(crate) unsafe fn corrupt_output(
     shim: &Shim,
     call: &Call,
@@ -258,25 +265,25 @@ pub(crate) unsafe fn corrupt_output(
     }
 }
 
-/// The caller's room behind `len`, read before the real module overwrites it with the length
-/// it wrote.
+/// Returns the caller's room behind `len`. It must be read before the real module overwrites it
+/// with the length that the module wrote.
 ///
 /// # Safety
 ///
 /// `len` is null or readable.
 unsafe fn room(len: *const CK_ULONG) -> usize {
-    // SAFETY: read only when not null.
+    // SAFETY: `len` is read only when it is not null.
     if len.is_null() { 0 } else { usize::try_from(unsafe { *len }).unwrap_or(0) }
 }
 
-/// What a call that returned `rv` wrote into the caller's buffer `out` (of `room` bytes, `*len`
-/// of them written), changed by the rules `call` meets, in plan order: `corrupt` makes the last
-/// byte another; `replay_output` puts back what the function returned that many calls before,
-/// where there was such a call and its output fits the room; `transcode` pads every byte. The
-/// rule that changed it first, if one did. The length query (no buffer) is left alone, and so
-/// is a length the caller's buffer cannot hold: a module that reports more than the room it was
-/// given is not believed, as in `find_objects`. What the module really returned is kept for a
-/// later replay where a rule names the function.
+/// Changes what a call that returned `rv` wrote into the caller's buffer `out` (of `room` bytes,
+/// with `*len` bytes written), by the rules that `call` meets, in plan order. `corrupt` changes
+/// the last byte. `replay_output` puts back what the function returned that many calls before,
+/// when there was such a call and its output fits the room. `transcode` XORs every byte with
+/// [`PAD`]. Returns the first rule that changed the output, if one did. A length query (no
+/// buffer) is left unchanged, and so is a length that the caller's buffer cannot hold, because a
+/// count above the given room from the module is not trusted, as in `find_objects`. What the
+/// module really returned is kept for a later replay when a rule names the function.
 ///
 /// # Safety
 ///
@@ -339,7 +346,8 @@ unsafe fn change_output(
     fired
 }
 
-/// What the functions a `replay_output` rule names have returned, in order, per function.
+/// What the functions that a `replay_output` rule names have returned, in order, for each
+/// function.
 #[derive(Default)]
 pub(crate) struct Outputs(Mutex<BTreeMap<usize, Vec<Vec<u8>>>>);
 
@@ -348,7 +356,8 @@ impl Outputs {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// What `function` returned `k` calls ago (1: the latest), if it has returned that often.
+    /// Returns what `function` returned `k` calls ago (1 means the latest call), if it has
+    /// returned that many times.
     fn earlier(&self, function: crate::Fn, k: usize) -> Option<Vec<u8>> {
         let held = self.held();
         let kept = held.get(&(function as usize))?;
@@ -360,8 +369,8 @@ impl Outputs {
     }
 }
 
-/// The key a key-taking function uses: the caller's, or the object a `use_label` rule names
-/// (of the caller's key's class).
+/// Returns the key that a function that takes a key uses: the caller's key, or the object that a
+/// `use_label` rule names (of the class of the caller's key).
 pub(crate) unsafe fn substitute_key(
     shim: &Shim,
     call: &Call,
@@ -376,9 +385,10 @@ pub(crate) unsafe fn substitute_key(
     unsafe { substitute(shim, call, session, key, "use_label", used) }
 }
 
-/// `C_WrapKey`: the wrapping key a `use_label` rule names, and the key wrapped a `wrap_label`
-/// rule names, each of the class of the caller's, in place of the caller's. A `wrap_label`
-/// rule's `of_label` names the key wrapped: the blob then holds another key than the one shown.
+/// `C_WrapKey`: uses the wrapping key that a `use_label` rule names, and wraps the key that a
+/// `wrap_label` rule names, each of the class of the caller's key, in place of the caller's keys.
+/// A `wrap_label` rule's `of_label` names the key that is wrapped, and the blob then holds a
+/// different key from the one that the caller sees.
 #[expect(clippy::too_many_arguments, reason = "C_WrapKey's arguments, after the shim and the call")]
 pub(crate) unsafe fn wrap_key(
     shim: &Shim,
@@ -407,9 +417,9 @@ pub(crate) unsafe fn wrap_key(
     }
 }
 
-/// `C_UnwrapKey`: the key a `use_label` rule names in place of the unwrapping key; and where the
-/// plan transcodes what `C_WrapKey` returns, the blob undone first (a copy of the caller's,
-/// which is left as it was).
+/// `C_UnwrapKey`: uses the key that a `use_label` rule names in place of the unwrapping key.
+/// When the plan transcodes what `C_WrapKey` returns, the transcoding is first undone on a copy
+/// of the caller's blob, and the caller's blob is left as it was.
 #[expect(clippy::too_many_arguments, reason = "C_UnwrapKey's arguments, after the shim and the call")]
 pub(crate) unsafe fn unwrap_key(
     shim: &Shim,
@@ -438,9 +448,9 @@ pub(crate) unsafe fn unwrap_key(
     Ok((rv, used.or(transcoded)))
 }
 
-/// The handle a function uses in place of the caller's `handle`: the caller's, or the object
-/// the first matching rule for it names (`label_of` its action's label; `what` the rule kind,
-/// for the message), of the class of the caller's.
+/// Returns the handle that a function uses in place of the caller's `handle`: the caller's
+/// handle, or the object of the same class that the first matching rule names. `label_of`
+/// returns the label of a rule's action, and `what` is the kind of rule, for the message.
 unsafe fn substitute(
     shim: &Shim,
     call: &Call,
@@ -453,9 +463,9 @@ unsafe fn substitute(
         let Some(label) = label_of(&rule.action) else { continue };
         // SAFETY: real-module calls on the caller's session and handles.
         unsafe {
-            // Nothing under the label is the plan's mistake, as for `from_label`: the caller's own
-            // key run under a rule the trace says fired would pass a test for the wrong reason
-            // (hooks.rs F1).
+            // A label with no object is an error in the plan, as for `from_label`. If the caller's
+            // own key were used under a rule that the trace reports as fired, a test would pass
+            // for the wrong reason (hooks.rs F1).
             let class = class_of(shim, session, handle);
             let other = named(shim, session, &label, class)?.first().copied().ok_or_else(|| {
                 Fatal(format!("{what}: no object labelled {} of the key's class", String::from_utf8_lossy(&label)))
@@ -466,8 +476,8 @@ unsafe fn substitute(
     Ok((handle, None))
 }
 
-/// `C_GetAttributeValue`: the attributes a rule names are answered by the shim, the others by
-/// the real module, in the caller's template.
+/// `C_GetAttributeValue`: the shim answers the attributes that a rule names, and the real module
+/// answers the other attributes, in the caller's template.
 pub(crate) unsafe fn attribute_value(
     shim: &Shim,
     call: &Call,
@@ -491,7 +501,8 @@ pub(crate) unsafe fn attribute_value(
     // SAFETY: the caller's template of `count` entries, as PKCS#11 requires of it.
     let entries = unsafe { std::slice::from_raw_parts_mut(template, n) };
     let rule_for = |ty: CK_ATTRIBUTE_TYPE| rules.iter().find(|(_, attribute, _)| *attribute == ty);
-    // The real module answers the entries no rule names, through a template of only those.
+    // The real module answers the entries that no rule names, through a template that holds
+    // only those entries.
     let (mut rest, mut at) = (Vec::new(), Vec::new());
     for (i, e) in entries.iter().enumerate() {
         if rule_for(e.type_).is_none() {
@@ -554,8 +565,9 @@ pub(crate) unsafe fn attribute_value(
     Ok((rv, fired))
 }
 
-/// Answer the caller's entry with `value`: its length, and its bytes where the caller gave a
-/// buffer that holds them (`CKR_BUFFER_TOO_SMALL` and an unavailable length where it does not).
+/// Answers the caller's entry with `value`: its length, and its bytes where the caller gave a
+/// buffer that holds them. When the buffer is too small, the answer is `CKR_BUFFER_TOO_SMALL`
+/// with an unavailable length.
 ///
 /// # Safety
 ///
@@ -576,7 +588,7 @@ unsafe fn serve(entry: &mut CK_ATTRIBUTE, value: &[u8]) -> CK_RV {
     CKR_OK
 }
 
-/// The real value of `attribute` on `object`, or the real module's refusal.
+/// Returns the real value of `attribute` on `object`, or the real module's refusal.
 unsafe fn value_of(
     shim: &Shim,
     session: CK_SESSION_HANDLE,
@@ -602,7 +614,7 @@ unsafe fn value_of(
     }
 }
 
-/// `CKA_CLASS` of `object`, if the real module gives it.
+/// Returns the `CKA_CLASS` of `object`, if the real module gives it.
 ///
 /// # Safety
 ///
@@ -617,8 +629,8 @@ pub(crate) unsafe fn class_of(
     Some(CK_OBJECT_CLASS::from_ne_bytes(value.try_into().ok()?))
 }
 
-/// Whether one of `objects` bears `label`, on the token `session` is open on (an `of_label`
-/// matcher). None does when the call names no session.
+/// Returns whether one of `objects` has the label `label` on the token that `session` is open
+/// on (for an `of_label` matcher). It returns false when the call names no session.
 ///
 /// # Safety
 ///
@@ -635,8 +647,9 @@ pub(crate) unsafe fn is_of(
     Ok(objects.iter().any(|o| named.contains(o)))
 }
 
-/// The objects labelled `label` (of `class`, when given) on the token `session` is open on,
-/// found through a session of the shim's own. None when the caller's session is no session.
+/// Returns the objects with the label `label` (of `class`, when it is given) on the token that
+/// `session` is open on, found through the shim's own session. Returns no objects when the
+/// caller's session is not a valid session.
 unsafe fn named(
     shim: &Shim,
     session: CK_SESSION_HANDLE,
@@ -666,8 +679,9 @@ unsafe fn named(
         let mut own = 0;
         let open = real!(shim, C_OpenSession);
         let mut rv = open(info.slotID, CKF_SERIAL_SESSION, std::ptr::null_mut(), None, &raw mut own);
-        // A read-only session is refused while the caller holds an SO one (PKCS #11, C_OpenSession):
-        // a read-write one reads the same objects (review 2026-11-23 B-17).
+        // A read-only session is refused while the caller holds an SO session (PKCS #11,
+        // C_OpenSession), and a read-write session reads the same objects (review 2026-11-23
+        // B-17).
         if rv == CKR_SESSION_READ_WRITE_SO_EXISTS {
             rv = open(info.slotID, CKF_SERIAL_SESSION | CKF_RW_SESSION, std::ptr::null_mut(), None, &raw mut own);
         }
@@ -687,8 +701,9 @@ unsafe fn named(
                 if rv != CKR_OK || n == 0 {
                     break;
                 }
-                // A count past the batch is the module's fault, named, never a panic the guard
-                // turns into a bare CKR_GENERAL_ERROR (review 2026-11-23 B-16).
+                // A count beyond the batch is the module's fault. It is reported by name, and it
+                // never causes a panic that the guard would turn into a bare CKR_GENERAL_ERROR
+                // (review 2026-11-23 B-16).
                 let Some(got) = usize::try_from(n).ok().and_then(|n| batch.get(..n)) else {
                     overrun = Some(n);
                     break;
@@ -713,29 +728,32 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
 
-    /// The caller's session, the shim's own (opened to resolve a label), and the one object
-    /// labelled as the rules say.
+    /// The caller's session, the shim's own session (opened to resolve a label), and the one
+    /// object with the label that the rules name.
     const CALLER: CK_SESSION_HANDLE = 1;
     const OWN: CK_SESSION_HANDLE = 99;
     const LABELLED: CK_OBJECT_HANDLE = 7;
 
     thread_local! {
-        /// The batches the caller's search returns, in turn; then none.
+        /// The batches that the caller's search returns, in turn, and then no more batches.
         static BATCHES: RefCell<VecDeque<Vec<CK_OBJECT_HANDLE>>> = const { RefCell::new(VecDeque::new()) };
-        /// What the shim's own search has still to return.
+        /// What the shim's own search still has to return.
         static OWN_LEFT: RefCell<Vec<CK_OBJECT_HANDLE>> = const { RefCell::new(Vec::new()) };
-        /// What `C_FindObjectsInit` on the shim's own session returns.
+        /// The value that `C_FindObjectsInit` on the shim's own session returns.
         static OWN_INIT: Cell<CK_RV> = const { Cell::new(CKR_OK) };
-        /// The caller holds an SO session: a read-only one is refused.
+        /// Whether the caller holds an SO session, in which case a read-only session is
+        /// refused.
         static SO_HELD: Cell<bool> = const { Cell::new(false) };
-        /// A count `C_FindObjects` reports on the shim's own session instead of its batch.
+        /// A count that `C_FindObjects` reports on the shim's own session instead of the length
+        /// of its batch.
         static OWN_COUNT: Cell<CK_ULONG> = const { Cell::new(0) };
-        /// The objects under each label, where a test names them: the shim's own search then
-        /// finds those its template's label names. Unset, it finds [`LABELLED`] for any label.
+        /// The objects under each label, when a test names them. The shim's own search then
+        /// finds the objects of the label in its template. When this is empty, the search
+        /// finds [`LABELLED`] for any label.
         static LABELS: RefCell<Vec<(&'static [u8], Vec<CK_OBJECT_HANDLE>)>> = const { RefCell::new(Vec::new()) };
-        /// The wrapping key and the key wrapped the last `C_WrapKey` got.
+        /// The wrapping key and the wrapped key that the last `C_WrapKey` received.
         static WRAPPED: Cell<(CK_OBJECT_HANDLE, CK_OBJECT_HANDLE)> = const { Cell::new((0, 0)) };
-        /// The blob the last `C_UnwrapKey` got.
+        /// The blob that the last `C_UnwrapKey` received.
         static UNWRAPPED: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     }
 
@@ -847,7 +865,8 @@ mod tests {
         CKR_OK
     }
 
-    /// A module holding the one labelled object, whose caller searches return [`BATCHES`].
+    /// Returns a module that holds the one labeled object, and whose searches by the caller
+    /// return [`BATCHES`].
     fn module() -> cryptoki_sys::CK_FUNCTION_LIST {
         let mut m = crate::empty_table();
         m.C_GetSessionInfo = Some(get_session_info);
@@ -859,8 +878,8 @@ mod tests {
         m
     }
 
-    /// One whole search by the caller, read until a batch comes back empty, three at a time:
-    /// each batch it got.
+    /// Runs one whole search by the caller, reading three handles at a time until a batch comes
+    /// back empty, and returns each batch that the caller got.
     fn search(shim: &Shim, batches: &[&[CK_OBJECT_HANDLE]]) -> Vec<Vec<CK_OBJECT_HANDLE>> {
         BATCHES.set(batches.iter().map(|b| b.to_vec()).collect());
         let mut got = Vec::new();
@@ -883,19 +902,20 @@ mod tests {
         got
     }
 
-    /// `add_label` adds its object once per search: a search the module returns over several
-    /// batches gets it in the first that finds anything, not in each; the next search, again.
+    /// `add_label` adds its object once per search. A search that the module returns over
+    /// several batches gets the object in the first batch that finds anything, not in each
+    /// batch, and the next search gets it again.
     #[test]
     fn an_added_object_is_found_once_per_search() {
         let shim = fake(&module(), "[[rule]]\nfn = \"C_FindObjects\"\nadd_label = \"decoy\"\n", None);
         assert_eq!(search(&shim, &[&[1, 2], &[3]]), [vec![1, 2, LABELLED], vec![3]]);
         assert_eq!(search(&shim, &[&[4]]), [vec![4, LABELLED]]);
-        // Nor beside the object itself, when an earlier batch of the search returned it.
+        // The object is not added when an earlier batch of the search already returned it.
         assert_eq!(search(&shim, &[&[LABELLED], &[5]]), [vec![LABELLED], vec![5]]);
     }
 
-    /// A label that cannot be resolved names the call that failed: the search's start, not its
-    /// batches.
+    /// A label that cannot be resolved names the call that failed: the start of the search, not
+    /// its batches.
     #[test]
     fn a_failed_search_start_is_named_as_such() {
         let shim = fake(&module(), "[[rule]]\nfn = \"C_FindObjects\"\nhide_label = \"decoy\"\n", None);
@@ -909,8 +929,9 @@ mod tests {
         assert!(fatal.0.contains("C_FindObjectsInit returned 0x30"), "{}", fatal.0);
     }
 
-    /// A module reporting more handles than the shim's batch holds is a fault named by its count,
-    /// never a panic the guard answers as a bare `CKR_GENERAL_ERROR` (review 2026-11-23 B-16).
+    /// A module that reports more handles than the shim's batch holds produces a fault that
+    /// names the count, never a panic that the guard answers as a bare `CKR_GENERAL_ERROR`
+    /// (review 2026-11-23 B-16).
     #[test]
     fn a_count_past_the_batch_is_named() {
         let shim = fake(&module(), "[[rule]]\nfn = \"C_FindObjects\"\nhide_label = \"decoy\"\n", None);
@@ -924,8 +945,8 @@ mod tests {
         assert!(fatal.0.contains("C_FindObjects returned 17 handles into room for 16"), "{}", fatal.0);
     }
 
-    /// A label resolves while the caller holds an SO session, where the module refuses the shim
-    /// a read-only one: it reads through a read-write one (review 2026-11-23 B-17).
+    /// A label resolves while the caller holds an SO session, when the module refuses the shim a
+    /// read-only session: the shim reads through a read-write session (review 2026-11-23 B-17).
     #[test]
     fn a_label_resolves_beside_an_so_session() {
         let shim = fake(&module(), "[[rule]]\nfn = \"C_FindObjects\"\nadd_label = \"decoy\"\n", None);
@@ -935,10 +956,10 @@ mod tests {
         assert_eq!(got, [vec![1, LABELLED]]);
     }
 
-    /// `wrap_label` wraps the object its label names in place of the key wrapped, where
-    /// `of_label` names the key wrapped: not where it names the wrapping key, nor another key
-    /// wrapped. A label naming nothing is the plan's mistake, never the caller's key wrapped under
-    /// a rule said to have fired.
+    /// `wrap_label` wraps the object that its label names in place of the wrapped key, when
+    /// `of_label` names the wrapped key. It does not do so when `of_label` names the wrapping key
+    /// or another wrapped key. A label that names nothing is an error in the plan, and the shim
+    /// never wraps the caller's key under a rule that it reports as fired.
     #[test]
     fn a_wrap_label_wraps_another_key() {
         let mut m = module();
@@ -967,9 +988,10 @@ mod tests {
         assert!(fatal.0.contains("wrap_label: no object labelled none"), "{}", fatal.0);
     }
 
-    /// `transcode` changes what `C_WrapKey` returns (never its length query) and every
-    /// `C_UnwrapKey` undoes it, on a copy of the caller's blob: the blob round-trips through the
-    /// module, and is not what the module made. With no such rule, both pass unchanged.
+    /// `transcode` changes what `C_WrapKey` returns (never its length query), and every
+    /// `C_UnwrapKey` undoes the change on a copy of the caller's blob. The blob round-trips
+    /// through the module, but it is not the blob that the module made. Without such a rule,
+    /// both calls pass unchanged.
     #[test]
     fn transcode_round_trips() {
         use std::ptr::null_mut as null;
@@ -997,9 +1019,9 @@ mod tests {
         }
     }
 
-    /// `replay_output` returns what the function returned that many calls before: not where no
-    /// call came before, nor where the earlier output does not fit the caller's buffer; and what
-    /// is kept is what the module really returned, never what was replayed.
+    /// `replay_output` returns what the function returned that many calls before. It does not do
+    /// so when no call came before, or when the earlier output does not fit the caller's buffer.
+    /// The shim keeps what the module really returned, never what was replayed.
     #[test]
     fn an_output_is_replayed_from_an_earlier_call() {
         let shim = fake(&crate::empty_table(), "[[rule]]\nfn = \"C_Sign\"\nreplay_output = 1\n", None);
@@ -1022,8 +1044,9 @@ mod tests {
         assert_eq!(sign(&[9], 4), (Some(1), vec![7, 8]));
     }
 
-    /// `replace_label` finds another object (labelled `by`, of the class of the one replaced) in
-    /// place of each one labelled `of`, once per search; nothing under `by` fails the call.
+    /// `replace_label` finds another object (with the label `by`, of the class of the replaced
+    /// object) in place of each object with the label `of`, once per search. When nothing has the
+    /// label `by`, the call fails.
     #[test]
     fn a_found_object_is_replaced() {
         LABELS.set(vec![(b"shown", vec![7]), (b"other", vec![8])]);
@@ -1045,9 +1068,9 @@ mod tests {
         assert!(fatal.0.contains("replace_label: no object labelled none"), "{}", fatal.0);
     }
 
-    /// `corrupt` changes the last byte the module returned, inside the caller's buffer; a module
-    /// that reports more bytes than the caller had room for is not believed, and nothing past
-    /// the buffer is touched.
+    /// `corrupt` changes the last byte that the module returned, inside the caller's buffer. A
+    /// byte count above the caller's room from the module is not trusted, and nothing past the
+    /// buffer is touched.
     #[test]
     fn corruption_stays_inside_the_callers_buffer() {
         let shim = fake(&crate::empty_table(), "[[rule]]\nfn = \"C_Sign\"\ncorrupt = true\n", None);
@@ -1067,8 +1090,9 @@ mod tests {
         }
     }
 
-    /// A ruled attribute is served as PKCS#11 serves any: the length alone without a buffer, the
-    /// bytes into one that holds them, and a too-small buffer refused.
+    /// An attribute that a rule names is served as PKCS#11 serves any attribute: only the length
+    /// without a buffer, the bytes into a buffer that holds them, and a refusal for a buffer
+    /// that is too small.
     #[test]
     fn a_value_is_served_into_the_callers_entry() {
         let entry = |buffer: Option<&mut [u8]>| CK_ATTRIBUTE {

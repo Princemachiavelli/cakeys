@@ -1,11 +1,13 @@
-//! The call log (`P11_FAULT_TRACE`): one JSON line per call, appended, so the processes of a
-//! test run (each loads the shim afresh) interleave whole lines in one file.
+//! The call log (`P11_FAULT_TRACE`) has one JSON line for each call, appended to the file, so
+//! that the processes of a test run (each of which loads the shim again) interleave whole lines
+//! in one file.
 //!
-//! Beside the function and what it returned, a line says what the call was about ([`Detail`]):
-//! the mechanism, the user type, the session flags, the attribute types of a template and the
-//! object classes, key types and certificate types it named. They are numbers: the reader maps
-//! them to names (the coverage file of docs/PLAN.md A1 uses the spec baseline). `exe` names the
-//! program that made the call, so a test harness's own calls can be told from the tool's.
+//! Besides the function and what it returned, a line says what the call was about ([`Detail`]):
+//! the mechanism, the user type, the session flags, the attribute types of a template, and the
+//! object classes, key types and certificate types that the template named. These values are
+//! numbers, and the reader maps them to names (the coverage file of docs/PLAN.md A1 uses the spec
+//! baseline). `exe` names the program that made the call, so that a test harness's own calls can
+//! be told apart from the tool's calls.
 
 use crate::Fatal;
 use crate::plan::Call;
@@ -31,26 +33,29 @@ pub(crate) struct Trace {
     shim: Option<String>,
 }
 
-/// What one call was about, read from its arguments: before the call, for the plan's matchers
-/// (outputs not yet filled, so not read), and once it has returned, for the trace (an input
-/// template is unchanged then, and an output one filled in).
+/// What one call was about, read from its arguments. The arguments are read before the call for
+/// the plan's matchers (the outputs are not filled yet, so they are not read), and after the call
+/// has returned for the trace (an input template is unchanged then, and an output template is
+/// filled in).
 #[derive(Debug, Default)]
 pub(crate) struct Detail {
-    /// The real call ran and returned `CKR_OK`: only then are its outputs read. A rule that
-    /// answered in its place, or a failure an `after` rule hid, filled nothing.
+    /// True when the real call ran and returned `CKR_OK`. Only then are its outputs read. A rule
+    /// that answered in place of the real call, or a failure that an `after` rule hid, filled
+    /// nothing.
     pub(crate) ok: bool,
-    /// Why the shim failed the call itself (`Fatal`), if it did.
+    /// The reason why the shim failed the call itself (`Fatal`), if it did.
     pub(crate) fatal: Option<String>,
     pub(crate) mechanism: Option<CK_MECHANISM_TYPE>,
-    /// From the mechanism's parameters: the OAEP or PSS hash, the MGF, the OAEP source, the
-    /// ECDH KDF.
+    /// The OAEP or PSS hash from the mechanism's parameters. The next three fields hold the MGF,
+    /// the OAEP source and the ECDH KDF from the same parameters.
     hash: Option<CK_MECHANISM_TYPE>,
     mgf: Option<CK_ULONG>,
     source: Option<CK_ULONG>,
     kdf: Option<CK_ULONG>,
     user: Option<CK_USER_TYPE>,
     flags: Option<CK_FLAGS>,
-    /// `C_Initialize`'s flags, and the flags a slot, token or mechanism info came back with.
+    /// The flags of `C_Initialize`. The next three fields hold the flags of the slot, token or
+    /// mechanism information that a call returned.
     init_flags: Option<CK_FLAGS>,
     slot_flags: Option<CK_FLAGS>,
     token_flags: Option<CK_FLAGS>,
@@ -59,20 +64,23 @@ pub(crate) struct Detail {
     pub(crate) classes: Vec<CK_ULONG>,
     pub(crate) key_types: Vec<CK_ULONG>,
     certificate_types: Vec<CK_ULONG>,
-    /// The session and the objects the call names (`of_label` looks at them; not traced).
+    /// The session that the call names, and in the next field the objects that it names.
+    /// `of_label` looks at them, and they are not traced.
     pub(crate) session: Option<CK_SESSION_HANDLE>,
     pub(crate) objects: Vec<CK_OBJECT_HANDLE>,
-    /// What may be recorded of the values the call returned (`P11_FAULT_RECORD_VALUES`), and
-    /// what was: the attribute values, and `C_Sign`'s data and signature.
+    /// What may be recorded of the values that the call returned (`P11_FAULT_RECORD_VALUES`).
+    /// The next two fields hold what was recorded: the attribute values, and the data and the
+    /// signature of `C_Sign`.
     pub(crate) record: crate::record::Recording,
     values: Vec<(CK_ATTRIBUTE_TYPE, Vec<u8>)>,
     signed: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 impl Detail {
-    /// The mechanism of a `CK_MECHANISM` argument, and the enumerated choices in the parameters
-    /// of the ones cakeys uses with parameters: an OAEP or PSS hash and MGF, an OAEP source, an
-    /// ECDH KDF (each read only where the parameter is as long as its structure).
+    /// Reads the mechanism of a `CK_MECHANISM` argument, and the enumerated choices in the
+    /// parameters of the mechanisms that cakeys uses with parameters: an OAEP or PSS hash and
+    /// MGF, an OAEP source, and an ECDH KDF. Each choice is read only when the parameter is as
+    /// long as its structure.
     ///
     /// # Safety
     ///
@@ -117,7 +125,7 @@ impl Detail {
         }
     }
 
-    /// The hash, MGF and source of OAEP parameters.
+    /// Reads the hash, the MGF and the source of OAEP parameters.
     ///
     /// # Safety
     ///
@@ -140,7 +148,7 @@ impl Detail {
         self.session = Some(session);
     }
 
-    /// A `CK_OBJECT_HANDLE` argument, after those before it.
+    /// Records a `CK_OBJECT_HANDLE` argument, after the handles that came before it.
     pub(crate) fn object(&mut self, object: CK_OBJECT_HANDLE) {
         self.objects.push(object);
     }
@@ -155,7 +163,8 @@ impl Detail {
         self.flags = Some(flags);
     }
 
-    /// `C_Initialize`'s argument: the flags of its `CK_C_INITIALIZE_ARGS`, if any.
+    /// Reads the argument of `C_Initialize`: the flags of its `CK_C_INITIALIZE_ARGS`, if there
+    /// are any.
     ///
     /// # Safety
     ///
@@ -167,7 +176,7 @@ impl Detail {
         }
     }
 
-    /// The flags of the `CK_SLOT_INFO` a successful `C_GetSlotInfo` filled.
+    /// Reads the flags of the `CK_SLOT_INFO` that a successful `C_GetSlotInfo` filled.
     ///
     /// # Safety
     ///
@@ -179,7 +188,7 @@ impl Detail {
         }
     }
 
-    /// The flags of the `CK_TOKEN_INFO` a successful `C_GetTokenInfo` filled.
+    /// Reads the flags of the `CK_TOKEN_INFO` that a successful `C_GetTokenInfo` filled.
     ///
     /// # Safety
     ///
@@ -191,7 +200,8 @@ impl Detail {
         }
     }
 
-    /// The flags of the `CK_MECHANISM_INFO` a successful `C_GetMechanismInfo` filled.
+    /// Reads the flags of the `CK_MECHANISM_INFO` that a successful `C_GetMechanismInfo`
+    /// filled.
     ///
     /// # Safety
     ///
@@ -203,8 +213,8 @@ impl Detail {
         }
     }
 
-    /// A template of `count` entries: every attribute type, and the values of the class, key
-    /// type and certificate type entries that carry one.
+    /// Reads a template of `count` entries: every attribute type, and the values of the class,
+    /// key type and certificate type entries that carry a value.
     ///
     /// # Safety
     ///
@@ -215,9 +225,9 @@ impl Detail {
         unsafe { self.read_template(template, count, true) };
     }
 
-    /// A template the call fills (`C_GetAttributeValue`): every attribute type, and the values of
-    /// [`Detail::template`] only where the call filled them ([`Detail::ok`]); otherwise the
-    /// buffers hold whatever the caller left there.
+    /// Reads a template that the call fills (`C_GetAttributeValue`): every attribute type, and
+    /// the values that [`Detail::template`] reads only when the call filled them
+    /// ([`Detail::ok`]). Otherwise, the buffers hold whatever the caller left there.
     ///
     /// # Safety
     ///
@@ -241,20 +251,20 @@ impl Detail {
         }
     }
 
-    /// The attribute values recorded.
+    /// Returns the attribute values that were recorded.
     #[cfg(test)]
     pub(crate) fn values(&self) -> &[(CK_ATTRIBUTE_TYPE, Vec<u8>)] {
         &self.values
     }
 
-    /// `C_Sign`'s data and signature recorded.
+    /// Returns the data and the signature of `C_Sign` that were recorded.
     #[cfg(test)]
     pub(crate) fn recorded_signature(&self) -> Option<&(Vec<u8>, Vec<u8>)> {
         self.signed.as_ref()
     }
 
-    /// `C_Sign`'s data and the signature it returned, where they may be recorded
-    /// ([`Detail::record`]) and the call filled the signature.
+    /// Records the data of `C_Sign` and the signature that it returned, when they may be
+    /// recorded ([`Detail::record`]) and the call filled the signature.
     ///
     /// # Safety
     ///
@@ -278,7 +288,7 @@ impl Detail {
         }
     }
 
-    /// [`Detail::template`], reading values only when `values`.
+    /// Does what [`Detail::template`] does, but reads the values only when `values` is true.
     ///
     /// # Safety
     ///
@@ -307,7 +317,7 @@ impl Detail {
     }
 }
 
-/// `bytes` in lower-case hex.
+/// Returns `bytes` in lower-case hex.
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
         let _ = write!(s, "{b:02x}");
@@ -316,7 +326,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 impl Trace {
-    /// Open `path`, which the variable `var` named, for appending; `shim` is this copy's tag.
+    /// Opens `path`, which the variable `var` named, for appending. `shim` is this copy's tag.
     pub(crate) fn open(var: &str, path: &Path, shim: Option<String>) -> Result<Trace, Fatal> {
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -327,9 +337,9 @@ impl Trace {
         Ok(Trace { file: Mutex::new(file), exe, shim })
     }
 
-    /// Log `call`, the value its caller saw, the plan's rule (from 1) that decided it, if any,
-    /// and what it was about. A write that fails is dropped: the trace never changes what the
-    /// caller sees.
+    /// Logs `call`, the value that its caller saw, the plan's rule (counted from 1) that decided
+    /// it, if any, and what the call was about. A write that fails is dropped, because the trace
+    /// must never change what the caller sees.
     pub(crate) fn line(&self, call: &Call, rv: CK_RV, rule: Option<usize>, detail: &Detail) {
         let mut line = serde_json::json!({
             "pid": std::process::id(),
@@ -383,8 +393,9 @@ impl Trace {
         if let Some((data, signature)) = &detail.signed {
             fields.insert("signed".into(), serde_json::json!({"data": hex(data), "signature": hex(signature)}));
         }
-        // One write per line: the processes sharing the file (O_APPEND) then interleave whole
-        // lines, where `writeln!` (a write per formatted piece) interleaved their tokens.
+        // The line is written with one write, so the processes that share the file (O_APPEND)
+        // interleave whole lines. `writeln!` makes one write for each formatted piece, and with
+        // it the processes interleaved parts of lines.
         let mut text = line.to_string();
         text.push('\n');
         if let Ok(mut file) = self.file.lock() {
@@ -411,7 +422,7 @@ mod tests {
             entry(CKA_CLASS, (&raw mut class).cast(), size_of::<CK_ULONG>()),
             entry(CKA_KEY_TYPE, (&raw mut key_type).cast(), size_of::<CK_ULONG>()),
             entry(CKA_LABEL, label.as_mut_ptr(), 1),
-            // A length query: the type, no value.
+            // A length query has the type and no value.
             entry(CKA_KEY_TYPE, std::ptr::null_mut(), 0),
         ];
         let mut d = Detail::default();
@@ -419,12 +430,13 @@ mod tests {
         unsafe { d.template(template.as_ptr(), 4) };
         assert_eq!(d.attributes, [CKA_CLASS, CKA_KEY_TYPE, CKA_LABEL, CKA_KEY_TYPE]);
         assert_eq!((&d.classes[..], &d.key_types[..]), (&[CKO_PRIVATE_KEY][..], &[CKK_EC][..]));
-        // SAFETY: a null template is no template.
+        // SAFETY: a null template is read as no template.
         unsafe { d.template(std::ptr::null(), 3) };
     }
 
-    /// A template the call fills gives its values only when the call filled it: a failed
-    /// `C_GetAttributeValue` leaves the caller's buffers as they were, garbage to a reader.
+    /// A template that the call fills gives its values only when the call filled it. A failed
+    /// `C_GetAttributeValue` leaves the caller's buffers as they were, and their contents are
+    /// meaningless to a reader.
     #[test]
     fn a_filled_template_gives_values_only_when_filled() {
         let mut class = CKO_PRIVATE_KEY;
