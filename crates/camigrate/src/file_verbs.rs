@@ -1,6 +1,7 @@
 //! The verbs on key files (docs/FILE.md, docs/CAMIGRATE.md D2 `file`): `export --to-key-file`, and
-//! `import` from a file or from each object's own. What a file holds is `file` (written) and
-//! `keyfile` (read); this is the run around them: its passphrase, its plan and the lock.
+//! `import` from a key file or from each object's own file. The module `file` writes the content of
+//! a key file, and the module `keyfile` reads it. This module runs the verbs around them: it reads
+//! the passphrase, makes the plan and updates the lock.
 
 #[allow(
     clippy::wildcard_imports,
@@ -10,12 +11,13 @@ use super::*;
 use cakeys_core::{Check, Reason};
 
 impl Run<'_> {
-    /// `export --to-key-file`: one private key, through the host (`Token::extract`), into a
-    /// passphrase-protected file (docs/CAMIGRATE.md D2 `file`): encrypted PKCS#8, or PKCS#12 with the
-    /// certificate the lock pairs with it on the source. Written whole or not at all, mode 0600.
+    /// Runs `export --to-key-file`. It moves one private key through the host (`Token::extract`)
+    /// into a passphrase-protected file (docs/CAMIGRATE.md D2 `file`). The file is encrypted
+    /// PKCS#8, or PKCS#12 with the certificate that the lock pairs with the key on the source. The
+    /// file is written whole or not at all, with mode 0600.
     pub(super) fn export_file(&self, ctx: &MoveCtx, out: &Path, pass: &Path, notes: &mut Notes) -> anyhow::Result<()> {
         let from = ctx.from;
-        // The source is opened once, for the plan and the hand-over.
+        // The source is opened once, for both the plan and the extraction of the key.
         let source = self.opener.open(from, Access::Scratch, notes);
         let (moves, source, _) = self.plan(ctx, super::Show::No, source, Access::Read, notes)?;
         moves.verdict(ctx.take(), from)?;
@@ -34,8 +36,8 @@ impl Run<'_> {
                 format!("'{from}' offers no RFC 5649 key wrap to hand the key over"),
             )
         })?;
-        // The key the source handed over is the one the lock pins, before a file holds it
-        // (review 2026-11-24 D-5).
+        // The key that the source extracted must be the key that the lock pins. This is checked
+        // before the key is written to a file (review 2026-11-24 D-5).
         let pkcs8 = cakeys_pkcs11::ops::check_identity(&src, &self.lock, source.extract(h, &kwp)?)?;
         let bytes = match p.method {
             Some(Method::Pkcs12) => {
@@ -52,7 +54,8 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// The certificate the lock pairs with `object` (`pairs`), as realised on `from`.
+    /// Returns the name of the certificate object that the lock pairs with `object` (`pairs`) and
+    /// that is realised on `from`, if there is one.
     pub(super) fn paired_certificate_target(&self, object: &str, from: &'_ str) -> Option<String> {
         let pairs = self.lock.objects.get(object).map(|o| o.pairs.clone()).unwrap_or_default();
         pairs.into_iter().find(|pair| {
@@ -62,7 +65,8 @@ impl Run<'_> {
         })
     }
 
-    /// That certificate's DER, read and verified on the open source `tok`.
+    /// Returns the DER of the certificate that the lock pairs with `object`
+    /// ([`Self::paired_certificate_target`]), read and verified on the open source `tok`.
     pub(super) fn paired_certificate(
         &self,
         object: &str,
@@ -80,11 +84,13 @@ impl Run<'_> {
         Ok(public::material(&t, tok, &self.lock, notes)?)
     }
 
-    /// `import --in <key file>`: read the file (any format `keyfile` reads, decrypted under
-    /// `pass` when it is encrypted), find the locked object by its key's identity (`rfc7093m4`
-    /// of its public key), and create it under the spec that realises that object on `token`
-    /// (`--spec` when several), with the certificate the file carries when the lock pairs one
-    /// with the object there too. Recorded with where it came from: a `file`.
+    /// Runs `import --in <key file>`. It reads the file in any format that `keyfile` reads, and it
+    /// decrypts the file with `pass` when the file is encrypted. It finds the locked object by the
+    /// key's identity (the `rfc7093m4` of its public key), and it creates the key under the spec
+    /// that realises that object on `token` (the `--spec` value when there are several specs).
+    /// When the file carries a certificate and the lock pairs a certificate with the object on
+    /// `token`, it imports that certificate too. The lock records the origin of each object as
+    /// `file`.
     pub(super) fn import_file(
         &mut self,
         token: &str,
@@ -120,11 +126,11 @@ impl Run<'_> {
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let pairs = self.lock.objects.get(&object).map(|o| o.pairs.clone()).unwrap_or_default();
         let spec_for = |o: &str| spec_for(cfg, specs, o);
-        // The certificate a PKCS#12 carries for its key goes where the lock pairs one with the key
-        // on this token.
+        // The certificate that a PKCS#12 file carries for its key is imported under the pair on
+        // this token of the certificate that the lock pairs with the key.
         let cert_target = pairs.iter().find_map(|o| import_target(cfg, o, token, spec_for(o), KEY_FILE).ok());
         let certificate = keyfile::key_certificate(&certificates, &spki);
-        // A refusal before the first object still prints a row for the key, and for the
+        // A refusal before the first object still prints a row for the key and for the
         // certificate that goes with it (review 2026-11-24 L4b-1).
         let rows_of: Vec<String> = std::iter::once(object.clone())
             .chain(cert_target.as_ref().filter(|_| certificate.is_some()).map(|t| t.object_name.to_owned()))
@@ -133,8 +139,8 @@ impl Run<'_> {
         if let Err(e) = specs_select(cfg, specs, objects, token, KEY_FILE) {
             return unmoved(&rows_of, token, e.into());
         }
-        // Each refusal from here on is a row, as a bundle's entries are (review 2026-11-24 D-9:
-        // a key file's returned before any row was printed).
+        // From here on, each refusal is printed as a row, as for the entries of a bundle. Before
+        // review 2026-11-24 D-9, the refusal of a key file returned before any row was printed.
         let mut tally = Tally::default();
         let dst = match import_target(cfg, &object, token, spec_for(&object), KEY_FILE) {
             Ok(dst) => dst,
@@ -173,20 +179,22 @@ impl Run<'_> {
                 notes.note(format_args!("{dst} is already realised and verifies; nothing to import"));
                 tally.done(Of::pair(&dst), "already-there", None);
             }
-            // Its certificate goes with it, or not at all.
+            // When the key fails, its certificate is not imported either.
             Err(err) => {
                 tally.fail(Of::pair(&dst), format_args!("{dst}: not imported"), err, notes);
                 return tally.finish(self, notes);
             }
         }
-        // The certificate a PKCS#12 carries, where the lock pairs one with the key on this token.
-        // Its failure ends the run only after the lock is saved: the key is on the token by now.
+        // Import the certificate that a PKCS#12 file carries, when the lock pairs a certificate
+        // with the key on this token. A failure here ends the run only after the lock is saved,
+        // because the key is already on the token at this point.
         if let Some(cert) = &certificate {
             match cert_target {
                 Some(t) => match public::create(&t, &target, cert, "file", &mut self.lock, notes) {
                     Ok(public::Moved::Imported) => {
-                        // Saved as the key was: it was recorded only in memory, and `check` found
-                        // a realisation the lock did not record (14).
+                        // The lock is saved for the certificate as it was for the key. Before this
+                        // save, the certificate was recorded only in memory, and `check` found a
+                        // realisation that the lock did not record (14).
                         let (public, hint) = (Method::Public.name(), public::unrecorded_hint(&t));
                         if tally.record(self, Of::pair(&t), ("imported", Some(&public)), &hint, notes) {
                             notes.say(format!("imported its certificate into {t}"));
@@ -203,9 +211,10 @@ impl Run<'_> {
         tally.finish(self, notes)
     }
 
-    /// `import --in <key file> --dry-run`: everything the import checks before it creates
-    /// anything, and nothing more, a row each for the key (`dst`, of public key `spki`, by
-    /// `method`) and the certificate the file carries (`paired`: where the lock pairs one).
+    /// Runs `import --in <key file> --dry-run`. It makes every check that the import makes before
+    /// it creates anything, and nothing more. It adds one row for the key (`dst`, with the public
+    /// key `spki`, by `method`) and one row for the certificate that the file carries (`paired`,
+    /// when the lock pairs a certificate with the key).
     #[expect(clippy::too_many_arguments, reason = "the key file's parts, as import_file read them")]
     fn plan_key_file(
         &self,
@@ -262,12 +271,13 @@ impl Run<'_> {
         }
     }
 
-    /// `import` without `--in` (docs/FILE.md F6): each object a pair on `token` says is born in a
-    /// file (`origin = "file"`), or each of `objects`, from its object's `migrate.file`. Keys
-    /// first, so a public key object finds the public half its key's import made. Each on its
-    /// own, as a bundle's entries: one that fails leaves nothing, the others still import, the
-    /// lock records them. The run exits with the code of the first failure, or with 22 if it
-    /// recorded any object in the lock.
+    /// Runs `import` without `--in` (docs/FILE.md F6). It imports each object for which a pair on
+    /// `token` says `origin = "file"`, or each of `objects`, from its object's `migrate.file`.
+    /// Private and secret keys are imported first, so that a public key object finds the public
+    /// half that the import of its private key created. Each object is handled on its own, as the
+    /// entries of a bundle are: an object that fails leaves nothing behind, and the other objects
+    /// still import and are recorded in the lock. The run exits with the code of the first
+    /// failure, or with 22 if it recorded any object in the lock.
     pub(super) fn import_files(
         &mut self,
         token: &str,
@@ -302,7 +312,8 @@ impl Run<'_> {
         if wanted.is_empty() {
             return Err(KmError::Validation(format!("no pair on '{token}' says origin = \"file\"").into()).into());
         }
-        // Keys first: a public key object then finds the public half its key's import made.
+        // Private and secret keys come first, so that a public key object finds the public half
+        // that the import of its private key created.
         wanted.sort_by_key(|o| !cfg.objects[*o].class.is_key() || cfg.objects[*o].class == Class::PublicKey);
         // A refusal before the first object still prints a row for each object (review
         // 2026-11-24 L4b-1).
@@ -342,8 +353,9 @@ impl Run<'_> {
     }
 }
 
-/// The `localKeyId` a PKCS#12 export pairs the key and its certificate by: the key's locked
-/// `rfc7093m4`, which importers pair on, so never empty.
+/// Returns the `localKeyId` by which a PKCS#12 export pairs the key with its certificate. The
+/// value is the key's locked `rfc7093m4`, so it is never empty, because importers pair the key
+/// and the certificate by this value.
 ///
 /// # Errors
 ///
@@ -358,16 +370,17 @@ fn local_key_id(lock: &Lock, object: &str) -> cakeys_core::Result<String> {
     })
 }
 
-/// The passphrase in `path` (its one line, [`cakeys_core::secret::read`]), zeroized when dropped.
-/// Never empty.
+/// Returns the passphrase in `path` (its one line, read by [`cakeys_core::secret::read`]). The
+/// passphrase is zeroized when it is dropped, and it is never empty.
 fn read_passphrase(path: &Path) -> cakeys_core::Result<Zeroizing<String>> {
     let pass = cakeys_core::secret::read("passphrase", None, Some(path))?.unwrap_or_default();
     non_empty(pass, &path.display())
 }
 
-/// `pass`, read from `source`, unless it is empty (17): the one check of every passphrase, a
-/// file's or an environment variable's (review 2026-11-23 C-14), so an empty one is said as
-/// empty, never tried as one the file "does not open under".
+/// Returns `pass`, which was read from `source`, or refuses it (17) when it is empty. Every
+/// passphrase passes this one check, whether it comes from a file or from an environment variable
+/// (review 2026-11-23 C-14). An empty passphrase is therefore reported as empty, and it is never
+/// tried on the file, which would report that the file does not open with it.
 fn non_empty(pass: Zeroizing<String>, source: &dyn std::fmt::Display) -> cakeys_core::Result<Zeroizing<String>> {
     if pass.is_empty() {
         return Err(KmError::Validation(format!("{source}: the passphrase is empty").into()));
@@ -375,9 +388,10 @@ fn non_empty(pass: Zeroizing<String>, source: &dyn std::fmt::Display) -> cakeys_
     Ok(pass)
 }
 
-/// How `import` without `--in` reads the objects' files.
+/// The flags that control how `import` without `--in` reads the objects' files.
 pub(super) struct FileImport<'a> {
-    /// `--passphrase-file`: every encrypted file's passphrase, over keys.toml's.
+    /// `--passphrase-file`: the passphrase of every encrypted file, which overrides the passphrase
+    /// that keys.toml names.
     pub(super) pass: Option<&'a Path>,
     /// `--allow-host-plaintext`.
     pub(super) plaintext: bool,
@@ -385,8 +399,9 @@ pub(super) struct FileImport<'a> {
     pub(super) dry_run: bool,
 }
 
-/// The passphrase of `object`'s file: `--passphrase-file`, else its `migrate.passphraseEnv`,
-/// else its `migrate.passphraseFile`; `None` when none is given.
+/// Returns the passphrase of `object`'s file: the passphrase in `--passphrase-file`, or else the
+/// one in the object's `migrate.passphraseEnv`, or else the one in its `migrate.passphraseFile`.
+/// The result is `None` when none of them is given.
 fn file_passphrase(cfg: &Config, object: &str, over: Option<&Path>) -> cakeys_core::Result<Option<Zeroizing<String>>> {
     if let Some(path) = over {
         return read_passphrase(path).map(Some);
@@ -398,12 +413,13 @@ fn file_passphrase(cfg: &Config, object: &str, over: Option<&Path>) -> cakeys_co
     cfg.object_passphrase_file(object, &|name| std::env::var(name).ok())?.map(|p| read_passphrase(&p)).transpose()
 }
 
-/// One object from its file, as `import` without `--in` takes it (docs/FILE.md F3, F6): read
-/// and typed on the host, checked against the IDs the lock pins (10 before anything is
-/// written), then created on `to` and recorded with `from = "file"`. When the lock pins
-/// nothing yet, the file is the object's first use: the IDs the host computes from it are put
-/// in the lock first, so the token must show exactly them, and the lock is left as it was if it
-/// does not.
+/// Imports one object from its file, as `import` without `--in` does (docs/FILE.md F3, F6). The
+/// host reads the file and determines the type of its content. The host then checks the content
+/// against the IDs that the lock pins, and it exits with 10 before anything is written when they
+/// differ. The object is then created on `to` and recorded with `from = "file"`. When the lock
+/// pins nothing yet, the file is the object's first use. The IDs that the host computes from the
+/// file are then put in the lock first, so the token must show exactly those IDs. If the token
+/// does not, the lock is restored to what it was.
 fn from_its_file(
     (cfg, registry): (&Config, &Registry),
     dst: &Target,
@@ -416,8 +432,8 @@ fn from_its_file(
         return Ok(Filed::Moved(public::Moved::AlreadyThere, String::new()));
     }
     let class = dst.object.class;
-    // A data object is private unless the spec says it is public (`Target::needs_login`: the lock
-    // records nothing of it here yet; review 2026-11-24 D-7, §9.2).
+    // A data object is private unless the spec says that it is public (`Target::needs_login`).
+    // The lock records nothing about the object here yet (review 2026-11-24 D-7, §9.2).
     let private_data = class == Class::Data && dst.needs_login(lock);
     if (matches!(class, Class::PrivateKey | Class::SecretKey) || private_data) && !how.plaintext {
         return Err(KmError::Unsupported(
@@ -433,7 +449,8 @@ fn from_its_file(
         .object_file(dst.object_name, &env)?
         .ok_or_else(|| KmError::Validation(format!("object '{}' names no migrate.file", dst.object_name).into()))?;
     let bytes = Zeroizing::new(std::fs::read(&path).map_err(KmError::io(format_args!("reading {}", path.display())))?);
-    // A certificate or public key beside a private key is found by decoding that key.
+    // When a file holds a private key, a certificate or public key in the same file is found by
+    // decoding that private key, so reading it needs `--allow-host-plaintext`.
     if keyfile::holds_private_key(&bytes) && !how.plaintext {
         return Err(KmError::Unsupported(
             format!(
@@ -468,8 +485,9 @@ fn from_its_file(
             });
         }
     }
-    // A secret key's identity is its commitments, computed on the host (`ops::check_identity`):
-    // checked here, so the dry run refuses what the run would (10).
+    // A secret key's identity is its commitments, which the host computes
+    // (`ops::check_identity`). They are checked here, so that the dry run refuses what the run
+    // would refuse (10).
     if class == Class::SecretKey {
         cakeys_pkcs11::ops::check_identity(dst, lock, cakeys_pkcs11::ops::Extracted::from_file(m.bytes.clone()))?;
     }
@@ -515,8 +533,8 @@ fn from_its_file(
     moved.map(|moved| Filed::Moved(moved, method))
 }
 
-/// What [`from_its_file`] did with one object: ready (a dry run), or moved or found there, with
-/// the method it took.
+/// What [`from_its_file`] did with one object: the object is ready (in a dry run), or it was moved
+/// or found already there, with the name of the method.
 enum Filed {
     Ready(String),
     Moved(public::Moved, String),
@@ -526,8 +544,8 @@ enum Filed {
 mod tests {
     use super::*;
 
-    /// A PKCS#12's `localKeyId` is the key's locked `rfc7093m4`, and a lock that pins none is
-    /// refused (14), never an empty ID importers would pair on.
+    /// Checks that a PKCS#12 file's `localKeyId` is the key's locked `rfc7093m4`. A lock that pins
+    /// no `rfc7093m4` is refused (14), so the file never gets an empty ID for importers to pair on.
     #[test]
     fn a_pkcs12_pairs_by_the_locked_rfc7093m4_or_not_at_all() {
         let mut lock = Lock::default();
@@ -543,8 +561,8 @@ mod tests {
         }
     }
 
-    /// An empty passphrase is refused (17) naming where it came from, whichever source it is
-    /// (review 2026-11-23 C-14: `passphraseEnv` skipped the check).
+    /// Checks that an empty passphrase is refused (17) with a message that names its source,
+    /// whichever source it is. Before review 2026-11-23 C-14, `passphraseEnv` skipped the check.
     #[test]
     fn an_empty_passphrase_is_refused_by_its_source() {
         let e = non_empty(Zeroizing::new(String::new()), &"object 'k': env var PASS").unwrap_err();
