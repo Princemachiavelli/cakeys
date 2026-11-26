@@ -109,15 +109,13 @@ rv = "CKR_OK"
 '''
 
 # camigrate sees the session is not logged in (C_GetSessionInfo) and trusts nothing it finds.
+# C_Login answered CKR_OK, so no return value says that the device failed: a row's `device` is
+# false, as the rows of cakeys' ok.login cells say.
 [[block]]
 lies = ["ok.login"]
 verbs = ["migrate", "export --to", "export --to-key-file", "migrate --dry-run", "export --dry-run"]
 objects = ["ec"]
 expect = { exit = 16 }
-
-[[block.override]]
-verbs = ["migrate"]
-expect = { exit = 16, device = true, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
 
 [[block]]
 lies = ["ok.login"]
@@ -125,15 +123,11 @@ verbs = ["migrate", "export --to"]
 objects = ["aes"]
 expect = { exit = 16 }
 
-[[block.override]]
-verbs = ["migrate"]
-expect = { exit = 16, device = true, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
-
 [[block]]
 lies = ["ok.login"]
 verbs = ["import"]
 objects = ["ec-in"]
-expect = { exit = 16, device = true, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
+expect = { exit = 16 }
 
 # A state, not a lie (no rule): the target's profile says its unwrap of an AES key worked only by
 # its own round trip (`by = "unverified"`). The plan still takes the sealed way, and defers the
@@ -229,7 +223,7 @@ expect = { exit = 12 }
 
 [[block.override]]
 verbs = ["migrate --dry-run", "export --dry-run"]
-expect = { exit = 12, red = "L4b-3: camigrate's dry runs plan from the lock and never search the source: a second object under the locator plans ready (0), and the run refuses it (12), which no deferred rule foretells" }
+expect = { exit = 12 }
 
 [[block.override]]
 verbs = ["migrate"]
@@ -269,7 +263,7 @@ expect = { exit = 15 }
 
 [[block.override]]
 verbs = ["migrate"]
-expect = { exit = 15, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
+expect = { exit = 15 }
 
 # CKA_WRAP_WITH_TRUSTED hidden from `lock`: unrecorded, only a trusted transport key may wrap the
 # key, and there is none (D-7): no host path, no sealed one.
@@ -306,7 +300,7 @@ expect = { exit = 15 }
 
 [[block.override]]
 verbs = ["migrate"]
-expect = { exit = 15, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
+expect = { exit = 15 }
 
 # A write-protected target: nothing lands.
 [lies."flag.write-protected"]
@@ -321,7 +315,7 @@ set_flags = ["CKF_WRITE_PROTECTED"]
 lies = ["flag.write-protected"]
 verbs = ["import"]
 objects = ["ec-in"]
-expect = { exit = 15, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
+expect = { exit = 15 }
 
 # ── FORGE: an output the key did not make.
 
@@ -493,11 +487,11 @@ expect = { exit = 16 }
 
 [[block.override]]
 verbs = ["migrate"]
-expect = { exit = 16, device = true, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
+expect = { exit = 16, device = true }
 
 [[block.override]]
 verbs = ["migrate --dry-run", "export --dry-run"]
-expect = { exit = 16, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
+expect = { exit = 16 }
 
 [[block]]
 lies = ["dev.open"]
@@ -507,7 +501,7 @@ expect = { exit = 16 }
 
 [[block.override]]
 verbs = ["migrate"]
-expect = { exit = 16, device = true, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
+expect = { exit = 16, device = true }
 
 # The first unwrap of an import is its transport key's proof of possession.
 [[block]]

@@ -508,6 +508,16 @@ impl<'a> Dest<'a> {
     pub(crate) fn bundle(&self) -> bool {
         matches!(self, Dest::Bundle(_) | Dest::Transport(..))
     }
+
+    /// The name that a plan shows for the destination: the token that [`Self::to`] names, or the
+    /// file format of a key file.
+    pub(crate) fn name(&self) -> String {
+        match (self.to(), self) {
+            (Some(to), _) => to.to_owned(),
+            (None, Dest::File(f)) => format!("{f:?} file").to_lowercase(),
+            (None, _) => unreachable!("only a key file names no token"),
+        }
+    }
 }
 
 /// What to plan moving.
@@ -627,8 +637,8 @@ impl Moves {
     /// `text` as the error of the first blocked plan's refusal ([`Plan::refused`]): the one the
     /// run would end with, as the run itself meets it; `Unsupported` (15) for a plan of none.
     fn refusal(&self, text: String) -> KmError {
-        match self.plans.iter().find(|p| !p.ready).and_then(|p| p.refused.clone()) {
-            Some(r) => r.error(text),
+        match self.plans.iter().find(|p| !p.ready) {
+            Some(p) => p.refusal(text),
             None => KmError::Unsupported(text.into()),
         }
     }
@@ -657,12 +667,12 @@ pub(crate) fn plan_moves(
     let (source, source_from, source_token) = side_or_lock(req.from, source, lock, registry, notes)?;
     let allow = Allow { host_plaintext: req.host_plaintext, trusted_transport: req.trusted_transport };
     let mut target_token = None;
-    let (target, target_from, to_name) = match req.dest {
+    let (target, target_from) = match req.dest {
         Dest::Token(name) | Dest::Bundle(name) => {
             let opened = open(name, notes);
             let (side, from, token) = side_or_lock(name, opened, lock, registry, notes)?;
             target_token = token;
-            (Some(side), from, (*name).to_owned())
+            (Some(side), from)
         }
         Dest::Transport(path, to, t) => {
             let shown = path.display();
@@ -674,10 +684,11 @@ pub(crate) fn plan_moves(
                     KmError::Unsupported(format!("{shown}: provider '{}' is not in this build", t.provider).into())
                 })?
                 .map_err(|e| KmError::Validation(format!("{shown}: {e}").into()))?;
-            (Some(side), KnownFrom::TransportFile, t.token.clone())
+            (Some(side), KnownFrom::TransportFile)
         }
-        Dest::File(f) => (None, KnownFrom::Nowhere, format!("{f:?} file").to_lowercase()),
+        Dest::File(_) => (None, KnownFrom::Nowhere),
     };
+    let to_name = req.dest.name();
     let to = match (&target, req.dest) {
         (Some(side), _) => To::Token(side),
         (None, Dest::File(f)) => To::File(*f),

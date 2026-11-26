@@ -45,7 +45,11 @@ after the write (CAKEYS.md, "Exit codes").
   exits 17. On `import`, `--dry-run` checks the bundle or the key file against the lock and the
   token, and it imports nothing. The dry run of an `import` or a `migrate` opens the token that
   it would write in read-only mode, and it refuses a write-protected token
-  (`CKF_WRITE_PROTECTED`, 15) in the same way as the run does.
+  (`CKF_WRITE_PROTECTED`, 15) in the same way as the run does. The dry run of an `export` or a
+  `migrate` also finds each object that it would move under its locator on the source, and it
+  verifies the object against the lock with the functions that the run uses, so a second object
+  under the locator is refused with 12 by both. A dry run that fails before its plans exist
+  prints a blocked plan for each object, with the failure as the reason.
 - `--spec` names the spec under which to realise an object, when the object has several specs on
   the target. A `--spec` that selects nothing (an unknown spec, or a spec of an object that is not
   moving there) is refused (17).
@@ -90,11 +94,17 @@ The exit codes are the shared ones (see the table in [CAKEYS.md](CAKEYS.md#exit-
 `import`, `migrate` and `import` from files print one row per object on stdout, as a JSON array,
 whatever happens to each object. Each row is cakeys' row (its `exit`, the `rule` that refused it,
 whether the `device` failed, and the `error`), together with the `method` by which the object
-moved. A key file's refusals are rows too. When an object reached its token but could not be
-recorded because the lock could not be saved, its row has the exit code 21 and the rule
-`lock-writable`, and it says how to record the object. No object after it moves. The run exits
-with the code of the first failure, or with 22 if it recorded any object. In that case, the row
-of each failed object shows that object's code, and a note on stderr says why the run exits 22.
+moved. A run that ends before it moves the first object prints these rows too, one for each object
+that the run was to move, with the exit code and the reason of the failure. These are the objects
+that the run names, or else the keys of the bundle, the objects that are born in files, or the
+objects that the lock realises on the source. Such a failure is a `--spec` that selects nothing, a
+token that does not open or that fails a search, or plans that are refused. When a named object is
+blocked, no object moves, and the row of each object that could have moved says `ready`. A key
+file's refusals are rows too. When an object reached its token but could not be recorded because
+the lock could not be saved, its row has the exit code 21 and the rule `lock-writable`, and it says
+how to record the object. No object after it moves. The run exits with the code of the first
+failure, or with 22 if it recorded any object. In that case, the row of each failed object shows
+that object's code, and a note on stderr says why the run exits 22.
 In this way, a written lock is never hidden.
 When no rule refused an object, the row's `rule` names the check that refused it ([CAKEYS.md](CAKEYS.md#rules-and-checks)).
 

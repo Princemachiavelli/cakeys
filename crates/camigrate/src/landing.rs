@@ -75,6 +75,47 @@ pub(crate) fn block(run: &Run, ctx: &MoveCtx, moves: &mut tokens::Moves, target:
     }
 }
 
+/// What a dry run reads of the source `source` before it says ready, as its run reads it before
+/// the move (docs/CAMIGRATE.md D9; review 2026-11-24 L4b-3: the dry runs planned from the lock
+/// alone and never searched the source, so a second object under a locator planned ready, and
+/// the run refused it, 12). Nothing is read when the verdict refuses the plans, because the run
+/// then ends before it reads any object. Otherwise, the object of each ready plan is found under
+/// its locator and verified against the lock by the function that the run finds it with:
+/// [`public::material`] for a public object, and [`host::source_key`] for a key, which makes
+/// the same calls as the sealed export's `hold`. A plan whose object fails is blocked, and its
+/// reasons say why.
+///
+/// # Errors
+///
+/// The first failure, in the order of the plans, which is the one that the run ends with.
+pub(crate) fn search(
+    run: &Run,
+    ctx: &MoveCtx,
+    moves: &mut tokens::Moves,
+    source: &Token,
+    notes: &mut Notes,
+) -> cakeys_core::Result<()> {
+    if moves.verdict(ctx.take(), ctx.from).is_err() {
+        return Ok(());
+    }
+    let (cfg, lock) = (&run.opener.cfg, &run.lock);
+    let mut first = None;
+    for p in moves.plans.iter_mut().filter(|p| p.ready) {
+        let found = source_target(cfg, lock, &p.object, ctx.from).and_then(|src| {
+            if p.method == Some(Method::Public) {
+                public::material(&src, source, lock, notes).map(drop)
+            } else {
+                host::source_key(&src, source, lock, notes).map(drop)
+            }
+        });
+        if let Err(e) = found {
+            p.block(crate::trust::reason(e.clone()));
+            first.get_or_insert(e);
+        }
+    }
+    first.map_or(Ok(()), Err)
+}
+
 /// What an import's dry run asks of the open `target` before it says ready, as the import asks
 /// before it creates anything: the capability check of the record that follows
 /// (`ops::check_import`), and the target's provider about the templates `method` sends there

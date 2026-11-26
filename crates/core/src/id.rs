@@ -194,8 +194,31 @@ impl Scheme {
     /// a warning, and the lock never records a new ID of it.
     #[must_use]
     pub(crate) fn is_deprecated(self) -> bool {
-        Scheme::DEPRECATED.contains(&self)
+        Scheme::DEPRECATED.contains(&self) || deprecated_in_test(self)
     }
+}
+
+/// Whether a unit test of this crate marked `scheme` deprecated on its own thread
+/// (`DEPRECATED_IN_TEST`, which only the unit tests compile). [`Scheme::DEPRECATED`] is empty, so
+/// without this mark no test could reach the rule that a deprecated scheme is never newly
+/// recorded. Outside this crate's unit tests the function always returns false.
+#[cfg(not(test))]
+fn deprecated_in_test(_scheme: Scheme) -> bool {
+    false
+}
+
+/// See the other definition of this function, which every build outside this crate's unit tests
+/// uses.
+#[cfg(test)]
+fn deprecated_in_test(scheme: Scheme) -> bool {
+    DEPRECATED_IN_TEST.with(|d| d.get() == Some(scheme))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The scheme that a unit test treats as deprecated on its own thread. Each test runs on its
+    /// own thread, so a mark that one test sets does not reach another test.
+    pub(crate) static DEPRECATED_IN_TEST: std::cell::Cell<Option<Scheme>> = const { std::cell::Cell::new(None) };
 }
 
 impl std::fmt::Display for Scheme {

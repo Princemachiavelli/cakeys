@@ -583,3 +583,54 @@ fn commitments(t: &Target, eff: &Effective, token: &str) -> Option<std::result::
         .any(|(k, v)| matches!(v, Verdict::Unknown { .. }) && eff.measured_commit(k, kt.name()))
         .then(|| Err(format!("{t}: commitments not decided ({})", lines.join("; "))))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The gate refuses a secret key for its commitments only when the module profile measured
+    /// every commitment that the spec declares as *no* (docs/CAPROBE.md, "Secret keys"). The spec
+    /// of a 32-byte AES key declares CMAC and KW, and the profile measured CMAC as *no* at 32
+    /// bytes. The verdict then follows the KW rows: *no* at 32 bytes refuses (15, the rule
+    /// `capability`); a KW row at 16 bytes alone leaves 32 bytes unknown, and the capability is
+    /// deferred to the open token instead of refused; with no KW row, or *yes* at 32 bytes, the
+    /// commitments neither refuse nor defer. The four profiles differ only in the KW rows, so a
+    /// refusal or a deferral that one of them has and the others lack comes from the commitments.
+    /// The gate asks the same of the commitments' mechanisms: a profile that advertises the KW
+    /// mechanisms and not `CKM_AES_CMAC` does not refuse, and one that advertises only
+    /// `CKM_AES_ECB`, which computes neither commitment, refuses (15).
+    #[test]
+    fn the_gate_refuses_commitments_only_when_every_one_is_no() {
+        cakeys_profile::Set::activate_embedded().unwrap();
+        let cfg: cakeys_core::config::Config = toml::from_str(
+            "[tokens.t]\ntokenLabel = \"t\"\n\n\
+             [objects.k]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
+             [specs.s]\nobject = \"k\"\nattributes = { CKA_SIGN = true, CKA_WRAP = true }\n\
+             tokens.t = { locator = { CKA_LABEL = \"k\" }, origin = \"adopt\" }\n",
+        )
+        .unwrap();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let kw_mechanisms = "\"CKM_AES_KEY_WRAP\", \"CKM_AES_KEY_WRAP_PAD\"";
+        let advertised = |advertise: &str, kw: &str| {
+            let module = cakeys_profile::Profile::from_toml(&format!(
+                "profile = \"m/1\"\nmode = \"observed\"\nadvertise = [{advertise}]\n\
+                 [capabilities]\n\"commit.cmac.CKK_AES.32\" = {{ answer = \"no\" }}\n{kw}"
+            ))
+            .unwrap();
+            let profiles = Profiles { module: Some(module), ..Profiles::default() };
+            let seat = Seat::Unresolved("the test names no provider".into());
+            let v = static_rules(&t, Mode::Commitment, seat, Verb::Lock, Some(&profiles)).unwrap();
+            let refused: Vec<(Rule, u8)> = v.refusals.iter().map(|r| (r.rule, r.error.exit_code())).collect();
+            let deferred = v.deferred.iter().any(|d| d.rule == Rule::Capability);
+            (refused, deferred)
+        };
+        let gate = |kw: &str| advertised(&format!("\"CKM_AES_CMAC\", {kw_mechanisms}"), kw);
+        let row = |bytes: u32, answer: &str| format!("\"commit.kw.CKK_AES.{bytes}\" = {{ answer = \"{answer}\" }}\n");
+        assert_eq!(gate(&row(32, "no")), (vec![(Rule::Capability, 15)], false), "both no");
+        assert_eq!(gate(&row(16, "yes")), (vec![], true), "CMAC no, KW unknown at 32 bytes");
+        assert_eq!(gate(""), (vec![], false), "CMAC no, KW never measured");
+        assert_eq!(gate(&row(32, "yes")), (vec![], false), "CMAC no, KW yes");
+        assert_eq!(advertised(kw_mechanisms, ""), (vec![], false), "the KW mechanisms alone");
+        assert_eq!(advertised("\"CKM_AES_ECB\"", ""), (vec![(Rule::Capability, 15)], false), "neither mechanism");
+    }
+}

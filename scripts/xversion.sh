@@ -7,8 +7,9 @@
 #   scripts/xversion.sh check  <new-cakeys> <dir>   # check, compare-only lock, re-record, diff
 #
 # Both builds must speak today's keys.toml and command line (`origin`, `lock`, the object-first
-# address; `--new-lock`, `lock --dry-run` and exit 22): builds from 2026-11-23 on. An older one is
-# refused by its own errors, not shimmed.
+# address; `--new-lock`, `lock --dry-run`, and the exit code that says the lock was written, with
+# the exit-code table at the end of `--help`): builds from 2026-11-23 on. An older one is refused
+# by its own errors, not shimmed.
 #
 # Needs softhsm2-util and pkcs11-tool on PATH (the dev shell has both).
 set -euo pipefail
@@ -26,12 +27,30 @@ specs=(ec ecpub rsa ed aes hmac wrapped cert data)
 export SOFTHSM2_CONF=$dir/softhsm2.conf
 
 km() { "$bin" --config "$dir/keys.toml" --lock "$dir/keys.lock" "$@"; }
-# A run that may write the lock: 22 is done with the lock written (docs/CAKEYS.md), as 0 is done
-# with it unchanged.
+
+# The exit code that the table at the end of `$bin --help` lists with a meaning that starts with
+# $1. The script reads the codes from the build under test, as nix/demo.sh reads them from
+# cakeys, so that it keeps no copy of the table (review 2026-11-24 C-13). It fails when the help
+# lists no such code.
+code_of() {
+  local code
+  code=$("$bin" --help | sed -n '/^Exit codes/,$ s/^ *\([0-9][0-9]*\)  \(.*\)$/\1 \2/p' |
+    awk -v m="$1" '{ c = $1; sub(/^[0-9]+ /, "") } index($0, m) == 1 { print c }')
+  if [ -z "$code" ]; then
+    echo "xversion: $bin --help lists no exit code that means \"$1\"" >&2
+    exit 1
+  fi
+  echo "$code"
+}
+ok=$(code_of "ok")
+written=$(code_of "done, and the lock was written")
+
+# A run that may write the lock: it is done when it exits with $ok (the lock unchanged) or with
+# $written (the lock written). Any other exit code is a failure, which this returns.
 recorded() {
   local rc=0
   km "$@" || rc=$?
-  [ "$rc" = 0 ] || [ "$rc" = 22 ] || return "$rc"
+  [ "$rc" = "$ok" ] || [ "$rc" = "$written" ] || return "$rc"
 }
 
 record() {
@@ -134,6 +153,7 @@ EOF
 }
 
 check() {
+  local rc
   cp "$dir/base.lock" "$dir/keys.lock"
   for s in "${specs[@]}"; do
     km check --spec "$s" --token soft >/dev/null
@@ -142,11 +162,14 @@ check() {
       echo "resolve output of $s changed" >&2
       exit 1
     }
-    # 0: re-recorded and nothing changed (22 would be a lock this build writes otherwise).
-    km lock --spec "$s" --token soft >/dev/null || {
-      echo "re-recording $s failed or changed the lock (exit $?)" >&2
+    # Re-recording must exit with $ok, which means that nothing changed. The code $written
+    # would mean that this build writes the lock differently.
+    rc=0
+    km lock --spec "$s" --token soft >/dev/null || rc=$?
+    if [ "$rc" != "$ok" ]; then
+      echo "re-recording $s failed or changed the lock (exit $rc)" >&2
       exit 1
-    }
+    fi
   done
   diff -u "$dir/base.lock" "$dir/keys.lock" || {
     echo "re-recording changed the lock" >&2

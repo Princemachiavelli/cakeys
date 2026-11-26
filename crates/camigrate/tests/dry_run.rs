@@ -542,6 +542,62 @@ fn private_data_objects_never_move() {
     assert!(stderr(&o).contains("pd: left out of the bundle"), "{}", stderr(&o));
 }
 
+/// A dry run reads each object on the source as its run does, once the verdict lets the plans go
+/// (review 2026-11-24 L4b-3: the dry runs planned from the lock alone), and a run that the
+/// verdict refuses prints a row for each object (L4b-1). A public data object with a second
+/// object under its label is refused with 12 by the dry run and by the run. Named beside a private
+/// data object, for which no move plans (15), the verdict refuses first: the dry run exits 15, as
+/// the run does, and not with the 12 of the search. The run's rows say that the private object
+/// failed with 15 and that the public one was ready and did not move. [`Env::km`] runs each dry
+/// run before its run and holds the run to the dry run's exit.
+#[test]
+fn the_dry_run_searches_the_source_once_the_verdict_lets_the_plans_go() {
+    let Some(e) = env("source-search") else { return };
+    let Some([soft, kry]) = e.needs("source-search", ["softhsm", "kryoptic"]) else { return };
+    let plant = |label: &str, private: bool, value: &[u8]| {
+        open_session(&soft.module, soft.token_label, "1234")
+            .create_object(&[
+                Attribute::Class(ObjectClass::DATA),
+                Attribute::Token(true),
+                Attribute::Private(private),
+                Attribute::Label(label.as_bytes().to_vec()),
+                Attribute::Value(value.to_vec()),
+            ])
+            .unwrap();
+    };
+    plant("ss-secret", true, b"an application secret");
+    plant("ss-note", false, b"a public note");
+    let (private, public) = ("attributes = { CKA_PRIVATE = true }\n", "attributes = { CKA_PRIVATE = false }\n");
+    e.config(
+        &("[objects.secret]\nclass = \"CKO_DATA\"\n\n[objects.note]\nclass = \"CKO_DATA\"\n\n".to_owned()
+            + &Env::spec("secret-soft", "secret", private, &[soft], "ss-secret", "")
+            + &Env::spec("secret-kry", "secret", private, &[kry], "ss-secret", IMPORT)
+            + &Env::spec("note-soft", "note", public, &[soft], "ss-note", "")
+            + &Env::spec("note-kry", "note", public, &[kry], "ss-note", IMPORT)),
+    );
+    for spec in ["secret-soft", "note-soft"] {
+        let o = e.cakeys(soft, &["lock", "--spec", spec, "--token", "softhsm"]);
+        assert_eq!(code(&o), 22, "{spec}: {}", stderr(&o));
+    }
+    // A second data object under the note's label, planted after the lock recorded the first.
+    plant("ss-note", false, b"another note");
+    let migrate = |objects: &[&str]| {
+        let mut args = vec!["migrate"];
+        args.extend_from_slice(objects);
+        args.extend(["--from", "softhsm", "--to", "kryoptic", "--allow-host-plaintext"]);
+        e.km(soft, &args)
+    };
+    let o = migrate(&["note"]);
+    assert_eq!(code(&o), 12, "{}", stderr(&o));
+    let o = migrate(&["secret", "note"]);
+    assert_eq!(code(&o), 15, "{}", stderr(&o));
+    let mut rows: Vec<(String, String, u8)> =
+        state::rows(&o).into_iter().map(|r| (r.object, r.outcome, r.exit)).collect();
+    rows.sort();
+    assert_eq!(rows, [("note".into(), "ready".into(), 0), ("secret".into(), "failed".into(), 15)], "{}", stderr(&o));
+    assert_eq!(open_session(&kry.module, kry.token_label, "1234").labelled("ss-note").len(), 0);
+}
+
 /// A lock that cannot be saved once an object moved (21: the object is on its token, the lock
 /// does not record it) still prints every object's row (review 2026-11-24 D-9: the run returned
 /// before printing any): the unrecorded one's with 21 and its rule, and the run moves nothing
