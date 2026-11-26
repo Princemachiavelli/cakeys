@@ -1,4 +1,6 @@
-//! Idempotent verbs with HTTP-like semantics (docs/CAKEYS.md).
+//! The verbs `resolve`, `check`, `lock`, `create` and `delete`. Each verb is idempotent, and each
+//! one follows the semantics of an HTTP method over two stores, the token and the lock, as
+//! docs/CAKEYS.md describes.
 
 use crate::provider::{Provider, Topic};
 use crate::registry::Registry;
@@ -26,14 +28,17 @@ pub use identity::*;
 pub use planner::*;
 pub use rules::*;
 
-/// The attestation scheme `t`'s token computes when opted in (`attestation = true`), if the
-/// provider attests this class at all (§3.7 of docs/DESIGN.md).
+/// Returns the attestation scheme that the token of `t` computes when the spec's token entry
+/// opts in with `attestation = true`. Returns `None` when the entry does not opt in, or when the
+/// token's provider does not attest objects of this class (§3.7 of docs/DESIGN.md).
 fn attestation_scheme(t: &Target, tok: &Token) -> Option<Scheme> {
     t.on_token.attestation.then(|| tok.attestation_cap(&t.object)).flatten().map(|c| c.scheme)
 }
 
-/// The commitments a secret key's spec allows (or, for a wrap-rebind copy, every one for the
-/// key type), whatever the token: empty for every other mode.
+/// Returns the commitments that a secret key's spec allows, without regard to what the token
+/// implements. In `Mode::Commitment`, these are the commitments that the spec declares. In
+/// `Mode::WrapRebind`, these are all the commitments for the key type. In every other mode, the
+/// list is empty.
 fn wanted_commits(t: &Target, mode: Mode) -> Vec<Commit> {
     match (mode, t.object.key_type) {
         (Mode::Commitment, _) => declared_commits(t),
@@ -45,8 +50,9 @@ fn wanted_commits(t: &Target, mode: Mode) -> Vec<Commit> {
     }
 }
 
-/// Commitments to compute for a secret key on this token: those the spec allows (or, for a
-/// wrap-rebind copy, every one for the key type) that the token implements.
+/// Returns the commitments to compute for a secret key on this token. These are the commitments
+/// from `wanted_commits` whose mechanism the token implements. Returns an `Unsupported` error
+/// when the token implements none of them.
 fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
     let wanted = wanted_commits(t, mode);
     if wanted.is_empty() {
@@ -63,14 +69,16 @@ fn commits(t: &Target, tok: &Token, mode: Mode) -> Result<Vec<Commit>> {
     Ok(usable)
 }
 
-/// Schemes this spec computes on this token: `Target::schemes` narrowed to the commitments the
-/// token implements, plus the attestation scheme when the spec opted in and the provider
-/// attests the class (§3.7). Needs no object, so callers can refuse before anything is created.
+/// Returns the schemes that this spec computes on this token. For a secret key, these are the
+/// schemes of the commitments that the token implements. For every other class, these are the
+/// schemes of `Target::schemes`. The list also includes the attestation scheme when the spec opts
+/// in and the provider attests the class (§3.7). The function does not need the object, so a
+/// caller can refuse a spec before anything is created.
 ///
 /// # Errors
 ///
-/// `Unsupported` if the token implements none of the spec's commitments (or `plan_mode`
-/// rejects the spec).
+/// `Unsupported` if the token implements none of the spec's commitments, and the error of
+/// `plan_mode` when `plan_mode` rejects the spec.
 pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<Scheme>> {
     let mut v = if t.object.class == Class::SecretKey {
         commits(t, tok, plan_mode(t)?)?.iter().map(|c| c.scheme()).collect()
@@ -83,24 +91,29 @@ pub fn schemes_on(t: &Target, tok: &Token) -> Result<Vec<Scheme>> {
     Ok(v)
 }
 
-/// Whether a run may create the device state an attestation needs (a TPM Attestation Key):
-/// only the verbs that write (`lock`, `create`), never a read.
+/// Says whether a run may create the device state that an attestation needs, which is a TPM
+/// Attestation Key. Only the verbs that write (`lock` and `create`) use `IfMissing`. A verb that
+/// only reads uses `Never`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Provision {
     Never,
     IfMissing,
 }
 
-/// GET: find by locator (exactly one), check type and attributes, compute IDs. Never writes,
-/// neither the lock nor the token: a TPM Attestation Key that is not provisioned yet is an
-/// error here, and only `lock` provisions it.
+/// The GET verb. It finds the object by its locator (the locator must match exactly one object),
+/// checks the object's type and attributes, and computes the object's IDs. It never writes to the
+/// lock or to the token. For that reason, a TPM Attestation Key that is not provisioned yet is an
+/// error here, and only `lock` provisions it. Returns `None` when the locator finds no object.
 ///
 /// # Errors
 ///
-/// `NotFound` when the locator finds no object, `Ambiguous` when it finds several; `Conflict`
-/// for a wrong type or policy, or — for a private key — a public key object under the locator
-/// that holds another key; `Unsupported`/`Unavailable` when the object cannot be proven or
-/// attested as the spec requires.
+/// - `Unavailable` when the locator finds no object and the session cannot see private objects
+///   (`needs_login`).
+/// - `Ambiguous` when the locator finds several objects.
+/// - `Conflict` for a wrong type or a wrong policy. For a private key, also `Conflict` when a
+///   public key object under the locator holds another key.
+/// - `Unsupported` or `Unavailable` when the object cannot be proven or attested as the spec
+///   requires.
 pub fn resolve(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Option<Resolved>> {
     resolve_with(t, tok, lock, Provision::Never, notes)
 }
@@ -124,10 +137,12 @@ fn resolve_with(
     }
     tok.check_public_half(h, t.spec, &t.on_token.locator, public_only)?;
     let Computed { ids, binding, commitment_label, spki, commits } = compute_ids(t, tok, lock, h, mode)?;
-    // The key's public key, read once (review D8): every check below compares with the value its
-    // identity hashed. A key identified another way reads it where it is needed.
+    // The key's public key is read once (review D8), so that every check below compares with the
+    // same value that the identity hashed. For a key whose identity is not computed from its
+    // public key, the closure reads the public key from the token when a check needs it.
     let spki = || spki.clone().map_or_else(|| tok.spki(h, &t.on_token.locator), Ok);
-    // After the IDs, so a swapped private key still reports its failed proof first.
+    // This check runs after the IDs are computed, so that a private key that was replaced by
+    // another key reports its failed proof of possession first.
     if t.object.class == Class::PrivateKey && !public_only {
         tok.check_public_objects(&spki()?, &t.on_token.locator)?;
     }
@@ -161,19 +176,23 @@ fn resolve_with(
 /// What [`compute_ids`] establishes about an object.
 struct Computed {
     ids: std::collections::BTreeMap<String, String>,
-    /// How a private key is bound: observed, not planned (a `CKA_ALWAYS_AUTHENTICATE` key
-    /// records the `pop-sign-pin` it proved).
+    /// The binding of a private key as the run observed it, not as the plan expected it. For
+    /// example, a key with `CKA_ALWAYS_AUTHENTICATE` records the `pop-sign-pin` binding that it
+    /// proved.
     binding: Option<cakeys_core::config::Binding>,
-    /// The label the commitments were computed with, when there are any.
+    /// The label that the commitments were computed with, or `None` when no commitment was
+    /// computed.
     commitment_label: Option<String>,
-    /// The key's canonical SPKI, where its identity is one (an asymmetric key, `Direct`).
+    /// The key's canonical SPKI, when the identity is computed from it (an asymmetric key in
+    /// `Mode::Direct`).
     spki: Option<Vec<u8>>,
-    /// The commitments computed (a secret key's), under `commitment_label`.
+    /// The commitments that were computed for a secret key, with `commitment_label` as the label.
     commits: Vec<Commit>,
 }
 
-/// The commitments `commits` computed under `label`, each with its input and the ID it gave
-/// (`ids`): what a secret key's attestation is bound to (review 2026-11-23 B-1).
+/// Returns each commitment in `commits` that was computed with `label`, together with its input
+/// and the ID that it produced (taken from `ids`). A secret key's attestation is bound to these
+/// commitments (review 2026-11-23 B-1). Returns an empty list when `label` is `None`.
 fn committed(
     t: &Target,
     commits: &[Commit],
@@ -190,8 +209,9 @@ fn committed(
         .collect()
 }
 
-/// The material IDs of `t`'s object `h` on `tok` in `mode` — a private key proving possession
-/// on the way — as `resolve` and `delete` (If-Match) compute them.
+/// Computes the material IDs of the object `h` of `t` on `tok` in `mode`. Both `resolve` and
+/// `delete` (for If-Match) compute the IDs with this function. For a private key, the computation
+/// also proves possession of the key.
 fn compute_ids(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, mode: Mode) -> Result<Computed> {
     let commits = commits(t, tok, mode)?;
     let label = commitment_label(t, lock);
@@ -204,14 +224,16 @@ fn compute_ids(t: &Target, tok: &Token, lock: &Lock, h: ObjectHandle, mode: Mode
     Ok(Computed { ids, binding, commitment_label: (!commits.is_empty()).then_some(label), spki, commits })
 }
 
-/// The attestation commitment (§3.7): per-device identity from signed provenance. The material
-/// SPKI it must name comes from the same source `rfc7093m4` hashed, so an attestation of other
-/// material is a conflict, not a second opinion.
+/// Computes the attestation record (§3.7), which is a per-device identity derived from signed
+/// provenance. The material SPKI that the attestation must name is the same SPKI that the
+/// `rfc7093m4` scheme hashed. An attestation of other material is therefore a conflict, and it is
+/// never accepted as an additional identity.
 ///
-/// Once the lock pins an attestation for this realisation, a run that cannot attest — the TPM
-/// unreachable, no PIN, no attestation certificate — is a scheme downgrade (14), like any
-/// scheme a realisation stops computing. Conflicts (13) and ambiguity (12) keep their codes:
-/// they say the evidence is wrong, not absent.
+/// When the lock already records an attestation for this realisation, a run that cannot attest
+/// (because the TPM is unreachable, no PIN is available, or there is no attestation certificate)
+/// is a scheme downgrade and fails with exit 14. This is the same result as when a realisation
+/// stops computing any other scheme. A conflict (exit 13) and an ambiguity (exit 12) keep their
+/// own codes, because they mean that the evidence is wrong, not that it is missing.
 #[expect(clippy::too_many_arguments, reason = "one caller, `resolve_with`, which holds them all")]
 fn attest(
     t: &Target,
@@ -261,24 +283,27 @@ fn attest(
     Ok(AttestationRecord { kind: kind.to_owned(), root: a.root, id: a.id })
 }
 
-/// What a run did with its key, for [`answers`]: found it under its locator, or created it,
-/// with how the module made it when that was other than asked.
+/// Says what a run did with its key, for [`answers`]. `Found` means that the run found the key
+/// under its locator. `Created` means that the run created the key, and it holds the module's
+/// note when the module made the key differently from how it was asked.
 #[derive(Clone, Copy)]
 enum Run<'a> {
     Found,
     Created(Option<&'a hal::CreateNote>),
 }
 
-/// What `t`'s run on its token demonstrated, as capability rows (docs/CAPROBE.md): the proof of
-/// possession it gave, and the generation when it created the key, `via = "by-name"` when the
-/// module took the curve only by name (ISSUES.md B18). A run that failed records nothing, so
-/// these are only ever yes.
+/// Returns what the run of `t` on its token demonstrated, as capability rows (docs/CAPROBE.md).
+/// The rows are the proof of possession that the run gave and, when the run created the key, the
+/// key generation. The generation row has `via = "by-name"` when the module accepted the curve
+/// only by its name (ISSUES.md B18). A run that failed records nothing, so every row here has the
+/// answer yes.
 fn answers(t: &Target, r: &Resolved, run: Run<'_>) -> std::collections::BTreeMap<String, Answered> {
     let mut out = std::collections::BTreeMap::new();
     if !t.object.class.is_asymmetric() {
         return out;
     }
-    // The rows' own keys (`cakeys_profile::Capability`), as the gate reads them back.
+    // The row keys are the names of `cakeys_profile::Capability`, because the gate reads the rows
+    // back by those names.
     if let Some(proof) = r.binding.and_then(|b| rules::proof_capability(&t.object, b)) {
         out.insert(proof.to_string(), Answered::yes());
     }
@@ -291,8 +316,9 @@ fn answers(t: &Target, r: &Resolved, run: Run<'_>) -> std::collections::BTreeMap
     out
 }
 
-/// What this run sees of `tok` (session, mechanisms, profile, module, token), and what `t`'s
-/// run demonstrated ([`answers`]), for the lock to record or compare.
+/// Returns what this run observes of `tok` (the session, the mechanisms, the profile, the module
+/// and the token) and what the run of `t` demonstrated ([`answers`]). The lock records these facts
+/// or compares them with the facts that it already holds.
 fn facts(t: &Target, tok: &Token, r: &Resolved, run: Run<'_>) -> Facts {
     Facts {
         observed: Observed { uri: r.uri.clone(), session: if tok.logged_in { Session::User } else { Session::Public } },
@@ -310,42 +336,51 @@ fn facts(t: &Target, tok: &Token, r: &Resolved, run: Run<'_>) -> Facts {
     }
 }
 
-/// GET + If-Match against the lock. Never writes, neither the lock nor the token.
+/// The GET verb with If-Match against the lock. It resolves the object and compares the result
+/// with the lock. It never writes to the lock or to the token.
 ///
 /// # Errors
 ///
-/// `NotFound` when resolve found nothing (`cakeys create` makes it); whatever `compare`
-/// rejects — `HashMismatch` (10) when the token's IDs differ from the lock,
-/// `PreconditionFailed` (14) for a realisation that moved.
+/// - Every error of `resolve`.
+/// - `NotFound` when `resolve` finds nothing. The message names the command that puts the object
+///   there, such as `cakeys create`.
+/// - Every rejection of `compare`: `HashMismatch` (exit 10) when the token's IDs differ from the
+///   IDs in the lock, `FirstUse` (exit 18) when the lock records no ID to compare with, and
+///   `PreconditionFailed` (exit 14) for a realisation that moved.
 pub fn verify(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Resolved> {
     let r = resolve(t, tok, lock, notes)?.ok_or_else(|| absent(t))?;
     reconcile::compare(t, &r, lock, &facts(t, tok, &r, Run::Found), LockWrite::Compare, notes)?;
     Ok(r)
 }
 
-/// The lock verb: find the object, compare it with the lock and record what the lock lacks or
-/// what changed around it (docs/CAKEYS.md). Never creates the object (`create` does); it does
-/// provision a TPM Attestation Key the realisation needs.
+/// The `lock` verb. It finds the object, compares it with the lock, and records what the lock
+/// does not hold yet or what changed in the facts that the lock records about the realisation
+/// (docs/CAKEYS.md). It never creates the object, because only `create` does that. It does
+/// provision a TPM Attestation Key when the realisation needs one.
 ///
 /// # Errors
 ///
-/// `NotFound` when the locator finds nothing; whatever `resolve` returns for the object once
-/// found; `plan_mode`/`check_capabilities` rejections (`Validation`, `Unsupported`) before the
-/// object is looked for, and `compare`'s on the realised object.
+/// - `Validation` or `Unsupported` when `plan_mode` or `check_capabilities` rejects the pair,
+///   before the object is looked for.
+/// - `NotFound` when the locator finds nothing.
+/// - Every error that `resolve` returns for the object that it found.
+/// - Every rejection of `compare` for the realised object.
 pub fn lock(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes: &mut Notes) -> Result<(Resolved, bool)> {
     lock_as(t, tok, lock, write, None, notes)
 }
 
-/// Record an object camigrate just imported (docs/CAMIGRATE.md D6, D7): [`lock`] without creating,
-/// through the same lock rules, with the realisation's `provenance.origin` saying where the
-/// material came from. The lock must already pin the object's IDs (they came from the source),
-/// so a different material is a mismatch (10), never a new identity.
+/// Records an object that camigrate has just imported (docs/CAMIGRATE.md D6, D7). It works as
+/// [`lock`] does and applies the same lock rules, and it also sets the realisation's
+/// `provenance.origin` to the place that the material came from. The lock must already record
+/// the object's IDs, because camigrate copied them from the source. Different material is
+/// therefore a hash mismatch (exit 10) and never a new identity.
 ///
 /// # Errors
 ///
-/// `NotFound` when the object is not under the locator; whatever [`lock`] refuses for an
-/// object it found, a hash mismatch (10) included; `PreconditionFailed` when the lock pins no
-/// ID for the object (`reconcile` refuses an import that would be a first use).
+/// - `NotFound` when the object is not under the locator.
+/// - Every refusal of [`lock`] for an object that it found, including a hash mismatch (exit 10).
+/// - `PreconditionFailed` when the lock records no ID for the object, because `reconcile` refuses
+///   an import that would be a first use.
 pub fn lock_import(
     t: &Target,
     tok: &Token,
@@ -356,7 +391,8 @@ pub fn lock_import(
     lock_as(t, tok, lock, LockWrite::Record, Some(origin), notes)
 }
 
-/// [`lock`]'s one code path: `origin` records an import's history.
+/// The shared implementation of [`lock`] and [`lock_import`]. `origin` is `Some` only for an
+/// import, and the lock then records where the imported material came from.
 fn lock_as(
     t: &Target,
     tok: &Token,
@@ -373,8 +409,9 @@ fn lock_as(
     Ok((r, changed))
 }
 
-/// `NotFound` for `t`'s object missing under its locator, naming what puts it there: its
-/// pair's origin says which verb.
+/// Returns the `NotFound` error for the object of `t` when the object is not under its locator.
+/// The message names the command that puts the object there, which depends on the `origin` of the
+/// pair.
 fn absent(t: &Target) -> KmError {
     let what = match t.on_token.key_origin() {
         KeyOrigin::Create => "`cakeys create` makes it".to_owned(),
@@ -387,10 +424,11 @@ fn absent(t: &Target) -> KmError {
     KmError::NotFound(format!("{t}: not under its locator; {what}").into())
 }
 
-/// Create `t`'s object, which `resolve` did not find, and resolve it. Refused before anything is
-/// created once [`token_rules`] found nothing to refuse; what was created is removed again when
-/// its identity cannot be established.
-/// Returns what was made and how the module made it, when other than asked.
+/// Creates the object of `t`, which `resolve` did not find, and then resolves it. [`create`]
+/// calls this function only after [`token_rules`] found nothing to refuse, so those refusals
+/// happen before anything is created. When the identity of the created object cannot be
+/// established, the function removes the object again. Returns the resolved object and, when the
+/// module made the key differently from how it was asked, the module's note.
 fn create_absent(
     t: &Target,
     tok: &Token,
@@ -400,8 +438,9 @@ fn create_absent(
     let made_otherwise = match tok.create(t.object, t.spec, &t.on_token.locator, cakeys_core::plan::expected_binding(t))
     {
         Ok(made) => made,
-        // A module may fail after it made the key (an error after the write, or the session
-        // put back after an SO step): what is under the locator now is this creation's.
+        // A module may return an error after it made the key, for example an error after the
+        // write, or an error while the session is restored after a step as the SO. The locator
+        // was empty before, so whatever is under the locator now was made by this creation.
         Err(e) => return Err(undo_created(t, tok, e, "the creation failed", notes)),
     };
     notes.say(format!("created {t}"));
@@ -416,10 +455,13 @@ fn create_absent(
     Err(undo_created(t, tok, e, "its identity could not be established", notes))
 }
 
-/// After a creation under `t`'s locator that failed (`why`): remove what is there. The locator
-/// was empty before (If-None-Match), so this removes only what the creation made: a refused
-/// creation or `lock` leaves nothing behind, unless the module cannot delete keys (ykcs11),
-/// which is then said rather than claimed. Hands back `err`.
+/// Removes what is under the locator of `t` after a creation there failed for the reason `why`.
+/// Only [`create_absent`] calls this function, for two failures: the module's creation call
+/// failed, or the identity of the created object could not be established. The locator was empty
+/// before the creation (If-None-Match), so this function removes only what the creation made, and
+/// a failed creation leaves nothing behind. The exception is a module that cannot delete keys
+/// (ykcs11): the note then says that the key is still on the token instead of saying that it was
+/// removed. Returns `err` unchanged.
 fn undo_created(t: &Target, tok: &Token, err: KmError, why: &str, notes: &mut Notes) -> KmError {
     match tok.find_any(&t.on_token.locator) {
         Ok(found) if found.is_empty() => {}
@@ -437,34 +479,43 @@ fn undo_created(t: &Target, tok: &Token, err: KmError, why: &str, notes: &mut No
     err
 }
 
-/// What [`create`] did with its pair.
+/// Says what [`create`] did with its pair.
 #[derive(Debug)]
 pub enum Made {
-    /// Created and recorded; whether the lock changed.
+    /// The key was created and recorded. The `bool` says whether the lock changed.
     Created(Resolved, bool),
-    /// Already there, and the lock pins it: verified as `check` verifies it, nothing made and
-    /// nothing written.
+    /// The key was already under the locator, and the lock records its IDs. The key was verified
+    /// as `check` verifies it, and nothing was created or written.
     Verified(Resolved),
 }
 
-/// PUT If-None-Match: create the object under the declared locator, then record it as [`lock`]
-/// does. The one verb that creates, and only on a pair whose `origin` is `create`. A key the
-/// lock pins that is already under the locator is verified as `check` verifies it ([`verify`])
-/// and left alone; one the lock does not pin is `Exists` (19), whatever it holds, before any
-/// capability is asked of the token — `lock` is the verb for a key that is there. Every other
-/// guard of a creation applies: the lock must not pin the object's material already (D1), and
-/// nothing of another class may sit under the locator.
+/// The PUT verb with If-None-Match. It creates the object under the declared locator and then
+/// records it as [`lock`] does. It is the only verb that creates an object, and it creates one
+/// only for a pair whose `origin` is `create`.
+///
+/// When the lock records the object's IDs and a key is already under the locator, the function
+/// verifies the key as `check` does ([`verify`]) and leaves it alone. When the lock does not
+/// record the object and a key is already under the locator, the result is `Exists` (exit 19),
+/// whatever the key holds. That refusal comes before any capability of the token is checked,
+/// because `lock` is the verb for a key that is already there. Every other guard of a creation
+/// also applies: the lock must not already record the object's material (D1), and no object of
+/// another class may be under the locator.
 ///
 /// # Errors
 ///
-/// `Validation` (17) on a pair whose origin is not `create`, before the token is touched;
-/// [`verify`]'s errors for a pinned key that is there (`HashMismatch` (10) for other material,
-/// `PreconditionFailed` (14) for a realisation the lock does not record or that moved);
-/// `Exists` (19) when an unpinned key is already under its locator, `Ambiguous` when several
-/// are; `plan_mode`/`check_capabilities` rejections, the generation included;
-/// `PreconditionFailed` (D1) when the lock pins the object's material and the token lost it,
-/// `Unavailable` when a session without login cannot see the locator, `Conflict` when the
-/// locator is occupied by another class; and `compare`'s on the object just made.
+/// - `Validation` (exit 17) for a pair whose origin is not `create`, before the token is used.
+/// - The errors of [`verify`] for a key that the lock records and that is already there:
+///   `HashMismatch` (exit 10) for other material, and `PreconditionFailed` (exit 14) for a
+///   realisation that the lock does not record or that moved.
+/// - `Exists` (exit 19) when a key that the lock does not record is already under the locator,
+///   and `Ambiguous` when several keys are there.
+/// - The rejections of `plan_mode` and `check_capabilities`, including a rejection of the key
+///   generation.
+/// - `PreconditionFailed` (D1) when the lock records the object's material and the token lost
+///   the object.
+/// - `Unavailable` when a session without login cannot see the objects under the locator.
+/// - `Conflict` when an object of another class is under the locator.
+/// - The rejections of `compare` for the object just created.
 pub fn create(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes: &mut Notes) -> Result<Made> {
     plan_mode(t)?;
     if let Some(why) = not_origin_create(t) {
@@ -475,7 +526,8 @@ pub fn create(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes:
         notes.say(format!("{t} is already there and matches the lock: nothing created"));
         return Ok(Made::Verified(r));
     }
-    // The token's rules, as `create --dry-run` asked them: again now, just before the write.
+    // Check the token's rules, which `create --dry-run` also checks, again now, just before the
+    // write.
     if let Some(r) = token_rules(t, tok, lock, Verb::Create)?.into_iter().next() {
         return Err(r.into());
     }
@@ -484,19 +536,19 @@ pub fn create(t: &Target, tok: &Token, lock: &mut Lock, write: LockWrite, notes:
     Ok(Made::Created(r, changed))
 }
 
-/// What [`delete`] did with the object under the locator.
+/// Says what [`delete`] did with the object under the locator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Deleted {
     /// It held the expected identity and was destroyed.
     Deleted,
-    /// It holds the expected identity: a run without `dry_run` destroys it.
+    /// It holds the expected identity, so a run without `dry_run` would destroy it.
     WouldDelete,
     /// Nothing is under the locator.
     Absent,
 }
 
 impl Deleted {
-    /// Its name in `cakeys delete`'s output.
+    /// Returns the name of this outcome in the output of `cakeys delete`.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -507,21 +559,26 @@ impl Deleted {
     }
 }
 
-/// DELETE + If-Match. Absent is success; only the object identified (and a private key's public
-/// half holding the same key) is removed: anything else under the locator is left alone, and the
-/// realisation is removed from the lock (its object's `ids` stay: the material may live on other
-/// tokens). `dry_run` identifies and checks If-Match as a delete does, and changes nothing.
-/// Returns what it did, and whether it changed the lock.
+/// The DELETE verb with If-Match. An absent object counts as success. The function removes only
+/// the identified object, and also a private key's public half when the public half holds the
+/// same key. It leaves everything else under the locator alone. It then removes the realisation
+/// from the lock, but it keeps the object's `ids`, because the material may still exist on other
+/// tokens. With `dry_run`, the function identifies the object and checks If-Match as a delete
+/// does, and it changes nothing. Returns what the function did and whether it changed the lock.
 ///
 /// # Errors
 ///
-/// `Unsupported` for a `publicOnly` adoption or when no identity can be computed to check;
-/// `Unavailable` when a session without login finds no private object (it cannot see one);
-/// `PreconditionFailed` when there is nothing to check against (no `--if-match`, no locked
-/// ID) or the token holds another ID than expected; `Unsupported` (15, `delete-refused`), a dry
-/// run too, when the module's profile or provider says it does not remove the object;
-/// `Unavailable` (16, `delete-kept`) when an object destroyed is still under the locator. A
-/// refusal leaves the lock as it was.
+/// - `Unsupported` for an object adopted with `publicOnly`, or when no identity can be computed
+///   for the If-Match check.
+/// - `Unavailable` when a session without login finds no private object, because such a session
+///   cannot see private objects.
+/// - `PreconditionFailed` when there is no expected ID to check against (no `--if-match` and no
+///   ID in the lock), or when the token holds an ID other than the expected one.
+/// - `Unsupported` (exit 15, `delete-refused`), also for a dry run, when the module's profile or
+///   the provider says that the module does not remove the object.
+/// - `Unavailable` (exit 16, `delete-kept`) when a destroyed object is still under the locator.
+///
+/// A refusal leaves the lock unchanged.
 pub fn delete(
     t: &Target,
     tok: &Token,
@@ -539,15 +596,20 @@ pub fn delete(
     // An expected identity is only required when there is something to delete.
     let mut outcome = Deleted::Absent;
     if let Some(h) = tok.find_key(&t.object, loc, false)? {
-        // Whether the module would remove it: a dry run says so as the delete would.
+        // Refuse when the module would not remove the object. A dry run refuses in the same way
+        // as the delete.
         rules::delete_refused(t, tok)?;
-        // Proven like `resolve`: If-Match must not pass on a public object beside another key.
+        // The IDs are computed as `resolve` computes them, including the proof of possession, so
+        // that If-Match cannot pass because of a public key object that holds the expected key
+        // next to a private key that holds another key.
         let Computed { ids: got, spki, .. } = compute_ids(t, tok, lock, h, plan_mode(t)?)?;
-        // The schemes computed, in the spec's order of preference: the first is the primary one.
+        // The schemes that were computed, in the spec's order of preference. The first one is the
+        // primary scheme.
         let computed: Vec<Scheme> = t.schemes().into_iter().filter(|s| got.contains_key(s.name())).collect();
         let primary =
             *computed.first().ok_or_else(|| KmError::Unsupported(format!("no identity computed for {t}").into()))?;
-        // --if-match names the primary scheme; otherwise the first scheme the lock records.
+        // The value of `--if-match` is an ID of the primary scheme. Without `--if-match`, the
+        // expected ID is the lock's ID for the first computed scheme that the lock records.
         let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
         let (scheme, expected) = match if_match {
             Some(want) => (primary, want.to_owned()),
@@ -591,7 +653,8 @@ pub fn delete(
     Ok((outcome, changed))
 }
 
-/// A `check` reference in its parts: the object, and the scheme `<object>.id.<scheme>` asks for.
+/// Splits a `check` reference into the object name and, for a reference of the form
+/// `<object>.id.<scheme>`, the scheme name.
 #[must_use]
 pub fn split_reference(reference: &str) -> (&str, Option<&str>) {
     match reference.split_once(".id.") {
@@ -600,20 +663,27 @@ pub fn split_reference(reference: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// The pseudo-FOD pre-use check of `reference` (`<object>` or `<object>.id.<scheme>`; none with `spec`): pick the
-/// (spec, token) pair and [`verify`] it, in a read-only session. Never writes: neither the lock,
-/// nor the token, nor a TPM's persistent handles; an object that is not there is `NotFound`
-/// (`cakeys create` makes it), one that is there but not locked fails with its `got:` (10).
-/// A requested scheme must be one the spec computes on this token — refused (15) before the
-/// token is opened, or before the object is looked for — and must itself be locked, not merely
-/// computed beside another scheme that matched (18, a first use of that scheme, with its
-/// `got:`). `open` opens the token.
+/// The pseudo-FOD check before use. `reference` has the form `<object>` or
+/// `<object>.id.<scheme>`, and it is `None` when `spec` selects the pair. The function selects the
+/// (spec, token) pair and checks it with [`verify`] in a read-only session. `open` opens the
+/// token.
+///
+/// The function never writes to the lock, to the token, or to a TPM's persistent handles. An
+/// object that is not there is `NotFound`, and the message names the command that makes it, such
+/// as `cakeys create`. An object that is there but whose ID the lock does not record fails with
+/// its `got:` (`FirstUse`, exit 18). A requested scheme must be one that the spec computes on this
+/// token; otherwise it is refused (exit 15) before the token is opened or before the object is
+/// looked for. The lock must also record the requested scheme itself. It is not enough that the
+/// scheme was computed while another scheme matched: that case is a first use of the scheme
+/// (exit 18), and the message shows its `got:`.
 ///
 /// # Errors
 ///
-/// `Unsupported` (15) for a scheme the spec does not compute on this token; `FirstUse` (18)
-/// when a requested scheme is computed but not locked (its `got:` shows the computed ID); plus `Config::address`/`Target::new`/`verify` failures — the reference and the pair must
-/// exist, and the realisation must compare clean.
+/// - `Unsupported` (exit 15) for a scheme that the spec does not compute on this token.
+/// - `FirstUse` (exit 18) when a requested scheme is computed but the lock does not record it.
+///   Its `got:` shows the computed ID.
+/// - The errors of `Config::address`, `Target::new` and `verify`: the reference and the pair must
+///   exist, and the realisation must match the lock.
 pub fn check(
     cfg: &Config,
     reference: Option<&str>,
@@ -626,12 +696,13 @@ pub fn check(
     check_open(cfg, reference, spec, token, open, lock, notes).map(|(r, _)| r)
 }
 
-/// [`check`], also handing back the token it opened, for a caller that reads more of the
-/// object it verified (the CLI's key-file output asks for its `CKA_ID`).
+/// Works as [`check`] does, and also returns the token that it opened. A caller uses the token to
+/// read more of the verified object. For example, the CLI's key-file output reads the object's
+/// `CKA_ID`.
 ///
 /// # Errors
 ///
-/// As [`check`].
+/// The same errors as [`check`].
 pub fn check_open(
     cfg: &Config,
     reference: Option<&str>,
@@ -648,18 +719,20 @@ pub fn check_open(
     let (spec_name, token_name) = cfg.address(object, spec, token)?;
     let t = Target::new(cfg, &spec_name, &token_name)?;
     let object = t.object_name;
-    // Refused before the token opens where the spec cannot compute it at all.
+    // A scheme that the spec can never compute is refused before the token is opened.
     let scheme = requested.map(|name| requested_scheme(&t, name, None)).transpose()?;
     let tok = open(&token_name, hal::Access::Read)?;
     if let Some(w) = tok.pin_warning() {
         notes.warn(w);
     }
-    // The token may lack a mechanism the spec allows: refuse before the object is looked for.
+    // The token may lack a mechanism that the spec allows, so the scheme is checked again against
+    // the token's schemes before the object is looked for.
     if let Some(s) = scheme {
         requested_scheme(&t, s.name(), Some(&schemes_on(&t, &tok)?))?;
     }
     let r = verify(&t, &tok, lock, notes)?;
-    // An attestation is locked on this realisation (§3.7), not on the object.
+    // The lock records an attestation on the realisation (§3.7), not on the object, so an
+    // attestation scheme is looked up in the realisation.
     if let Some(s) = scheme {
         let (locked, got) = if s.is_attestation() {
             let locked = lock
@@ -680,14 +753,17 @@ pub fn check_open(
     Ok((r, tok))
 }
 
-/// The scheme `name` a reference asks of `t` (`<object>#<scheme>`), refused (15) in one wording
-/// whether asked before the token opens (`on_token` `None`: the spec's own schemes, and any
-/// attestation scheme where it opted in, which only the provider decides) or after (what the
-/// token computes, [`schemes_on`]): one mistake, one message (ops F4).
+/// Returns the scheme `name` that a reference of the form `<object>.id.<scheme>` requests of `t`.
+/// Before the token is opened, `on_token` is `None`, and the allowed schemes are the spec's own
+/// schemes and, when the spec opts in, any attestation scheme, because only the provider decides
+/// which attestation scheme applies. After the token is opened, `on_token` holds the schemes that
+/// the token computes ([`schemes_on`]). A refusal (exit 15) has the same wording in both cases,
+/// so that the same mistake always gives the same message (ops F4).
 ///
 /// # Errors
 ///
-/// `Unsupported` for a scheme the spec does not compute there, or no scheme at all.
+/// `Unsupported` for a scheme that the spec does not compute there, or for a name that is not a
+/// scheme.
 fn requested_scheme(t: &Target, name: &str, on_token: Option<&[Scheme]>) -> Result<Scheme> {
     let scheme = Scheme::from_input(name);
     let attests = t.on_token.attestation && on_token.is_none();
@@ -708,24 +784,25 @@ fn requested_scheme(t: &Target, name: &str, on_token: Option<&[Scheme]>) -> Resu
     }
 }
 
-/// One (spec, token) pair [`check_token`] verified, and how that went.
+/// One (spec, token) pair that [`check_token`] verified, and the result.
 pub struct PairCheck {
-    /// The spec realising the object.
+    /// The spec that realises the object.
     pub spec: String,
-    /// The object it realises.
+    /// The object that the spec realises.
     pub object: String,
-    /// What [`verify`] made of it.
+    /// The result of [`verify`] for this pair.
     pub result: Result<Resolved>,
 }
 
-/// [`check`] of every (spec, token) pair keys.toml places on `token`, in one read-only session:
-/// a failing pair does not stop the others, each one's result is handed back. Never writes.
-/// `open` opens the token.
+/// Runs [`check`] on every (spec, token) pair that keys.toml places on `token`, in one read-only
+/// session. A pair that fails does not stop the checks of the other pairs, and the function
+/// returns the result of each pair. It never writes. `open` opens the token.
 ///
 /// # Errors
 ///
-/// `Validation` (17) for a token keys.toml does not name or that no spec places anything on;
-/// whatever `open` refuses. A pair's own failure is in its [`PairCheck`], never here.
+/// `Validation` (exit 17) for a token that keys.toml does not name, or on which no spec places
+/// an object. Every error of `open`. The failure of a single pair is in its [`PairCheck`] and is
+/// never returned here.
 pub fn check_token(
     cfg: &Config,
     token: &str,
@@ -756,9 +833,10 @@ pub fn check_token(
 mod tests {
     use super::*;
 
-    /// A scheme a reference asks for is refused in one wording before the token opens and after
-    /// (ops F4): before, by the spec's schemes and (opted in) any attestation scheme; after, by
-    /// what the token computes.
+    /// A scheme that a reference requests is refused with the same wording before the token is
+    /// opened and after it is opened (ops F4). Before the open, the allowed schemes are the spec's
+    /// schemes and, when the spec opts in, any attestation scheme. After the open, the allowed
+    /// schemes are those that the token computes.
     #[test]
     fn a_requested_scheme_is_refused_alike_before_and_after_the_open() {
         let cfg: Config = toml::from_str(
