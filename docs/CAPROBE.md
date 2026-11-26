@@ -294,8 +294,8 @@ generated, never edited, and pinned like the baseline:
 - **D10.** A probe measures a module and its hardware together, and nothing in PKCS#11 says whose
   refusal is whose. So an observed profile is a pair, named module first
   (`tpm2-pkcs11/1.10+swtpm`; software tokens keep plain names). A token whose hardware has no
-  pair yet resolves the nearest one for what the module advertises only: generation and wrapping
-  answer unknown. Pairs rank by a hardware layer the config names, then model and firmware.
+  pair yet resolves the nearest one for what the module advertises and what this repo claims of
+  the module (`move.*`) only: every measured row answers unknown. Pairs rank by a hardware layer the config names, then model and firmware.
   A module version no pair of its family records (a client library update) is no error either:
   the nearest recorded version stands in the same way, module rows only, with a note naming
   `caprobe probe`. No profile is ever required to open a token.

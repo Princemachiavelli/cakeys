@@ -236,12 +236,12 @@ impl Resolved {
     }
 
     /// A module version no profile of the family records (an update, typically): the nearest
-    /// profile's module rows stand, its capability rows answer unknown ([`clear_hardware_rows`]).
+    /// profile's module rows stand, its measured rows answer unknown ([`clear_hardware_rows`]).
     /// Never an error: a missing profile must not stop the token from opening (P1).
     fn nearest_version(&mut self, p: &mut Profile, family: &str, candidates: &[&Profile], module: &ModuleInfo) {
         self.notes.push(format!(
             "no module profile for '{family}' ({}) records module version '{}': using the nearest, {}, \
-             without its capability rows (unknown); profile this module with \
+             without its measured rows (unknown); profile this module with \
              `caprobe probe` (docs/CAPROBE.md)",
             candidates.iter().map(|p| p.profile.as_str()).collect::<Vec<_>>().join(", "),
             module.version,
@@ -251,12 +251,12 @@ impl Resolved {
     }
 
     /// Pairs of one module on several kinds of hardware, and no token to tell which: what the
-    /// module lists is taken from one of them; its capability rows depend on the hardware —
+    /// module lists is taken from one of them; its measured rows depend on the hardware —
     /// unknown, as for hardware no pair was observed on.
     fn hardware_unknown(&mut self, p: &mut Profile, tied: &[&Profile]) {
         self.notes.push(format!(
             "module profiles {} fit equally and the hardware is not known here: using {}'s module \
-             rows, its capability rows are not used (unknown); name the \
+             rows, its measured rows are not used (unknown); name the \
              hardware in tokens.<token>.profiles, or the pair in tokens.<token>.moduleProfile",
             tied.iter().map(|p| p.profile.as_str()).collect::<Vec<_>>().join(", "),
             p.profile
@@ -301,11 +301,11 @@ impl Resolved {
     }
 
     /// Another kind of hardware under the same module: what the module advertises still holds,
-    /// its capability rows depend on the hardware — unknown, not the observed hardware's answer.
+    /// its measured rows depend on the hardware — unknown, not the observed hardware's answer.
     fn other_hardware(&mut self, p: &mut Profile, token: Option<&TokenInfo>) {
         self.notes.push(format!(
             "module profile {} was observed on model {} firmware {}, this token is model {} \
-             firmware {}: its capability rows are not used (unknown)",
+             firmware {}: its measured rows are not used (unknown)",
             p.profile,
             seen(p.r#match.model.as_ref()),
             seen(p.r#match.firmware.as_ref()),
@@ -410,7 +410,8 @@ impl Nearness {
 
 /// Drop a pair profile's rows that depend on the hardware it was observed on, and what the probe
 /// could not decide of them there ([`hardware_dependent`]): on other or unknown hardware they
-/// answer unknown, and only what the module advertises stands (docs/CAPROBE.md, D10).
+/// answer unknown, and only what the module advertises and what is claimed of it (`move.*`)
+/// stands (docs/CAPROBE.md, D10).
 fn clear_hardware_rows(p: &mut Profile) {
     p.reported.clear();
     p.capabilities.retain(|c, _| !hardware_dependent(c));
@@ -424,21 +425,24 @@ fn clear_hardware_rows(p: &mut Profile) {
 /// `Capability` does not compile until it is (review 2026-11-24 B-9: a `matches!` list kept 12
 /// of 20 kinds, `prove.*` and `commit.*` among them, from hardware that was never measured).
 ///
-/// Every kind is, today: each row is an operation run on a key of that pair, and nothing in
-/// PKCS#11 says whether the module or the device refused it (docs/CAPROBE.md, D10).
+/// Every measured kind is: each such row is an operation run on a key of that pair, and nothing
+/// in PKCS#11 says whether the module or the device refused it (docs/CAPROBE.md, D10). A
+/// `move.*` row is no measurement but this repo's claim about the module
+/// ([`Capability::probed`]: kept across regenerations, never compared): it stands.
 fn hardware_dependent(c: &Capability) -> bool {
     match c {
-        // Making and moving keys: what generates, imports, creates, exports and unwraps;
-        // operations on a key: the proofs, the commitments, the ciphers and derivations, the
-        // OAEP hashes, signing and encapsulating; what a key's attributes are set to and read
-        // back as.
+        // What the module does, as claimed of it, not as measured on one pair's hardware.
+        Capability::Move(_) => false,
+        // Making keys and bringing them in or out: what generates, imports, creates, exports,
+        // unwraps and deletes; operations on a key: the proofs, the commitments, the ciphers and
+        // derivations, the OAEP hashes, signing and encapsulating; what a key's attributes are
+        // set to and read back as.
         Capability::Generate { .. }
         | Capability::Import { .. }
         | Capability::Create { .. }
         | Capability::Export { .. }
         | Capability::Unwrap { .. }
         | Capability::UnwrapTemplate(_)
-        | Capability::Move(_)
         | Capability::Delete(_)
         | Capability::Prove { .. }
         | Capability::Commit { .. }
@@ -595,20 +599,23 @@ mod tests {
         assert_eq!(r.notes.len(), 1, "{:?}", r.notes);
     }
 
-    /// On other hardware no row of any kind stands, nor what the probe left undecided of one
-    /// (`[untested]`): every row of every committed profile, walked by kind, is the hardware's
-    /// it was measured on (review 2026-11-24 B-9: `prove.*`, `commit.*` and `move.*` rows
-    /// carried a measured no to hardware never measured, a refusal there). The kinds the
-    /// finding named are among those walked, so the walk is not empty of them.
+    /// On other hardware no measured row of any kind stands, nor what the probe left undecided
+    /// of one (`[untested]`): every row of every committed profile, walked by kind, is the
+    /// hardware's it was measured on (review 2026-11-24 B-9: `prove.*` and `commit.*` rows
+    /// carried a measured no to hardware never measured, a refusal there). What this repo
+    /// claims of the module (`move.*`, [`Capability::probed`]) is the module's and stands, every
+    /// one of it. The kinds the finding named are among those walked, so the walk is not empty
+    /// of them.
     #[test]
     fn other_hardware_keeps_no_measured_row_of_any_kind() {
         let mut walked = BTreeSet::new();
         for (path, text) in cakeys_profile::embedded::PROFILE_FILES {
             let mut p = Profile::from_toml(text).unwrap_or_else(|e| panic!("{path}: {e}"));
             walked.extend(p.capabilities.keys().map(|c| c.to_string().split('.').next().unwrap_or("").to_owned()));
+            let claims: Vec<String> = p.capabilities.keys().filter(|c| !c.probed()).map(ToString::to_string).collect();
             clear_hardware_rows(&mut p);
             let kept: Vec<String> = p.capabilities.keys().map(ToString::to_string).collect();
-            assert!(kept.is_empty(), "{path} keeps {kept:?}");
+            assert_eq!(kept, claims, "{path}: the claims, and only they, stand");
             let undecided: Vec<&String> = p.untested.keys().filter(|k| Capability::parse(k).is_ok()).collect();
             assert!(undecided.is_empty(), "{path} keeps [untested] {undecided:?}");
             assert!(p.reported.is_empty(), "{path}");
@@ -616,6 +623,23 @@ mod tests {
         for kind in ["generate", "prove", "commit", "move", "derive", "crypt", "delete", "attr"] {
             assert!(walked.contains(kind), "no committed row of {kind}: {walked:?}");
         }
+    }
+
+    /// The swtpm the pair was measured on is that pair's hardware: tpm2-pkcs11 fills the token's
+    /// model from the TPM's four vendor strings, swtpm's last two NUL \[run\], and the probe
+    /// writes the match key without them. Read at the open with the NULs, the model was another
+    /// hardware's, and the pair's measured rows (`delete.CKO_PRIVATE_KEY = no`) never stood on
+    /// the hardware that measured them.
+    #[test]
+    fn the_token_a_pair_was_measured_on_is_that_hardware() {
+        cakeys_profile::Set::activate_embedded().unwrap();
+        let tpm2 = module("tpm2-software.github.io", "1.10");
+        let sw = crate::token::token_info("SW   TPM\0\0\0\0\0\0\0\0", "0000000000000000", "36.37".into());
+        let r = resolve(&cfg(None, &[]), &tpm2, Some(&sw), "tpm2-pkcs11").unwrap();
+        assert!(r.notes.is_empty(), "{:?}", r.notes);
+        let m = r.module.unwrap();
+        assert_eq!(m.profile, "tpm2-pkcs11/1.10+swtpm");
+        assert_eq!(m.answer(&Capability::Delete("CKO_PRIVATE_KEY".into())), Some(false));
     }
 
     #[test]
