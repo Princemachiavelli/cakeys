@@ -161,7 +161,7 @@ tests = [
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "Never writes. For a private key"
+says = "It never writes. For a private key"
 kind = "enforced"
 tests = [
   "lock_is_written_by_default_and_refused_where_it_cannot_be",
@@ -194,19 +194,19 @@ paths = ["migrate"]
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "out selects every one, so `create` alone selects"
+says = "leaves out selects every value of that part, so `create` alone selects"
 kind = "enforced"
 tests = ["create_makes_keys_and_nothing_else_does", "check_token_checks_every_object_on_it"]
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "The options every verb takes, before or after"
+says = "The options that every verb takes, before or after the verb"
 kind = "descriptive"
 why = "lists the options the parser gives every verb: a usage description, not a security guarantee"
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "(17) unless `--new-lock`, so a mistyped `--lock` never"
+says = "(17) unless `--new-lock` is given, so a mistyped `--lock` never"
 kind = "enforced"
 tests = [
   "a_missing_lock_is_refused_unless_a_new_one_is_asked_for",
@@ -242,13 +242,13 @@ tests = [
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "`got:`. It never creates the object: absent is"
+says = "`got:`. It never creates the object: an absent object"
 kind = "enforced"
 tests = ["create_makes_keys_and_nothing_else_does"]
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "declares: every selected (spec, token) pair with"
+says = "It creates every selected (spec, token) pair with"
 kind = "enforced"
 tests = [
   "create_makes_keys_and_nothing_else_does",
@@ -275,19 +275,19 @@ tests = [
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "`check` of every (spec, token) pair keys.toml places"
+says = "`check` of every (spec, token) pair that keys.toml places"
 kind = "enforced"
 tests = ["check_token_checks_every_object_on_it", "liars_ok"]
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "<lock>` as every writing verb does (22); `--dry-run`"
+says = "`updated <lock>` as every writing verb does (22)"
 kind = "enforced"
 tests = ["gc_says_what_it_did_through_the_notes", "gc_prints_then_removes_stale_entries"]
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "mismatch | never blindly | a swapped or"
+says = "mismatch | never without review | a swapped or"
 kind = "descriptive"
 why = "the Retry column is advice to whoever reads the exit code, not something cakeys does"
 
@@ -299,19 +299,19 @@ tests = ["checks.lib"]
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "— `check` never writes, and in the sandbox"
+says = "because `check` never writes, and in the sandbox"
 kind = "enforced"
 tests = ["liars_ok", "lock_is_written_by_default_and_refused_where_it_cannot_be"]
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "grant is host-wide: pcscd serves every reader, so"
+says = "pcscd serves every reader, so a build"
 kind = "descriptive"
 why = "states a limit of pcscd's grant (it serves every reader), a warning to whoever enables it"
 
 [[claim]]
 doc = "docs/CAKEYS.md"
-says = "- **Never** a token database: SoftHSM files allow"
+says = "- **Never** allowed: a token database, because SoftHSM files allow"
 kind = "descriptive"
 why = "advice on what a deployment may grant: the module grants the paths its configuration names, and cannot tell a token database from a socket"
 
