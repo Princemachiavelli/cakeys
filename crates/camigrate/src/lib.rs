@@ -679,13 +679,17 @@ impl Run<'_> {
     /// D9), and end with the real run's own verdict ([`tokens::Moves::verdict`]): an export
     /// without names takes what can move, and fails only when nothing can. A `migrate` writes on
     /// its target, so its dry run opens that token as the dry run of a write: a write-protected
-    /// one is refused (15) as the run's open refuses it (review 2026-11-24 L4a-3), and a target
-    /// the plan took from the lock is opened after the verdict, as the run opens it.
+    /// one is refused (15) as the run's open refuses it (review 2026-11-24 L4a-3), and a source
+    /// or target the plan took from the lock is opened after the verdict, as the run opens it
+    /// (review 2026-11-24 L4b-4: a source that did not open planned ready, and its run was 16).
     fn plan_moves(&self, ctx: &MoveCtx, notes: &mut Notes) -> anyhow::Result<()> {
         let source = self.opener.open(ctx.from, Access::Read, notes);
         let target = if let tokens::Dest::Token(_) = ctx.dest { Access::DryWrite } else { Access::Read };
-        let (moves, _, opened) = self.plan(ctx, Show::Stdout, source, target, notes)?;
+        let (moves, source, opened) = self.plan(ctx, Show::Stdout, source, target, notes)?;
         moves.verdict(ctx.take(), ctx.from)?;
+        if source.is_none() {
+            self.opener.open(ctx.from, Access::Read, notes)?;
+        }
         if let (tokens::Dest::Token(to), None) = (ctx.dest, opened) {
             self.opener.open(to, target, notes)?;
         }

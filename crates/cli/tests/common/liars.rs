@@ -1037,7 +1037,7 @@ pub fn judge(tool: &impl Tool, table: &Table, cell: &Cell, n: usize) -> Vec<Stri
         Form::Plan => wrong.extend(judge_plan(e, &out)),
         Form::Profile => wrong.extend(judge_profile(e, &out, refused)),
         Form::Nothing if refused && !out.stdout.is_empty() => {
-            wrong.push(format!("a refusal printed {:?}", stdout(&out)))
+            wrong.push(format!("a refusal printed {:?}", stdout(&out)));
         }
         Form::Nothing => {}
     }

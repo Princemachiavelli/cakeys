@@ -409,6 +409,17 @@ fn = "C_FindObjectsInit"
 rv = "CKR_DEVICE_ERROR"
 '''
 
+# The source's session does not open (a device failure): the run cannot reach what it would move
+# (16), and its dry run, which plans the source from the lock, exits as the run does (D9: the dry
+# run's verdict is the outcome).
+[lies."dev.open"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_OpenSession"
+rv = "CKR_DEVICE_ERROR"
+'''
+
 [lies."dev.unwrap"]
 class = "DEV"
 plan = '''
@@ -429,13 +440,13 @@ rv = "CKR_KEY_FUNCTION_NOT_PERMITTED"
 lies = ["dev.wrap"]
 verbs = ["migrate"]
 objects = ["ec", "aes"]
-expect = { exit = 16, device = true, red = "L4b-2: a device failure in the source's C_WrapKey is said unsupported (15), the row not device: sealed.rs export and Token::extract map it through unsupported_for (L4a-1's class; fixed by d63f2c2 on l4a-fixes)" }
+expect = { exit = 16, device = true }
 
 [[block]]
 lies = ["dev.wrap"]
 verbs = ["export --to", "export --to-key-file"]
 objects = ["ec"]
-expect = { exit = 16, red = "L4b-2: a device failure in the source's C_WrapKey is said unsupported (15), the row not device: sealed.rs export and Token::extract map it through unsupported_for (L4a-1's class; fixed by d63f2c2 on l4a-fixes)" }
+expect = { exit = 16 }
 
 [[block]]
 lies = ["refused.wrap"]
@@ -462,6 +473,16 @@ expect = { exit = 16, device = true, red = "L4b-1: camigrate prints no row (no p
 [[block.override]]
 verbs = ["migrate --dry-run", "export --dry-run"]
 expect = { exit = 16, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
+
+[[block]]
+lies = ["dev.open"]
+verbs = ["migrate", "migrate --dry-run", "export --to", "export --dry-run"]
+objects = ["ec"]
+expect = { exit = 16 }
+
+[[block.override]]
+verbs = ["migrate"]
+expect = { exit = 16, device = true, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
 
 # The first unwrap of an import is its transport key's proof of possession.
 [[block]]
@@ -500,7 +521,7 @@ rv = "CKR_DEVICE_REMOVED"
 lies = ["loss.wrap"]
 verbs = ["migrate"]
 objects = ["ec", "aes"]
-expect = { exit = 16, device = true, red = "L4b-2: a device failure in the source's C_WrapKey is said unsupported (15), the row not device: sealed.rs export and Token::extract map it through unsupported_for (L4a-1's class; fixed by d63f2c2 on l4a-fixes)" }
+expect = { exit = 16, device = true }
 
 [[block]]
 lies = ["loss.wrap"]
@@ -512,7 +533,7 @@ expect = { exit = 16 }
 lies = ["loss.wrap"]
 verbs = ["export --to"]
 objects = ["aes"]
-expect = { exit = 16, red = "L4b-2: a device failure in the source's C_WrapKey is said unsupported (15), the row not device: sealed.rs export and Token::extract map it through unsupported_for (L4a-1's class; fixed by d63f2c2 on l4a-fixes)" }
+expect = { exit = 16 }
 
 [[block]]
 lies = ["loss.unwrap"]
