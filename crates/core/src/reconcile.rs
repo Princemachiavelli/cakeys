@@ -495,7 +495,15 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
         ));
     }
     for (scheme, _) in &unlocked {
-        notes.note(format_args!("{t} also has a {scheme} identity the lock does not record; `lock` adds it"));
+        // `record_object` does not add a deprecated scheme, so the note does not promise it.
+        if Scheme::from_name(scheme).is_some_and(Scheme::is_deprecated) {
+            notes.note(format_args!(
+                "{t} also has a {scheme} identity the lock does not record; `lock` does not add it: that \
+                 computation is deprecated (docs/DESIGN.md §3.1)"
+            ));
+        } else {
+            notes.note(format_args!("{t} also has a {scheme} identity the lock does not record; `lock` adds it"));
+        }
     }
     // Locked schemes not checked now: unknown to this cakeys (e.g. from a newer one), or not
     // computable for this spec on this token.
@@ -589,13 +597,18 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
             ));
         }
     }
-    changed |= record_object(t, r, lock.objects.entry(t.object_name.into()).or_default(), notes);
+    let entry = lock.objects.entry(t.object_name.into()).or_default();
+    changed |= record_object(t, r, entry, notes);
+    // The schemes that the object's IDs now hold. A deprecated scheme that `record_object` did not
+    // record is left out, because a realisation names only schemes among its object's IDs, and a
+    // lock that names another one does not load (`Lock::check`).
+    let schemes = r.ids.keys().filter(|s| entry.ids.contains_key(*s)).cloned().collect();
     let real = LockRealisation {
         object: t.object_name.to_owned(),
         locator: t.on_token.locator.clone(),
         spec_digest: r.spec_digest.clone(),
         mode: r.mode,
-        schemes: r.ids.keys().cloned().collect(),
+        schemes,
         public_only: r.public_only,
         binding: r.binding,
         attestation: r.attestation.clone(),
@@ -823,6 +836,53 @@ mod tests {
         assert!(!reconcile(&t, &r, &mut lock, &facts("1"), LockWrite::Record, &mut notes).unwrap(), "nothing new");
         compare(&t, &r, &lock, &facts("1"), LockWrite::Compare, &mut notes).unwrap();
         assert!(notes.lines().is_empty(), "{:?}", notes.lines());
+    }
+
+    /// A deprecated scheme (docs/DESIGN.md §3.1) is never newly recorded. A first write and a
+    /// second write record the other scheme that the realisation computes, add a note that the
+    /// deprecated identity was not recorded, and leave a lock that loads again. An identity that
+    /// the lock recorded under the scheme before it was deprecated still verifies, with a
+    /// warning, and another value under it is still a mismatch (10). `Scheme::DEPRECATED` is
+    /// empty, so the test marks `certhash` deprecated on its own thread (`DEPRECATED_IN_TEST`).
+    #[test]
+    fn a_deprecated_scheme_is_never_newly_recorded() {
+        let cfg = config();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let ids = |cert: &str| [("rfc7093m4".to_owned(), SRI_A.to_owned()), ("certhash".to_owned(), cert.to_owned())];
+        let both = Resolved { ids: ids(SRI_B).into(), ..resolved(&t) };
+        let said = |notes: &Notes, what: &str| notes.lines().iter().any(|l| l.contains(what));
+        let mut before = empty_lock();
+        reconcile(&t, &both, &mut before, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap();
+        assert_eq!(before.objects["k"].ids.len(), 2, "recorded before the deprecation");
+
+        id::DEPRECATED_IN_TEST.with(|d| d.set(Some(Scheme::Certhash)));
+        let mut lock = empty_lock();
+        for write in ["first", "second"] {
+            let mut notes = Notes::default();
+            reconcile(&t, &both, &mut lock, &facts("1"), LockWrite::Record, &mut notes).unwrap();
+            let recorded: Vec<&String> = lock.objects["k"].ids.keys().collect();
+            assert_eq!(recorded, ["rfc7093m4"], "the {write} write");
+            assert!(said(&notes, "not recorded: that computation is deprecated"), "{:?}", notes.lines());
+            let text = toml::to_string_pretty(&lock).unwrap();
+            if let Err(e) = crate::config::parse_lock(&text, std::path::Path::new("keys.lock")) {
+                panic!("the lock after the {write} write does not load: {e}");
+            }
+        }
+        // A compare against that lock passes by rfc7093m4, and its note does not say that `lock`
+        // adds the deprecated identity.
+        let mut notes = Notes::default();
+        compare(&t, &both, &lock, &facts("1"), LockWrite::Compare, &mut notes).unwrap();
+        assert!(said(&notes, "`lock` does not add it"), "{:?}", notes.lines());
+        assert!(!said(&notes, "`lock` adds it"), "{:?}", notes.lines());
+        for write in [LockWrite::Compare, LockWrite::Record] {
+            let mut notes = Notes::default();
+            compare(&t, &both, &before, &facts("1"), write, &mut notes).unwrap();
+            assert!(said(&notes, "uses a deprecated computation"), "{:?}", notes.lines());
+            let other = Resolved { ids: ids(SRI_A).into(), ..resolved(&t) };
+            let e = compare(&t, &other, &before, &facts("1"), write, &mut Notes::default()).unwrap_err();
+            assert_eq!(e.exit_code(), 10, "{e}");
+        }
+        id::DEPRECATED_IN_TEST.with(|d| d.set(None));
     }
 
     /// Drift the write is for (a changed spec, policy) fails only a compare; a downgrade, a

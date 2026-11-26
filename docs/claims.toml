@@ -14,7 +14,7 @@
 # An entry registers the whole line its phrase is on, so an enforced entry's tests hold every
 # universal claim of that line; a line with one claim no test holds stays unregistered.
 
-max-unregistered = 6
+max-unregistered = 3
 
 # CAMIGRATE.md D5: a bundle's transport key is the target's own (review 2026-11-24 D-8).
 
@@ -544,6 +544,16 @@ tests = [
   "kryoptic_the_scratch_guard_names_one_slot",
 ]
 
+# The commitment gate (L7b's gap list, closed by F3). The test gives the gate module profiles
+# that differ only in one commitment's rows: it refuses (15) when both declared commitments are
+# measured no, and defers or passes when one of them is unknown or yes.
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "the gate refuses only when every"
+kind = "enforced"
+tests = ["the_gate_refuses_commitments_only_when_every_one_is_no"]
+
 # DESIGN.md, beyond §8.1 (Phase 2 L7b).
 
 [[claim]]
@@ -814,3 +824,20 @@ tests = [
   "spec_digests_are_pinned",
   "commitment_label_comes_from_the_lock",
 ]
+
+# Two claims of L7b's gap list, closed by F3. The reconcile test marks a scheme deprecated on its
+# own thread, since Scheme::DEPRECATED is empty, and checks that two writes leave it out of the
+# object's IDs and the realisation's schemes. The lock test adds a binding to a realisation of
+# each class that is not a private key, and removes it from a private key's, and expects 17.
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "`lock` never records a *new* identity under it"
+kind = "enforced"
+tests = ["a_deprecated_scheme_is_never_newly_recorded"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "a private-key realisation records its `binding`, and no other class has one."
+kind = "enforced"
+tests = ["a_binding_is_recorded_for_private_keys_and_no_other_class"]
