@@ -1,14 +1,14 @@
-//! Hex text to bytes, one rule for every caller: an even number of hex digits, either case.
-//! And back, in lower case.
+//! The conversion of hex text to bytes, with one rule for every caller: an even number of hex
+//! digits, in upper or lower case. The conversion back writes lower case.
 
-/// `bytes` in lower-case hex.
+/// Returns `bytes` in lower-case hex.
 #[must_use]
 pub fn encode(bytes: &[u8]) -> String {
     base16ct::lower::encode_string(bytes)
 }
 
-/// The bytes `s` spells in hex; `None` when it is not hex of whole bytes. The empty string is
-/// the empty byte string.
+/// Returns the bytes that `s` encodes in hex, or `None` when `s` is not the hex of whole bytes.
+/// The empty string decodes to the empty byte string.
 #[must_use]
 pub fn decode(s: &str) -> Option<Vec<u8>> {
     base16ct::mixed::decode_vec(s).ok()
