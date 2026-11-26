@@ -18,7 +18,7 @@ use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{KmError, Result, id};
 use cakeys_pkcs11::provider::PlaintextKind;
 use cakeys_pkcs11::token::{self, SessionObject, locator_attrs, public_object_attrs};
-use cakeys_pkcs11::{Declared, SessionKey, Template, Via};
+use cakeys_pkcs11::{Declared, SessionKey, Template, Topic, Via};
 use cakeys_profile::{Capability, KeyKind, On, Way};
 use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsOaepParams, PkcsOaepSource};
 use cryptoki::mechanism::{Mechanism, MechanismType};
@@ -58,12 +58,66 @@ const RSA_KEYS: [(u32, &[u8]); 7] = [
 pub(super) const AES_KEYS: [&[u8]; 3] = [fixture!("aes-16.key"), fixture!("aes-24.key"), fixture!("aes-32.key")];
 
 /// A self-signed certificate under the P-256 key.
-const CERTIFICATE: &[u8] = fixture!("certificate.der");
+pub(super) const CERTIFICATE: &[u8] = fixture!("certificate.der");
 
-/// What marks a scratch slot as one the probe used: its own certificate (`CN=cakeys-probe`),
-/// written over the slot's last key ([`mark_slot`]) and the one occupant the next run's guard
-/// accepts (`super::check_slot`).
-pub(super) const SLOT_MARKER: &[u8] = CERTIFICATE;
+/// The P-256 test key [`CERTIFICATE`] is self-signed by, which signs the slot's mark.
+const P256_KEY: &[u8] = fixture!("ec-secp256r1.der");
+
+/// What marks a scratch slot as one the probe used: its own certificate (`CN=cakeys-probe`, as
+/// [`CERTIFICATE`]) issued over the slot's key `spki` and signed by the P-256 test key, written
+/// over the slot's last key ([`mark_slot`]); the one occupant beside that key the next run's
+/// guard accepts (`super::check_slot`). ECDSA here is deterministic (RFC 6979), so the guard
+/// makes the same bytes from the key it finds: a mark vouches for one key, not for the slot
+/// (review 2026-11-24 E-6: a fixed certificate kept vouching for a key put there since). `None`
+/// for a key the certificate cannot carry.
+pub(super) fn slot_mark(spki: &[u8]) -> Option<Vec<u8>> {
+    use p256::ecdsa::signature::Signer as _;
+    use p256::pkcs8::DecodePrivateKey as _;
+    let (cert, _) = der_element(CERTIFICATE)?;
+    let (tbs, rest) = der_element(der_contents(cert)?)?;
+    let (algorithm, _) = der_element(rest)?;
+    let own = id::cert_spki(CERTIFICATE).ok()?;
+    let body = der_contents(tbs)?;
+    let at = body.windows(own.len()).position(|w| w == own.as_slice())?;
+    let tbs = der_tlv(0x30, &[&body[..at], spki, &body[at + own.len()..]].concat())?;
+    let key = p256::ecdsa::SigningKey::from_pkcs8_der(P256_KEY).ok()?;
+    let signature: p256::ecdsa::Signature = key.sign(&tbs);
+    let bits = der_tlv(0x03, &[&[0][..], &signature.to_der().to_bytes()].concat())?;
+    der_tlv(0x30, &[tbs, algorithm.to_vec(), bits].concat())
+}
+
+/// The first DER element of `der`, whole, and what follows it.
+fn der_element(der: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (head, len) = match *der.get(1)? {
+        n @ 0..=0x7f => (2, usize::from(n)),
+        0x81 => (3, usize::from(*der.get(2)?)),
+        0x82 => (4, usize::from(u16::from_be_bytes([*der.get(2)?, *der.get(3)?]))),
+        _ => return None,
+    };
+    der.split_at_checked(head + len)
+}
+
+/// The contents of the DER element `tlv`.
+fn der_contents(tlv: &[u8]) -> Option<&[u8]> {
+    let head = match *tlv.get(1)? {
+        0..=0x7f => 2,
+        0x81 => 3,
+        0x82 => 4,
+        _ => return None,
+    };
+    tlv.get(head..)
+}
+
+/// The DER element of `tag` holding `contents` (shorter than 64 KiB).
+fn der_tlv(tag: u8, contents: &[u8]) -> Option<Vec<u8>> {
+    let n = contents.len();
+    let len = match u8::try_from(n) {
+        Ok(b) if b < 0x80 => vec![b],
+        Ok(b) => vec![0x81, b],
+        Err(_) => [&[0x82][..], &u16::try_from(n).ok()?.to_be_bytes()].concat(),
+    };
+    Some([&[tag][..], &len, contents].concat())
+}
 
 /// A data object's value.
 const DATA: &[u8] = b"cakeys probe: a data object";
@@ -77,16 +131,37 @@ struct PrivateKey {
     der: &'static [u8],
 }
 
-/// The scratch token's RSA key pair the sealed exports wrap toward, `(public, private)`.
-type Transport = Option<(ObjectHandle, ObjectHandle)>;
+/// The RSA test key the sealed exports wrap toward, imported: the host holds its private key
+/// too, so it decodes what the module wraps (review 2026-11-24 E-3).
+const TRANSPORT_KEY: &[u8] = fixture!("rsa-2048.der");
+
+/// The RSA key pair the sealed exports wrap toward, and the private key the host decodes their
+/// blobs with (`None`: the generated pair of the wrap probes, which the host cannot decode with,
+/// standing in for a token that will not take [`TRANSPORT_KEY`]).
+struct Transport {
+    public: ObjectHandle,
+    private: ObjectHandle,
+    host: Option<rsa::PrivateKey>,
+}
 
 /// Bring each fixture in the way the provider imports, then (on a scratch token) take it out
-/// each way. `transport` is the RSA pair the wrap probes use.
+/// each way: toward [`TRANSPORT_KEY`] imported, else toward `generated`, the RSA pair the wrap
+/// probes use.
 ///
 /// # Errors
 ///
 /// An SO login failing, which stops the probe as it stops the generation probes.
-pub(super) fn probe_moves(made: &mut Made, profile: &mut Draft, transport: Transport) -> Result<()> {
+pub(super) fn probe_moves(
+    made: &mut Made,
+    profile: &mut Draft,
+    generated: Option<(ObjectHandle, ObjectHandle)>,
+) -> Result<()> {
+    let transport = match made.scratch.target {
+        Target::Labels => host_transport(made)
+            .or_else(|| generated.map(|(public, private)| Transport { public, private, host: None })),
+        Target::Slot(_) => None,
+    };
+    let transport = transport.as_ref();
     let kind = made.tok.provider.plaintext_import().kind();
     if kind == PlaintextKind::Tpm2Ptool {
         // tpm2_ptool writes the module's store, which this open token reads only once opened
@@ -145,27 +220,80 @@ pub(super) fn probe_moves(made: &mut Made, profile: &mut Draft, transport: Trans
     Ok(())
 }
 
-/// Leave the scratch slot marked as the probe's: its own certificate ([`SLOT_MARKER`]) over the
-/// placeholder ykcs11 wrote with the last generation. ykcs11 writes that placeholder for every
-/// key it generates, so it tells a probe's slot from no real key's; the next run's guard
-/// (`super::check_slot`) accepts only this certificate (review 2026-11-23 D-1). A slot left
-/// unmarked is refused by the next run until it is emptied, and this run says so.
+/// [`TRANSPORT_KEY`] imported as the sealed exports' transport key: its public half wraps, its
+/// private half unwraps. `None`, said as undetermined, when the token will not take it.
+fn host_transport(made: &mut Made) -> Option<Transport> {
+    let mut import = || -> Result<Transport> {
+        use rsa::pkcs8::DecodePrivateKey as _;
+        let host = rsa::PrivateKey::from_pkcs8_der(TRANSPORT_KEY)
+            .map_err(|e| KmError::Unsupported(format!("the host reads no RSA test key: {e}").into()))?;
+        let object = ObjectCfg { modulus_bits: Some(2048), ..ObjectCfg::new(Class::PrivateKey, Some(Kt::Rsa)) };
+        let o = Object::new(&object)?;
+        let spki = id::spki_canonical(&spki_of_pkcs8(TRANSPORT_KEY)?)?;
+        let parts = private_from_pkcs8(TRANSPORT_KEY, Kt::Rsa, None)?;
+        let (loc, label) = made.locator();
+        let usage = spec(&["CKA_DECRYPT", "CKA_UNWRAP"], &["CKA_ENCRYPT", "CKA_WRAP"]);
+        let declared = Declared { object: o, spec: &usage, locator: &loc };
+        let mut t = vec![Attribute::Token(true), Attribute::Encrypt(true), Attribute::Wrap(true)];
+        t.extend(host_encoding(&loc, &ObjectCfg { class: Class::PublicKey, ..object.clone() }, &spki)?);
+        let t = made.tok.provider.adjusted(&Template::PublicHalf(declared), t)?;
+        let public = made.session.create_object(&t).map_err(|e| {
+            made.tok.refused_for(Topic::Create, &e, format!("its public half: C_CreateObject: {}", ckr(&e)))
+        })?;
+        made.track(public, label.as_ref());
+        let mut t = vec![
+            Attribute::Token(true),
+            Attribute::Class(ObjectClass::PRIVATE_KEY),
+            Attribute::KeyType(KeyType::RSA),
+            Attribute::Decrypt(true),
+            Attribute::Unwrap(true),
+            Attribute::Sensitive(true),
+        ];
+        t.extend(locator_attrs(&loc)?);
+        let t = made.tok.provider.adjusted(&Template::Import(declared, Via::CreateObject), t)?;
+        let private = made.tok.create_private(o, t, &parts)?;
+        made.track(private, label.as_ref());
+        Ok(Transport { public, private, host: Some(host) })
+    };
+    match import() {
+        Ok(t) => Some(t),
+        Err(e) => {
+            let why = evidence(made.tok, &e);
+            made.undetermined.push(format!(
+                "the sealed exports wrap toward the wrap probes' RSA key, whose blobs the host cannot decode: the \
+                 RSA test key is not imported: {why}"
+            ));
+            None
+        }
+    }
+}
+
+/// Leave the scratch slot marked as the probe's: its own certificate ([`slot_mark`]) over each
+/// key the slot holds, written over the placeholder ykcs11 wrote with the last generation.
+/// ykcs11 writes that placeholder for every key it generates, so it tells a probe's slot from no
+/// real key's; the next run's guard (`super::check_slot`) accepts only these certificates, beside
+/// only these keys (review 2026-11-23 D-1; review 2026-11-24 E-6). A slot left unmarked is
+/// refused by the next run until it is emptied, and this run says so.
 fn mark_slot(made: &mut Made) -> Result<()> {
     let object = public_object(Class::Certificate);
     let (loc, _) = made.locator();
-    let mut t = vec![Attribute::Token(true)];
-    t.extend(host_encoding(&loc, &object, SLOT_MARKER)?);
     let (probe_spec, session) = (spec(&[], &[]), made.session);
-    let on = Declared { object: Object::new(&object)?, spec: &probe_spec, locator: &loc };
-    let marked = made.tok.provider.adjusted(&Template::Object(on), t).and_then(|t| {
+    let mark = |spki: &[u8]| {
+        let mark = slot_mark(spki)
+            .ok_or_else(|| KmError::Unsupported("the probe's certificate cannot carry the slot's key".into()))?;
+        let mut t = vec![Attribute::Token(true)];
+        t.extend(host_encoding(&loc, &object, &mark)?);
+        let on = Declared { object: Object::new(&object)?, spec: &probe_spec, locator: &loc };
+        let t = made.tok.provider.adjusted(&Template::Object(on), t)?;
         made.tok.managing("marking the scratch slot", || {
-            session.create_object(&t).map_err(|e| {
-                KmError::Unsupported(format!("C_CreateObject: {}", ckr(&e)).into()).with_rv(token::rv_of(&e))
-            })
+            session
+                .create_object(&t)
+                .map_err(|e| made.tok.refused_for(Topic::Create, &e, format!("C_CreateObject: {}", ckr(&e))))
         })
-    });
+    };
+    let marked = slot_keys(made).and_then(|keys| keys.iter().try_for_each(|k| mark(k).map(drop)));
     match marked {
-        Ok(_) => Ok(()),
+        Ok(()) => Ok(()),
         Err(e) if so_login(&e) => Err(e),
         Err(e) => {
             made.undetermined.push(format!(
@@ -176,6 +304,49 @@ fn mark_slot(made: &mut Made) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// The public keys the slot's marks are issued over: each of its public key objects' that no
+/// mark of the probe's names yet (one, in a PIV slot; every key it was given, in a module that
+/// keeps them all under one `CKA_ID`), but the probe's own test keys ([`test_keys`]), which the
+/// guard knows. With none, and no mark there (a module whose SO generates no key, the slot holding
+/// only what the import probes put there), the P-256 test key's, so the slot carries one.
+fn slot_keys(made: &Made) -> Result<Vec<Vec<u8>>> {
+    let Target::Slot(id) = &made.scratch.target else {
+        return Err(KmError::Validation("no scratch slot".into()));
+    };
+    let find = |class| {
+        made.session.find_objects(&[Attribute::Class(class), Attribute::Id(id.clone())]).map_err(|e| {
+            made.tok.refused_for(Topic::Create, &e, format!("finding the slot's keys: C_FindObjects: {}", ckr(&e)))
+        })
+    };
+    let marked: Vec<Vec<u8>> = find(ObjectClass::CERTIFICATE)?
+        .into_iter()
+        .filter_map(|h| match made.session.get_attributes(h, &[AttributeType::Value]).ok()?.pop()? {
+            Attribute::Value(der) => id::cert_spki(&der).ok().filter(|k| slot_mark(k).as_ref() == Some(&der)),
+            _ => None,
+        })
+        .collect();
+    let (tested, mut keys) = (test_keys(), Vec::new());
+    for h in find(ObjectClass::PUBLIC_KEY)? {
+        // One whose public key the host cannot read (X25519: no SPKI cakeys encodes) carries no
+        // mark; the guard tells it by the keys beside it.
+        let Ok(Some(spki)) = made.tok.material_spki(h) else { continue };
+        if !marked.contains(&spki) && !tested.contains(&spki) && !keys.contains(&spki) {
+            keys.push(spki);
+        }
+    }
+    if keys.is_empty() && marked.is_empty() {
+        keys.push(id::cert_spki(CERTIFICATE)?);
+    }
+    Ok(keys)
+}
+
+/// The public keys of the probe's test keys ([`CURVE_KEYS`], [`RSA_KEYS`]): keys whose private
+/// halves are committed beside the code, so a slot holding one holds no real key.
+pub(super) fn test_keys() -> Vec<Vec<u8>> {
+    let ders = CURVE_KEYS.iter().map(|(_, _, der)| *der).chain(RSA_KEYS.iter().map(|(_, der)| *der));
+    ders.filter_map(|der| spki_of_pkcs8(der).and_then(|s| id::spki_canonical(&s)).ok()).collect()
 }
 
 /// The curves cakeys names (`id::Curve::ALL`) with no test key in [`CURVE_KEYS`]: no import
@@ -232,7 +403,7 @@ fn import_private(
     profile: &mut Draft,
     key: &PrivateKey,
     kind: PlaintextKind,
-    transport: Transport,
+    transport: Option<&Transport>,
 ) -> Result<()> {
     let cap = Capability::Import { key_type: key.key_type.clone(), on: key.on.clone() };
     let read = || -> Result<_> {
@@ -295,8 +466,8 @@ fn import_private(
         }
     };
     made.track(h, label.as_ref());
-    match made.tok.prove_binding(h, object, &spki, Binding::PopSign) {
-        Ok(()) => profile.yes(cap, Checked::Host, Some(kind.name().into())),
+    match Checked::verified(made.tok.prove_binding(h, object, &spki, Binding::PopSign)) {
+        Ok(checked) => profile.yes(cap, checked, Some(kind.name().into())),
         Err(e) => {
             made.undetermined
                 .push(format!("no {cap} row: imported, but no proof of possession: {}", evidence(made.tok, &e)));
@@ -309,7 +480,9 @@ fn import_private(
         }
         return Ok(());
     }
-    let host_same = |plain: &[u8]| spki_of_pkcs8(plain).and_then(|s| id::spki_canonical(&s)).is_ok_and(|s| s == spki);
+    let host_same = |plain: &[u8]| {
+        spki_of_pkcs8(plain).and_then(|s| id::spki_canonical(&s)).ok().and_then(|s| Checked::same(&s, &spki))
+    };
     let template = |label: &str| {
         let t = vec![
             Attribute::Token(true),
@@ -322,9 +495,17 @@ fn import_private(
         let locator = Locator { label: Some(label.to_owned()), id: None };
         adjusted(Template::Import(Declared { locator: &locator, ..declared }, Via::Unwrap), t)
     };
-    let same = |m: &Made, h2| m.tok.prove_binding(h2, object, &spki, Binding::PopSign);
-    let test_key = TestKey { key_type: &key.key_type, on: &key.on, h, secret: false, template: &template, same: &same };
-    exports(made, profile, &test_key, &host_same, transport);
+    let same = |m: &Made, h2| Checked::verified(m.tok.prove_binding(h2, object, &spki, Binding::PopSign));
+    let test_key = TestKey {
+        key_type: &key.key_type,
+        on: &key.on,
+        h,
+        secret: false,
+        template: &template,
+        same: &same,
+        host_same: &host_same,
+    };
+    exports(made, profile, &test_key, transport);
     Ok(())
 }
 
@@ -353,9 +534,9 @@ fn public_half(
     match created {
         Ok(h) => {
             made.track(h, label);
-            match made.tok.material_spki(h) {
-                Ok(Some(s)) if s == spki => profile.yes(cap, Checked::Host, None),
-                Ok(_) => profile.wrong(cap, "the object holds no key, or another".into()),
+            match made.tok.material_spki(h).map(|s| s.and_then(|s| Checked::same(s.as_slice(), spki))) {
+                Ok(Some(checked)) => profile.yes(cap, checked, None),
+                Ok(None) => profile.wrong(cap, "the object holds no key, or another".into()),
                 Err(e) => made.undetermined.push(format!("no {cap} row: reading it back: {}", evidence(made.tok, &e))),
             }
         }
@@ -407,14 +588,18 @@ fn export_host(
     profile: &mut Draft,
     (key_type, on): (&KeyKind, &On),
     h: ObjectHandle,
-    same: &dyn Fn(&[u8]) -> bool,
+    same: &dyn Fn(&[u8]) -> Option<Checked>,
 ) {
     let cap = Capability::Export { way: Way::Host, key_type: key_type.clone(), on: on.clone() };
     let (mut refusals, mut rvs) = (Vec::new(), Vec::new());
     for (mech, name) in host_wraps() {
         match made.tok.extract(h, &mech) {
-            Ok(plain) if same(&plain) => return profile.yes(cap, Checked::Host, Some(name.to_string())),
-            Ok(_) => return profile.wrong(cap, format!("{name}: what arrived is another key")),
+            Ok(plain) => {
+                return match same(&plain) {
+                    Some(checked) => profile.yes(cap, checked, Some(name.to_string())),
+                    None => profile.wrong(cap, format!("{name}: what arrived is another key")),
+                };
+            }
             Err(e) => {
                 refusals.push(format!("{name}: {}", evidence(made.tok, &e)));
                 rvs.push(e.rv());
@@ -473,26 +658,28 @@ fn sealed_ways(profile: &Draft, secret: bool) -> Vec<Sealed> {
 enum Trip {
     /// The key did not leave: why, and the return value.
     WrapRefused(String, Option<u64>),
-    /// It left, but did not come back in here: why, and the return value.
-    UnwrapRefused(String, Option<u64>),
-    /// It came back in as this object.
-    Unwrapped(ObjectHandle),
+    /// It left as this; it came back in here as the object, or did not: why, and the return
+    /// value.
+    Wrapped(Wrapped, std::result::Result<ObjectHandle, (String, Option<u64>)>),
+}
+
+/// What left the token one sealed way: under RSA-OAEP, the key itself (and
+/// `CKM_RSA_AES_KEY_WRAP`'s one blob), or the KEK (`kek`) the key is under by RFC 5649.
+struct Wrapped {
+    kek: Option<Vec<u8>>,
+    key: Vec<u8>,
 }
 
 /// Wrap `h` toward the transport key `way`'s way, then unwrap it back here under `template`.
-fn trip(
-    made: &Made,
-    way: Sealed,
-    (tpub, tpriv): (ObjectHandle, ObjectHandle),
-    h: ObjectHandle,
-    template: &[Attribute],
-) -> Trip {
+fn trip(made: &Made, way: Sealed, t: &Transport, h: ObjectHandle, template: &[Attribute]) -> Trip {
     let session = made.session;
-    let one = |mech: &Mechanism| match session.wrap_key(mech, tpub, h) {
-        Ok(blob) => match session.unwrap_key(mech, tpriv, &blob, template) {
-            Ok(h2) => Trip::Unwrapped(h2),
-            Err(e) => Trip::UnwrapRefused(format!("C_UnwrapKey: {}", ckr(&e)), token::rv_of(&e)),
-        },
+    let one = |mech: &Mechanism| match session.wrap_key(mech, t.public, h) {
+        Ok(blob) => {
+            let back = session
+                .unwrap_key(mech, t.private, &blob, template)
+                .map_err(|e| (format!("C_UnwrapKey: {}", ckr(&e)), token::rv_of(&e)));
+            Trip::Wrapped(Wrapped { kek: None, key: blob }, back)
+        }
         Err(e) => Trip::WrapRefused(format!("C_WrapKey: {}", ckr(&e)), token::rv_of(&e)),
     };
     match way {
@@ -504,27 +691,19 @@ fn trip(
                 None => Trip::WrapRefused("this build cannot name CKM_RSA_AES_KEY_WRAP".into(), None),
             }
         }
-        Sealed::Composed(hash) => composed(made, hash, (tpub, tpriv), h, template),
+        Sealed::Composed(hash) => composed(made, hash, t, h, template),
     }
 }
 
 /// camigrate's composed method: a fresh AES-256 KEK, the key under it by RFC 5649, the KEK under
 /// RSA-OAEP to the transport key; back in the same way. Both KEKs are session objects.
-fn composed(
-    made: &Made,
-    hash: OaepHash,
-    (tpub, tpriv): (ObjectHandle, ObjectHandle),
-    h: ObjectHandle,
-    template: &[Attribute],
-) -> Trip {
+fn composed(made: &Made, hash: OaepHash, t: &Transport, h: ObjectHandle, template: &[Attribute]) -> Trip {
     let session = made.session;
     // camigrate's own KEK templates (`templates::session`), as the provider adjusts them.
-    let (kek, back) =
-        match (made.tok.session_template(SessionKey::ExportKek), made.tok.session_template(SessionKey::ImportKek)) {
-            (Ok(kek), Ok(back)) => (kek, back),
-            (Err(e), _) => return Trip::WrapRefused(format!("the KEK: {}", evidence(made.tok, &e)), e.rv()),
-            (_, Err(e)) => return Trip::UnwrapRefused(format!("the KEK: {}", evidence(made.tok, &e)), e.rv()),
-        };
+    let kek = match made.tok.session_template(SessionKey::ExportKek) {
+        Ok(kek) => kek,
+        Err(e) => return Trip::WrapRefused(format!("the KEK: {}", evidence(made.tok, &e)), e.rv()),
+    };
     let kek = match session.generate_key(&Mechanism::AesKeyGen, &kek) {
         Ok(k) => SessionObject::new(session, k),
         Err(e) => return Trip::WrapRefused(format!("the KEK: C_GenerateKey: {}", ckr(&e)), token::rv_of(&e)),
@@ -540,29 +719,41 @@ fn composed(
                 continue;
             }
         };
-        let kek_blob = match session.wrap_key(&oaep, tpub, kek.handle()) {
+        let kek_blob = match session.wrap_key(&oaep, t.public, kek.handle()) {
             Ok(blob) => blob,
             Err(e) => return Trip::WrapRefused(format!("the KEK: C_WrapKey: {}", ckr(&e)), token::rv_of(&e)),
         };
-        let back = match session.unwrap_key(&oaep, tpriv, &kek_blob, &back) {
-            Ok(k) => SessionObject::new(session, k),
-            Err(e) => return Trip::UnwrapRefused(format!("the KEK: C_UnwrapKey: {}", ckr(&e)), token::rv_of(&e)),
-        };
-        return match session.unwrap_key(&kwp, back.handle(), &blob, template) {
-            Ok(h2) => Trip::Unwrapped(h2),
-            Err(e) => Trip::UnwrapRefused(format!("{name}: C_UnwrapKey: {}", ckr(&e)), token::rv_of(&e)),
-        };
+        let back = made
+            .tok
+            .session_template(SessionKey::ImportKek)
+            .map_err(|e| (format!("the KEK: {}", evidence(made.tok, &e)), e.rv()))
+            .and_then(|back| {
+                session
+                    .unwrap_key(&oaep, t.private, &kek_blob, &back)
+                    .map(|k| SessionObject::new(session, k))
+                    .map_err(|e| (format!("the KEK: C_UnwrapKey: {}", ckr(&e)), token::rv_of(&e)))
+            })
+            .and_then(|back| {
+                session
+                    .unwrap_key(&kwp, back.handle(), &blob, template)
+                    .map_err(|e| (format!("{name}: C_UnwrapKey: {}", ckr(&e)), token::rv_of(&e)))
+            });
+        return Trip::Wrapped(Wrapped { kek: Some(kek_blob), key: blob }, back);
     }
     Trip::WrapRefused(refusals.join("; "), worst(&rvs))
 }
 
 /// The `export.sealed.*` and `unwrap.*` rows of the test key `h` (imported extractable): each
-/// sealed way tried until one round-trips; `same` says the unwrapped key is the test key. Only
-/// a round trip shows a blob holds the key, so a key that leaves but never comes back in leaves
-/// the export unprobed. An unwrapped secret key's `CKA_VALUE_LEN` is not read: stock `SoftHSM`
-/// leaves it 0 and the reference suites' carries the fix (upstream #925), so a row reading it
-/// would describe one build only; `move.secret-unwrap` still says it.
-fn export_sealed(made: &mut Made, profile: &mut Draft, key: &TestKey, transport: Transport) {
+/// sealed way tried until the host decodes what left to the test key (`host_same`) and it comes
+/// back in (`same`). The export is a yes only when the host recovers the key, and a no the host
+/// shows when it recovers it from no blob, since another token reads only the standard encoding
+/// (review 2026-11-24 E-3); the unwrap is the host's yes only of a blob it decoded. A round trip
+/// alone, and the generated transport key the host cannot decode with, are the module's word.
+/// Only a round trip shows a blob comes back in, so a key that leaves but never comes back in
+/// leaves the unwrap a no. An unwrapped secret key's `CKA_VALUE_LEN` is not read: stock
+/// `SoftHSM` leaves it 0 and the reference suites' carries the fix (upstream #925), so a row
+/// reading it would describe one build only; `move.secret-unwrap` still says it.
+fn export_sealed(made: &mut Made, profile: &mut Draft, key: &TestKey, transport: Option<&Transport>) {
     let export = Capability::Export { way: Way::Sealed, key_type: key.key_type.clone(), on: key.on.clone() };
     let unwrap = Capability::Unwrap { key_type: key.key_type.clone(), on: key.on.clone() };
     let Some(transport) = transport else {
@@ -581,24 +772,37 @@ fn export_sealed(made: &mut Made, profile: &mut Draft, key: &TestKey, transport:
                 continue;
             }
         };
-        match trip(made, way, transport, key.h, &template) {
+        let (wrapped, unwrapped) = match trip(made, way, transport, key.h, &template) {
             Trip::WrapRefused(why, rv) => {
                 ways.wrap_refused.push(format!("{}: {why}", way.via()));
                 ways.rvs.push(rv);
+                continue;
             }
-            Trip::UnwrapRefused(why, rv) => {
+            Trip::Wrapped(wrapped, unwrapped) => (wrapped, unwrapped),
+        };
+        let host = transport.host.as_ref().map(|k| host_decode(way, &wrapped, k).and_then(|p| (key.host_same)(&p)));
+        match host {
+            Some(Some(checked)) => {
+                ways.decoded.get_or_insert_with(|| (way.via(), checked));
+            }
+            Some(None) => ways.undecoded.push(way.via()),
+            None => {}
+        }
+        match unwrapped {
+            Err((why, rv)) => {
                 ways.unwrap_refused.push(format!("{}: {why}", way.via()));
                 ways.rvs.push(rv);
             }
-            Trip::Unwrapped(h2) => {
+            Ok(h2) => {
                 made.track(h2, Some(&label));
                 match (key.same)(made, h2) {
-                    // A round trip on this one module: the blob is never decoded on the host, so
-                    // another token taking it is not shown (review 2026-11-24 E-3).
-                    Ok(()) => {
-                        profile.yes(export, Checked::Unverified, Some(way.via()));
-                        profile.yes(unwrap, Checked::Unverified, Some(way.via()));
-                        return;
+                    // Of a blob the host decoded, as the key is checked; of its own alone, its word.
+                    Ok(checked) if matches!(host, Some(Some(_))) => {
+                        ways.back = Some((way.via(), checked));
+                        break;
+                    }
+                    Ok(_) => {
+                        ways.back.get_or_insert_with(|| (way.via(), Checked::unverified()));
                     }
                     Err(e) => {
                         ways.unwrap_refused.push(format!(
@@ -617,8 +821,37 @@ fn export_sealed(made: &mut Made, profile: &mut Draft, key: &TestKey, transport:
             }
         }
     }
-    // The module's no only when each way failed by its refusal; the host's when none returned
-    // a value and one came back as another key.
+    sealed_rows(made, profile, (export, unwrap), ways, transport.host.is_some());
+}
+
+/// The rows [`export_sealed`] found, `host` whether the host held the transport key's private
+/// key.
+fn sealed_rows(
+    made: &mut Made,
+    profile: &mut Draft,
+    (export, unwrap): (Capability, Capability),
+    ways: Ways,
+    host: bool,
+) {
+    // The export: the host's yes, its no, or (no host key) the module's round trip.
+    let exported = ways.decoded.is_some() || (ways.back.is_some() && !host) || !ways.undecoded.is_empty();
+    match (&ways.decoded, &ways.back) {
+        (Some((via, checked)), _) => profile.yes(export.clone(), *checked, Some(via.clone())),
+        (None, Some((via, _))) if !host => {
+            profile.yes(export.clone(), Checked::unverified(), Some(via.clone()));
+        }
+        (None, _) if !ways.undecoded.is_empty() => profile.wrong(
+            export.clone(),
+            format!("the host decodes none of what it wraps to the key: {}", ways.undecoded.join("; ")),
+        ),
+        (None, _) => (),
+    }
+    // The unwrap: of a blob the host decoded, as the key is checked; of the module's own alone,
+    // its word. The module's no only when each way failed by its refusal; the host's when none
+    // returned a value and one came back as another key.
+    if let Some((via, checked)) = ways.back {
+        return profile.yes(unwrap, checked, Some(via));
+    }
     let rv = worst(&ways.rvs);
     match ways.rows() {
         SealedRows::UnwrapNo(why) => {
@@ -627,9 +860,14 @@ fn export_sealed(made: &mut Made, profile: &mut Draft, key: &TestKey, transport:
             } else {
                 profile.refused(&mut made.undetermined, unwrap, rv, why);
             }
-            made.undetermined.push(format!("no {export} row: it leaves, but never comes back in here"));
+            if !exported {
+                made.undetermined.push(format!("no {export} row: it leaves, but never comes back in here"));
+            }
         }
-        SealedRows::ExportNo(why) => profile.refused(&mut made.undetermined, export, rv, why),
+        SealedRows::ExportNo(why) if !exported => {
+            profile.refused(&mut made.undetermined, export, rv, why);
+        }
+        SealedRows::ExportNo(_) => {}
         SealedRows::Undetermined(why) => {
             made.undetermined
                 .push(format!("no {export} or {unwrap} row: the provider refuses the unwrap template: {why}"));
@@ -637,32 +875,62 @@ fn export_sealed(made: &mut Made, profile: &mut Draft, key: &TestKey, transport:
     }
 }
 
+/// What the module wrapped `way`'s way toward the transport key, decoded on the host with its
+/// private key `key`: the key's encoding (a secret key's value, a private key's PKCS#8), or `None`
+/// when it is not the standard encoding (RFC 8017 OAEP; RFC 5649 under the KEK) that camigrate
+/// and another token read.
+fn host_decode(way: Sealed, wrapped: &Wrapped, key: &rsa::PrivateKey) -> Option<Vec<u8>> {
+    use aes_kw::cipher::KeyInit as _;
+    let oaep = |hash, blob: &[u8]| match hash {
+        OaepHash::Sha1 => key.decrypt(rsa::Oaep::<sha1::Sha1>::new(), blob).ok(),
+        OaepHash::Sha256 => key.decrypt(rsa::Oaep::<sha2::Sha256>::new(), blob).ok(),
+    };
+    let kwp = |kek: &[u8], blob: &[u8]| {
+        let mut out = vec![0u8; blob.len()];
+        let n = match kek.len() {
+            16 => aes_kw::KwpAes128::new_from_slice(kek).ok()?.unwrap_key(blob, &mut out).ok()?.len(),
+            24 => aes_kw::KwpAes192::new_from_slice(kek).ok()?.unwrap_key(blob, &mut out).ok()?.len(),
+            32 => aes_kw::KwpAes256::new_from_slice(kek).ok()?.unwrap_key(blob, &mut out).ok()?.len(),
+            _ => return None,
+        };
+        out.truncate(n);
+        Some(out)
+    };
+    match (way, &wrapped.kek) {
+        (Sealed::Direct(hash), None) => oaep(hash, &wrapped.key),
+        (Sealed::Composed(hash), Some(kek)) => kwp(&oaep(hash, kek)?, &wrapped.key),
+        // PKCS#11 §2.1.21: the KEK under RSA-OAEP, a modulus long, then the key under it.
+        (Sealed::RsaAes(hash), None) => {
+            let k = rsa::traits::PublicKeyParts::size(key);
+            let (kek, blob) = wrapped.key.split_at_checked(k)?;
+            kwp(&oaep(hash, kek)?, blob)
+        }
+        _ => None,
+    }
+}
+
 /// One test key on the token, for its export rows: what it is, whether it is a secret key (the
 /// direct RSA-OAEP way is a secret key's), how the provider templates its unwrapped copy under a
-/// label, and whether an unwrapped copy is the test key.
+/// label, whether an unwrapped copy is the test key (`same`, and what checked it: the host, or
+/// the module's commitment alone), and whether what the host decoded is (`host_same`).
 struct TestKey<'a> {
     key_type: &'a KeyKind,
     on: &'a On,
     h: ObjectHandle,
     secret: bool,
     template: &'a dyn Fn(&str) -> Result<Vec<Attribute>>,
-    same: &'a dyn Fn(&Made, ObjectHandle) -> Result<()>,
+    same: &'a dyn Fn(&Made, ObjectHandle) -> Result<Checked>,
+    host_same: &'a dyn Fn(&[u8]) -> Option<Checked>,
 }
 
 /// Hand `key` to the host (`export.host.*`, checked by `host_same` on what arrived), then each
 /// sealed way (`export.sealed.*`, `unwrap.*`).
-fn exports(
-    made: &mut Made,
-    profile: &mut Draft,
-    key: &TestKey,
-    host_same: &dyn Fn(&[u8]) -> bool,
-    transport: Transport,
-) {
-    export_host(made, profile, (key.key_type, key.on), key.h, host_same);
+fn exports(made: &mut Made, profile: &mut Draft, key: &TestKey, transport: Option<&Transport>) {
+    export_host(made, profile, (key.key_type, key.on), key.h, key.host_same);
     export_sealed(made, profile, key, transport);
 }
 
-/// How each sealed way of one key failed.
+/// How each sealed way of one key went: how it failed, and what the host decoded.
 #[derive(Default)]
 struct Ways {
     /// The key did not leave: the module's `C_WrapKey` refusals.
@@ -675,6 +943,13 @@ struct Ways {
     rvs: Vec<Option<u64>>,
     /// Whether a way came back as another key: the host's finding.
     wrong: bool,
+    /// The first way whose blob the host decoded to the key, as it checked.
+    decoded: Option<(String, Checked)>,
+    /// The ways whose blob the host decoded to no key, or another.
+    undecoded: Vec<String>,
+    /// The first way that came back in as the key, and what checked that: the key's check when
+    /// the host decoded its blob, else nothing outside the module.
+    back: Option<(String, Checked)>,
 }
 
 /// The rows the failed ways of [`Ways`] give.
@@ -736,7 +1011,7 @@ pub(super) fn same_aes(made: &Made, h: ObjectHandle, value: &[u8]) -> Result<()>
 
 /// Import an AES `value` with `C_CreateObject` (`import.CKK_AES.<bytes>`), extractable, then
 /// export it each way.
-fn import_secret(made: &mut Made, profile: &mut Draft, kt: Kt, value: &[u8], transport: Transport) {
+fn import_secret(made: &mut Made, profile: &mut Draft, kt: Kt, value: &[u8], transport: Option<&Transport>) {
     let n = u32::try_from(value.len()).unwrap_or_default();
     let on = On::Bytes(n);
     let key_kind = KeyKind::from(kt.name());
@@ -786,20 +1061,23 @@ fn import_secret(made: &mut Made, profile: &mut Draft, kt: Kt, value: &[u8], tra
     };
     made.track(h, Some(&label));
     // The imported key's commitment, which a copy that comes back must give too.
+    // AES is checked against the value the host knows; another type by its own commitment, which
+    // the module computes alone (review 2026-11-24 E-3).
     let checked = match commit {
-        Some(c) => made.tok.commit(h, &object, c, "cakeys probe: import").map(Some).map_err(|e| ("commitment", e)),
-        None => same_aes(made, h, value).map(|()| None).map_err(|e| ("check value", e)),
+        Some(c) => made
+            .tok
+            .commit(h, &object, c, "cakeys probe: import")
+            .map(|v| (Some(v), Checked::unverified()))
+            .map_err(|e| ("commitment", e)),
+        None => Checked::verified(same_aes(made, h, value)).map(|c| (None, c)).map_err(|e| ("check value", e)),
     };
-    let first = match checked {
+    let (first, checked) = match checked {
         Ok(v) => v,
         Err((what, e)) => {
             made.undetermined.push(format!("no {cap} row: imported, but its {what}: {}", evidence(made.tok, &e)));
             return;
         }
     };
-    // AES is checked against the value the host knows; another type by its own commitment, which
-    // the module computes alone (review 2026-11-24 E-3).
-    let checked = if commit.is_none() { Checked::Host } else { Checked::Unverified };
     profile.yes(cap, checked, Some(PlaintextKind::CreateObject.name().into()));
     let template = |label: &str| {
         let t = vec![
@@ -813,14 +1091,22 @@ fn import_secret(made: &mut Made, profile: &mut Draft, kt: Kt, value: &[u8], tra
     };
     let same = |m: &Made, h2| match (commit, &first) {
         (Some(c), Some(first)) => match m.tok.commit(h2, &object, c, "cakeys probe: import") {
-            Ok(v) if &v == first => Ok(()),
+            Ok(v) if &v == first => Ok(Checked::unverified()),
             Ok(_) => Err(KmError::Conflict("its commitment is another key's".into())),
             Err(e) => Err(e),
         },
-        _ => same_aes(m, h2, value),
+        _ => Checked::verified(same_aes(m, h2, value)),
     };
-    let test_key = TestKey { key_type: &key_kind, on: &on, h, secret: true, template: &template, same: &same };
-    exports(made, profile, &test_key, &|plain| plain == value, transport);
+    let test_key = TestKey {
+        key_type: &key_kind,
+        on: &on,
+        h,
+        secret: true,
+        template: &template,
+        same: &same,
+        host_same: &|plain| Checked::same(plain, value),
+    };
+    exports(made, profile, &test_key, transport);
 }
 
 /// The secret key types, other than AES, whose import and export are probed, with the length
@@ -863,9 +1149,9 @@ fn create_public(made: &mut Made, profile: &mut Draft, class: Class, bytes: &[u8
     let on = Declared { object: Object::new(&object)?, spec: &probe_spec, locator: &loc };
     let created = made.tok.provider.adjusted(&Template::Object(on), t).and_then(|t| {
         made.tok.managing("the create probe", || {
-            session.create_object(&t).map_err(|e| {
-                KmError::Unsupported(format!("C_CreateObject: {}", ckr(&e)).into()).with_rv(token::rv_of(&e))
-            })
+            session
+                .create_object(&t)
+                .map_err(|e| made.tok.refused_for(Topic::Create, &e, format!("C_CreateObject: {}", ckr(&e))))
         })
     });
     let h = match created {
@@ -878,7 +1164,9 @@ fn create_public(made: &mut Made, profile: &mut Draft, class: Class, bytes: &[u8
     };
     made.track(h, label.as_ref());
     match made.session.get_attributes(h, &[AttributeType::Value]).as_deref() {
-        Ok([Attribute::Value(v)]) if v == bytes => profile.yes(cap, Checked::Host, None),
+        Ok([Attribute::Value(v)]) if let Some(checked) = Checked::same(v.as_slice(), bytes) => {
+            profile.yes(cap, checked, None);
+        }
         Ok(_) => profile.wrong(cap, "CKA_VALUE reads otherwise".into()),
         Err(e) => made.undetermined.push(format!("no {cap} row: reading CKA_VALUE back: {}", ckr(e))),
     }
@@ -922,6 +1210,29 @@ mod tests {
         assert_eq!(unfixtured_curves(), ["edwards448"]);
     }
 
+    /// The slot's mark is a certificate over the key it is given, signed by the P-256 test key,
+    /// the same bytes each time (the guard makes it again from the slot's key) and another for
+    /// another key; the fixed certificate the probe once marked with is none (review 2026-11-24
+    /// E-6: it vouched for whatever key the slot held).
+    #[test]
+    fn the_slot_mark_names_its_key() {
+        use cakeys_core::sig::{self, Encoding};
+        let own = id::cert_spki(CERTIFICATE).unwrap();
+        let other = id::spki_canonical(&spki_of_pkcs8(CURVE_KEYS[1].2).unwrap()).unwrap();
+        let (mark, another) = (slot_mark(&own).unwrap(), slot_mark(&other).unwrap());
+        assert_eq!(slot_mark(&own).as_ref(), Some(&mark));
+        assert_ne!(mark, another);
+        assert_ne!(mark, CERTIFICATE);
+        for (cert, spki) in [(&mark, &own), (&another, &other)] {
+            assert_eq!(&id::cert_spki(cert).unwrap(), spki);
+            let (whole, _) = der_element(cert).unwrap();
+            let (tbs, rest) = der_element(der_contents(whole).unwrap()).unwrap();
+            let (bits, _) = der_element(der_element(rest).unwrap().1).unwrap();
+            let signature = &der_contents(bits).unwrap()[1..];
+            assert_eq!(sig::ecdsa(&own, tbs, signature, Encoding::Der, None), Some(Ok(())));
+        }
+    }
+
     /// A way the provider will not template was never sent to the module: no `no` row from it,
     /// and no export `no` while it is untried. A wrong key unwrapped is an unwrap `no`, named
     /// as such (review moves F2).
@@ -931,8 +1242,7 @@ mod tests {
             wrap_refused: wrap.iter().map(|s| (*s).to_owned()).collect(),
             unwrap_refused: unwrap.iter().map(|s| (*s).to_owned()).collect(),
             untried: untried.iter().map(|s| (*s).to_owned()).collect(),
-            rvs: Vec::new(),
-            wrong: false,
+            ..Ways::default()
         };
         assert_eq!(ways(&[], &[], &["a: refused"]).rows(), SealedRows::Undetermined("a: refused".into()));
         assert_eq!(ways(&["b: C_WrapKey"], &[], &["a: refused"]).rows(), SealedRows::Undetermined("a: refused".into()));

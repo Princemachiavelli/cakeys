@@ -45,6 +45,12 @@ sha2.workspace = true
 getrandom.workspace = true
 # The import probes' AES check value, computed on the host.
 aes.workspace = true
+# The sealed exports, decoded on the host: RSA-OAEP to the imported test key, then RFC 5649.
+aes-kw.workspace = true
+rsa.workspace = true
+sha1.workspace = true
+# The scratch slot's mark, signed on the host by the P-256 test key.
+p256.workspace = true
 
 # The integration tests include crates/cli/tests/common (one harness for both tools), and with
 # it its dependencies.
@@ -53,7 +59,6 @@ aes.workspace = true
 serde.workspace = true
 # tests/fault.rs loads its cdylib: as a dependency, every build of the tests makes it.
 p11-fault = { path = "../p11-fault" }
-aes-kw.workspace = true
 base64.workspace = true
 cmac.workspace = true
 des.workspace = true

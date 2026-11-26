@@ -425,8 +425,8 @@ pub(super) fn prove(made: &mut Made, profile: &mut Draft, kt: &KeyKind, on: &str
         let cap = Capability::Prove { binding: binding.name().into(), key_type: kt.clone(), on: on.clone() };
         // The host verified the proof; a signature it refuses is its finding. Anything else
         // (no verifier on the host, a device failure) is no answer of the module's (E-2).
-        match outcome {
-            Ok(()) => profile.yes(cap, Checked::Host, None),
+        match Checked::verified(outcome) {
+            Ok(checked) => profile.yes(cap, checked, None),
             Err(e @ KmError::Conflict(_)) => profile.wrong(cap, evidence(made.tok, &e)),
             Err(e) => profile.refused(&mut made.undetermined, cap, e.rv(), evidence(made.tok, &e)),
         }
