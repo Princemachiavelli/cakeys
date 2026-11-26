@@ -1226,4 +1226,38 @@ mod tests {
         let other = verify(&unmarshal_public(&blob).unwrap(), &victim_spki);
         assert!(matches!(other, Err(KmError::Conflict(m)) if m.contains("attests the public key")));
     }
+
+    /// A statement is the AK's only when the AK signed it as itself (review 2026-11-24 B-12, the
+    /// other signer): one another key signed is refused by the signature, under the AK's
+    /// qualified Name or its own; and one the AK's key signed naming another qualified signer is
+    /// refused by that Name. The AK's own statement of the same object verifies.
+    #[test]
+    fn a_statement_by_another_signer_is_refused() {
+        let ak = p256::ecdsa::SigningKey::from_slice(&[1; 32]).unwrap();
+        let other = p256::ecdsa::SigningKey::from_slice(&[4; 32]).unwrap();
+        let key = p256::ecdsa::SigningKey::from_slice(&[2; 32]).unwrap();
+        let (ak_public, blob) = (unmarshal_public(&blob_of(&ak)).unwrap(), blob_of(&key));
+        let (ak_qn, other_qn) = (Name::try_from(vec![0x0b; 34]).unwrap(), vec![0x0d; 34]);
+        let (name, qn) = (recompute_name(&blob).unwrap(), vec![0x0c; 34]);
+        let live = (
+            unmarshal_public(&blob).unwrap(),
+            Name::try_from(name.clone()).unwrap(),
+            Name::try_from(qn.clone()).unwrap(),
+        );
+        let spki = material_of(&live.0).unwrap().spki.unwrap();
+        let verify = |signer: &p256::ecdsa::SigningKey, signer_qn: &[u8]| {
+            let (attest, signature) = certify_statement(signer, signer_qn, &name, &qn);
+            verify_certified(&attest, &signature, &blob, &live, &ak_public, &ak_qn, Some(&spki))
+        };
+        verify(&ak, ak_qn.value()).unwrap();
+        for qualified in [ak_qn.value(), other_qn.as_slice()] {
+            let e = verify(&other, qualified);
+            assert!(
+                matches!(&e, Err(KmError::Conflict(m)) if m.contains("does not verify against the pinned AK")),
+                "{e:?}"
+            );
+        }
+        let e = verify(&ak, &other_qn);
+        assert!(matches!(&e, Err(KmError::Conflict(m)) if m.contains("signed by another key than the AK")), "{e:?}");
+    }
 }
