@@ -119,13 +119,22 @@ fn the_write_probes_make_their_secret_keys_through_the_provider() {
     // the provider's refusal, not these arguments' (review `template_hook.rs` F1: the absence
     // alone passed whatever else stopped the wrap probes).
     w.write_config(&tokens);
-    // Onto the provider's profile, which it differs from: beside it, as `.new`, until accepted
-    // (review 2026-11-24 C-8: a regeneration replaced the file it was then compared with).
-    let refused = std::fs::read_to_string(&out).unwrap();
-    let control = w.dir.join("profile.toml.new");
-    let o = Run::new(BIN, &config).output(&[&args[3..], &more].concat());
+    // Onto the committed softhsm/2.7 profile, which this probe (RSA up to 2048 bits) differs
+    // from: beside it, as `.new`, until accepted (review 2026-11-24 C-8: a regeneration replaced
+    // the file it was then compared with).
+    let committed =
+        cakeys_profile::embedded::PROFILE_FILES.iter().find(|(p, _)| p.ends_with("softhsm/2.7.toml")).unwrap().1;
+    let target = w.dir.join("control.toml");
+    std::fs::write(&target, committed).unwrap();
+    let control = w.dir.join("control.toml.new");
+    let control_args = [&args[3..], &more[..2], &["--out", target.to_str().unwrap()]].concat();
+    let o = Run::new(BIN, &config).output(&control_args);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    assert_eq!(std::fs::read_to_string(&out).unwrap(), refused, "a probe without --accept replaced its --out file");
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        committed,
+        "a probe without --accept replaced its --out file"
+    );
     let profile = std::fs::read_to_string(&control).unwrap();
     assert!(profile.contains("\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\", by = \"host\" }"), "{profile}");
     assert!(profile.contains("\"generate.CKK_EC.secp256k1\" = { answer = \"yes\", by = \"host\" }"), "{profile}");
@@ -133,9 +142,9 @@ fn the_write_probes_make_their_secret_keys_through_the_provider() {
         assert!(profile.contains(&format!("\"{cap}\" = {{ answer = \"yes\"")), "{cap}: {profile}");
     }
     // Accepted, it replaces the file, and nothing waits beside it.
-    let o = Run::new(BIN, &config).output(&[&args[3..], &more, &["--accept"]].concat());
+    let o = Run::new(BIN, &config).output(&[&control_args[..], &["--accept"]].concat());
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(!control.exists(), "a stale .new stayed beside the accepted profile");
-    let profile = std::fs::read_to_string(&out).unwrap();
+    let profile = std::fs::read_to_string(&target).unwrap();
     assert!(profile.contains("\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\", by = \"host\" }"), "{profile}");
 }
