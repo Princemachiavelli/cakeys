@@ -1164,9 +1164,12 @@ fn create_public(made: &mut Made, profile: &mut Draft, class: Class, bytes: &[u8
     };
     made.track(h, label.as_ref());
     match made.session.get_attributes(h, &[AttributeType::Value]).as_deref() {
-        Ok([Attribute::Value(v)]) if let Some(checked) = Checked::same(v.as_slice(), bytes) => {
-            profile.yes(cap, checked, None);
-        }
+        // The match does not use an `if let` guard, because the workspace's rust-version (1.89)
+        // does not have that feature.
+        Ok([Attribute::Value(v)]) => match Checked::same(v.as_slice(), bytes) {
+            Some(checked) => profile.yes(cap, checked, None),
+            None => profile.wrong(cap, "CKA_VALUE reads otherwise".into()),
+        },
         Ok(_) => profile.wrong(cap, "CKA_VALUE reads otherwise".into()),
         Err(e) => made.undetermined.push(format!("no {cap} row: reading CKA_VALUE back: {}", ckr(e))),
     }

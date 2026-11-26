@@ -124,10 +124,12 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
     let get = |t: AttributeType| attrs.iter().find(|a| a.attribute_type() == t);
     let row = |attr: &str, answer: Option<(bool, String)>, profile: &mut Draft, undetermined: &mut Vec<String>| {
         let cap = Capability::Attr { read: true, attr: attr.into(), key_type: aes.clone() };
-        match (&failed, answer) {
+        // The answer is checked before the match, because the workspace's rust-version (1.89) has
+        // no `if let` guards in match arms.
+        match (&failed, answer.map(|(truthful, why)| (Checked::same(&truthful, &true), why))) {
             (Some((rv, why)), _) => profile.refused(undetermined, cap, *rv, why.clone()),
-            (None, Some((truthful, _))) if let Some(c) = Checked::same(&truthful, &true) => profile.yes(cap, c, None),
-            (None, Some((_, why))) => profile.wrong(cap, why),
+            (None, Some((Some(c), _))) => profile.yes(cap, c, None),
+            (None, Some((None, why))) => profile.wrong(cap, why),
             (None, None) => profile.wrong(cap, "the module does not return it".into()),
         }
     };
