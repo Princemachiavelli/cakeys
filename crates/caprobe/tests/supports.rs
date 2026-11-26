@@ -1,14 +1,16 @@
-//! `caprobe supports` (docs/CAPROBE.md): static answers from the capability profiles embedded in
-//! the binary. No token and no keys.toml, so these run under a plain `cargo test` too. Yes is 0,
-//! no 15, unknown 16. `checks.profiles` (checks.nix) asks the Nix-built binary the questions
-//! whose answer depends on the patched binding.
+//! Tests of `caprobe supports` (docs/CAPROBE.md), which gives static answers from the capability
+//! profiles embedded in the binary. The tests need no token and no keys.toml, so they also run
+//! under a plain `cargo test`. The exit code is 0 for yes, 15 for no and 16 for unknown.
+//! `checks.profiles` (checks.nix) asks the Nix-built binary the questions whose answers depend on
+//! the patched binding.
 
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
 
 use common::*;
 
-/// `caprobe supports <args>`: its exit, and what it said (the verdicts, then the notes).
+/// Runs `caprobe supports <args>` and returns its exit code and its output (the verdicts, and
+/// then the notes).
 fn supports(args: &[&str]) -> (i32, String) {
     let out = tool(BIN).arg("supports").args(args).output().unwrap();
     let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
@@ -20,15 +22,16 @@ fn exit(args: &[&str]) -> i32 {
     supports(args).0
 }
 
-/// The module profile decides; a layer's subtraction, a hardware pair and a class listing each
-/// answer as the profiles record.
+/// The module profile decides the answer, and a layer's subtraction, a hardware pair and a class
+/// listing each answer as the profiles record.
 #[test]
 fn supports_answers_from_the_embedded_profiles() {
     assert_eq!(exit(&["--profile", "softhsm/2.7", "CKM_SHA512_HMAC"]), 0);
     assert_eq!(exit(&["--profile", "softhsm/2.7", "secp256r1"]), 0);
     assert_eq!(exit(&["--profile", "softhsm/2.7", "--oaep"]), 0);
-    // Unknown to the profile, not for want of one: the profile consulted is named (review
-    // supports.rs F2: a profile not found at all answers 16 too).
+    // The answer is unknown because the profile does not decide it, not because there is no
+    // profile, so the output names the profile that was consulted (review supports.rs F2: a
+    // profile that is not found at all also answers 16).
     let unknown = |args: &[&str], module: &str| {
         let (exit, said) = supports(args);
         assert!(exit == 16 && said.contains(&format!("profiles: module {module},")), "{args:?}: exit {exit}: {said}");
@@ -37,28 +40,30 @@ fn supports_answers_from_the_embedded_profiles() {
     assert_eq!(exit(&["--profile", "softhsm/2.7", "--layer", "p11-kit/0.26", "CKM_AES_KEY_WRAP"]), 15);
     assert_eq!(exit(&["--profile", "kryoptic/1.5", "secp256k1"]), 15);
     assert_eq!(exit(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "4096", "CKK_RSA"]), 15);
-    // The same fact, factored out by hand into the swtpm layer.
+    // The same fact, moved by hand into the swtpm layer.
     assert_eq!(exit(&["--profile", "tpm2-pkcs11", "--layer", "swtpm", "--bits", "4096", "CKK_RSA"]), 15);
     assert_eq!(exit(&["--class", "pq", "--profile", "softhsm/2.7"]), 15);
-    // A key type every probed row refuses is no, never yes for want of a curve or size: the
-    // swtpm profile's only Edwards rows are edwards25519 = no and edwards448 = no (it said yes).
+    // A key type that every probed row refuses is a no, and never a yes because no curve or size
+    // was given. The swtpm profile's only Edwards rows are edwards25519 = no and edwards448 = no
+    // (the answer used to be yes).
     assert_eq!(exit(&["--profile", "tpm2-pkcs11/1.10+swtpm", "CKK_EC_EDWARDS"]), 15);
     assert_eq!(exit(&["--profile", "tpm2-pkcs11/1.10+swtpm", "CKK_EC"]), 0);
-    // Between two sizes that generated only when no size between them was refused: swtpm
-    // generates 1024, refuses 1536, generates 2048 and 3072: 2560 is yes, 1280 unknown (it was yes).
+    // A size between two generated sizes is a yes only when no size between them was refused.
+    // swtpm generates 1024, refuses 1536, and generates 2048 and 3072, so 2560 is yes and 1280
+    // is unknown (the answer for 1280 used to be yes).
     assert_eq!(exit(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "2560", "CKK_RSA"]), 0);
     unknown(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "1280", "CKK_RSA"], "tpm2-pkcs11/1.10+swtpm");
     assert_eq!(exit(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "2048", "CKK_RSA"]), 0);
-    // A PBKDF2 parameter set names no key type to generate: the profiles cannot decide it.
+    // A PBKDF2 parameter set names no key type to generate, so the profiles cannot decide it.
     unknown(&["--profile", "softhsm/2.7", "CKP_PKCS5_PBKD2_HMAC_SHA1"], "softhsm/2.7");
-    // No module profile at all: only the binding layer and the baseline answer.
+    // With no module profile at all, only the binding layer and the baseline answer.
     unknown(&["CKM_SHA512_HMAC"], "(none)");
 }
 
-/// `--json` gives the verdicts the text gives, as `{name, verdict}` rows, with the same exit.
-/// NAME, `--class` and `--oaep` each ask one question: two at once are a usage error (2).
-/// `--bits` asks for an RSA size, so with any NAME but `CKK_RSA` it is refused (17), never
-/// dropped (review 2026-11-23 D-16).
+/// `--json` gives the same verdicts as the text output, as `{name, verdict}` rows, with the same
+/// exit code. NAME, `--class` and `--oaep` each ask one question, and two of them at once are a
+/// usage error (2). `--bits` asks about an RSA size, so with any NAME other than `CKK_RSA` it is
+/// refused (17) and never silently dropped (review 2026-11-23 D-16).
 #[test]
 fn supports_asks_one_question_and_answers_it_as_json_too() {
     let query = ["--profile", "softhsm/2.7", "--class", "hmac"];
@@ -77,9 +82,10 @@ fn supports_asks_one_question_and_answers_it_as_json_too() {
     assert!(exit == 17 && said.contains("CKK_RSA"), "{exit}: {said}");
 }
 
-/// The layers `supports --layer`'s help names resolve, and the binding layer named explicitly
-/// changes nothing: it is always applied, as the build decides (review 2026-11-23 D-7: the help
-/// named `cryptoki/0.12-unpatched`, which no profile is).
+/// The layers that the help of `supports --layer` names resolve, and naming the binding layer
+/// explicitly changes nothing, because the binding layer is always applied as the build decides
+/// it (review 2026-11-23 D-7: the help named `cryptoki/0.12-unpatched`, which is not the name of
+/// any profile).
 #[test]
 fn the_layers_the_help_names_resolve() {
     let help = tool(BIN).args(["supports", "--help"]).output().unwrap();
@@ -93,7 +99,8 @@ fn the_layers_the_help_names_resolve() {
     assert_eq!(supports(&[&kwp[..], &["--layer", "cryptoki/0.12"]].concat()), supports(&kwp));
 }
 
-/// `--profiles <dir>` adds profiles to the embedded set: a layer of one's own subtracts.
+/// `--profiles <dir>` adds profiles to the embedded set, so a layer that the user writes
+/// subtracts its mechanisms.
 #[test]
 fn supports_reads_profiles_from_a_directory() {
     // The test's own directory (review supports.rs F3: a fixed name, shared by no rule).
@@ -104,8 +111,9 @@ fn supports_reads_profiles_from_a_directory() {
     assert_eq!(exit(&with), 15);
 }
 
-/// `--token` asks about the profile keys.toml's token names by its `provider`; what cannot be
-/// asked is refused (17), and every verb but `supports --profile` needs keys.toml.
+/// `--token` asks about the profile that a keys.toml token names with its `provider`. A
+/// question that cannot be asked is refused (17), and every verb except `supports --profile`
+/// needs keys.toml.
 #[test]
 fn supports_asks_by_token_and_refuses_what_it_cannot_ask() {
     let dir = Workdir::new("supports-token").dir;
@@ -125,22 +133,23 @@ fn supports_asks_by_token_and_refuses_what_it_cannot_ask() {
     refused(&["--token", "bare", "secp256r1"], "no provider named");
     refused(&["--token", "soft", "--class", "nope"], "no class 'nope'");
 
-    // The token's own stack: its configured layers (`profiles`), and module profiles keys.toml's
-    // `profileDirs` add, as token resolution and `cakeys validate` use them. `supports --token`
-    // once left both out: yes from SoftHSM's profile behind p11-kit, and 17 for a profile only
-    // `profileDirs` has.
+    // The token's own stack includes its configured layers (`profiles`) and the module profiles
+    // that the `profileDirs` of keys.toml add, as token resolution and `cakeys validate` use
+    // them. `supports --token` once left both out: it answered yes from SoftHSM's profile behind
+    // p11-kit, and 17 for a profile that only `profileDirs` has.
     let proxied = "[tokens.proxied]\ntokenLabel = \"p\"\nprovider = \"softhsm\"\nprofiles = [\"p11-kit/0.26\"]\n";
     let tpm = "[tokens.tpm]\ntokenLabel = \"t\"\nprovider = \"tpm2-pkcs11\"\nprofiles = [\"swtpm\"]\n";
     std::fs::write(&config, format!("{tokens}\n{proxied}\n{tpm}")).unwrap();
-    // The stack `validate` and `create`'s gate resolve (`gate::stack`, review D4): with no module
-    // recorded, the hardware's rows decide nothing, so a size the swtpm profile generated is
-    // unknown for the token, though asking the profile by name says yes. `supports --token` once
-    // composed a stack of its own that took the profile whole, and said yes.
+    // This is the stack that `validate` and the gate of `create` resolve (`gate::stack`, review
+    // D4). With no module recorded, the hardware's rows decide nothing, so a size that the swtpm
+    // profile generated is unknown for the token, although asking about the profile by name
+    // answers yes. `supports --token` once built a stack of its own that took the whole profile,
+    // and answered yes.
     let (exit, said) = ask(&["--token", "tpm", "--bits", "2048", "CKK_RSA"]);
     assert!(exit == 16 && said.contains("chosen by provider alone"), "exit {exit}: {said}");
     assert_eq!(ask(&["--profile", "tpm2-pkcs11/1.10+swtpm", "--bits", "2048", "CKK_RSA"]).0, 0);
     assert_eq!(ask(&["--token", "soft", "CKM_AES_KEY_WRAP"]).0, 0);
-    // In the stack once, though the command line names it too.
+    // The layer is in the stack once, even when the command line also names it.
     for args in [&["--token", "proxied"][..], &["--token", "proxied", "--layer", "p11-kit/0.26"]] {
         let (exit, said) = ask(&[args, &["CKM_AES_KEY_WRAP"]].concat());
         assert!(exit == 15 && said.contains("layers [cryptoki/0.12, p11-kit/0.26]"), "{args:?}: exit {exit}: {said}");
@@ -157,7 +166,7 @@ fn supports_asks_by_token_and_refuses_what_it_cannot_ask() {
     assert!(exit == 15 && said.contains("softhsm/2.7+site"), "exit {exit}: {said}");
     assert_eq!(ask(&["--token", "site", "CKM_SHA512_HMAC"]).0, 0);
 
-    // `caps` reads a token: without keys.toml it is a usage error.
+    // `caps` reads a token, so running it without keys.toml is a usage error.
     let out = tool(BIN).args(["caps", "--token", "soft"]).output().unwrap();
     assert_eq!(code(&out), 2, "{}", String::from_utf8_lossy(&out.stderr));
 }
