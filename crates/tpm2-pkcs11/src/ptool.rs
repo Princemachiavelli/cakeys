@@ -1,11 +1,13 @@
-//! The plaintext import of tpm2-pkcs11 (docs/CAMIGRATE.md `tpm2-ptool`, phase 4): the module creates
-//! keys from values only through `tpm2_ptool import`, a runtime dependency of this path.
+//! The plaintext import of tpm2-pkcs11 (docs/CAMIGRATE.md `tpm2-ptool`, phase 4). The module
+//! creates keys from values only through `tpm2_ptool import`, which is a runtime dependency of
+//! this path.
 //!
-//! What it costs, said in every plan that uses it: the key reaches `tpm2_ptool`'s own Python
-//! process, which cakeys cannot zeroize, through an in-memory file (`memfd`, named by cakeys'
-//! own `/proc/<pid>/fd/N`, which the tool's own `tpm2_import` child can open too: it does not
-//! inherit the descriptor; never a file on disk); and `tpm2_ptool` takes the user PIN only on its command
-//! line (`--userpin`), where other local users can read it while it runs.
+//! Every plan that uses this path states its costs. First, the key reaches the Python process of
+//! `tpm2_ptool`, which cakeys cannot zeroize. The key travels through an in-memory file
+//! (`memfd`), never through a file on disk. The tool opens the file by cakeys' own
+//! `/proc/<pid>/fd/N` path, which the tool's `tpm2_import` child can also open, because the
+//! child does not inherit the descriptor. Second, `tpm2_ptool` takes the user PIN only on its
+//! command line (`--userpin`), where other local users can read it while the tool runs.
 
 use crate::attest::{Tpm2Options, store_dir_of};
 use cakeys_core::types::{KeyType, ObjectClass};
@@ -16,13 +18,14 @@ use std::os::fd::AsRawFd as _;
 use std::process::Command;
 use zeroize::Zeroizing;
 
-/// `tpm2_ptool import` of `ctx.key` into the token's store, under its locator.
+/// Runs `tpm2_ptool import` of `ctx.key` into the token's store, under the key's locator.
 ///
 /// # Errors
 ///
-/// `Validation` for a locator with neither `CKA_LABEL` nor `CKA_ID`; `Unsupported` for a key
-/// type the tool cannot import, or no `tpm2_ptool` on `PATH`; `Unavailable` without a user PIN,
-/// or when the tool fails (its message, the PIN removed).
+/// Returns `Validation` for a locator with neither `CKA_LABEL` nor `CKA_ID`. Returns
+/// `Unsupported` for a key type that the tool cannot import, or when `tpm2_ptool` is not on
+/// `PATH`. Returns `Unavailable` without a user PIN, or when the tool fails (with the tool's
+/// message, from which the PIN is removed).
 pub(crate) fn import(ctx: &ImportCtx<'_>) -> Result<()> {
     let opts = Tpm2Options::of(ctx.token_name, &ctx.cfg.options)?;
     let store = store_dir_of(ctx.token_name, &opts)?;
@@ -48,8 +51,9 @@ pub(crate) fn import(ctx: &ImportCtx<'_>) -> Result<()> {
         ));
     }
     let id = ctx.locator.id.as_deref().map(|hex| id_text(ctx.token_name, hex)).transpose()?;
-    // The key never touches a disk: an anonymous in-memory file, open in this process until the
-    // tool is done, which (and whose children) open it through /proc.
+    // The key never touches a disk. It goes into an anonymous in-memory file, which stays open in
+    // this process until the tool is done. The tool and its children open the file through
+    // /proc.
     let fd = rustix::fs::memfd_create("cakeys-import", rustix::fs::MemfdFlags::CLOEXEC)
         .map_err(|e| KmError::Unavailable(format!("memfd_create: {e}").into()))?;
     let mut file = std::fs::File::from(fd);
@@ -81,7 +85,8 @@ pub(crate) fn import(ctx: &ImportCtx<'_>) -> Result<()> {
     drop(file);
     if !out.status.success() {
         let said = String::from_utf8_lossy(&out.stderr);
-        // An empty pattern matches between every character.
+        // An empty pattern matches between every pair of characters, so an empty PIN is not
+        // replaced.
         let said = if pin.is_empty() { said.into_owned() } else { said.replace(pin, "<pin>") };
         return Err(KmError::Unavailable(
             format!("tpm2_ptool import into '{}': {}", ctx.token_name, said.trim()).into(),
@@ -90,11 +95,12 @@ pub(crate) fn import(ctx: &ImportCtx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The `--id` that makes `tpm2_ptool` store the `CKA_ID` the locator names (`hex`, the bytes in
-/// hex). The tool stores the text it is given as the ID's bytes (`CKA_ID = hexlify(id.encode())`,
-/// tpm2-pkcs11 1.10's `commandlets_keys.py`), so it is passed the text those bytes spell; bytes
-/// that are no such text (not UTF-8, a NUL, none at all) cannot reach it, and are refused before
-/// it runs.
+/// Returns the `--id` value that makes `tpm2_ptool` store the `CKA_ID` that the locator names
+/// (`hex` is the ID's bytes in hex). The tool stores the text that it is given as the ID's bytes
+/// (`CKA_ID = hexlify(id.encode())` in `commandlets_keys.py` of tpm2-pkcs11 1.10), so the function
+/// passes the text that those bytes spell. Bytes that do not spell such a text (bytes that are
+/// not UTF-8, a NUL byte, or no bytes at all) cannot reach the tool, so they are refused before
+/// the tool runs.
 fn id_text(token: &str, hex: &str) -> Result<String> {
     let refuse = |why: &str| {
         KmError::Validation(
@@ -112,11 +118,12 @@ fn id_text(token: &str, hex: &str) -> Result<String> {
     Ok(text)
 }
 
-/// A PKCS#8 key as the PEM `tpm2_ptool` reads.
+/// Returns a PKCS#8 key as the PEM text that `tpm2_ptool` reads.
 fn pem(der: &[u8]) -> Zeroizing<Vec<u8>> {
     use base64::Engine as _;
     let b64 = Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(der));
-    // At its final size from the start: growing it would free unzeroized copies of the key.
+    // The buffer has its final size from the start, because growing it would free copies of the
+    // key that are not zeroized.
     let (head, tail) = (b"-----BEGIN PRIVATE KEY-----\n", b"-----END PRIVATE KEY-----\n");
     let mut out = Zeroizing::new(Vec::with_capacity(head.len() + b64.len() + b64.len() / 64 + 1 + tail.len()));
     out.extend_from_slice(head);
@@ -128,7 +135,7 @@ fn pem(der: &[u8]) -> Zeroizing<Vec<u8>> {
     out
 }
 
-/// `tpm2_ptool`'s algorithm for an HMAC key type.
+/// Returns the algorithm name that `tpm2_ptool` uses for an HMAC key type.
 fn hmac(kt: KeyType) -> Option<&'static str> {
     Some(match kt {
         KeyType::GenericSecret => "hmac",
@@ -155,9 +162,10 @@ mod tests {
     use super::*;
     use cakeys_core::config::{Locator, ObjectCfg, parse_config_with};
 
-    /// What the import refuses before `tpm2_ptool` runs: no PIN, a key the tool cannot import,
-    /// a locator it has nothing to import under; and each HMAC key type's algorithm name. A
-    /// run that fails says so without the PIN.
+    /// The import refuses these cases before `tpm2_ptool` runs: no PIN, a key that the tool
+    /// cannot import, and a locator with nothing to import under. The test also checks the
+    /// algorithm name of each HMAC key type, and that a failed run reports the failure without
+    /// the PIN.
     #[test]
     fn imports_are_refused_before_the_tool_runs() {
         let text = "[tokens.t]\ntokenLabel = \"t\"\n[tokens.t.options]\ntpm2Store = \"/nonexistent/store\"\n";
@@ -180,8 +188,8 @@ mod tests {
         }
         let e = run(Some("987654"), &ec, &nowhere).unwrap_err();
         assert!(matches!(&e, KmError::Validation(m) if m.contains("names neither")), "{e}");
-        // The tool itself, on a store that is not there (or no tool at all): a failure that
-        // never repeats the PIN.
+        // The tool itself runs on a store that does not exist (or there is no tool at all), and
+        // the failure never repeats the PIN.
         let hmac_key = ObjectCfg::new(ObjectClass::SecretKey, Some(KeyType::Sha256Hmac));
         let e = run(Some("987654"), &hmac_key, &labelled).unwrap_err();
         assert!(
@@ -194,9 +202,9 @@ mod tests {
         assert!(pem(&[0u8; 100]).starts_with(b"-----BEGIN PRIVATE KEY-----\n"));
     }
 
-    /// `--id` is the text the locator's ID bytes spell, as the tool stores its text as the ID
-    /// (the store fixture's `CKA_ID` "3061" is the text "0a"); an ID no text spells is refused
-    /// before the tool runs, never imported under other bytes.
+    /// `--id` is the text that the locator's ID bytes spell, because the tool stores its text as
+    /// the ID (the `CKA_ID` "3061" of the store fixture is the text "0a"). An ID that spells no
+    /// text is refused before the tool runs, and is never imported under other bytes.
     #[test]
     fn the_id_is_passed_as_the_text_its_bytes_spell() {
         assert_eq!(id_text("t", "3061").unwrap(), "0a");
@@ -210,7 +218,7 @@ mod tests {
                 "{hex}: {e}"
             );
         }
-        // Refused in `import` itself, before the tool would run.
+        // `import` itself refuses it, before the tool would run.
         let text = "[tokens.t]\ntokenLabel = \"t\"\n[tokens.t.options]\ntpm2Store = \"/nonexistent/store\"\n";
         let cfg = parse_config_with(text, std::path::Path::new("keys.toml"), &|_| None).unwrap();
         let ec = ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Ec));
