@@ -173,10 +173,6 @@ verbs = ["create", "create --dry-run"]
 objects = ["new", "new-aes"]
 expect = { exit = 16 }
 
-[[block.override]]
-verbs = ["create --dry-run"]
-expect = { exit = 16, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
-
 # ── OTHER: another object than the one asked for.
 
 # A second object under the locator.
@@ -622,17 +618,13 @@ expect = { exit = 15 }
 lies = ["flag.write-protected"]
 verbs = ["delete --dry-run"]
 objects = ["ec-sign"]
-expect = { exit = 15, red = "L4a-3: a dry run opens its token to read, and does not refuse a write-protected token the run refuses (15)" }
+expect = { exit = 15 }
 
 [[block]]
 lies = ["flag.write-protected"]
 verbs = ["create", "create --dry-run"]
 objects = ["new"]
 expect = { exit = 15 }
-
-[[block.override]]
-verbs = ["create --dry-run"]
-expect = { exit = 15, red = "L4a-3: a dry run opens its token to read, and does not refuse a write-protected token the run refuses (15)" }
 
 [[block]]
 lies = ["flag.write-protected"]
@@ -1095,10 +1087,6 @@ verbs = ["check"]
 objects = ["ec-sign", "aes"]
 expect = { exit = 16 }
 
-[[block.override]]
-objects = ["aes"]
-expect = { exit = 16, red = "L4a-1: a commitment's device failure is said unsupported (15), its row device: token/identity.rs commit maps every module error to Unsupported" }
-
 [[block]]
 lies = ["refused.sign"]
 verbs = ["check"]
@@ -1129,15 +1117,11 @@ verbs = ["lock --dry-run", "create", "create --dry-run"]
 objects = ["ec-sign"]
 expect = { exit = 16, device = true }
 
-[[block.override]]
-verbs = ["create --dry-run"]
-expect = { exit = 16, device = true, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
-
 [[block]]
 lies = ["dev.find"]
 verbs = ["create --dry-run"]
 objects = ["new-aes"]
-expect = { exit = 16, device = true, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
+expect = { exit = 16, device = true }
 
 [[block]]
 lies = ["dev.find"]
@@ -1309,7 +1293,7 @@ expect = { exit = 16 }
 lies = ["loss.removed"]
 verbs = ["check"]
 objects = ["aes"]
-expect = { exit = 16, red = "L4a-1: a commitment's device failure is said unsupported (15), its row device: token/identity.rs commit maps every module error to Unsupported" }
+expect = { exit = 16 }
 
 [[block]]
 lies = ["loss.removed"]
@@ -1318,12 +1302,6 @@ objects = ["new", "new-aes"]
 expect = { exit = 16, device = true, changed = [
   "token",
 ], why = "the module is gone before the undo: what it made stays on the token, and the run says so" }
-
-[[block.override]]
-objects = ["new-aes"]
-expect = { exit = 16, device = true, changed = [
-  "token",
-], why = "the module is gone before the undo: what it made stays on the token, and the run says so", red = "L4a-1: a commitment's device failure is said unsupported (15), its row device: token/identity.rs commit maps every module error to Unsupported" }
 
 [[block]]
 lies = ["loss.destroy"]
@@ -1343,15 +1321,11 @@ verbs = ["delete --dry-run", "create --dry-run"]
 objects = ["ec-sign"]
 expect = { exit = 16, device = true }
 
-[[block.override]]
-verbs = ["create --dry-run"]
-expect = { exit = 16, device = true, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
-
 [[block]]
 lies = ["loss.find"]
 verbs = ["create --dry-run"]
 objects = ["new"]
-expect = { exit = 16, device = true, red = "L4a-2: create --dry-run prints its plan's row (exit 0) when the token then fails it: the run exits 16, and no row says why (cli create, ops::plan_on_tokens)" }
+expect = { exit = 16, device = true }
 
 # ── Grid points no cell covers, each decided.
 

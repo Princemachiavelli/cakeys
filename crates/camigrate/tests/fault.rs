@@ -127,6 +127,7 @@ fn a_move_the_module_fails_is_refused_and_undone() {
         |function: &str, more: &str| format!("[[rule]]\nfn = \"{function}\"\n{more}rv = \"CKR_DEVICE_ERROR\"\n");
     let bad =
         |function: &str, more: &str| format!("[[rule]]\nfn = \"{function}\"\n{more}rv = \"CKR_WRAPPED_KEY_INVALID\"\n");
+    let refuses = |function: &str| format!("[[rule]]\nfn = \"{function}\"\nrv = \"CKR_MECHANISM_INVALID\"\n");
     let out: &[&str] = &["migrate", "ek", "--from", "softhsm", "--to", "kryoptic"];
     let into: &[&str] = &["migrate", "kk", "--from", "kryoptic", "--to", "softhsm"];
     let host: &[&str] = &["migrate", "ks", "--from", "kryoptic", "--to", "softhsm", "--allow-host-plaintext"];
@@ -134,15 +135,18 @@ fn a_move_the_module_fails_is_refused_and_undone() {
     let wrong_type =
         "[[rule]]\nfn = \"C_GetAttributeValue\"\nattribute = \"CKA_CERTIFICATE_TYPE\"\nvalue = \"0100000000000000\"\n";
     // `C_Sign` is asked the length first: the second call of a signature is the one that signs,
-    // and it fails after the real call, which ends the operation (docs/FAULT_SHIM.md).
+    // and it fails after the real call, which ends the operation (docs/FAULT_SHIM.md). A step
+    // that fails as a device (`CKR_DEVICE_ERROR`) is 16, the step it was at named; only the
+    // module's refusal of the step is 15 (review 2026-11-24 L4a-1: the device's were 15 too).
     let cases: Vec<(&str, &[&str], String, i32, &str)> = vec![
         // The source (softhsm) wraps: its key-encryption key, the transport key it loads, each wrap.
-        ("kek", out, fails("C_GenerateKey", ""), 15, "making the KEK"),
-        ("transport", out, fails("C_CreateObject", ""), 15, "loading the transport key"),
+        ("kek", out, fails("C_GenerateKey", ""), 16, "making the KEK"),
+        ("kek-refused", out, refuses("C_GenerateKey"), 15, "making the KEK"),
+        ("transport", out, fails("C_CreateObject", ""), 16, "loading the transport key"),
         // `C_WrapKey` too is asked the length first: calls 1 and 2 wrap the KEK to the transport
         // key (OAEP), 3 is the first of the key's own wrap under the KEK (RFC 5649) [run].
-        ("wrap-kek", out, fails("C_WrapKey", "call = 1\n"), 15, "wrapping the KEK"),
-        ("wrap-key", out, fails("C_WrapKey", "call = 3\n"), 15, "wrapping the key"),
+        ("wrap-kek", out, fails("C_WrapKey", "call = 1\n"), 16, "wrapping the KEK"),
+        ("wrap-key", out, fails("C_WrapKey", "call = 3\n"), 16, "wrapping the key"),
         // The target (softhsm) unwraps (after its transport key proved possession by unwrapping,
         // twice: calls 1 and 2), then proves possession of what it unwrapped. A module that fails
         // the unwrap is 16, said as what may be a damaged bundle; one that says the blob is bad,
@@ -154,8 +158,9 @@ fn a_move_the_module_fails_is_refused_and_undone() {
         // to 4, the length then the MAC); `kk`'s own proof is then calls 5 and 6 (ECDSA) [run].
         ("proof", into, fails("C_Sign", "call = 6\nwhen = \"after\"\n"), 16, "just imported for 'kk'"),
         // The host path into softhsm: the creation, then the commitment of what was created.
-        ("create", host, fails("C_CreateObject", ""), 15, "creating the key"),
-        ("commit", host, fails("C_Sign", "call = 2\nwhen = \"after\"\n"), 15, "just imported for 'ks'"),
+        ("create", host, fails("C_CreateObject", ""), 16, "creating the key"),
+        ("create-refused", host, refuses("C_CreateObject"), 15, "creating the key"),
+        ("commit", host, fails("C_Sign", "call = 2\nwhen = \"after\"\n"), 16, "just imported for 'ks'"),
         // A certificate created on softhsm, which then says it is of another type than X.509.
         ("cert-type", cert, wrong_type.to_owned(), 13, "just imported for 'crt'"),
     ];
@@ -384,4 +389,48 @@ fn a_failed_move_leaves_the_others_moving() {
     let lock: toml::Value = toml::from_str(&std::fs::read_to_string(e.dir.join("keys.lock")).unwrap()).unwrap();
     let realised = |spec: &str| lock["realisations"].get(spec).is_some_and(|r| r.get("softhsm").is_some());
     assert_eq!((realised("c1-dst"), realised("c2-dst")), (false, true), "{lock}");
+}
+
+/// A write-protected target (`CKF_WRITE_PROTECTED`) is refused (15) by every entry path that
+/// would write there, the dry run as the run (review 2026-11-24 L4a-3: the dry runs opened their
+/// target read-only and passed it): a `migrate`, whose plan takes the target from the lock when
+/// it does not open, an `import` of a bundle and one of a key file. Nothing changes, and the lie
+/// fires; without it, each dry run passes.
+#[test]
+fn a_write_protected_target_is_refused_by_each_dry_run_as_by_its_run() {
+    let Some((e, real)) = tokens("write-protected") else { return };
+    let (soft, kry) = (&e.refs[0], &e.refs[1]);
+    // What the imports take, made before: a bundle of kk for softhsm, and kk as a key file.
+    let (bundle, file, pass) = (e.dir.join("kk.bundle.toml"), e.dir.join("kk.p8"), e.dir.join("pass"));
+    std::fs::write(&pass, "correct horse\n").unwrap();
+    let (bundle, file, pass) = (bundle.to_str().unwrap(), file.to_str().unwrap(), pass.to_str().unwrap());
+    let plaintext = ["--passphrase-file", pass, "--allow-host-plaintext"];
+    for args in [
+        &["export", "kk", "--from", "kryoptic", "--to", "softhsm", "--out", bundle][..],
+        &[&["export", "kk", "--from", "kryoptic", "--to-key-file", "pkcs8", "--out", file][..], &plaintext].concat(),
+    ] {
+        let o = e.km_alone(kry, args);
+        assert_eq!(code(&o), 0, "{args:?}: {}", stderr(&o));
+    }
+    let protected = "[[rule]]\nfn = \"C_GetTokenInfo\"\nset_flags = [\"CKF_WRITE_PROTECTED\"]\n";
+    let lock = e.dir.join("keys.lock");
+    let views = [state::TokenView { module: &real, ..soft.view() }, kry.view()];
+    let now = || state::snapshot(&[&lock], &views);
+    let runs: [Vec<&str>; 3] = [
+        vec!["migrate", "kk", "--from", "kryoptic", "--to", "softhsm"],
+        vec!["import", "--to", "softhsm", "--in", bundle],
+        [&["import", "--to", "softhsm", "--in", file][..], &plaintext].concat(),
+    ];
+    for (i, run) in runs.iter().enumerate() {
+        let dry = [&run[..], &["--dry-run"]].concat();
+        for (j, args) in [&run[..], &dry[..]].into_iter().enumerate() {
+            let before = now();
+            let (code, said, fired) = faulted(&e, &format!("protected-{i}-{j}"), protected, args);
+            assert_eq!(code, 15, "{args:?}: {said}");
+            assert!(fired > 0, "{args:?}: the token was never asked its flags");
+            state::assert_unchanged(&before, &now(), &format!("{args:?}"));
+        }
+        let (code, said, _) = faulted(&e, &format!("honest-{i}"), "", &dry);
+        assert_eq!(code, 0, "{dry:?}: {said}");
+    }
 }

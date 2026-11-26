@@ -677,11 +677,19 @@ impl Tally {
 impl Run<'_> {
     /// `--dry-run`: plan each object's move from `from` to `dest` and print it (docs/CAMIGRATE.md
     /// D9), and end with the real run's own verdict ([`tokens::Moves::verdict`]): an export
-    /// without names takes what can move, and fails only when nothing can.
+    /// without names takes what can move, and fails only when nothing can. A `migrate` writes on
+    /// its target, so its dry run opens that token as the dry run of a write: a write-protected
+    /// one is refused (15) as the run's open refuses it (review 2026-11-24 L4a-3), and a target
+    /// the plan took from the lock is opened after the verdict, as the run opens it.
     fn plan_moves(&self, ctx: &MoveCtx, notes: &mut Notes) -> anyhow::Result<()> {
         let source = self.opener.open(ctx.from, Access::Read, notes);
-        let (moves, ..) = self.plan(ctx, Show::Stdout, source, Access::Read, notes)?;
-        Ok(moves.verdict(ctx.take(), ctx.from)?)
+        let target = if let tokens::Dest::Token(_) = ctx.dest { Access::DryWrite } else { Access::Read };
+        let (moves, _, opened) = self.plan(ctx, Show::Stdout, source, target, notes)?;
+        moves.verdict(ctx.take(), ctx.from)?;
+        if let (tokens::Dest::Token(to), None) = (ctx.dest, opened) {
+            self.opener.open(to, target, notes)?;
+        }
+        Ok(())
     }
 
     /// `export` for real: plan as `--dry-run` does, then wrap every key to the target's
@@ -790,7 +798,7 @@ impl Run<'_> {
             .map_err(|e| e.prefixed(input.display()))?;
         let bundle = bound.bundle();
         specs_select(cfg, specs, bundle.keys.iter().map(|e| e.object.as_str()), token, MOVE)?;
-        let access = if dry_run { Access::Read } else { Access::Write };
+        let access = if dry_run { Access::DryWrite } else { Access::Write };
         let target = opener.open(token, access, notes)?;
         let mut tally = Tally::default();
         // Keys first: a public key object then finds the public half its key's import made.

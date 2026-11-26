@@ -358,7 +358,7 @@ impl Run<'_> {
                     )
                     .into());
                 }
-                let access = if *dry_run { Access::Read } else { Access::Write };
+                let access = if *dry_run { Access::DryWrite } else { Access::Write };
                 let mut deleted = Vec::new();
                 let result = self.each(at, &mut deleted, notes, |opener, lock, t, notes| {
                     let tok = opener.open(t.token_name, access, notes)?;
@@ -615,18 +615,20 @@ impl Run<'_> {
         }
         if how.dry_run {
             // What the run refuses once a token opens: each pair it would make or verify, on
-            // its token opened read-only, asked as the write asks it (review 2026-11-24 C-4). A
-            // run the profiles stop opens none, and neither does its dry run. A token that does
-            // not open ends it as it ends the run (16), its rows printed first.
-            let on_tokens = if stopped {
-                Ok(())
-            } else {
-                let open = |name: &str, notes: &mut Notes| opener.open(name, Access::Read, notes);
-                ops::plan_on_tokens(cfg, &mut planned, &open, &self.lock, notes)
-            };
+            // its token opened read-only and refused where the write's open refuses it (a
+            // write-protected token, 15: L4a-3), asked as the write asks it (review 2026-11-24 C-4). A
+            // run the profiles stop opens none, and neither does its dry run. A token that fails
+            // (its open, a login, a search) ends it at that pair as it ends the run (16), the
+            // pair's row saying so (review 2026-11-24 L4a-2).
+            if !stopped {
+                let open = |name: &str, notes: &mut Notes| opener.open(name, Access::DryWrite, notes);
+                ops::plan_on_tokens(cfg, &mut planned, &open, &self.lock, notes);
+            }
             let rows: Vec<Outcome> = planned.iter().map(dry_row).collect::<anyhow::Result<_>>()?;
             print(&rows)?;
-            on_tokens?;
+            if let Some(e) = planned.iter_mut().find_map(|p| p.failed.take()) {
+                return Err(e.into());
+            }
         }
         if stopped {
             let one = refusing == 1;
@@ -680,11 +682,15 @@ impl Run<'_> {
 }
 
 /// A `create --dry-run` row: what the run would do with the pair, the first refusal's exit,
-/// rule and message where one refuses it, and what only the run decides.
+/// rule and message where one refuses it, `failed` with the failure's exit, rule and device bit
+/// where its token failed it, as the run's row says it, and what only the run decides.
 fn dry_row(p: &ops::Planned<'_>) -> anyhow::Result<Outcome> {
     let mut row = Outcome::passed(p.object, p.spec, p.token, p.action.name());
     if let Some(r) = p.refusals.first() {
         row = Outcome { error: Some(r.error.to_string()), ..row.refused_by(Some(&r.error)) };
+    }
+    if let Some(e) = &p.failed {
+        row = Outcome { outcome: "failed".to_owned(), error: Some(e.to_string()), ..row.refused_by(Some(e)) };
     }
     row.deferred =
         p.deferred.iter().map(|d| DeferredRow { rule: d.rule.name().to_owned(), why: d.why.clone() }).collect();

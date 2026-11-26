@@ -123,6 +123,8 @@ pub struct Planned<'a> {
     /// Whether its refusals are the open token's ([`plan_on_tokens`]): the run ends there, as the
     /// write's own [`token_rules`] would end it; `--skip-unsupported` skips only the profiles'.
     pub on_token: bool,
+    /// The failure that ended [`plan_on_tokens`] at this pair, as it would end the run there.
+    pub failed: Option<KmError>,
 }
 
 /// A planned pair the run creates or verifies, no rule refusing it: what the write takes
@@ -196,6 +198,7 @@ pub fn plan_create<'a>(
             deferred: Vec::new(),
             notes,
             on_token: false,
+            failed: None,
         };
         let mode = plan_mode(&t)?;
         if let Some(why) = not_origin_create(&t) {
@@ -224,41 +227,44 @@ pub fn plan_create<'a>(
 }
 
 /// `create --dry-run`'s second half (review 2026-11-24 C-4): each pair the run would create or
-/// verify ([`Planned::ready`]), on its token opened by `open` (read-only), asked the token's
-/// rules ([`token_rules`]) as the write asks them, in the run's order, one token open at a time.
-/// A refusal makes its row [`Action::Refuse`], [`Planned::on_token`]; a pair they pass has
-/// nothing deferred left, the open token having decided it.
-///
-/// # Errors
-///
-/// Opening a token (16 when it is absent or a login fails), and a failure that is no rule's
-/// ([`token_rules`]).
+/// verify ([`Planned::ready`]), on its token opened by `open` (read-only, a write-protected one
+/// refused as the write's open refuses it), asked the token's rules ([`token_rules`]) as the
+/// write asks them, in the run's order, one token open at a time. A refusal makes its row
+/// [`Action::Refuse`], [`Planned::on_token`]; a pair they pass has nothing deferred left, the
+/// open token having decided it. A failure that is no rule's (opening the token, a login, a
+/// search: 16 when the token is absent or fails) ends it at that pair, as it ends the run
+/// ([`create_selected`]): it is that pair's [`Planned::failed`], which its row carries (review
+/// 2026-11-24 L4a-2: the dry run exited 16 with every row 0), and no pair after it is asked.
 pub fn plan_on_tokens(
     cfg: &Config,
     planned: &mut [Planned<'_>],
     open: &dyn Fn(&str, &mut Notes) -> Result<Token>,
     lock: &Lock,
     notes: &mut Notes,
-) -> Result<()> {
+) {
     let mut current: Option<Token> = None;
     for p in planned.iter_mut().filter(|p| p.ready().is_some()) {
-        let t = Target::new(cfg, p.spec, p.token)?;
-        // Another token's module is finalized (dropped) before the next open.
-        let tok = match current.take().filter(|tok| tok.name == p.token) {
-            Some(tok) => current.insert(tok),
-            None => current.insert(open(p.token, notes)?),
-        };
-        // Create's rules, a verified pair's too: the write asks them of a pinned key it does
-        // not find.
-        let refusals = token_rules(&t, tok, lock, Verb::Create)?;
-        if refusals.is_empty() {
+        let (spec, token) = (p.spec, p.token);
+        let asked = Target::new(cfg, spec, token).and_then(|t| {
+            // Another token's module is finalized (dropped) before the next open.
+            let tok = match current.take().filter(|tok| tok.name == token) {
+                Some(tok) => current.insert(tok),
+                None => current.insert(open(token, notes)?),
+            };
+            // Create's rules, a verified pair's too: the write asks them of a pinned key it does
+            // not find.
+            token_rules(&t, tok, lock, Verb::Create)
+        });
+        match asked {
             // The open token decided what the profiles left to it.
-            p.deferred.clear();
-        } else {
-            (p.action, p.refusals, p.on_token) = (Action::Refuse, refusals, true);
+            Ok(refusals) if refusals.is_empty() => p.deferred.clear(),
+            Ok(refusals) => (p.action, p.refusals, p.on_token) = (Action::Refuse, refusals, true),
+            Err(e) => {
+                p.failed = Some(e);
+                return;
+            }
         }
     }
-    Ok(())
 }
 
 /// What [`create_selected`] did.

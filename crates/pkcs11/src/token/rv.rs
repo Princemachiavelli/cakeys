@@ -111,6 +111,16 @@ pub fn device_failed_rv(rv: u64) -> bool {
     matches!(Rv::from(rv), Rv::Error(e) if device_error(e))
 }
 
+/// A module's refusal of what was asked, `msg` carrying the failed call's return value
+/// ([`rv_of`]): `refused`'s verdict on it (unsupported, 15), unless the return value says the
+/// device, the token or the session failed ([`device_failed_rv`]), which answers nothing of what
+/// was asked: then unavailable (16), as the row's `device` says. The one mapping every refusal
+/// made from a module's error goes through (review 2026-11-24 L4a-1: a commitment's device
+/// failure was said unsupported).
+pub fn refused_unless_device(msg: Msg, refused: impl FnOnce(Msg) -> KmError) -> KmError {
+    if msg.rv().is_some_and(device_failed_rv) { KmError::Unavailable(msg) } else { refused(msg) }
+}
+
 /// [`device_failed`]'s return values: those `cakeys_profile::DEVICE_FAILED_RV` names, so a
 /// profile row citing one and the token's own error agree (phase1-design §2.5).
 fn device_error(rv: RvError) -> bool {
@@ -191,6 +201,27 @@ mod tests {
         assert_eq!(pinned.len(), cakeys_profile::DEVICE_FAILED_RV.len());
         let refused = CkError::Pkcs11(RvError::MechanismInvalid, Function::GenerateKey);
         assert!(!device_failed(&refused));
+    }
+
+    /// A refusal made from a module's error is the verdict asked for only when the module
+    /// answered: every return value of a failed device, token or session is unavailable (16),
+    /// whatever the caller would say, and every other is the caller's, its return value kept
+    /// either way (review 2026-11-24 L4a-1: a commitment's device failure was unsupported).
+    #[test]
+    fn a_device_failure_is_never_a_refusal() {
+        let unsupported =
+            |v: u64| refused_unless_device(Msg::from("asked".to_owned()).with_rv(Some(v)), KmError::Unsupported);
+        for v in 1..0x1000 {
+            let e = unsupported(v);
+            assert_eq!(e.rv(), Some(v), "{v:#x}");
+            assert_eq!(matches!(e, KmError::Unavailable(_)), device_failed_rv(v), "{}: {e:?}", rv_value_name(v));
+            assert_eq!(matches!(e, KmError::Unsupported(_)), !device_failed_rv(v), "{}: {e:?}", rv_value_name(v));
+        }
+        for name in cakeys_profile::DEVICE_FAILED_RV {
+            assert!(matches!(unsupported(p11_names::rv(name).unwrap()), KmError::Unavailable(_)), "{name}");
+        }
+        let none = refused_unless_device(Msg::from("no call".to_owned()), KmError::Unsupported);
+        assert!(matches!(none, KmError::Unsupported(_)), "{none:?}");
     }
 
     #[test]

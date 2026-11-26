@@ -22,18 +22,17 @@ impl Token {
     ///
     /// # Errors
     ///
-    /// `Unavailable` if the random number generator fails; `Unsupported` when the module will not
-    /// make the session key or wrap the key with it (`CKA_EXTRACTABLE`, the mechanism);
-    /// `Conflict` when the blob does not unwrap.
+    /// `Unavailable` if the random number generator or the device fails; `Unsupported` when the
+    /// module will not make the session key or wrap the key with it (`CKA_EXTRACTABLE`, the
+    /// mechanism); `Conflict` when the blob does not unwrap.
     pub fn extract(&self, h: ObjectHandle, kwp: &Mechanism) -> Result<crate::ops::Extracted> {
         let mut kek = Zeroizing::new([0u8; 32]);
         getrandom::fill(kek.as_mut_slice())
             .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
         let mut template = Secret(self.session_template(SessionKey::HostKek)?);
         template.0.push(Attribute::Value(kek.to_vec()));
-        let refused = |what: &str, e: CkError| {
-            self.unsupported_for(Topic::Mechanism, format!("{what} on '{}': {e}", self.name)).with_rv(rv_of(&e))
-        };
+        let refused =
+            |what: &str, e: CkError| self.refused_for(Topic::Mechanism, &e, format!("{what} on '{}': {e}", self.name));
         let session_kek =
             self.session.create_object(&template.0).map_err(|e| refused("making the host's session key", e))?;
         drop(template);
@@ -137,11 +136,11 @@ impl Token {
     fn create_secret_template(&self, template: &Secret) -> Result<ObjectHandle> {
         let create = || {
             self.session.create_object(&template.0).map_err(|e| {
-                self.unsupported_for(
+                self.refused_for(
                     Topic::Create,
+                    &e,
                     format!("creating the key on '{}': C_CreateObject: {} ({e})", self.name, rv_name(&e)),
                 )
-                .with_rv(rv_of(&e))
             })
         };
         self.managing("importing a key", create)
