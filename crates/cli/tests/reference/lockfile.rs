@@ -294,8 +294,11 @@ fn waits_for_the_sidecar(e: &Suite, args: &[&str]) -> (Result<(), String>, Optio
 /// nothing is written). A lock that is not there is refused (17) by every verb unless
 /// `--new-lock` starts one: a mistyped `--lock` never makes a new, empty lock. Where the lock
 /// cannot be written — a Nix build sandbox, a read-only lock, a read-only directory — a writing
-/// run is refused (21) before the token is touched, naming `--dry-run`; `check` never writes and
-/// is unaffected (review 2026-11-23 C-4, C-16).
+/// run is refused (21) before the token is touched, naming `--dry-run`. The verbs `check` and
+/// `resolve` never write, so they still work there (review 2026-11-23 C-4, C-16). The test also
+/// runs `resolve` on a key that the lock does not record, with no lock file present, and checks
+/// that it exits 0, creates no lock file and does not change the token's objects (CAKEYS.md:
+/// "`resolve` and `check` are GETs and never write either").
 #[test]
 fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
     use std::os::unix::fs::PermissionsExt;
@@ -321,6 +324,13 @@ fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
     assert_eq!(e.code(&["--new-lock", "create", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"]), 18);
     assert_eq!(e.code(&[&["--new-lock"][..], &compare].concat()), 18);
     assert!(!lock.exists());
+    // Resolve the key that the lock does not record. It must exit 0, create no lock file and
+    // leave the token's objects unchanged.
+    let resolve = ["resolve", "--spec", "signing-soft", "--token", "ref"];
+    let before = state::snapshot(&[&lock], &[e.token_view()]);
+    let o = e.km(&[&["--new-lock"][..], &resolve].concat());
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    state::assert_unchanged(&before, &state::snapshot(&[&lock], &[e.token_view()]), "resolve");
     // `--update-lock` is gone: writing is the default.
     assert_eq!(e.code(&[&r[..], &["--update-lock"]].concat()), 2);
     // A writing run records first use, says it wrote the lock and exits 22.
@@ -340,12 +350,14 @@ fn lock_is_written_by_default_and_refused_where_it_cannot_be() {
     refused(&e.km_env(&["delete", "--spec", "signing-soft", "--token", "ref"], &sandbox), "Nix build sandbox");
     assert_eq!(code(&e.km_env(&compare, &sandbox)), 0);
     assert_eq!(code(&e.km_env(&["check", "signing.id.rfc7093m4"], &sandbox)), 0);
+    assert_eq!(code(&e.km_env(&resolve, &sandbox)), 0);
 
     // A read-only lock (unless running as root, which access(2) lets write anyway).
     std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o444)).unwrap();
     if std::fs::OpenOptions::new().append(true).open(&lock).is_err() {
         refused(&e.km(&r), "is not writable");
         assert_eq!(e.code(&compare), 0);
+        assert_eq!(e.code(&resolve), 0);
     } else {
         skip("lockfile", REF.require_var, "the read-only lock: this user writes a mode-444 file");
     }

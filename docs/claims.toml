@@ -14,7 +14,7 @@
 # An entry registers the whole line its phrase is on, so an enforced entry's tests hold every
 # universal claim of that line; a line with one claim no test holds stays unregistered.
 
-max-unregistered = 7
+max-unregistered = 4
 
 # CAMIGRATE.md D5: a bundle's transport key is the target's own (review 2026-11-24 D-8).
 
@@ -142,6 +142,37 @@ doc = "docs/CAKEYS.md"
 says = "`every_pair_has_a_row_of_one_shape`)"
 kind = "enforced"
 tests = ["every_pair_has_a_row_of_one_shape", "a_failure_row_says_its_code_rule_and_device"]
+
+# The verb `resolve` never writes the lock or the token. The test
+# lock_is_written_by_default_and_refused_where_it_cannot_be runs `resolve` on a key that the lock
+# does not record, with no lock file present, and fails if a lock file appears or the token's
+# objects change. It also runs `resolve` in a Nix build sandbox and with a read-only lock, where
+# a verb that writes is refused with exit 21. The liar runner fails if `check` changes anything.
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "never write either"
+kind = "enforced"
+tests = [
+  "lock_is_written_by_default_and_refused_where_it_cannot_be",
+  "liars_ok",
+  "create_makes_keys_and_nothing_else_does",
+]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "Never writes. For a private key"
+kind = "enforced"
+tests = [
+  "lock_is_written_by_default_and_refused_where_it_cannot_be",
+  "a_foreign_public_key_conflicts_and_is_never_deleted",
+]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "and `resolve` never write and are unaffected"
+kind = "enforced"
+tests = ["lock_is_written_by_default_and_refused_where_it_cannot_be", "liars_ok"]
 
 # Review 2026-11-24 L5: a run that wrote the lock exits 22, whatever failed after the write
 # (each run seen exiting the failure's code before its fix).

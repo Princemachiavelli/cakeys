@@ -60,8 +60,10 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Create keys, the one verb that does: every selected (spec, token) pair with origin =
-    /// "create" whose object the lock does not pin yet, then record them like `lock`; a pair
+    /// Create the keys that keys.toml declares. No other verb creates them; `lock` creates only
+    /// the TPM Attestation Key that a realisation needs. It creates the object of every selected
+    /// (spec, token) pair with origin = "create" whose object the lock does not pin yet, then
+    /// records them like `lock`; a pair
     /// whose object the lock pins is verified as `check` verifies it and left alone; the other
     /// pairs are skipped with a note. Nothing named selects every pair. Before any token is
     /// opened, each is checked against the capability profiles: a pair they say cannot be made
