@@ -57,9 +57,9 @@ pub struct Table {
     pub exempt_max: usize,
     /// What a cell's state oracle names ([`STATE`] unless the table lists its own).
     pub state: Vec<String>,
-    /// The tool's own rules, beside the plan's (`cakeys_pkcs11::ops::Rule`): each name, and the
-    /// source file (from the repository's root) that defines it.
-    pub rules: BTreeMap<String, String>,
+    /// The checks (`cakeys_core::Check`) that the table's cells must name as a rule or as
+    /// deferred: those that only the tool's runs decide.
+    pub covers: Vec<String>,
 }
 
 /// An object of the fixture.
@@ -419,11 +419,8 @@ impl Table {
             .map(|t| t.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_owned())).collect())
             .unwrap_or_default();
         let state = doc.get("state").map_or_else(|| STATE.map(str::to_owned).to_vec(), |v| list(Some(v), "state"));
-        let rules = section("rules")
-            .into_iter()
-            .map(|(name, v)| (name.clone(), v.as_str().unwrap_or_else(|| panic!("rules.{name}")).to_owned()))
-            .collect();
-        Table { path, objects, verbs, lies, blocks, na, units, exempt, exempt_max, state, rules }
+        let covers = list(doc.get("covers"), "covers");
+        Table { path, objects, verbs, lies, blocks, na, units, exempt, exempt_max, state, covers }
     }
 
     /// cakeys' own table.

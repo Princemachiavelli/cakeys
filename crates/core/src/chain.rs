@@ -3,7 +3,7 @@
 //! issuer signed. The `YubiKey` PIV attestation (ykcs11) and the TPM's EK certificate
 //! (tpm2-pkcs11) both build on it; what a chain must assert is theirs.
 
-use crate::{KmError, Result, id};
+use crate::{Check, KmError, Reason, Result, id};
 use x509_cert::certificate::Certificate;
 use x509_cert::der::asn1::ObjectIdentifier;
 use x509_cert::der::{DateTime, Decode, Encode, Header, Reader, SliceReader, Tagged};
@@ -57,8 +57,8 @@ impl Cert {
     ///
     /// `Conflict` when `der` is no certificate.
     pub fn from_der(der: Vec<u8>) -> Result<Cert> {
-        let parsed =
-            Certificate::from_der(&der).map_err(|e| KmError::Conflict(format!("parsing certificate: {e}").into()))?;
+        let parsed = Certificate::from_der(&der)
+            .map_err(|e| KmError::Conflict(Reason::malformed(format!("parsing certificate: {e}"))))?;
         Ok(Cert { der, parsed })
     }
 
@@ -82,11 +82,11 @@ impl Cert {
     fn tbs(&self) -> Result<&[u8]> {
         // Certificate is SEQUENCE { tbsCertificate, signatureAlgorithm, signature }: the first
         // TLV after the outer header, header included.
-        let mut reader =
-            SliceReader::new(&self.der).map_err(|e| KmError::Conflict(format!("certificate DER: {e}").into()))?;
+        let mut reader = SliceReader::new(&self.der)
+            .map_err(|e| KmError::Conflict(Reason::malformed(format!("certificate DER: {e}"))))?;
         Header::decode(&mut reader)
             .and_then(|_| reader.tlv_bytes())
-            .map_err(|e| KmError::Conflict(format!("certificate has no tbsCertificate: {e}").into()))
+            .map_err(|e| KmError::Conflict(Reason::malformed(format!("certificate has no tbsCertificate: {e}"))))
     }
 
     /// The raw signature value: the BIT STRING content, minus the unused-bits byte.
@@ -108,7 +108,7 @@ impl Cert {
                 .tbs_certificate()
                 .subject_public_key_info()
                 .to_der()
-                .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}").into()))?,
+                .map_err(|e| KmError::Conflict(Reason::malformed(format!("encoding SPKI: {e}"))))?,
         )
     }
 
@@ -129,7 +129,8 @@ impl Cert {
             DateTime::from_unix_duration(std::time::Duration::from_secs(s))
                 .map_or_else(|_| s.to_string(), |t| t.to_string())
         };
-        Err(KmError::Conflict(
+        Err(KmError::Conflict(Reason::check(
+            Check::ChainValidity,
             format!(
                 "attestation chain: '{}' is not valid at {} (valid from {} to {}); `check --at <time>` judges the \
                  chain at another time, `--ignore-validity` skips the dates",
@@ -137,9 +138,8 @@ impl Cert {
                 show(at),
                 show(from),
                 show(to)
-            )
-            .into(),
-        ))
+            ),
+        )))
     }
 
     /// The raw `extnValue` of the extension with this OID, empty when absent.
@@ -190,9 +190,10 @@ impl Cert {
             .map(|e| T::from_der(e.extn_value.as_bytes()))
             .transpose()
             .map_err(|e| {
-                KmError::Conflict(
-                    format!("attestation chain: '{}' {what}: {e}", self.parsed.tbs_certificate().subject()).into(),
-                )
+                KmError::Conflict(Reason::malformed(format!(
+                    "attestation chain: '{}' {what}: {e}",
+                    self.parsed.tbs_certificate().subject()
+                )))
             })
     }
 
@@ -207,22 +208,27 @@ impl Cert {
         match bc {
             Some(bc) if bc.ca && bc.path_len_constraint.is_none_or(|n| u16::from(n) >= below) => {}
             Some(bc) if bc.ca => {
-                return Err(KmError::Conflict(
+                return Err(KmError::Conflict(Reason::check(
+                    Check::ChainCa,
                     format!(
                         "attestation chain: '{subject}' allows {} CA certificate(s) below it, the chain has {below}",
                         bc.path_len_constraint.unwrap_or_default()
-                    )
-                    .into(),
-                ));
+                    ),
+                )));
             }
-            _ => return Err(KmError::Conflict(format!("attestation chain: '{subject}' is not a CA").into())),
+            _ => {
+                return Err(KmError::Conflict(Reason::check(
+                    Check::ChainCa,
+                    format!("attestation chain: '{subject}' is not a CA"),
+                )));
+            }
         }
         let ku: Option<x509_cert::ext::pkix::KeyUsage> = self.decoded(&KEY_USAGE, "keyUsage")?;
         if ku.is_some_and(|ku| !ku.key_cert_sign()) {
-            return Err(KmError::Conflict(
-                format!("attestation chain: '{subject}' may not sign certificates: its keyUsage lacks keyCertSign")
-                    .into(),
-            ));
+            return Err(KmError::Conflict(Reason::check(
+                Check::ChainCa,
+                format!("attestation chain: '{subject}' may not sign certificates: its keyUsage lacks keyCertSign"),
+            )));
         }
         Ok(())
     }
@@ -239,14 +245,14 @@ impl Cert {
             .find(|e| e.critical && !UNDERSTOOD.contains(&e.extn_id));
         match unknown {
             None => Ok(()),
-            Some(e) => Err(KmError::Conflict(
+            Some(e) => Err(KmError::Conflict(Reason::check(
+                Check::ChainCriticalExtension,
                 format!(
                     "attestation chain: '{}' has the critical extension {}, which cakeys does not process",
                     self.parsed.tbs_certificate().subject(),
                     e.extn_id
-                )
-                .into(),
-            )),
+                ),
+            ))),
         }
     }
 }
@@ -354,9 +360,9 @@ fn issuer_chain<'a>(
     at: Option<u64>,
     max_links: u8,
 ) -> Result<&'a Cert> {
-    let bad = |what: String| KmError::Conflict(format!("attestation chain: {what}").into());
+    let bad = |check, what: String| KmError::Conflict(Reason::check(check, format!("attestation chain: {what}")));
     if walk.links > u16::from(max_links) {
-        return Err(bad(format!("longer than {max_links} links")));
+        return Err(bad(Check::ChainLength, format!("longer than {max_links} links")));
     }
     let link = |issuer: &Cert| issued_by(current, issuer, walk.below, at);
     let mut first_error = None;
@@ -378,10 +384,13 @@ fn issuer_chain<'a>(
         }
     }
     Err(first_error.unwrap_or_else(|| {
-        bad(format!(
-            "'{}' is signed by no pinned root and no intermediate given",
-            current.parsed.tbs_certificate().subject()
-        ))
+        bad(
+            Check::ChainAnchor,
+            format!(
+                "'{}' is signed by no pinned root and no intermediate given",
+                current.parsed.tbs_certificate().subject()
+            ),
+        )
     }))
 }
 
@@ -446,15 +455,15 @@ pub(crate) fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
             None => a.oid.to_string(),
             Some(p) => format!("{} with {} parameters", a.oid, p.tag()),
         };
-        return Err(KmError::Conflict(
+        return Err(KmError::Conflict(Reason::check(
+            Check::ChainSignature,
             format!(
                 "certificate '{}': its signatureAlgorithm {} is not the signed tbsCertificate.signature {}",
                 cert.parsed.tbs_certificate().subject(),
                 show(outer),
                 show(inner)
-            )
-            .into(),
-        ));
+            ),
+        )));
     }
     let spki = signer.spki()?;
     let (tbs, s) = (cert.tbs()?, cert.signature());
@@ -471,12 +480,14 @@ pub(crate) fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
     let sri = id::sri(&spki);
     match verdict {
         Some(Ok(())) => Ok(()),
-        Some(Err(e)) => {
-            Err(KmError::Conflict(format!("certificate signature does not verify against {sri}: {e}").into()))
-        }
-        None => Err(KmError::Conflict(
-            format!("the signer {sri} holds no key for the certificate's signature algorithm").into(),
-        )),
+        Some(Err(e)) => Err(KmError::Conflict(Reason::check(
+            Check::ChainSignature,
+            format!("certificate signature does not verify against {sri}: {e}"),
+        ))),
+        None => Err(KmError::Conflict(Reason::check(
+            Check::ChainSignature,
+            format!("the signer {sri} holds no key for the certificate's signature algorithm"),
+        ))),
     }
 }
 

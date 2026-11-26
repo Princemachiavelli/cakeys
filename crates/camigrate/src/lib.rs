@@ -621,7 +621,7 @@ impl Tally {
         let mut row = of.row("failed").refused_by(Some(&err));
         // 10 names no rule of its own: the material is not the one the lock pins.
         if matches!(err, KmError::HashMismatch { .. }) && row.rule.is_none() {
-            row.rule = Some(sealed::IDENTITY.to_owned());
+            row.rule = Some(sealed::IDENTITY.name().to_owned());
         }
         self.results.push(cakeys_cli_common::Outcome { error: Some(err.to_string()), ..row });
         self.failed.get_or_insert(err);
@@ -841,8 +841,8 @@ impl Run<'_> {
                     ));
                     // A blob is unwrapped, and what it holds known, only by the import itself.
                     let sealed: &[(&str, &str)] = &[
-                        (sealed::UNWRAPS, "only the target's unwrap shows the blob is intact"),
-                        (sealed::IDENTITY, "only the unwrapped key shows it is the one the lock pins"),
+                        (sealed::UNWRAPS.name(), "only the target's unwrap shows the blob is intact"),
+                        (sealed::IDENTITY.name(), "only the unwrapped key shows it is the one the lock pins"),
                     ];
                     tally.ready(Of::pair(&dst), &e.method, if e.method == public { &[] } else { sealed });
                 }
@@ -1136,7 +1136,7 @@ fn needs_login(cfg: &Config, token: &str) -> cakeys_core::Result<()> {
             )
             .into(),
         )
-        .with_rule(cakeys_pkcs11::ops::Rule::NeedsLogin.name())),
+        .with_rule(cakeys_pkcs11::ops::Rule::NeedsLogin)),
         _ => Ok(()),
     }
 }

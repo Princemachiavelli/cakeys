@@ -3,7 +3,7 @@
 //! row no `exit`, and `create` printed no row for a failure), and what a dry run's row and its
 //! run's must agree on (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4).
 
-use cakeys_core::KmError;
+use cakeys_core::{KmError, Rule};
 use serde::{Deserialize, Serialize};
 
 /// One pair's row. The process exit follows from the rows: 0 (22 when the lock was written),
@@ -23,7 +23,7 @@ pub struct Outcome {
     /// The exit code the pair alone ends a run with: 0, a write recorded included (the run's 22
     /// says the lock was written), or its failure's.
     pub exit: u8,
-    /// The rule that refused it (`cakeys_pkcs11::ops::Rule::name`), where one did.
+    /// The rule that refused it (`cakeys_core::Rule::name`), where one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule: Option<String>,
     /// Whether the failure is the device's: its PKCS#11 return value says the device, the token
@@ -87,7 +87,7 @@ impl Outcome {
     pub fn refused_by(self, e: Option<&KmError>) -> Outcome {
         Outcome {
             exit: e.map_or(1, KmError::exit_code),
-            rule: e.and_then(KmError::rule).map(str::to_owned),
+            rule: e.and_then(KmError::rule).map(Rule::name).map(str::to_owned),
             device: e.and_then(KmError::rv).is_some_and(cakeys_pkcs11::token::device_failed_rv),
             ..self
         }
@@ -141,6 +141,7 @@ pub fn refused(mut errors: Vec<KmError>, what: &str) -> Option<KmError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cakeys_core::Reason;
 
     fn row(outcome: &str, exit: u8, rule: Option<&str>, device: bool, deferred: &[&str]) -> Outcome {
         Outcome {
@@ -180,7 +181,7 @@ mod tests {
     /// and the verb's own round-trip through the one type.
     #[test]
     fn a_failure_row_says_its_code_rule_and_device() {
-        let refusal = KmError::Conflict("taken".into()).with_rule("locator-free");
+        let refusal = KmError::Conflict(Reason::rule(Rule::LocatorFree, "taken"));
         let r = Outcome::failed("o", "s", "t", &anyhow::Error::from(refusal));
         assert_eq!(
             (r.exit, r.rule.as_deref(), r.device, r.outcome.as_str()),

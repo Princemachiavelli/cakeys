@@ -16,7 +16,7 @@ use crate::trust::{BoundBundle, BoundTransport};
 use cakeys_core::config::{AttrValue, Binding, Lock, Origin};
 use cakeys_core::migrate::{Exposure, Method, OaepHash};
 use cakeys_core::types::{KeyType, ObjectClass as Class};
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::token::{SessionObject, with_public_default_dropped};
 use cakeys_pkcs11::{SessionKey, Template, Token, Topic, Via, templates};
@@ -61,9 +61,10 @@ pub(crate) fn export(
     let wraps = found.iter().any(|f| matches!(f.held, Held::Key(..)));
     let Some(transport) = transport.filter(|t| wraps && t.token() == to) else {
         if wraps {
-            return Err(KmError::PreconditionFailed(
-                format!("exporting keys from '{}' needs the target's transport key to wrap them to", from.name).into(),
-            ));
+            return Err(KmError::PreconditionFailed(Reason::check(
+                Check::ImportTransport,
+                format!("exporting keys from '{}' needs the target's transport key to wrap them to", from.name),
+            )));
         }
         // Public objects only: nothing to wrap, so no transport key and nothing made on the source.
         let keys = found.iter().map(|f| entry(f, None));
@@ -90,15 +91,15 @@ pub(crate) fn export(
             ));
         }
         Some(copy.ok_or_else(|| {
-            KmError::PreconditionFailed(
+            KmError::PreconditionFailed(Reason::check(
+                Check::ImportTransport,
                 format!(
                     "'{}' holds no trusted copy of transport key '{}': `{}`",
                     from.name,
                     transport.object(),
                     crate::plan::trust_command(Some(transport.object()), &from.name)
-                )
-                .into(),
-            )
+                ),
+            ))
         })?)
     } else {
         None
@@ -207,12 +208,16 @@ fn hold<'a>(items: &'a [Item<'a>], from: &Token, lock: &'a Lock, notes: &mut Not
             None
         };
         let locked = lock.objects.get(src.object_name).filter(|o| !o.ids.is_empty()).ok_or_else(|| {
-            KmError::PreconditionFailed(format!("{src}: the lock pins no IDs for object '{}'", src.object_name).into())
+            KmError::PreconditionFailed(Reason::check(
+                Check::ImportLocked,
+                format!("{src}: the lock pins no IDs for object '{}'", src.object_name),
+            ))
         })?;
         let object_type = locked.object_type.clone().ok_or_else(|| {
-            KmError::PreconditionFailed(
-                format!("{src}: the lock records no type for object '{}'", src.object_name).into(),
-            )
+            KmError::PreconditionFailed(Reason::check(
+                Check::ImportLocked,
+                format!("{src}: the lock records no type for object '{}'", src.object_name),
+            ))
         })?;
         let held = if let Some(bytes) = public {
             Held::Public(bytes)
@@ -394,7 +399,7 @@ pub(crate) fn import(
         // What unwrapped and does not prove to be the key the lock pins (a failed proof of
         // possession, 13) fails the rule only the run decides, as a mismatched ID (10) does.
         ops::lock_import(dst, to, lock, origin, notes)
-            .map_err(|err| if err.exit_code() == 13 && err.rule().is_none() { err.with_rule(IDENTITY) } else { err })
+            .map_err(|err| if err.exit_code() == 13 && err.rule().is_none() { err.with_check(IDENTITY) } else { err })
     });
     match created {
         Ok(_) => Ok(Moved::Imported),
@@ -454,16 +459,16 @@ pub(crate) fn check_carried(e: &Entry, dst: &Target) -> Result<()> {
     if own_identity || ops::binding(dst) != Some(Binding::TokenAsserted) {
         return Ok(());
     }
-    Err(KmError::PreconditionFailed(
+    Err(KmError::PreconditionFailed(Reason::check(
+        Check::ImportBinding,
         format!(
             "{dst}: binding = \"token-asserted\" proves nothing of the {} key '{}' a bundle file carries: its \
              identity would rest on the public key the bundle itself names; bind it with pop-sign or pop-ecdh \
              there, or move it with `camigrate migrate`",
             dst.object.key_type.map_or_else(String::new, |k| k.to_string()),
             e.object
-        )
-        .into(),
-    ))
+        ),
+    )))
 }
 
 /// What [`preflight`] established: the transport key to unwrap with (none for a public object),
@@ -475,13 +480,13 @@ pub(crate) struct Preflight {
 
 /// A wrapped key in a bundle whose transport key is not realised on the target.
 fn no_transport(dst: &Target) -> KmError {
-    KmError::PreconditionFailed(
+    KmError::PreconditionFailed(Reason::check(
+        Check::LockRealised,
         format!(
             "{dst}: the bundle's transport key is not realised on '{}' under a spec keys.toml names",
             dst.token_name
-        )
-        .into(),
-    )
+        ),
+    ))
 }
 
 /// The bundle's key `e` against the lock: the same type, IDs and commitment label, and — for a
@@ -489,24 +494,26 @@ fn no_transport(dst: &Target) -> KmError {
 /// import picks it by that name).
 fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: Option<&Target>, lock: &Lock) -> Result<()> {
     let locked = lock.objects.get(dst.object_name).filter(|o| !o.ids.is_empty()).ok_or_else(|| {
-        KmError::PreconditionFailed(
+        KmError::PreconditionFailed(Reason::check(
+            Check::ImportLocked,
             format!(
                 "{dst}: the lock pins no IDs for object '{}', so nothing could check the imported material; \
              lock it on its source first",
                 dst.object_name
-            )
-            .into(),
-        )
+            ),
+        ))
     })?;
     if locked.object_type.as_ref() != Some(&e.object_type) || dst.object.cfg() != &e.object_type {
-        return Err(KmError::PreconditionFailed(
-            format!("{dst}: the bundle carries a {}, the lock and keys.toml another type", e.object_type).into(),
-        ));
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::ImportLocked,
+            format!("{dst}: the bundle carries a {}, the lock and keys.toml another type", e.object_type),
+        )));
     }
     let mismatch = |what: &str, expected: String, got: String| KmError::HashMismatch {
         what: format!("{dst}: the bundle's {what}"),
         expected,
         got,
+        check: Check::IdentityMaterial,
     };
     if e.ids != locked.ids {
         return Err(mismatch("IDs", format!("{:?}", locked.ids), format!("{:?}", e.ids)));
@@ -619,15 +626,14 @@ fn create(
     }
 }
 
-/// The rule a sealed import's dry run cannot decide, and its run refuses by: whether the blob
-/// unwraps (13; 16 where the module says only that it failed, a device failure). camigrate's own,
-/// beside `ops::Rule` (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4, "deferred rules
-/// today").
-pub(crate) const UNWRAPS: &str = "unwraps";
+/// The check that a sealed import's dry run cannot decide, and that its run refuses by: whether
+/// the blob unwraps (13; 16 where the module says only that it failed, a device failure).
+pub(crate) const UNWRAPS: Check = Check::ImportUnwraps;
 
-/// The other: whether what unwrapped is the key the lock pins (10, which names no rule of its
-/// own: [`crate::Tally`] names this one for it).
-pub(crate) const IDENTITY: &str = "identity";
+/// The other: whether what unwrapped is the key the lock pins. A mismatch (10) names
+/// `identity.material`, and [`crate::Tally`] renames it to this check, as the 13 of a failed proof
+/// of possession is renamed below.
+pub(crate) const IDENTITY: Check = Check::ImportIdentity;
 
 /// What a failed `C_UnwrapKey` says, by the module's return value: only a blob the module finds
 /// invalid says the bundle was tampered with or wrapped to another key.
@@ -688,10 +694,10 @@ fn unwrap_failure(e: &cryptoki::error::Error) -> UnwrapFailure {
 fn unwrap_error(what: &str, e: &cryptoki::error::Error, unsupported: impl FnOnce(String) -> KmError) -> KmError {
     let rv = cakeys_pkcs11::token::rv_of(e);
     match unwrap_failure(e) {
-        UnwrapFailure::Tampered => {
-            KmError::Conflict(format!("{what}: {e} (the bundle was tampered with, or wrapped to another key)").into())
-                .with_rule(UNWRAPS)
-        }
+        UnwrapFailure::Tampered => KmError::Conflict(Reason::check(
+            UNWRAPS,
+            format!("{what}: {e} (the bundle was tampered with, or wrapped to another key)"),
+        )),
         UnwrapFailure::Refused => unsupported(format!("{what}: {e}")),
         UnwrapFailure::Opaque => KmError::Unavailable(
             format!(
@@ -700,7 +706,7 @@ fn unwrap_error(what: &str, e: &cryptoki::error::Error, unsupported: impl FnOnce
             )
             .into(),
         )
-        .with_rule(UNWRAPS),
+        .with_check(UNWRAPS),
         UnwrapFailure::Failed => KmError::Unavailable(format!("{what}: {e}").into()),
     }
     .with_rv(rv)

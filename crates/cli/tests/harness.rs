@@ -50,17 +50,17 @@ fn the_twin_holds_a_run_to_its_dry_runs_exit_and_deferred_rules() {
         device,
         ..Row::passed("o", "s", "t", "failed")
     };
-    let ready = Dry::new(0, vec!["unwraps".into()]);
+    let ready = Dry::new(0, vec!["import.unwraps".into()]);
     assert!(ready.kept_by(0, &[]) && ready.kept_by(22, &[]), "the same success");
     let compared = |exit| Dry::new(exit, vec![]).comparing();
     assert!(compared(18).kept_by(22, &[]) && compared(14).kept_by(22, &[]), "what `lock` records");
     assert!(!compared(18).kept_by(0, &[]) && !compared(10).kept_by(22, &[]), "a comparison, then another run");
     assert!(!Dry::new(14, vec![]).kept_by(22, &[]), "a plan refused, then done");
     assert!(!ready.kept_by(13, &[row(13, Some("locator-free"), false)]), "a rule it did not defer");
-    assert!(ready.kept_by(13, &[row(13, Some("unwraps"), false)]), "a rule it deferred");
+    assert!(ready.kept_by(13, &[row(13, Some("import.unwraps"), false)]), "a rule it deferred");
     assert!(ready.kept_by(16, &[row(16, None, true)]), "the device");
     assert!(!ready.kept_by(16, &[]), "a 16 without its row");
-    assert!(!ready.kept_by(10, &[row(13, Some("unwraps"), false)]), "a row of another exit than the run's");
+    assert!(!ready.kept_by(10, &[row(13, Some("import.unwraps"), false)]), "a row of another exit than the run's");
     let refused = Dry::new(17, vec![]);
     assert!(refused.kept_by(17, &[row(17, Some("placement"), false)]));
     assert!(!refused.kept_by(13, &[row(13, Some("locator-free"), false)]), "refused by one rule, then another");

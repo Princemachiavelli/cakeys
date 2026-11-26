@@ -5,7 +5,7 @@
 
 use crate::id::Curve;
 use crate::types::KeyType;
-use crate::{KmError, Result};
+use crate::{Check, KmError, Reason, Result};
 use zeroize::Zeroizing;
 
 /// A private key's parts, as PKCS#11 names them.
@@ -53,7 +53,12 @@ fn scalar<B: AsRef<[u8]> + zeroize::Zeroize>(bytes: B) -> Zeroizing<Vec<u8>> {
 /// such a key (the message never includes them).
 pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<Curve>) -> Result<PrivateParts> {
     use pkcs8::DecodePrivateKey as _;
-    let bad = |what: &str| KmError::Conflict(format!("the source's wrapped key is not a PKCS#8 {what} key").into());
+    let bad = |what: &str| {
+        KmError::Conflict(Reason::check(
+            Check::HostKeyType,
+            format!("the source's wrapped key is not a PKCS#8 {what} key"),
+        ))
+    };
     let ec = |value| Ok(PrivateParts::Ec(value));
     match (key_type, curve) {
         (KeyType::Ec, Some(Curve::P256)) => {
@@ -133,7 +138,7 @@ pub fn spki_of_pkcs8(der: &[u8]) -> Result<Vec<u8>> {
 
 /// A key that parsed whose public half does not encode: the key's fault, no token's (13).
 fn spki_err(e: impl std::fmt::Display) -> KmError {
-    KmError::Conflict(format!("encoding the public key: {e}").into())
+    KmError::Conflict(Reason::check(Check::HostKeyType, format!("encoding the public key: {e}")))
 }
 
 /// A multi-prime RSA key (RFC 8017's `otherPrimeInfos`): PKCS#11 names two primes only.
@@ -157,7 +162,8 @@ fn is_multi_prime(der: &[u8]) -> bool {
 
 fn rsa_parts(der: &[u8]) -> Result<RsaParts> {
     use pkcs8::DecodePrivateKey as _;
-    let bad = || KmError::Conflict("the source's wrapped key is not a PKCS#8 RSA key".into());
+    let bad =
+        || KmError::Conflict(Reason::check(Check::HostKeyType, "the source's wrapped key is not a PKCS#8 RSA key"));
     let key =
         rsa::PrivateKey::from_pkcs8_der(der).map_err(|_| if is_multi_prime(der) { multi_prime() } else { bad() })?;
     rsa_key_parts(key)
@@ -166,7 +172,8 @@ fn rsa_parts(der: &[u8]) -> Result<RsaParts> {
 /// The parts of a decoded RSA key: two primes, as PKCS#11 has them.
 fn rsa_key_parts(mut key: rsa::PrivateKey) -> Result<RsaParts> {
     use rsa::traits::{PrivateKeyParts as _, PublicKeyParts as _};
-    let bad = || KmError::Conflict("the source's wrapped key is not a PKCS#8 RSA key".into());
+    let bad =
+        || KmError::Conflict(Reason::check(Check::HostKeyType, "the source's wrapped key is not a PKCS#8 RSA key"));
     if key.primes().len() != 2 {
         return Err(multi_prime());
     }

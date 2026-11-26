@@ -19,7 +19,10 @@ impl Token {
         if class == ObjectClass::CERTIFICATE {
             return match self.attr(h, AttributeType::CertificateType)? {
                 Some(Attribute::CertificateType(CertificateType::X_509)) => self.check_policy(h, spec),
-                other => Err(KmError::Conflict(format!("CKA_CERTIFICATE_TYPE is {other:?}, not CKC_X_509").into())),
+                other => Err(KmError::Conflict(Reason::check(
+                    Check::ObjectType,
+                    format!("CKA_CERTIFICATE_TYPE is {other:?}, not CKC_X_509"),
+                ))),
             };
         }
         if class == ObjectClass::DATA {
@@ -43,18 +46,24 @@ impl Token {
             };
         }
         let Some(kt) = self.key_type(h)? else {
-            return Err(KmError::Conflict("object has no CKA_KEY_TYPE".into()));
+            return Err(KmError::Conflict(Reason::check(Check::ObjectType, "object has no CKA_KEY_TYPE")));
         };
         if kt != key_type_of(object)? {
-            return Err(KmError::Conflict(
-                format!("CKA_KEY_TYPE is {kt}, spec object type says {}", object.key_type.map_or("", Kt::name)).into(),
-            ));
+            return Err(KmError::Conflict(Reason::check(
+                Check::ObjectType,
+                format!("CKA_KEY_TYPE is {kt}, spec object type says {}", object.key_type.map_or("", Kt::name)),
+            )));
         }
         // The key type matched: an EC or Edwards object has its curve.
         if let Some(want) = object.curve() {
             match self.attr(h, AttributeType::EcParams)? {
                 Some(Attribute::EcParams(p)) if Curve::from_params(&p) == Some(want) => {}
-                other => return Err(KmError::Conflict(format!("CKA_EC_PARAMS {other:?} is not {want:?}").into())),
+                other => {
+                    return Err(KmError::Conflict(Reason::check(
+                        Check::ObjectType,
+                        format!("CKA_EC_PARAMS {other:?} is not {want:?}"),
+                    )));
+                }
             }
         }
         if let Some(bits) = object.modulus_bits {
@@ -68,7 +77,10 @@ impl Token {
                         Attribute::Modulus(m) => Some(size(&m)),
                         _ => None,
                     });
-                    return Err(KmError::Conflict(format!("RSA modulus is {have:?} bits, spec says {bits}").into()));
+                    return Err(KmError::Conflict(Reason::check(
+                        Check::ObjectType,
+                        format!("RSA modulus is {have:?} bits, spec says {bits}"),
+                    )));
                 }
             }
         }
@@ -77,9 +89,10 @@ impl Token {
             match self.attr(h, AttributeType::ValueLen)? {
                 Some(Attribute::ValueLen(v)) if *v == len => {}
                 Some(Attribute::ValueLen(v)) => {
-                    return Err(KmError::Conflict(
-                        format!("CKA_VALUE_LEN is {}, spec says {len}", u64::from(v)).into(),
-                    ));
+                    return Err(KmError::Conflict(Reason::check(
+                        Check::ObjectType,
+                        format!("CKA_VALUE_LEN is {}, spec says {len}", u64::from(v)),
+                    )));
                 }
                 // PKCS#11 requires it of the key; a module that stores an imported key without it
                 // (tpm2-pkcs11's C_CreateObject) leaves the type unverifiable, not different.
@@ -112,7 +125,7 @@ impl Token {
             Some(Attribute::Class(c)) => {
                 managed_class(c).ok_or_else(|| KmError::Unsupported(format!("object class {c}").into()))?
             }
-            _ => return Err(KmError::Conflict("object has no CKA_CLASS".into())),
+            _ => return Err(KmError::Conflict(Reason::check(Check::ObjectType, "object has no CKA_CLASS"))),
         };
         let mut policy = BTreeMap::new();
         for name in attrs::observed(class) {
@@ -198,14 +211,14 @@ impl Token {
         for (name, want) in attrs {
             let have = self.attr_value(h, name)?;
             if have.as_ref() != Some(want) {
-                return Err(KmError::Conflict(
+                return Err(KmError::Conflict(Reason::check(
+                    Check::PolicyAttribute,
                     format!(
                         "{what}{name} is {} on token '{}', spec wants {want}",
                         have.map_or("unreadable".into(), |v| v.to_string()),
                         self.name
-                    )
-                    .into(),
-                ));
+                    ),
+                )));
             }
         }
         Ok(())
@@ -276,7 +289,12 @@ impl Token {
                         "publicAttributes are declared, but there is no public key object under the locator".into(),
                     ));
                 }
-                _ => return Err(KmError::Ambiguous("several public key objects share the locator".into())),
+                _ => {
+                    return Err(KmError::Ambiguous(Reason::check(
+                        Check::LocatorUnique,
+                        "several public key objects share the locator",
+                    )));
+                }
             };
             same_public_key(self.held_spki(p)?.as_deref(), self.material_spki(h)?.as_deref())?;
             p
@@ -316,14 +334,15 @@ impl Token {
 /// `Conflict` for an unreadable public key object (never a match: policy.rs F2) or another key.
 fn same_public_key(held: Option<&[u8]>, own: Option<&[u8]>) -> Result<()> {
     match (held, own) {
-        (None, _) => Err(KmError::Conflict(
+        (None, _) => Err(KmError::Conflict(Reason::check(
+            Check::PublicSameKey,
             "the public key object under the locator exposes no key material, so it cannot be told apart from \
-             another key's"
-                .into(),
-        )),
-        (Some(held), Some(own)) if held != own => {
-            Err(KmError::Conflict("the public key object under the locator holds another key".into()))
-        }
+             another key's",
+        ))),
+        (Some(held), Some(own)) if held != own => Err(KmError::Conflict(Reason::check(
+            Check::PublicSameKey,
+            "the public key object under the locator holds another key",
+        ))),
         _ => Ok(()),
     }
 }

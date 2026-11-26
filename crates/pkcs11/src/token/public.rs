@@ -22,10 +22,16 @@ use x509_cert::der::{Decode as _, Encode as _};
 pub fn public_object_attrs(object: Object<'_>, bytes: &[u8]) -> Result<Vec<Attribute>> {
     match object.class {
         Class::Certificate => {
-            let cert = x509_cert::Certificate::from_der(bytes)
-                .map_err(|e| KmError::Conflict(format!("the value is not an X.509 certificate: {e}").into()))?;
+            let cert = x509_cert::Certificate::from_der(bytes).map_err(|e| {
+                KmError::Conflict(Reason::check(
+                    Check::CertificateDecodes,
+                    format!("the value is not an X.509 certificate: {e}"),
+                ))
+            })?;
             let tbs = cert.tbs_certificate();
-            let enc = |r: x509_cert::der::Result<Vec<u8>>| r.map_err(|e| KmError::Conflict(e.to_string().into()));
+            let enc = |r: x509_cert::der::Result<Vec<u8>>| {
+                r.map_err(|e| KmError::Conflict(Reason::check(Check::CertificateDecodes, e.to_string())))
+            };
             Ok(vec![
                 Attribute::Class(ObjectClass::CERTIFICATE),
                 Attribute::CertificateType(CertificateType::X_509),
@@ -55,7 +61,9 @@ pub fn public_object_attrs(object: Object<'_>, bytes: &[u8]) -> Result<Vec<Attri
 /// `Conflict` when the SPKI is not a key of `object`'s type and curve; `Validation` for an
 /// object with no curve cakeys knows.
 pub fn public_key_attrs(object: Object<'_>, spki: &[u8]) -> Result<Vec<Attribute>> {
-    let bad = |e: &dyn std::fmt::Display| KmError::Conflict(format!("the public key: {e}").into());
+    let bad = |e: &dyn std::fmt::Display| {
+        KmError::Conflict(Reason::check(Check::PublicKeyType, format!("the public key: {e}")))
+    };
     let declared = object.curve().map_or(KeyAlg::Rsa, KeyAlg::Ec);
     let held = KeyAlg::of_spki(spki).map_err(|e| bad(&e))?;
     let curve = match (held, declared) {

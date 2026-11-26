@@ -352,7 +352,7 @@ MIGRATE.md, docs/PROVIDERS.md, WORKPLAN.md).
 - **Design models** (DEVELOPMENT.md, "Verification beyond tests"): Quint for the lock rules is
   begun (2026-11-18: `crates/core/spec/lock.qnt`, `checks.quint`, `crates/core/tests/lock_mbt.rs`).
   Left for the model: imports and provenance, certificates and public-key objects (pairs, the
-  certificate exception of the second-name rule), transport keys (`publicKey`), locators and
+  certificate exception of the `lock.one-name` check), transport keys (`publicKey`), locators and
   `publicOnly`, recorded commitment labels, deprecated schemes, a spec retargeted to another
   object in keys.toml (the reconcile rule review reconcile F1 fixed, `reconcile.rs`, which the
   model's keys.toml never does; review 2026-11-23 A-16); and an inductive invariant, so

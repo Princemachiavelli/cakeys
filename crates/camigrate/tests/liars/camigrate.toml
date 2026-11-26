@@ -13,13 +13,13 @@
 # A cell's `expect`, beyond cakeys' table's (crates/cli/tests/liars/cakeys.toml):
 #   method_not, exposure_not   what the dry run's plan must not name (D-7);
 #   changed                    of "lock", "softhsm", "kryoptic" and "out" (the bundle or key file).
-# `rule` is a plan rule (cakeys_pkcs11::ops::Rule) or one of camigrate's own, [rules] below.
+# `rule` is a plan rule (cakeys_core::Rule) or, where no rule refused, the check that did
+# (cakeys_core::Check; docs/CAKEYS.md, "Rules and checks"). `covers` lists the checks that only
+# camigrate's runs decide, which its cells must name.
 
 state = ["lock", "softhsm", "kryoptic", "out"]
 
-[rules]
-unwraps = "crates/camigrate/src/sealed.rs"
-identity = "crates/camigrate/src/sealed.rs"
+covers = ["import.unwraps", "import.identity"]
 
 # ── Objects.
 
@@ -172,13 +172,13 @@ wrap_label = "{other}"
 lies = ["other.wrap"]
 verbs = ["migrate"]
 objects = ["aes", "hmac"]
-expect = { exit = 10, rule = "identity" }
+expect = { exit = 10, rule = "import.identity" }
 
 [[block]]
 lies = ["other.wrap"]
 verbs = ["migrate"]
 objects = ["ec"]
-expect = { exit = 13, rule = "identity" }
+expect = { exit = 13, rule = "import.identity" }
 
 [[block]]
 lies = ["other.wrap"]
@@ -190,7 +190,7 @@ expect = { exit = 10 }
 lies = ["other.wrap.host"]
 verbs = ["migrate"]
 objects = ["ec", "aes", "hmac"]
-expect = { exit = 10, rule = "identity" }
+expect = { exit = 10, rule = "import.identity" }
 
 # The source's search finds a second object under the label.
 [lies."other.find"]
@@ -313,7 +313,7 @@ corrupt = true
 lies = ["forge.wrap"]
 verbs = ["migrate"]
 objects = ["ec", "aes"]
-expect = { exit = 16, rule = "unwraps", device = true }
+expect = { exit = 16, rule = "import.unwraps", device = true }
 
 # A bundle is sealed to the target's transport key: the source cannot read it back, so a changed
 # blob is written, and the target's import refuses it (forge.sign's import cells take the target).
@@ -365,7 +365,7 @@ transcode = true
 lies = ["blob.transcode"]
 verbs = ["migrate"]
 objects = ["ec", "aes", "hmac"]
-expect = { exit = 16, rule = "unwraps", device = true }
+expect = { exit = 16, rule = "import.unwraps", device = true }
 
 # The host unwraps what the source wrapped for it, and nothing unwraps (13).
 [[block]]

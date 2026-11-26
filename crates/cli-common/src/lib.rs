@@ -290,7 +290,7 @@ pub fn read_lock(
 /// (21), so a row says which rule ended the pair ([`Outcome::rule`]).
 #[must_use]
 pub fn lock_rule(e: KmError) -> KmError {
-    if e.exit_code() == 21 { e.with_rule(cakeys_pkcs11::ops::Rule::LockWritable.name()) } else { e }
+    if e.exit_code() == 21 { e.with_rule(cakeys_pkcs11::ops::Rule::LockWritable) } else { e }
 }
 
 /// Save `lock` to `path` if the verb `changed` it, and say so ([`Notes::lock_written`]: the

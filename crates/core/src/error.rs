@@ -1,17 +1,19 @@
 //! Error classes with HTTP-like semantics and stable exit codes (docs/CAKEYS.md).
 
+use crate::check::{Check, Rule};
 use std::fmt;
 
 /// What a [`KmError`] says, the PKCS#11 return value behind it when a module call failed
-/// (`CK_RV`, a `CK_ULONG`: 64 bits on every platform this builds for), and the name of the rule
-/// that refused when a plan's rule did (`cakeys_pkcs11::ops::Rule`). It displays as its text
-/// alone: the value and the rule are for code to match on (ISSUES.md Q3), never part of a
-/// message.
+/// (`CK_RV`, a `CK_ULONG`: 64 bits on every platform this builds for), the plan's rule that
+/// refused when one did ([`Rule`]), and the check that refused when one did ([`Check`]). It
+/// displays as its text alone: the value, the rule and the check are for code to match on
+/// (ISSUES.md Q3), never part of a message.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Msg {
     text: String,
     rv: Option<u64>,
-    rule: Option<&'static str>,
+    rule: Option<Rule>,
+    check: Option<Check>,
 }
 
 impl Msg {
@@ -27,6 +29,14 @@ impl Msg {
         self.text
     }
 
+    /// Another text in place of this one, with the same return value, rule and check: for a
+    /// message rebuilt around the one it had.
+    #[must_use]
+    pub fn with_text(mut self, text: impl Into<String>) -> Self {
+        self.text = text.into();
+        self
+    }
+
     /// The same text, carrying the return value of the module call that failed.
     #[must_use]
     pub fn with_rv(mut self, rv: Option<u64>) -> Self {
@@ -34,10 +44,25 @@ impl Msg {
         self
     }
 
-    /// The name of the rule that refused, if a plan's rule did.
+    /// The plan's rule that refused, if one did.
     #[must_use]
-    pub fn rule(&self) -> Option<&'static str> {
+    pub fn rule(&self) -> Option<Rule> {
         self.rule
+    }
+
+    /// The check that refused, if one did.
+    #[must_use]
+    pub fn check(&self) -> Option<Check> {
+        self.check
+    }
+
+    /// The same text, naming `check` as the check that refused. A refusal of exit 11, 15 or 16
+    /// names its check this way; the three variants that take a [`Reason`] name one when they
+    /// are made.
+    #[must_use]
+    pub fn with_check(mut self, check: Check) -> Self {
+        self.check = Some(check);
+        self
     }
 }
 
@@ -56,7 +81,7 @@ impl fmt::Display for Msg {
 
 impl From<String> for Msg {
     fn from(text: String) -> Self {
-        Msg { text, rv: None, rule: None }
+        Msg { text, rv: None, rule: None, check: None }
     }
 }
 
@@ -78,23 +103,102 @@ impl PartialEq<&str> for Msg {
     }
 }
 
+/// Why a [`KmError::Conflict`], [`KmError::Ambiguous`] or [`KmError::PreconditionFailed`] was
+/// returned: the message, and either the check or the plan's rule that refused, or the statement
+/// that the input is malformed (a structure that does not parse). The only constructors are
+/// [`Reason::check`], [`Reason::rule`] and [`Reason::malformed`], and there is no `From<String>`,
+/// so every site that makes one of these three errors says which check refused. The JSON rows
+/// print that name ([`KmError::check`]), and a malformed input names none.
+/// `Reason::malformed` is allowed only in the modules that parse a structure
+/// (`malformed_only_in_parsers` in crates/core/tests/checks.rs). It dereferences to its [`Msg`],
+/// so `m.contains(…)` reads its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reason(Msg);
+
+impl Reason {
+    /// A refusal by `check`, saying `text`.
+    #[must_use]
+    pub fn check(check: Check, text: impl Into<String>) -> Reason {
+        Reason(Msg::from(text.into()).with_check(check))
+    }
+
+    /// A refusal by the plan's rule `rule`, saying `text`.
+    #[must_use]
+    pub fn rule(rule: Rule, text: impl Into<String>) -> Reason {
+        Reason(Msg { rule: Some(rule), ..Msg::from(text.into()) })
+    }
+
+    /// A refusal of an input that does not parse as the structure it should be, saying `text`.
+    /// It names no check.
+    #[must_use]
+    pub fn malformed(text: impl Into<String>) -> Reason {
+        Reason(Msg::from(text.into()))
+    }
+}
+
+impl std::ops::Deref for Reason {
+    type Target = Msg;
+    fn deref(&self) -> &Msg {
+        &self.0
+    }
+}
+
+impl fmt::Display for Reason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl PartialEq<str> for Reason {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<&str> for Reason {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+// TRANSITION (L2): these three conversions let the crates whose refusal sites are not classified
+// yet still build. The last commit of L2 removes them, and the compiler then finds every site
+// that names no check.
+impl From<String> for Reason {
+    fn from(text: String) -> Self {
+        Reason(text.into())
+    }
+}
+
+impl From<&str> for Reason {
+    fn from(text: &str) -> Self {
+        Reason(text.into())
+    }
+}
+
+impl From<Msg> for Reason {
+    fn from(m: Msg) -> Self {
+        Reason(m)
+    }
+}
+
 /// Every failure cakeys reports, each with a stable exit code (docs/CAKEYS.md, "Exit codes").
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum KmError {
     /// Nothing under the locator (11).
     #[error("not found: {0}")]
     NotFound(Msg),
     /// Several objects match (12).
     #[error("ambiguous: {0}")]
-    Ambiguous(Msg),
+    Ambiguous(Reason),
     /// The object is not what the spec says: wrong type or policy, a failed proof of possession,
     /// a foreign public key under the locator (13).
     #[error("conflict: {0}")]
-    Conflict(Msg),
+    Conflict(Reason),
     /// The realisation moved since it was recorded: a spec or policy change, a downgrade, a
     /// replaced object (14).
     #[error("precondition failed: {0}")]
-    PreconditionFailed(Msg),
+    PreconditionFailed(Reason),
     /// The token holds other material than the lock pins (10).
     #[error("hash mismatch in identity of {what}:\n  specified: {expected}\n     got:    {got}")]
     HashMismatch {
@@ -104,6 +208,9 @@ pub enum KmError {
         expected: String,
         /// The ID computed from the token.
         got: String,
+        /// The check that compared the two IDs: [`Check::IdentityMaterial`] for the material,
+        /// [`Check::LockAttestationId`] for an attestation's ID.
+        check: Check,
     },
     /// First use: the lock pins nothing to compare with yet, like a fixed-output derivation
     /// with a fake hash (18; HTTP's 428 Precondition Required). Not 10: a mismatch against a
@@ -173,12 +280,15 @@ impl KmError {
     pub fn every_variant() -> Vec<(&'static str, KmError)> {
         let s = String::new;
         let all = vec![
-            ("HashMismatch", KmError::HashMismatch { what: s(), expected: s(), got: s() }),
+            (
+                "HashMismatch",
+                KmError::HashMismatch { what: s(), expected: s(), got: s(), check: Check::IdentityMaterial },
+            ),
             ("FirstUse", KmError::FirstUse { what: s(), got: s() }),
             ("NotFound", KmError::NotFound("".into())),
-            ("Ambiguous", KmError::Ambiguous("".into())),
-            ("Conflict", KmError::Conflict("".into())),
-            ("PreconditionFailed", KmError::PreconditionFailed("".into())),
+            ("Ambiguous", KmError::Ambiguous(Reason::check(Check::LocatorUnique, ""))),
+            ("Conflict", KmError::Conflict(Reason::check(Check::ObjectType, ""))),
+            ("PreconditionFailed", KmError::PreconditionFailed(Reason::check(Check::LockSpec, ""))),
             ("Unsupported", KmError::Unsupported("".into())),
             ("Unavailable", KmError::Unavailable("".into())),
             ("Validation", KmError::Validation("".into())),
@@ -240,14 +350,14 @@ pub type Result<T, E = KmError> = std::result::Result<T, E>;
 
 /// `Some` of the [`Msg`] of a variant that says something in its own words, `None` for the two
 /// that format their own fields: the one list of those variants, matched by reference, by
-/// mutable reference or by value as `$e` is.
+/// mutable reference or by value as `$e` is. A [`Reason`]'s message is its [`Msg`].
 macro_rules! said {
     ($e:expr) => {
         match $e {
+            KmError::Ambiguous(Reason(m)) | KmError::Conflict(Reason(m)) | KmError::PreconditionFailed(Reason(m)) => {
+                Some(m)
+            }
             KmError::NotFound(m)
-            | KmError::Ambiguous(m)
-            | KmError::Conflict(m)
-            | KmError::PreconditionFailed(m)
             | KmError::Exists(m)
             | KmError::ObjectsFailed(m)
             | KmError::LockUnwritable(m)
@@ -286,6 +396,17 @@ impl KmError {
         self
     }
 
+    /// The same error with `text` as its message, its kind, return value, rule and check kept: a
+    /// refusal said again in other words. The two variants that format their own fields stay as
+    /// they are.
+    #[must_use]
+    pub fn with_text(mut self, text: impl Into<String>) -> Self {
+        if let Some(m) = self.msg_mut() {
+            m.text = text.into();
+        }
+        self
+    }
+
     /// The PKCS#11 return value of the module call that failed, where the token layer set it.
     #[must_use]
     pub fn rv(&self) -> Option<u64> {
@@ -301,18 +422,41 @@ impl KmError {
         self
     }
 
-    /// The name of the rule that refused, where a plan's rule did (`cakeys_pkcs11::ops::Rule`).
+    /// The plan's rule that refused, where one did ([`Rule`]).
     #[must_use]
-    pub fn rule(&self) -> Option<&'static str> {
+    pub fn rule(&self) -> Option<Rule> {
         self.msg().and_then(Msg::rule)
     }
 
     /// The same error, naming the rule that refused. The two variants that format their own
     /// fields name none: no rule refuses with them.
     #[must_use]
-    pub fn with_rule(mut self, rule: &'static str) -> Self {
+    pub fn with_rule(mut self, rule: Rule) -> Self {
         if let Some(m) = self.msg_mut() {
             m.rule = Some(rule);
+        }
+        self
+    }
+
+    /// The check that refused, where one did ([`Check`]). A [`KmError::HashMismatch`] names the
+    /// check that compared its IDs, and a [`KmError::FirstUse`] names none, because nothing was
+    /// compared.
+    #[must_use]
+    pub fn check(&self) -> Option<Check> {
+        match self {
+            KmError::HashMismatch { check, .. } => Some(*check),
+            _ => self.msg().and_then(Msg::check),
+        }
+    }
+
+    /// The same error, naming `check` as the check that refused, in place of the one it named.
+    /// A [`KmError::FirstUse`] names none and stays as it is.
+    #[must_use]
+    pub fn with_check(mut self, check: Check) -> Self {
+        if let KmError::HashMismatch { check: c, .. } = &mut self {
+            *c = check;
+        } else if let Some(m) = self.msg_mut() {
+            m.check = Some(check);
         }
         self
     }
@@ -334,11 +478,12 @@ mod tests {
     #[test]
     fn every_message_carries_its_return_value() {
         let m = || Msg::from("said");
+        let r = || Reason::check(Check::ObjectType, "said");
         let said = [
             KmError::NotFound(m()),
-            KmError::Ambiguous(m()),
-            KmError::Conflict(m()),
-            KmError::PreconditionFailed(m()),
+            KmError::Ambiguous(r()),
+            KmError::Conflict(r()),
+            KmError::PreconditionFailed(r()),
             KmError::Exists(m()),
             KmError::ObjectsFailed(m()),
             KmError::Unsupported(m()),
@@ -349,18 +494,23 @@ mod tests {
         ];
         for e in said {
             let code = e.exit_code();
-            let e = e.with_rv(Some(0x30)).with_rule("placement").prefixed("where");
+            let e = e.with_rv(Some(0x30)).with_rule(Rule::Placement).prefixed("where");
             assert_eq!(e.exit_code(), code, "prefixing keeps the kind");
             assert_eq!((e.rv(), e.msg().map(|m| &**m)), (Some(0x30), Some("where: said")), "{code}");
-            assert_eq!(e.rule(), Some("placement"), "{code}");
+            assert_eq!(e.rule(), Some(Rule::Placement), "{code}");
             assert_eq!(e.into_msg().and_then(|m| m.rv()), Some(0x30), "{code}");
         }
         let fields = [
-            KmError::HashMismatch { what: "w".into(), expected: "e".into(), got: "g".into() },
+            KmError::HashMismatch {
+                what: "w".into(),
+                expected: "e".into(),
+                got: "g".into(),
+                check: Check::IdentityMaterial,
+            },
             KmError::FirstUse { what: "w".into(), got: "g".into() },
         ];
         for e in fields {
-            let e = e.with_rv(Some(0x30)).with_rule("placement").prefixed("where");
+            let e = e.with_rv(Some(0x30)).with_rule(Rule::Placement).prefixed("where");
             assert!(!e.to_string().contains("where"));
             assert_eq!((e.rv(), e.rule(), e.msg().is_none()), (None, None, true));
             assert!(e.into_msg().is_none());

@@ -13,7 +13,7 @@ use cakeys_core::config::{Lock, Origin};
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::plaintext::private_from_pkcs8;
 use cakeys_core::types::ObjectClass as Class;
-use cakeys_core::{KmError, Result};
+use cakeys_core::{KmError, Reason, Result};
 use cakeys_pkcs11::ops::{self, Checked, Extracted, Notes, Target};
 use cakeys_pkcs11::token::Occupied;
 use cakeys_pkcs11::{Template, Token, Topic, Via, templates};
@@ -71,15 +71,14 @@ pub(crate) fn ptool_free(dst: &Target, occupied: &Occupied) -> Result<()> {
     if occupied.public_half.is_none() {
         return Ok(());
     }
-    Err(KmError::Conflict(
+    Err(KmError::Conflict(Reason::rule(
+        ops::Rule::LocatorFree,
         format!(
             "objects already sit under the locator of {dst}, and the lock records no realisation there; refusing \
              to import over them. {}",
             crate::public::unrecorded_hint(dst)
-        )
-        .into(),
-    )
-    .with_rule(ops::Rule::LocatorFree.name()))
+        ),
+    )))
 }
 
 /// The key `src` names on `from`, verified against the lock first: its handle, and a private

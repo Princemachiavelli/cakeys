@@ -1,13 +1,14 @@
 //! The liar tables' rules (docs/archive/REVIEW-2026-11-24/phase2-3-design.md §1.6), with no token:
-//! no rule of the plan (`cakeys_pkcs11::ops::Rule`) without a cell that fires it, a unit test
-//! that does, or an exemption that says why none can; no name that is no rule (the plan's, or
-//! one a tool's table says its source defines: camigrate's `unwraps`); every (lie class,
-//! verb, object class) of a table covered by a cell or decided with why; and a table of the
-//! shape its runner reads (`tests/common/liars.rs`). Pure: plain `cargo test`, on every system.
+//! no rule of the plan (`cakeys_core::Rule`) without a cell that fires it, a unit test that does,
+//! or an exemption that says why none can; no name that is neither a rule nor a check
+//! (`cakeys_core::Check`); every check that a table `covers` named by one of its cells; every
+//! (lie class, verb, object class) of a table covered by a cell or decided with why; and a table
+//! of the shape its runner reads (`tests/common/liars.rs`). Pure: plain `cargo test`, on every
+//! system.
 
 mod common;
 
-use cakeys_pkcs11::ops::Rule;
+use cakeys_core::{Check, Rule};
 use common::liars::Table;
 use std::path::{Path, PathBuf};
 
@@ -28,28 +29,19 @@ fn every_rule_has_a_liar_that_fires_it() {
     assert!(uncovered.is_empty(), "no cell, unit row or exemption names these rules: {uncovered:?}");
     for t in &tables {
         let unknown: Vec<String> =
-            t.named_rules().into_iter().filter(|r| Rule::named(r).is_none() && !t.rules.contains_key(r)).collect();
-        assert!(unknown.is_empty(), "{}: names no rule: {unknown:?}", t.path.display());
-        // A tool's own rule is one its source defines, by that name.
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for (rule, file) in &t.rules {
-            let text = std::fs::read_to_string(root.join(file)).unwrap_or_default();
-            assert!(
-                text.contains(&format!(": &str = \"{rule}\";")),
-                "{}: rule {rule}: {file} defines no constant of that name",
-                t.path.display()
-            );
-            assert!(Rule::named(rule).is_none(), "{}: rule {rule} is the plan's, not the tool's own", t.path.display());
-        }
-        let own: Vec<&str> = t.rules.keys().map(String::as_str).collect();
-        let uncovered = t.uncovered(&own);
-        assert!(uncovered.is_empty(), "{}: its own rules no cell names: {uncovered:?}", t.path.display());
+            t.named_rules().into_iter().filter(|r| Rule::named(r).is_none() && Check::named(r).is_none()).collect();
+        assert!(unknown.is_empty(), "{}: names no rule or check: {unknown:?}", t.path.display());
+        let unknown: Vec<&String> = t.covers.iter().filter(|c| Check::named(c).is_none()).collect();
+        assert!(unknown.is_empty(), "{}: covers no check: {unknown:?}", t.path.display());
+        let covers: Vec<&str> = t.covers.iter().map(String::as_str).collect();
+        let uncovered = t.uncovered(&covers);
+        assert!(uncovered.is_empty(), "{}: no cell names these checks that it covers: {uncovered:?}", t.path.display());
     }
 }
 
 /// Each unit row's test is a `fn` in `crates/` whose body names its rule (`Rule::<Variant>` or
-/// the name quoted): a row cannot point at a test that does not exist, or at one that never
-/// meets the rule.
+/// the name quoted), or whose body asserts its check (`assert_fires` and `Check::<Variant>`): a
+/// row cannot point at a test that does not exist, or at one that never meets the rule.
 #[test]
 fn every_unit_row_names_a_test_that_fires_its_rule() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -59,16 +51,22 @@ fn every_unit_row_names_a_test_that_fires_its_rule() {
     let mut wrong = Vec::new();
     for t in tables() {
         for u in &t.units {
-            let Some(rule) = Rule::named(&u.rule) else {
-                wrong.push(format!("unit {}: no rule {}", u.test, u.rule));
-                continue;
+            let fires: Vec<String> = match (Rule::named(&u.rule), Check::named(&u.rule)) {
+                (Some(rule), _) => vec![format!("Rule::{rule:?}"), format!("\"{}\"", rule.name())],
+                (None, Some(check)) => vec![format!("Check::{check:?}")],
+                (None, None) => {
+                    wrong.push(format!("unit {}: no rule or check {}", u.test, u.rule));
+                    continue;
+                }
             };
+            let check = Check::named(&u.rule).is_some();
             let bodies: Vec<&str> = texts.iter().filter_map(|text| body(text, &u.test)).collect();
-            let forms = [format!("Rule::{rule:?}"), format!("\"{}\"", rule.name())];
+            let named =
+                |b: &&str| fires.iter().any(|f| b.contains(f.as_str())) && (!check || b.contains("assert_fires("));
             if bodies.is_empty() {
                 wrong.push(format!("unit {}: no fn {} in crates/", u.rule, u.test));
-            } else if !bodies.iter().any(|b| forms.iter().any(|f| b.contains(f.as_str()))) {
-                wrong.push(format!("unit {}: fn {} names neither {forms:?}", u.rule, u.test));
+            } else if !bodies.iter().any(named) {
+                wrong.push(format!("unit {}: fn {} names none of {fires:?}", u.rule, u.test));
             }
             if u.why.trim().is_empty() {
                 wrong.push(format!("unit {}: no why", u.rule));

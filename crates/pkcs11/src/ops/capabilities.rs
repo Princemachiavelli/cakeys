@@ -262,7 +262,7 @@ pub(crate) fn check_attestation(
 /// The first refusal, naming its rule ([`KmError::rule`]).
 pub(super) fn check_capabilities(t: &Target, tok: &Token, mode: Mode, verb: Verb) -> Result<()> {
     let own = static_rules(t, mode, Seat::Resolved(tok.provider.as_ref()), verb, None)?.first()?.own;
-    let capability = |e: KmError| e.with_rule(Rule::Capability.name());
+    let capability = |e: KmError| e.with_rule(Rule::Capability);
     let needs = needs(t, mode, own).map_err(|e| capability(tok.provider.hinted(Topic::Generate, e)))?;
     let generation = needs.generation.map(|m| vec![m]);
     if let Some(g) = needs.groups.iter().chain(&generation).find(|g| !g.iter().any(|m| tok.has(*m))) {
@@ -277,5 +277,5 @@ pub(super) fn check_capabilities(t: &Target, tok: &Token, mode: Mode, verb: Verb
     if let Some(b) = cakeys_core::plan::expected_binding(t) {
         tok.check_proof(t.object, b).map_err(capability)?;
     }
-    check_templates(t, tok, mode, own == Some(false)).map_err(|e| e.with_rule(Rule::Templates.name()))
+    check_templates(t, tok, mode, own == Some(false)).map_err(|e| e.with_rule(Rule::Templates))
 }

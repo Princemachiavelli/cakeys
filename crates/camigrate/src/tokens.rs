@@ -11,7 +11,7 @@ use crate::trust::{self, BoundTransport, Claimed};
 use cakeys_core::config::{Config, Lock, Observation, TokenCfg, TokenObservation};
 use cakeys_core::migrate::{Method, OaepHash};
 use cakeys_core::types::{KeyType, ObjectClass};
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::resolution::{self, Resolved, moduleless_info};
 use cakeys_pkcs11::{Registry, Token};
@@ -441,19 +441,24 @@ pub(crate) fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Re
             continue;
         }
         let ty = lock.objects.get(&r.object).and_then(|o| o.object_type.as_ref()).ok_or_else(|| {
-            KmError::PreconditionFailed(format!("the lock records no type for object '{}'", r.object).into())
+            KmError::PreconditionFailed(Reason::check(
+                Check::ImportLocked,
+                format!("the lock records no type for object '{}'", r.object),
+            ))
         })?;
         out.push(Material { object: &r.object, ty, policy: &r.policy, immutables: &r.immutables });
     }
     if let Some(o) = objects.iter().find(|o| !seen.contains(**o)) {
-        return Err(KmError::PreconditionFailed(
-            format!("object '{o}' has no realisation on token '{token}' in the lock; lock it there first").into(),
-        ));
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::LockRealised,
+            format!("object '{o}' has no realisation on token '{token}' in the lock; lock it there first"),
+        )));
     }
     if out.is_empty() {
-        return Err(KmError::PreconditionFailed(
-            format!("the lock records no realisation on token '{token}': nothing to plan").into(),
-        ));
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::LockRealised,
+            format!("the lock records no realisation on token '{token}': nothing to plan"),
+        )));
     }
     Ok(out)
 }
@@ -622,7 +627,7 @@ impl Moves {
     /// `text` as the error of the first blocked plan's refusal ([`Plan::refused`]): the one the
     /// run would end with, as the run itself meets it; `Unsupported` (15) for a plan of none.
     fn refusal(&self, text: String) -> KmError {
-        match self.plans.iter().find(|p| !p.ready).and_then(|p| p.refused) {
+        match self.plans.iter().find(|p| !p.ready).and_then(|p| p.refused.clone()) {
             Some(r) => r.error(text),
             None => KmError::Unsupported(text.into()),
         }
