@@ -421,8 +421,8 @@ content-addressed identity — one per token type that can produce it:
   conflict (13), since an unrestricted key there could sign a forged attestation. The handle
   defaults to `0x81000016` (cakeys-tpm2-pkcs11 `DEFAULT_AK_HANDLE`), configurable per token
   (`options.akHandle`, `0x`-prefixed, owner persistent range). With `options.akLabel` the AK is
-  instead a private key object of the token (a restricted P-256 key the module makes and never
-  releases), found by that label and checked to be restricted and fixed to the TPM and its parent;
+  instead a private key object of the token (a restricted P-256 key the module makes in the TPM),
+  found by that label and checked to be restricted and fixed to the TPM and its parent;
   `lock` makes it, reads never do. Its `qualifiedSigner` is not checked: it is `H(QN(primary) ‖ Name(AK))`, and
   the host does not have the Name of the module's primary without the TPM or the store, so the
   signature under the pinned key is what identifies the signer (for the persistent AK, a primary

@@ -699,12 +699,6 @@ tests = ["attestation_is_per_realisation_and_never_alone"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "restricted P-256 key the module makes and never"
-kind = "enforced"
-tests = ["tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store"]
-
-[[claim]]
-doc = "docs/DESIGN.md"
 says = "it, reads never do. Its `qualifiedSigner` is not"
 kind = "enforced"
 tests = ["tpm2_vendor_token_attestation_key_needs_no_tpm_handle_or_store", "tpm2_keys_attest_their_tpm_residence"]
