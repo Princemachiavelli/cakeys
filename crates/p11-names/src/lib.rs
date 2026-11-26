@@ -1,14 +1,15 @@
-//! PKCS#11 names with the values `cryptoki-sys` gives them, compiler-checked: p11-fault's plans
-//! and trace say `CKR_DEVICE_ERROR`, never `0x30`, unless the value has no name here, and
-//! cakeys finds a module failure's `CK_RV` and names it by its constant (`cakeys_pkcs11::token`'s
-//! `rv_value` and `rv_name`, in every build). No cakeys dependency: p11-fault stays a module any
-//! client can load.
+//! PKCS#11 names with the values that `cryptoki-sys` gives them, so the compiler checks each
+//! value. p11-fault's plans and trace use names such as `CKR_DEVICE_ERROR`, never values such as
+//! `0x30`, unless the value has no name here. cakeys uses the tables to find the `CK_RV` of a
+//! module failure and to name it by its constant (`rv_value` and `rv_name` in
+//! `cakeys_pkcs11::token`, in every build). This crate has no cakeys dependency, so p11-fault
+//! stays a module that any client can load.
 
 use cryptoki_sys::{CK_ATTRIBUTE_TYPE, CK_FLAGS, CK_KEY_TYPE, CK_MECHANISM_TYPE, CK_OBJECT_CLASS, CK_RV};
 
 macro_rules! rv_names {
     ($($name:ident),* $(,)?) => {
-        /// Every `CKR_*` of PKCS#11 3.2 that `cryptoki-sys` defines, by name.
+        /// Every `CKR_*` value of PKCS#11 3.2 that `cryptoki-sys` defines, by name.
         pub const RV: &[(&str, CK_RV)] = &[$((stringify!($name), cryptoki_sys::$name)),*];
     };
 }
@@ -298,8 +299,9 @@ macro_rules! flag_names {
     };
 }
 
-// Two tables: the two flag words reuse bit values (CKF_HW_SLOT is CKF_LOGIN_REQUIRED's 4), so a
-// name is a flag of one structure only (p11-fault plan.rs F1).
+// There are two tables, because the two flag words reuse bit values (`CKF_HW_SLOT` and
+// `CKF_LOGIN_REQUIRED` are both 4). So a name is a flag of one structure only (p11-fault plan.rs
+// F1).
 flag_names!(
     SLOT_FLAG,
     "The slot flags (`C_GetSlotInfo`), by name. Other `CKF_*` reuse their bit values.",
@@ -332,19 +334,19 @@ flag_names!(
     CKF_ERROR_STATE,
 );
 
-/// The value of the attribute type `name` (`CKA_...`).
+/// Returns the value of the attribute type `name` (`CKA_...`).
 #[must_use]
 pub fn attribute(name: &str) -> Option<CK_ATTRIBUTE_TYPE> {
     ATTRIBUTE.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }
 
-/// The value of the slot flag `name` (`CKF_...`).
+/// Returns the value of the slot flag `name` (`CKF_...`).
 #[must_use]
 pub fn slot_flag(name: &str) -> Option<CK_FLAGS> {
     SLOT_FLAG.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }
 
-/// The value of the token flag `name` (`CKF_...`).
+/// Returns the value of the token flag `name` (`CKF_...`).
 #[must_use]
 pub fn token_flag(name: &str) -> Option<CK_FLAGS> {
     TOKEN_FLAG.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
@@ -840,7 +842,7 @@ mechanism_names!(
     CKM_DSA_PROBABILISTIC_PARAMETER_GEN,
 );
 
-/// The value of the mechanism `name` (`CKM_...`).
+/// Returns the value of the mechanism `name` (`CKM_...`).
 #[must_use]
 pub fn mechanism(name: &str) -> Option<CK_MECHANISM_TYPE> {
     MECHANISM.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
@@ -871,7 +873,8 @@ class_names!(
 
 macro_rules! key_type_names {
     ($($name:ident),* $(,)?) => {
-        /// Every `CKK_*` that `cryptoki-sys` defines, by name (an alias beside the name it stands for).
+        /// Every `CKK_*` that `cryptoki-sys` defines, by name. An alias is listed next to the name
+        /// that it stands for.
         pub const KEY_TYPE: &[(&str, CK_KEY_TYPE)] = &[$((stringify!($name), cryptoki_sys::$name)),*];
     };
 }
@@ -948,25 +951,25 @@ key_type_names!(
     CKK_XMSSMT,
 );
 
-/// The value of the object class `name` (`CKO_...`).
+/// Returns the value of the object class `name` (`CKO_...`).
 #[must_use]
 pub fn class(name: &str) -> Option<CK_OBJECT_CLASS> {
     CLASS.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }
 
-/// The value of the key type `name` (`CKK_...`).
+/// Returns the value of the key type `name` (`CKK_...`).
 #[must_use]
 pub fn key_type(name: &str) -> Option<CK_KEY_TYPE> {
     KEY_TYPE.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }
 
-/// The value of the return code `name` (`CKR_...`).
+/// Returns the value of the return code `name` (`CKR_...`).
 #[must_use]
 pub fn rv(name: &str) -> Option<CK_RV> {
     RV.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }
 
-/// The first name of return code `value`, if it has one.
+/// Returns the first name of the return code `value`, or `None` when it has no name.
 #[must_use]
 pub fn rv_name(value: CK_RV) -> Option<&'static str> {
     RV.iter().find(|(_, v)| *v == value).map(|(n, _)| *n)
@@ -992,8 +995,9 @@ mod tests {
         assert_eq!(key_type("CKK_ECDSA"), key_type("CKK_EC"));
     }
 
-    /// Each flag word has its own names: they share bit values, so a name in both tables, or
-    /// a token name read as a slot one, would set another flag (p11-fault plan.rs F1).
+    /// Each flag word has its own names. The words share bit values, so a name in both tables, or
+    /// a token flag name read as a slot flag name, would set a different flag (p11-fault plan.rs
+    /// F1).
     #[test]
     fn slot_and_token_flags_are_apart() {
         for (name, _) in SLOT_FLAG {
