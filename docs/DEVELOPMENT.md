@@ -113,7 +113,7 @@ what it needs, and when it must pass.
 
 | Tier | What | Needs | Must pass |
 |---|---|---|---|
-| T0 | `.#checks-no-vm`. It holds the crane build with its software-token suites (SoftHSM, kryoptic, p11-kit, swtpm, the fault shim), clippy, rustdoc, formatting, `doc-references` and `claims` (each universal claim of the documents that say what the tools guarantee names its tests in `docs/claims.toml`, or is counted against a number that only goes down). It holds `test-count`, `oracle-count` (no test file asserts on a tool's prose more often than `nix/oracle-count.toml` allows, and that number only goes down) and `mutants-scopes`. It holds `ledger`, which also covers the golden files: each change to a file that a build regenerates and compares with is recorded with the rows that it moved and why, and on a pull request, `nix/golden-rows.py` in the `light` job requires that the record lists exactly the rows that the diff moved. It holds `fuzz-lock` and `kani-library-lock`, which check that the second lockfiles still match: `fuzz/Cargo.lock` must hold what the fuzz crate needs at the versions of `Cargo.lock`, and `nix/kani/library-Cargo.lock` must be the Kani nightly's own (a drifted `fuzz/Cargo.lock` kept the `vm` job failing from 38967ae to 61b7000). On a pull request, the `unit` job of `.github/workflows/mutants.yml` is also T0 | Linux, no hardware | before a merge to `main` |
+| T0 | `.#checks-no-vm`. It holds the crane build with its software-token suites (SoftHSM, kryoptic, p11-kit, swtpm, the fault shim), clippy, rustdoc, formatting, `doc-references` and `claims` (each universal claim of the documents that say what the tools guarantee names its tests in `docs/claims.toml`, or is counted against a number that only goes down). It holds `test-count`, `oracle-count` (no test file asserts on a tool's prose more often than `nix/oracle-count.toml` allows, and that number only goes down) and `mutants-scopes`. It holds `ledger`, which also covers the golden files: each change to a file that a build regenerates and compares with is recorded with the rows that it moved and why, and on a pull request, `nix/golden-rows.py` in the `light` job requires that each record lists exactly the rows that its change moved and that each change of a watched golden file has a record. It holds `fuzz-lock` and `kani-library-lock`, which check that the second lockfiles still match: `fuzz/Cargo.lock` must hold what the fuzz crate needs at the versions of `Cargo.lock`, and `nix/kani/library-Cargo.lock` must be the Kani nightly's own (a drifted `fuzz/Cargo.lock` kept the `vm` job failing from 38967ae to 61b7000). On a pull request, the `unit` job of `.github/workflows/mutants.yml` is also T0 | Linux, no hardware | before a merge to `main` |
 | T1 | `.#checks-vm`: the NixOS VM tests and the fuzz smoke run. On a pull request, the token tier of the mutation gate is also T1 | Linux with KVM | before a merge, or within a day after it. When T1 fails, the fix is a new commit, and it comes before other work |
 | T2 | the YubiKey, AMD fTPM, Cloud KMS and CloudHSM suites and probes (`nix run .#coverage-full`, `scripts/cloud/*.sh`) | the device, or a cloud account that bills | on a schedule or before a release, and recorded in the [ledger](CAPROBE.md#the-ledger) |
 
@@ -369,10 +369,16 @@ protect them:
   each file (CAPROBE.md, "The ledger"). Every change adds a record that names the file that it
   made and each row that moved, with the row's old value and the reason that the new value is
   right. `checks.ledger` fails on a file that no record names, on a reason left as `"TODO"`, and
-  on a listed row that did not move. On a pull request, `nix/golden-rows.py --base <rev>` fails
-  when the record lists other rows than the diff moved, and it writes those rows, old and new, to
-  the job summary. `nix develop -c python3 -I nix/golden-rows.py --stub` prints the record to fill
-  in.
+  on a listed row that did not move. On a pull request, `nix/golden-rows.py --base <rev>` reads
+  each golden file in every commit since the base. A record that the pull request added must list
+  exactly the rows that moved in the first commit that made the record's version, compared with
+  that commit's first parent, so a merge record lists what the merge moved on the branch that it
+  merged into. The check also fails when a commit makes a version of a watched file that no
+  record names, and when a row that moved since the base is listed by no record that the pull
+  request added. A file that the ledger did not watch at the base is checked from the version that
+  its first record names, and that first record lists no row. The script writes the listed rows,
+  old and new, to the job summary. `nix develop -c python3 -I nix/golden-rows.py --stub` prints
+  the record to fill in.
 - **A regeneration is written beside the file.** Every writer of a golden file
   (`caprobe probe --out`, each `CAKEYS_UPDATE_*` test, the regeneration scripts) goes through
   `cakeys_profile::regenerate`. A file that differs from the new text is replaced only when the
