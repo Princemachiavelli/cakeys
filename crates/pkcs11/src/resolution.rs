@@ -1,46 +1,48 @@
-//! Profile resolution (docs/CAPROBE.md D9, phase 2): which module profile and which delta
-//! layers compose a token's effective capability. The binding layer is always there; a
-//! forwarder is recognised from the module itself; the config names the rest; the module
-//! profile follows the provider family, chosen by the most match keys — the version
-//! `C_GetInfo` expresses, then the token's model and firmware (D9/D10) —
-//! never a module digest; the one committed profile of a family matches by
-//! manufacturer alone, flagged low-evidence (kryoptic reports 0.0 \[run\]).
+//! Profile resolution (docs/CAPROBE.md D9, phase 2). It decides which module profile and which
+//! delta layers make up a token's effective capability. The binding layer is always present. A
+//! forwarder is recognized from the module itself, and the configuration names the other layers.
+//! The module profile follows the provider family. Among the family's profiles, the one with the
+//! most matching match keys is chosen: first the version that `C_GetInfo` reports, and then the
+//! token's model and firmware (D9/D10). A module digest is never used. When a family has only one
+//! committed profile, that profile matches by manufacturer alone, and the match is flagged as
+//! low-evidence (kryoptic reports version 0.0 \[run\]).
 
 use crate::binding;
 use cakeys_core::config::{ModuleInfo, Observation, Said, TokenCfg, TokenInfo};
 use cakeys_profile::{Answer, Capability, Mode, Profile, Row, Set};
 use std::collections::BTreeSet;
 
-/// A token's resolved profiles, what [`crate::Token`] carries and every consumer reads.
+/// A token's resolved profiles, which [`crate::Token`] holds and every consumer reads.
 #[derive(Debug, Clone, Default)]
 pub struct Resolved {
-    /// The module profile, when one is committed for the selected provider family.
+    /// The module profile, when a profile is committed for the selected provider family.
     pub module: Option<Profile>,
-    /// The delta layers, innermost first: the binding, any forwarder the module names, the
-    /// config's extras.
+    /// The delta layers, innermost first: the binding, any forwarder that the module names, and
+    /// the extra layers of the configuration.
     pub layers: Vec<Profile>,
-    /// What resolution noticed on the way (a low-evidence version match, ...): `caps` prints
-    /// them, so a resolved stack is never a silent guess.
+    /// What resolution noticed while it ran (for example, a low-evidence version match). `caps`
+    /// prints these notes, so a resolved stack is never a guess that nobody is told about.
     pub notes: Vec<String>,
-    /// A layer that hides the module behind it (`requires-provider`) while keys.toml names no
-    /// provider for that module: the layer's name and its note. A plan warns with it.
+    /// The name and the note of a layer that hides the module behind it (`requires-provider`)
+    /// when keys.toml names no provider for that module. A plan prints a warning with it.
     pub hidden: Option<String>,
 }
 
 impl Resolved {
-    /// The module profile's name, for `caps` and messages.
+    /// Returns the module profile's name, for `caps` and for messages.
     #[must_use]
     pub fn module_name(&self) -> Option<&str> {
         self.module.as_ref().map(|p| p.profile.as_str())
     }
 
-    /// Put what this deployment's token answered (`observed.capabilities`, the lock's record of
-    /// what its runs demonstrated and the probe measured) over the module profile: the token's
-    /// own answer decides before what a shipped profile says of its kind. With no module
-    /// profile, the answers stand alone (a partial profile: they say nothing of mechanisms). A
-    /// row this cakeys cannot read answers nothing. A recorded answer that agrees with the
-    /// profile and says nothing of how keeps the profile's `via`: a lock written before cakeys
-    /// recorded `via = "by-name"` still lets a curve generated only by name retry by name
+    /// Places the answers of this deployment's token (`observed.capabilities`, which is the
+    /// lock's record of what its runs demonstrated and what the probe measured) over the module
+    /// profile. The token's own answer takes precedence over what a shipped profile says about
+    /// its kind of token. When there is no module profile, the answers form a partial profile by
+    /// themselves, which says nothing about mechanisms. A row that this version of cakeys cannot
+    /// read is ignored. A recorded answer that agrees with the profile and does not say how
+    /// (`via`) keeps the profile's `via`. So a lock that was written before cakeys recorded
+    /// `via = "by-name"` still lets a curve that is generated only by name retry by name
     /// (ISSUES.md B18).
     pub fn with_answers(&mut self, token: &str, observed: &Observation) {
         let rows: Vec<(Capability, Row)> = observed
@@ -80,13 +82,13 @@ impl Resolved {
         }
     }
 
-    /// The layers' names, in order.
+    /// Returns the names of the layers, in order.
     #[must_use]
     pub fn layer_names(&self) -> Vec<&str> {
         self.layers.iter().map(|p| p.profile.as_str()).collect()
     }
 
-    /// Every mechanism the stack subtracts from a module's advertisement.
+    /// Returns every mechanism that the stack subtracts from the module's advertised list.
     #[must_use]
     pub fn subtracted_mechanisms(&self) -> BTreeSet<&str> {
         self.module
@@ -96,14 +98,15 @@ impl Resolved {
             .collect()
     }
 
-    /// Every mechanism the stack adds although the module does not list it (a provider's
-    /// stand-in the probe found working, `Provider::stand_in`).
+    /// Returns every mechanism that the stack adds although the module does not list it (a
+    /// provider's substitute that the probe found to work, `Provider::stand_in`).
     #[must_use]
     pub fn added_mechanisms(&self) -> BTreeSet<&str> {
         self.module.iter().chain(self.layers.iter()).flat_map(|p| p.add.iter().map(String::as_str)).collect()
     }
 
-    /// Every key type the stack subtracts (an unpatched binding's broken ones).
+    /// Returns every key type that the stack subtracts (the key types that an unpatched binding
+    /// maps wrongly).
     #[must_use]
     pub fn subtracted_key_types(&self) -> BTreeSet<&str> {
         self.module
@@ -114,9 +117,9 @@ impl Resolved {
     }
 }
 
-/// The `ModuleInfo` of a module nobody has seen yet — keys.toml's provider alone (the static
-/// gate) or a transport file's — so nothing to detect a forwarder from; the binding layer still
-/// applies.
+/// Returns the `ModuleInfo` of a module that nobody has seen yet, which is the case for keys.toml's
+/// provider alone (the static gate) or for a transport file. Such a module gives nothing from which
+/// to detect a forwarder, but the binding layer still applies.
 #[must_use]
 pub fn moduleless_info() -> ModuleInfo {
     ModuleInfo {
@@ -129,16 +132,16 @@ pub fn moduleless_info() -> ModuleInfo {
     }
 }
 
-/// Resolve a token's profiles: `provider` is the selected provider's name (or the explicitly
-/// configured one: a family, never a profile, docs/CONFIG.md);
-/// `token` is what `C_GetTokenInfo` gave, when there is a token (its firmware matches a module
-/// that hides its version).
+/// Resolves a token's profiles. `provider` is the name of the selected provider (or of the
+/// explicitly configured one, which is a family and never a profile, docs/CONFIG.md). `token` is
+/// what `C_GetTokenInfo` returned, when there is a token (its firmware matches a module that hides
+/// its version).
 ///
 /// # Errors
 ///
-/// [`Set::embedded`]'s parse error, or the message of a config-named layer no profile set has:
-/// the token open maps both to 17. A module version no profile records is never an error: the
-/// nearest profile stands in, with a note.
+/// The parse error of [`Set::embedded`], or the message for a layer that the configuration names
+/// but no profile set has. The token open maps both to exit code 17. A module version that no
+/// profile records is never an error: the nearest profile is used instead, with a note.
 pub fn resolve(
     cfg: &TokenCfg,
     module: &ModuleInfo,
@@ -147,7 +150,7 @@ pub fn resolve(
 ) -> Result<Resolved, String> {
     let set = Set::active()?;
     let mut out = Resolved::default();
-    // The binding layer, always: the one between cakeys and every module.
+    // The binding layer is always present, because it sits between cakeys and every module.
     out.layers.push(binding::layer()?);
     out.add_forwarders(set, module);
     out.add_configured(set, cfg)?;
@@ -157,7 +160,8 @@ pub fn resolve(
 }
 
 impl Resolved {
-    /// A forwarder the module itself names (p11-kit's client: `C_GetInfo` describes it).
+    /// Adds a forwarder that the module itself names (p11-kit's client, which `C_GetInfo`
+    /// describes).
     fn add_forwarders(&mut self, set: &Set, module: &ModuleInfo) {
         for p in set.all() {
             if p.mode == Mode::Delta
@@ -175,8 +179,9 @@ impl Resolved {
         }
     }
 
-    /// The config's extras, by name or family (the hardware under the module, a forwarder the
-    /// module does not name). Explicit means applied, even when nothing detected it.
+    /// Adds the extra layers of the configuration, by name or family (the hardware under the
+    /// module, or a forwarder that the module does not name). A layer that is named explicitly is
+    /// applied, even when nothing detected it.
     fn add_configured(&mut self, set: &Set, cfg: &TokenCfg) -> Result<(), String> {
         for name in &cfg.profiles {
             if self.layers.iter().any(|l| l.profile == name.as_str() || l.family() == name.as_str()) {
@@ -187,12 +192,14 @@ impl Resolved {
         Ok(())
     }
 
-    /// The module profile: of the configured provider's family, else the selected provider's
-    /// family. A profile is observed on a module and the hardware under it (D9/D10), so it is
-    /// chosen by the most match keys: the expressed version first (`C_GetInfo`; a module hiding
-    /// it as 0.0 records none), then the token's model and firmware. Anything short of all of
-    /// them is noted, and the rows the hardware decides are dropped where it is not known to be
-    /// the observed one. A `moduleProfile` naming one profile of the family takes that one alone.
+    /// Returns the module profile of the configured provider's family, or otherwise of the
+    /// selected provider's family. A profile is observed on a module and the hardware under it
+    /// (D9/D10), so the profile with the most matching match keys is chosen: first the reported
+    /// version (`C_GetInfo`; a module that hides it as 0.0 records none), and then the token's
+    /// model and firmware. A match on less than all of these keys gets a note, and the rows that
+    /// the hardware decides are dropped when the hardware is not known to be the observed
+    /// hardware. A `moduleProfile` that names one profile of the family selects only that
+    /// profile.
     fn module_profile(
         &mut self,
         set: &Set,
@@ -223,9 +230,10 @@ impl Resolved {
         Ok(Some(p))
     }
 
-    /// Pairs whose match keys are all the same (a FIPS and a non-FIPS `CloudHSM` cluster: PKCS#11
-    /// reports no mode, D12), and this token fits them alike: the first is used, rows intact, and
-    /// said, so the stack is no silent guess.
+    /// Adds a note for pairs whose match keys are all the same (a FIPS and a non-FIPS `CloudHSM`
+    /// cluster, because PKCS#11 reports no mode, D12) when this token fits all of them equally.
+    /// The first pair is used with all its rows, and the note says so, so that the stack is never
+    /// a guess that nobody is told about.
     fn tied_on_this_hardware(&mut self, p: &Profile, tied: &[&Profile]) {
         self.notes.push(format!(
             "module profiles {} fit this module and token equally: using {}; name another in \
@@ -235,9 +243,10 @@ impl Resolved {
         ));
     }
 
-    /// A module version no profile of the family records (an update, typically): the nearest
-    /// profile's module rows stand, its measured rows answer unknown ([`clear_hardware_rows`]).
-    /// Never an error: a missing profile must not stop the token from opening (P1).
+    /// Handles a module version that no profile of the family records (typically after an
+    /// update). The nearest profile's module rows are kept, and its measured rows answer unknown
+    /// ([`clear_hardware_rows`]). This is never an error, because a missing profile must not stop
+    /// the token from opening (P1).
     fn nearest_version(&mut self, p: &mut Profile, family: &str, candidates: &[&Profile], module: &ModuleInfo) {
         self.notes.push(format!(
             "no module profile for '{family}' ({}) records module version '{}': using the nearest, {}, \
@@ -250,9 +259,10 @@ impl Resolved {
         clear_hardware_rows(p);
     }
 
-    /// Pairs of one module on several kinds of hardware, and no token to tell which: what the
-    /// module lists is taken from one of them; its measured rows depend on the hardware —
-    /// unknown, as for hardware no pair was observed on.
+    /// Handles pairs of one module on several kinds of hardware when there is no token to say
+    /// which hardware applies. What the module lists is taken from one of the pairs. Its measured
+    /// rows depend on the hardware, so they answer unknown, as they do for hardware on which no
+    /// pair was observed.
     fn hardware_unknown(&mut self, p: &mut Profile, tied: &[&Profile]) {
         self.notes.push(format!(
             "module profiles {} fit equally and the hardware is not known here: using {}'s module \
@@ -264,9 +274,10 @@ impl Resolved {
         clear_hardware_rows(p);
     }
 
-    /// A module profile matched on less than the module's version: by manufacturer alone, or by
-    /// the token's firmware where the module hides its version. Not where no profile records
-    /// the module's version: [`Self::nearest_version`] said so.
+    /// Adds a note for a module profile that matched on less than the module's version: by the
+    /// manufacturer alone, or by the token's firmware when the module hides its version. No note
+    /// is added when no profile records the module's version, because [`Self::nearest_version`]
+    /// has already added one.
     fn weak_match(
         &mut self,
         p: &Profile,
@@ -300,8 +311,9 @@ impl Resolved {
         }
     }
 
-    /// Another kind of hardware under the same module: what the module advertises still holds,
-    /// its measured rows depend on the hardware — unknown, not the observed hardware's answer.
+    /// Handles another kind of hardware under the same module. What the module advertises still
+    /// holds, but its measured rows depend on the hardware, so they answer unknown and do not
+    /// give the observed hardware's answer.
     fn other_hardware(&mut self, p: &mut Profile, token: Option<&TokenInfo>) {
         self.notes.push(format!(
             "module profile {} was observed on model {} firmware {}, this token is model {} \
@@ -316,9 +328,9 @@ impl Resolved {
     }
 }
 
-/// A passthrough hides the module behind it: only a provider named past the passthrough's own
-/// family (an observation records the detected one) says what that module is. The layer's name
-/// and why, for a plan to warn with.
+/// Returns the name of a passthrough layer and the reason why it hides the module behind it, for
+/// a plan to warn with. Only a provider name other than the passthrough's own family (which is
+/// the provider that an observation records) says what that module is.
 fn hidden_module(cfg: &TokenCfg, layers: &[Profile]) -> Option<String> {
     let named = |l: &Profile| cfg.named_provider().is_some_and(|p| p != l.family() && p != l.profile);
     let l = layers.iter().find(|l| l.requires_provider && !named(l))?;
@@ -326,16 +338,17 @@ fn hidden_module(cfg: &TokenCfg, layers: &[Profile]) -> Option<String> {
     Some(format!("{}: {why}", l.profile))
 }
 
-/// A match key as a note quotes it.
+/// Returns a match key in the form in which a note quotes it.
 fn seen(x: Option<&String>) -> String {
     x.map_or_else(|| "unrecorded".to_owned(), |x| format!("'{x}'"))
 }
 
-/// The observed module profiles of `family`, or the one `pinned` names (`moduleProfile`).
+/// Returns the observed module profiles of `family`, or only the profile that `pinned` names
+/// (`moduleProfile`).
 ///
 /// # Errors
 ///
-/// `pinned` names no profile the set has.
+/// An error when `pinned` names a profile that the set does not have.
 fn module_candidates<'a>(set: &'a Set, family: &str, pinned: Option<&str>) -> Result<Vec<&'a Profile>, String> {
     if let Some(p) = pinned
         && !set.all().iter().any(|q| q.mode == Mode::Observed && q.profile == p)
@@ -349,12 +362,14 @@ fn module_candidates<'a>(set: &'a Set, family: &str, pinned: Option<&str>) -> Re
         .collect())
 }
 
-/// The module profile among a family's `candidates`, with the ones that fit it equally well,
-/// and whether none of several records the module's version. Ranked by: a configured hardware
-/// layer naming the pair (`profiles = ["swtpm"]` -> `tpm2-pkcs11/1.10+swtpm`), then the token's
-/// model and firmware; a profile recording another module version is out while one records
-/// this version. When none does, every candidate is in, and among equal hardware the nearest
-/// recorded version wins ([`Nearness`]). `None` for a family with no profile.
+/// Chooses the module profile among a family's `candidates`. Returns the chosen profile, the
+/// profiles that fit equally well, and whether none of several candidates records the module's
+/// version. The ranking uses first a configured hardware layer that names the pair
+/// (`profiles = ["swtpm"]` -> `tpm2-pkcs11/1.10+swtpm`), and then the token's model and firmware.
+/// A profile that records another module version is excluded when some profile records this
+/// version. When no profile records this version, every candidate is eligible, and among equal
+/// hardware the nearest recorded version is chosen ([`Nearness`]). Returns `None` for a family
+/// with no profile.
 fn choose<'a>(
     candidates: &[&'a Profile],
     layers: &[Profile],
@@ -386,10 +401,11 @@ fn choose<'a>(
     }
 }
 
-/// How near a profile's recorded module version is to the module's, compared numerically per
-/// dot-separated component (`1.10` is above `1.9`): the highest recorded version at or below
-/// the module's is nearest, else the lowest above it. A version that is not numbers (none
-/// recorded, or the empty one of a module nobody has seen) says nothing.
+/// How near a profile's recorded module version is to the module's version. The versions are
+/// compared numerically for each dot-separated component (`1.10` is above `1.9`). The highest
+/// recorded version at or below the module's version is the nearest. When there is none, the
+/// lowest version above it is the nearest. A version that is not made of numbers (no recorded
+/// version, or the empty version of a module that nobody has seen) is `Unknown`.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Nearness {
     Unknown,
@@ -408,35 +424,39 @@ impl Nearness {
     }
 }
 
-/// Drop a pair profile's rows that depend on the hardware it was observed on, and what the probe
-/// could not decide of them there ([`hardware_dependent`]): on other or unknown hardware they
-/// answer unknown, and only what the module advertises and what is claimed of it (`move.*`)
-/// stands (docs/CAPROBE.md, D10).
+/// Drops the rows of a pair profile that depend on the hardware on which it was observed, and
+/// the entries that the probe could not decide for those rows there ([`hardware_dependent`]). On
+/// other or unknown hardware, those rows answer unknown, and only what the module advertises and
+/// what is claimed of it (`move.*`) is kept (docs/CAPROBE.md, D10).
 fn clear_hardware_rows(p: &mut Profile) {
     p.reported.clear();
     p.capabilities.retain(|c, _| !hardware_dependent(c));
-    // What the probe could not decide there is that hardware's too (`[untested]`, why device or
-    // cakeys): on other hardware, unknown as the rows are.
+    // What the probe could not decide on that hardware (`[untested]`, with the reason `device`
+    // or `cakeys`) also belongs to that hardware, so on other hardware it is unknown, as the rows
+    // are.
     p.untested.retain(|name, _| Capability::parse(name).map_or(true, |c| !hardware_dependent(&c)));
 }
 
-/// Whether a capability row's answer is the hardware's it was observed on, and so unknown on
-/// other hardware. Each kind is classified here, with no wildcard: a kind added to
-/// `Capability` does not compile until it is (review 2026-11-24 B-9: a `matches!` list kept 12
-/// of 20 kinds, `prove.*` and `commit.*` among them, from hardware that was never measured).
+/// Returns whether a capability row's answer belongs to the hardware on which it was observed,
+/// so that it is unknown on other hardware. Each kind is classified here without a wildcard, so
+/// a kind that is added to `Capability` does not compile until it is classified (review
+/// 2026-11-24 B-9: a `matches!` list carried 12 of 20 kinds, `prove.*` and `commit.*` among them,
+/// over to hardware that was never measured).
 ///
-/// Every measured kind is: each such row is an operation run on a key of that pair, and nothing
-/// in PKCS#11 says whether the module or the device refused it (docs/CAPROBE.md, D10). A
-/// `move.*` row is no measurement but this repo's claim about the module
-/// ([`Capability::probed`]: kept across regenerations, never compared): it stands.
+/// Every measured kind depends on the hardware. Each such row is an operation that was run on a
+/// key of that pair, and nothing in PKCS#11 says whether the module or the device refused it
+/// (docs/CAPROBE.md, D10). A `move.*` row is not a measurement but this repository's claim
+/// about the module ([`Capability::probed`]: it is kept across regenerations and never
+/// compared), so it is kept.
 fn hardware_dependent(c: &Capability) -> bool {
     match c {
-        // What the module does, as claimed of it, not as measured on one pair's hardware.
+        // What the module does, as it is claimed, and not as it was measured on one pair's
+        // hardware.
         Capability::Move(_) => false,
-        // Making keys and bringing them in or out: what generates, imports, creates, exports,
-        // unwraps and deletes; operations on a key: the proofs, the commitments, the ciphers and
-        // derivations, the OAEP hashes, signing and encapsulating; what a key's attributes are
-        // set to and read back as.
+        // The creation of keys and their movement in or out: generation, import, creation,
+        // export, unwrap and deletion. The operations on a key: the proofs, the commitments, the
+        // ciphers and derivations, the OAEP hashes, signing and encapsulation. The values to
+        // which a key's attributes are set, and the values that are read back.
         Capability::Generate { .. }
         | Capability::Import { .. }
         | Capability::Create { .. }
@@ -459,8 +479,9 @@ fn hardware_dependent(c: &Capability) -> bool {
     }
 }
 
-/// How a module profile's match keys meet a token: per key, whether it matches (`None`: the
-/// profile records no such key, or there is no token to compare with).
+/// How a module profile's match keys compare with a token. For each key, the field says whether
+/// it matches (`None` means that the profile records no such key, or that there is no token to
+/// compare with).
 struct Fit {
     version: Option<bool>,
     model: Option<bool>,
@@ -478,7 +499,8 @@ impl Fit {
         }
     }
 
-    /// How many of the hardware keys match: the tie-breaker among one version's profiles.
+    /// Returns how many of the hardware keys match. This number breaks ties among the profiles
+    /// of one version.
     fn hardware_keys(&self) -> usize {
         usize::from(self.model == Some(true)) + usize::from(self.firmware == Some(true))
     }
@@ -518,10 +540,10 @@ mod tests {
         }
     }
 
-    /// A lock written before cakeys recorded `via` holds a plain yes for a curve the profile
-    /// says only its name generates: the answer keeps the profile's `via`, so the by-name retry
-    /// still runs (ISSUES.md B18). A recorded `via` is the token's own, and a recorded no says
-    /// nothing of how.
+    /// A lock that was written before cakeys recorded `via` holds a plain yes for a curve that,
+    /// according to the profile, only its name generates. The answer keeps the profile's `via`,
+    /// so the retry by name still runs (ISSUES.md B18). A recorded `via` is the token's own
+    /// value, and a recorded no says nothing about how.
     #[test]
     fn a_recorded_answer_keeps_the_profiles_way_unless_it_names_one() {
         use cakeys_core::config::Answered;
@@ -561,23 +583,25 @@ mod tests {
         cakeys_profile::Set::activate_embedded().unwrap();
         let r = resolve(&cfg(None, &[]), &module("SoftHSM", "2.7"), None, "softhsm").unwrap();
         assert_eq!(r.module_name(), Some("softhsm/2.7"));
-        assert_eq!(r.notes.len(), 0); // the expressed version matches
-        // kryoptic hides its version (0.0): the token's firmware is the secondary evidence, and
-        // either way the match is flagged, never silent.
+        assert_eq!(r.notes.len(), 0); // The reported version matches.
+        // kryoptic hides its version (0.0), so the token's firmware is the secondary evidence.
+        // In both cases, the match is flagged with a note.
         let firmware = |f: &str| TokenInfo { model: "v1".into(), serial: "s".into(), firmware: f.into() };
         let r = resolve(&cfg(None, &[]), &module("Kryoptic", "0.0"), Some(&firmware("1.5")), "kryoptic").unwrap();
         assert_eq!(r.module_name(), Some("kryoptic/1.5"));
         assert_eq!(r.notes.len(), 1);
         assert!(r.notes[0].contains("by the token's firmware '1.5'"), "{:?}", r.notes);
         assert!(r.module.as_ref().unwrap().wrap_oaep().is_some());
-        // Another firmware: flagged, and the hardware-dependent rows answer unknown.
+        // Another firmware is flagged, and the hardware-dependent rows answer unknown.
         let r = resolve(&cfg(None, &[]), &module("Kryoptic", "0.0"), Some(&firmware("1.6")), "kryoptic").unwrap();
         assert!(r.notes[0].contains("manufacturer alone"), "{:?}", r.notes);
         assert!(r.notes[1].contains("are not used"), "{:?}", r.notes);
         assert!(r.module.as_ref().unwrap().generation_key_types().is_empty());
-        // And what the probe could not decide on that hardware (its `[untested]` device entries).
+        // The same applies to what the probe could not decide on that hardware (its
+        // `[untested]` device entries).
         assert!(!r.module.as_ref().unwrap().untested.keys().any(|k| k.starts_with("generate.")));
-        // No token to compare with (a transport file): flagged, rows kept.
+        // With no token to compare with (a transport file), the match is flagged and the rows
+        // are kept.
         let r = resolve(&cfg(None, &[]), &module("Kryoptic", "0.0"), None, "kryoptic").unwrap();
         assert!(r.notes[0].contains("manufacturer alone"), "{:?}", r.notes);
         assert!(!r.module.as_ref().unwrap().generation_key_types().is_empty());
@@ -586,8 +610,8 @@ mod tests {
     #[test]
     fn another_kind_of_hardware_keeps_the_advertisement_only() {
         cakeys_profile::Set::activate_embedded().unwrap();
-        // A real TPM under the tpm2-pkcs11 observed on swtpm: what the module lists holds, what
-        // it generates, wraps and unwraps depends on the TPM.
+        // A real TPM under the tpm2-pkcs11 that was observed on swtpm: what the module lists
+        // still holds, but what it generates, wraps and unwraps depends on the TPM.
         let infineon = TokenInfo { model: "SLB9670".into(), serial: "s".into(), firmware: "7.85".into() };
         let r = resolve(&cfg(None, &[]), &module("tpm2-software.github.io", "1.10"), Some(&infineon), "tpm2-pkcs11")
             .unwrap();
@@ -599,13 +623,14 @@ mod tests {
         assert_eq!(r.notes.len(), 1, "{:?}", r.notes);
     }
 
-    /// On other hardware no measured row of any kind stands, nor what the probe left undecided
-    /// of one (`[untested]`): every row of every committed profile, walked by kind, is the
-    /// hardware's it was measured on (review 2026-11-24 B-9: `prove.*` and `commit.*` rows
-    /// carried a measured no to hardware never measured, a refusal there). What this repo
-    /// claims of the module (`move.*`, [`Capability::probed`]) is the module's and stands, every
-    /// one of it. The kinds the finding named are among those walked, so the walk is not empty
-    /// of them.
+    /// On other hardware, no measured row of any kind is kept, and neither is an entry that the
+    /// probe left undecided (`[untested]`). The test walks every row of every committed profile
+    /// by kind, and each measured row belongs to the hardware on which it was measured (review
+    /// 2026-11-24 B-9: `prove.*` and `commit.*` rows carried a measured no over to hardware that
+    /// was never measured, and that no became a refusal there). Every claim that this repository
+    /// makes about the module (`move.*`, [`Capability::probed`]) belongs to the module and is
+    /// kept. The kinds that the finding named are among the kinds walked, so the walk covers
+    /// them.
     #[test]
     fn other_hardware_keeps_no_measured_row_of_any_kind() {
         let mut walked = BTreeSet::new();
@@ -625,11 +650,11 @@ mod tests {
         }
     }
 
-    /// The swtpm the pair was measured on is that pair's hardware: tpm2-pkcs11 fills the token's
-    /// model from the TPM's four vendor strings, swtpm's last two NUL \[run\], and the probe
-    /// writes the match key without them. Read at the open with the NULs, the model was another
-    /// hardware's, and the pair's measured rows (`delete.CKO_PRIVATE_KEY = no`) never stood on
-    /// the hardware that measured them.
+    /// The swtpm on which the pair was measured counts as that pair's hardware. tpm2-pkcs11 fills
+    /// the token's model from the TPM's four vendor strings, swtpm's last two strings are NUL
+    /// \[run\], and the probe writes the match key without the NULs. When the open read the model
+    /// with the NULs, the model looked like another hardware's model, and the pair's measured rows
+    /// (`delete.CKO_PRIVATE_KEY = no`) were never applied on the hardware that measured them.
     #[test]
     fn the_token_a_pair_was_measured_on_is_that_hardware() {
         cakeys_profile::Set::activate_embedded().unwrap();
@@ -650,24 +675,28 @@ mod tests {
             let r = resolve(cfg, &tpm2, token, "tpm2-pkcs11").unwrap();
             (r.module.unwrap(), r.notes)
         };
-        // The token's model and firmware pick the pair observed on that hardware, rows intact.
+        // The token's model and firmware select the pair that was observed on that hardware,
+        // with all its rows.
         let amd = TokenInfo { model: "AMD".into(), serial: "s".into(), firmware: "3.87".into() };
         let (m, notes) = resolved(&cfg(None, &[]), Some(&amd));
         assert_eq!(m.profile, "tpm2-pkcs11/1.10+amd-ftpm");
         assert!(!m.generation_key_types().is_empty() && notes.is_empty(), "{notes:?}");
         let sw = TokenInfo { model: "SW   TPM".into(), serial: "s".into(), firmware: "36.37".into() };
         assert_eq!(resolved(&cfg(None, &[]), Some(&sw)).0.profile, "tpm2-pkcs11/1.10+swtpm");
-        // No token (validate by provider alone): a configured hardware layer names the pair ...
+        // Without a token (validate by the provider alone), a configured hardware layer names
+        // the pair.
         assert_eq!(resolved(&cfg(None, &["swtpm"]), None).0.profile, "tpm2-pkcs11/1.10+swtpm");
-        // ... else the pairs tie: module rows only, the hardware's unknown, and said so.
+        // Without such a layer, the pairs tie: only the module rows are used, the hardware rows
+        // are unknown, and a note says so.
         let (m, notes) = resolved(&cfg(None, &[]), None);
         assert!(m.generation_key_types().is_empty() && m.decrypt_oaep().is_none());
         assert!(notes.iter().any(|n| n.contains("fit equally")), "{notes:?}");
     }
 
-    /// A module version no profile of a family with several records (a client library update)
-    /// opens with the nearest profile, its hardware rows unknown and a note: never an error.
-    /// Pairs that tie on every key resolve to the first embedded, as with a recorded version.
+    /// A module version that no profile of a family with several profiles records (after an
+    /// update of the client library) opens with the nearest profile, with its hardware rows
+    /// unknown and with a note. It is never an error. Pairs that tie on every key resolve to the
+    /// first embedded pair, as with a recorded version.
     #[test]
     fn an_unrecorded_version_resolves_to_the_nearest_profile() {
         cakeys_profile::Set::activate_embedded().unwrap();
@@ -706,7 +735,8 @@ mod tests {
     #[test]
     fn a_forwarder_is_recognised_and_the_hidden_module_can_be_pinned() {
         cakeys_profile::Set::activate_embedded().unwrap();
-        // Behind p11-kit the module says so; the provider pin still selects the module profile.
+        // Behind p11-kit, the module reports p11-kit, and the named provider still selects the
+        // module profile.
         let r = resolve(&cfg(Some("softhsm"), &[]), &module("PKCS#11 Kit", "0.26"), None, "p11-kit").unwrap();
         assert_eq!(r.module_name(), Some("softhsm/2.7"));
         assert_eq!(r.layer_names(), ["cryptoki/0.12", "p11-kit/0.26"]);
@@ -714,9 +744,10 @@ mod tests {
         assert_eq!(r.hidden, None);
     }
 
-    /// Profiles that tie on every match key (a FIPS and a non-FIPS `CloudHSM` cluster: PKCS#11
-    /// reports no mode, D12) resolve to the first embedded, the stricter; `moduleProfile` naming
-    /// the other takes it, with or without the provider named; a name no profile has is refused.
+    /// Profiles that tie on every match key (a FIPS and a non-FIPS `CloudHSM` cluster, because
+    /// PKCS#11 reports no mode, D12) resolve to the first embedded profile, which is the stricter
+    /// one. A `moduleProfile` that names the other profile selects it, with or without a named
+    /// provider. A name that no profile has is refused.
     #[test]
     fn a_module_profile_pin_takes_that_one() {
         cakeys_profile::Set::activate_embedded().unwrap();
@@ -735,10 +766,11 @@ mod tests {
         assert!(e.contains("moduleProfile 'aws-cloudhsm/9.9'"), "{e}");
     }
 
-    /// With the token open, profiles that tie on every match key still resolve to the first,
-    /// rows intact, and the run says that another fit as well (resolution.rs F1): a `NON_FIPS`
-    /// cluster must not be judged by the FIPS profile without a word. A pin decides alone, and
-    /// hardware no pair was observed on says so in its own note.
+    /// With the token open, profiles that tie on every match key still resolve to the first
+    /// profile with all its rows, and the run says that another profile fits as well
+    /// (resolution.rs F1). A `NON_FIPS` cluster must not be judged by the FIPS profile without a
+    /// message. A `moduleProfile` alone decides the profile, and hardware on which no pair was
+    /// observed gets its own note.
     #[test]
     fn profiles_that_tie_on_the_token_are_said() {
         cakeys_profile::Set::activate_embedded().unwrap();
@@ -776,7 +808,8 @@ mod tests {
     #[test]
     fn a_passthrough_hides_its_module_until_a_provider_is_named() {
         cakeys_profile::Set::activate_embedded().unwrap();
-        // Unnamed, or named as the passthrough itself (what an observation records): hidden.
+        // With no provider, or with the passthrough itself as the provider (which is what an
+        // observation records), the module is hidden.
         let p11 = module("PKCS#11 Kit", "0.26");
         for named in [None, Some("p11-kit"), Some("p11-kit/0.26")] {
             let r = resolve(&cfg(named, &[]), &p11, None, "p11-kit").unwrap();
@@ -784,7 +817,7 @@ mod tests {
         }
         let r = resolve(&cfg(Some("kryoptic"), &[]), &p11, None, "p11-kit").unwrap();
         assert_eq!(r.hidden, None);
-        // A module that is no passthrough hides nothing.
+        // A module that is not a passthrough hides nothing.
         assert_eq!(resolve(&cfg(None, &[]), &module("SoftHSM", "2.7"), None, "softhsm").unwrap().hidden, None);
     }
 
