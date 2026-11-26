@@ -153,19 +153,16 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
     let text = [
         token("soft", "provider = \"softhsm\"\nprofiles = [\"cryptoki/0.12\"]"),
         token("gen", "provider = \"generic\""),
-        token("tpm", "provider = \"tpm2-pkcs11\""),
         token("yk", "provider = \"ykcs11\""),
         "[objects.aes]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n".to_owned(),
         "[objects.mac]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_SHA384_HMAC\"\nvalueLen = 48\n\n".to_owned(),
         ec("soft"),
         ec("gen"),
-        ec("tpm"),
         ec("yk"),
         ec("yk-in"),
         spec("mac-soft", "mac", "soft", ""),
         spec("p-soft", "soft", "soft", ", attestation = true"),
         spec("p-gen", "gen", "gen", ""),
-        spec("p-tpm", "tpm", "tpm", ""),
         spec("aes-yk", "aes", "yk", ", origin = \"adopt\", attestation = true"),
         // A key that ykcs11 would place under a label, whether created or imported. ykcs11 places
         // keys in PIV slots by CKA_ID alone (review 2026-11-23 B-3: before, only `create` itself
@@ -174,7 +171,14 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
         spec("in-yk", "yk-in", "yk", ", origin = \"import\""),
     ]
     .concat();
-    w.write_config(&text);
+    // A build without the tpm2 feature (darwin) refuses a tpm2-pkcs11 token before the gate runs,
+    // so the tpm2 case is in the config only where the provider is linked.
+    let tpm = if cfg!(feature = "tpm2") {
+        [token("tpm", "provider = \"tpm2-pkcs11\""), ec("tpm"), spec("p-tpm", "tpm", "tpm", "")].concat()
+    } else {
+        String::new()
+    };
+    w.write_config(&(text + &tpm));
     let out = w.km(&["validate"]);
     let err = stderr(&out);
     // Refusals with 15 and 17 give exit 20, and each refusal line starts with its own code (it
@@ -197,6 +201,9 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
         "validate: 'gen' (spec 'p-gen') on token 'gen': the profiles do not decide",
         "validate: 'tpm' (spec 'p-tpm') on token 'tpm': generation not decided",
     ] {
+        if line.contains("'tpm'") && !cfg!(feature = "tpm2") {
+            continue;
+        }
         assert!(err.contains(line), "expected {line:?} in\n{err}");
     }
     for pair in ["'yk' (spec 'p-yk') on token 'yk': provider 'ykcs11'", "'yk-in' (spec 'in-yk') on token 'yk'"] {

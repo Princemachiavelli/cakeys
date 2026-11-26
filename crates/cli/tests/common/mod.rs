@@ -555,10 +555,10 @@ pub const FAULT: Reference = Reference {
     ..SOFTHSM
 };
 
-/// Returns the path of `libp11_fault` with the platform's library suffix (`.so`, or `.dylib` on
-/// darwin). It is next to the binaries after a build of the workspace, and otherwise among the
-/// dependencies of the tests (`deps/`), where every test build puts it because the `cakeys` tests
-/// have a dev-dependency on `p11-fault`.
+/// Returns the path of `libp11_fault.so`, whose suffix is the platform's own (dylib on darwin,
+/// from `DLL_SUFFIX`). It is next to the binaries after a build of the workspace, and otherwise
+/// among the dependencies of the tests (`deps/`), where every test build puts it because the
+/// `cakeys` tests have a dev-dependency on `p11-fault`.
 ///
 /// # Panics
 ///

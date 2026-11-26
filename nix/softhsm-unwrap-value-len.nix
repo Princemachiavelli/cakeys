@@ -7,9 +7,12 @@
 # backported; its own crypto in a private OpenSSL library context (#834), so OpenSSL through
 # pkcs11-provider over SoftHSM neither deadlocks in C_Login nor crashes at exit. The check phase
 # and scripts/local-tests.sh test against it. `withTests` also runs SoftHSM's own cppunit suite,
-# which the patches extend. Drop each patch when a SoftHSM release carries it.
+# which the patches extend, on Linux only: on darwin libtool builds libsofthsm2.so as a bundle
+# (MH_BUNDLE), and the macOS linker cannot link the suite's p11test against a bundle. Drop each
+# patch when a SoftHSM release carries it.
 {
   lib,
+  stdenv,
   softhsm,
   cppunit,
   pkg-config,
@@ -27,5 +30,5 @@ softhsm.overrideAttrs (old: {
   # not only a check input.
   nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ lib.optional withTests pkg-config;
   buildInputs = (old.buildInputs or [ ]) ++ lib.optional withTests cppunit;
-  doCheck = withTests;
+  doCheck = withTests && !stdenv.hostPlatform.isDarwin;
 })
