@@ -49,7 +49,7 @@ FOREIGN_NAMES = {
     "sun_path": "the path field of POSIX's sockaddr_un",
     "tee_otp_get_hw_unique_key": "an OP-TEE platform hook",
     "token_generate_key": "a ykcs11 C function (yubico-piv-tool, ykcs11/token.c)",
-    "token_unseal_wrapping_key": "tpm2-pkcs11's login unseal (backend_token_unseal_wrapping_key, backend.c)",
+    "backend_token_unseal_wrapping_key": "tpm2-pkcs11's login unseal (backend.c)",
     "tpm2_import": "a tpm2-tools command, which tpm2_ptool runs",
     "tpm2_ptool": "tpm2-pkcs11's key and token tool",
     "yubihsm_pkcs11": "the YubiHSM 2 PKCS#11 module",
