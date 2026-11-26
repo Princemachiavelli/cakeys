@@ -1,0 +1,495 @@
+# camigrate's liar matrix (docs/archive/REVIEW-2026-11-24/phase2-3-design.md §1.2–1.7): the lies
+# a source or a target module can tell a move (p11-fault plans, docs/FAULT_SHIM.md), each told to
+# the verbs and the objects of its blocks, every (lie, verb, object) a cell. tests/liars.rs runs
+# it through cakeys' runner (crates/cli/tests/common/liars.rs, which says what a cell asserts);
+# crates/cli/tests/liar_lint.rs holds it to its rules with no token.
+#
+# The fixture (tests/liars.rs): SoftHSM behind the shim (`softhsm`), kryoptic beside it
+# (`kryoptic`, and `kryoptic-u`: the same token, its profile a copy of kryoptic's whose sealed
+# rows say `by = "unverified"`). The keys are born on softhsm and move to kryoptic; the `-in`
+# objects are born on kryoptic and imported into softhsm from a bundle exported at planting. Each
+# object's label is its name; beside each key softhsm holds a decoy, "<name>-other".
+#
+# A cell's `expect`, beyond cakeys' table's (crates/cli/tests/liars/cakeys.toml):
+#   method_not, exposure_not   what the dry run's plan must not name (D-7);
+#   changed                    of "lock", "softhsm", "kryoptic" and "out" (the bundle or key file).
+# `rule` is a plan rule (cakeys_pkcs11::ops::Rule) or one of camigrate's own, [rules] below.
+
+state = ["lock", "softhsm", "kryoptic", "out"]
+
+[rules]
+unwraps = "crates/camigrate/src/sealed.rs"
+identity = "crates/camigrate/src/sealed.rs"
+
+# ── Objects.
+
+[objects.ec]
+class = "private" # P-256, sealed by rsa-oaep+aes-kwp
+
+[objects.rsa-unwrap]
+class = "private" # RSA-2048, CKA_UNWRAP; its lock records CKA_WRAP_WITH_TRUSTED = false
+
+[objects.aes]
+class = "secret" # AES-256, sealed by rsa-oaep
+
+[objects.hmac]
+class = "secret" # a 32-byte generic secret
+
+[objects.aes-u]
+class = "secret" # aes, to kryoptic-u: the target's unwrap row unverified
+
+[objects.cert]
+class = "certificate"
+adopted = true
+
+[objects.data]
+class = "data" # CKA_PRIVATE = false
+adopted = true
+
+[objects.ec-in]
+class = "private" # on kryoptic; its bundle imported into softhsm
+token = "kryoptic"
+
+[objects.aes-in]
+class = "secret"
+token = "kryoptic"
+
+# ── Verbs: `{object}`, `{from}` and `{to}` the object's, `{out}` and `{pass}` the fixture's
+# files, `{bundle}` the object's bundle.
+
+[verbs.migrate]
+args = ["migrate", "{object}", "--from", "{from}", "--to", "{to}", "--allow-host-plaintext"]
+form = "rows"
+json = false
+
+[verbs."migrate --dry-run"]
+args = ["--json", "migrate", "{object}", "--from", "{from}", "--to", "{to}", "--allow-host-plaintext", "--dry-run"]
+form = "plan"
+
+[verbs."export --to"]
+args = ["export", "{object}", "--from", "{from}", "--to", "{to}", "--out", "{out}"]
+
+[verbs."export --dry-run"]
+args = ["--json", "export", "{object}", "--from", "{from}", "--to", "{to}", "--dry-run"]
+form = "plan"
+
+[verbs."export --to-key-file"]
+args = [
+  "export",
+  "{object}",
+  "--from",
+  "{from}",
+  "--to-key-file",
+  "pkcs8",
+  "--out",
+  "{out}",
+  "--passphrase-file",
+  "{pass}",
+  "--allow-host-plaintext",
+]
+
+[verbs.import]
+args = ["import", "--to", "softhsm", "--in", "{bundle}"]
+form = "rows"
+json = false
+
+# ── OK: a call answered CKR_OK, and nothing done.
+
+# A login the module only claims: the session sees no private object.
+[lies."ok.login"]
+class = "OK"
+plan = '''
+[[rule]]
+fn = "C_Login"
+rv = "CKR_OK"
+'''
+
+[[block]]
+lies = ["ok.login"]
+verbs = ["migrate", "export --to", "export --to-key-file"]
+objects = ["ec"]
+expect = { exit = 16 }
+
+[[block.override]]
+verbs = ["migrate"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["ok.login"]
+verbs = ["migrate", "export --to"]
+objects = ["aes"]
+expect = { exit = 16 }
+
+[[block.override]]
+verbs = ["migrate"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["ok.login"]
+verbs = ["import"]
+objects = ["ec-in", "aes-in"]
+expect = { exit = 16, device = true }
+
+# A state, not a lie (no rule): the target's profile says its unwrap of an AES key worked only by
+# its own round trip (`by = "unverified"`). The plan still takes the sealed way, and defers the
+# capability to the run, which shows it (P2's leftover: an unverified yes planned as a yes).
+[lies.none]
+class = "OK"
+plan = ""
+
+[[block]]
+lies = ["none"]
+verbs = ["migrate --dry-run", "export --dry-run"]
+objects = ["aes-u"]
+expect = { exit = 0, deferred = "capability", fired = false }
+
+# ── OTHER: another object than the one asked for.
+
+# The source wraps another key than the one named (D-5): sealed, the target's identity check
+# finds it (10), and nothing lands; to a key file, the host's (10), and no file is written.
+[lies."other.wrap"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_WrapKey"
+of_label = "{label}"
+wrap_label = "{other}"
+'''
+
+# The same with the source's sealed ways hidden: the host path, checked on the host (D-5).
+[lies."other.wrap.host"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_GetMechanismList"
+hide_mechanisms = ["CKM_RSA_PKCS_OAEP", "CKM_RSA_AES_KEY_WRAP", "CKM_ECDH1_DERIVE"]
+
+[[rule]]
+fn = "C_WrapKey"
+of_label = "{label}"
+wrap_label = "{other}"
+'''
+
+[[block]]
+lies = ["other.wrap"]
+verbs = ["migrate"]
+objects = ["ec", "aes", "hmac"]
+expect = { exit = 10, rule = "identity" }
+
+[[block]]
+lies = ["other.wrap"]
+verbs = ["export --to-key-file"]
+objects = ["ec"]
+expect = { exit = 10 }
+
+[[block]]
+lies = ["other.wrap.host"]
+verbs = ["migrate"]
+objects = ["ec", "aes", "hmac"]
+expect = { exit = 10, rule = "identity" }
+
+# The source's search finds a second object under the label.
+[lies."other.find"]
+class = "OTHER"
+plan = '''
+[[rule]]
+fn = "C_FindObjects"
+add_label = "{other}"
+'''
+
+[[block]]
+lies = ["other.find"]
+verbs = ["migrate", "migrate --dry-run", "export --to", "export --dry-run"]
+objects = ["ec", "aes", "cert", "data"]
+expect = { exit = 12 }
+
+[[block.override]]
+verbs = ["migrate"]
+expect = { exit = 12, rule = "placement" }
+
+# ── FLAG: what an object says of itself, hidden.
+
+# CKA_PRIVATE hidden from `lock` (its identity read first, then the policy): the lock records no
+# CKA_PRIVATE, and the move plans as though it were private (D-7: unrecorded restricts). The
+# lock's own warning says it re-recorded.
+[lies."flag.hide.CKA_PRIVATE"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_PRIVATE"
+from = 2
+drop = true
+'''
+
+[[block]]
+lies = ["flag.hide.CKA_PRIVATE"]
+verbs = ["migrate --dry-run", "export --dry-run"]
+objects = ["data"]
+before = [["lock", "--spec", "{spec}", "--token", "{from}"]]
+expect = { exit = 15, method_not = ["public"], exposure_not = ["public"] }
+
+[[block]]
+lies = ["flag.hide.CKA_PRIVATE"]
+verbs = ["migrate", "export --to"]
+objects = ["data"]
+before = [["lock", "--spec", "{spec}", "--token", "{from}"]]
+expect = { exit = 15 }
+
+[[block.override]]
+verbs = ["migrate"]
+expect = { exit = 15, rule = "capability" }
+
+# CKA_WRAP_WITH_TRUSTED hidden from `lock`: unrecorded, only a trusted transport key may wrap the
+# key, and there is none (D-7): no host path, no sealed one.
+[lies."flag.hide.CKA_WRAP_WITH_TRUSTED"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetAttributeValue"
+of_label = "{label}"
+attribute = "CKA_WRAP_WITH_TRUSTED"
+drop = true
+'''
+
+[[block]]
+lies = ["flag.hide.CKA_WRAP_WITH_TRUSTED"]
+verbs = ["migrate --dry-run", "export --dry-run"]
+objects = ["rsa-unwrap", "ec"]
+before = [["lock", "--spec", "{spec}", "--token", "{from}"]]
+expect = { exit = 15, exposure_not = ["host", "sealed", "file"] }
+
+[[block]]
+lies = ["flag.hide.CKA_WRAP_WITH_TRUSTED"]
+verbs = ["export --to-key-file"]
+objects = ["ec"]
+before = [["lock", "--spec", "{spec}", "--token", "{from}"]]
+expect = { exit = 15 }
+
+# A write-protected target: nothing lands.
+[lies."flag.write-protected"]
+class = "FLAG"
+plan = '''
+[[rule]]
+fn = "C_GetTokenInfo"
+set_flags = ["CKF_WRITE_PROTECTED"]
+'''
+
+[[block]]
+lies = ["flag.write-protected"]
+verbs = ["import"]
+objects = ["ec-in", "aes-in"]
+expect = { exit = 15 }
+
+# ── FORGE: an output the key did not make.
+
+# The source's blob changed: only the target can tell (sealed to its key), and does.
+[lies."forge.wrap"]
+class = "FORGE"
+plan = '''
+[[rule]]
+fn = "C_WrapKey"
+corrupt = true
+'''
+
+[[block]]
+lies = ["forge.wrap"]
+verbs = ["migrate"]
+objects = ["ec", "aes"]
+expect = { exit = [13, 16], rule = "unwraps" }
+
+# A bundle is sealed to the target's transport key: the source cannot read it back, so a changed
+# blob is written, and the target's import refuses it (forge.sign's import cells take the target).
+[[block]]
+lies = ["forge.wrap"]
+verbs = ["export --to"]
+objects = ["ec", "aes"]
+expect = { exit = 0, changed = ["out"], why = "the blob is sealed to the target's key: only the target's unwrap can tell it is not the key" }
+
+# To a key file the host unwraps the blob itself, and refuses what does not unwrap.
+[[block]]
+lies = ["forge.wrap"]
+verbs = ["export --to-key-file"]
+objects = ["ec"]
+expect = { exit = 10 }
+
+# The target's proof of possession of what it unwrapped, changed.
+[lies."forge.sign"]
+class = "FORGE"
+plan = '''
+[[rule]]
+fn = "C_Sign"
+corrupt = true
+'''
+
+[[block]]
+lies = ["forge.sign"]
+verbs = ["import"]
+objects = ["ec-in", "aes-in"]
+expect = { exit = 13 }
+
+# ── BLOB: a blob the module round-trips that is not what it made (E-3).
+
+[lies."blob.transcode"]
+class = "BLOB"
+plan = '''
+[[rule]]
+fn = "C_WrapKey"
+transcode = true
+'''
+
+# Between two tokens the transcoded blob reaches a module that never made it: the target's unwrap
+# refuses it, and the target is left as it was.
+[[block]]
+lies = ["blob.transcode"]
+verbs = ["migrate"]
+objects = ["ec", "aes", "hmac"]
+expect = { exit = [13, 16], rule = "unwraps" }
+
+[[block]]
+lies = ["blob.transcode"]
+verbs = ["export --to-key-file"]
+objects = ["ec"]
+expect = { exit = 10 }
+
+# The bundle, as forge.wrap's: written, and refused only where it is unwrapped.
+[[block]]
+lies = ["blob.transcode"]
+verbs = ["export --to"]
+objects = ["aes"]
+expect = { exit = 0, changed = ["out"], why = "the blob is sealed to the target's key: only the target's unwrap can tell it is not the key" }
+
+# ── DEV: a call failing as a device, and the same call refused by the module.
+
+[lies."dev.wrap"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_WrapKey"
+rv = "CKR_DEVICE_ERROR"
+'''
+
+[lies."refused.wrap"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_WrapKey"
+rv = "CKR_KEY_NOT_WRAPPABLE"
+'''
+
+[lies."dev.find"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_FindObjectsInit"
+rv = "CKR_DEVICE_ERROR"
+'''
+
+[lies."dev.unwrap"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_UnwrapKey"
+rv = "CKR_DEVICE_ERROR"
+'''
+
+[lies."refused.unwrap"]
+class = "DEV"
+plan = '''
+[[rule]]
+fn = "C_UnwrapKey"
+rv = "CKR_KEY_FUNCTION_NOT_PERMITTED"
+'''
+
+[[block]]
+lies = ["dev.wrap"]
+verbs = ["migrate"]
+objects = ["ec", "aes"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["dev.wrap"]
+verbs = ["export --to", "export --to-key-file"]
+objects = ["ec"]
+expect = { exit = 16 }
+
+[[block]]
+lies = ["refused.wrap"]
+verbs = ["migrate"]
+objects = ["ec", "aes"]
+expect = { exit = 15 }
+
+[[block]]
+lies = ["refused.wrap"]
+verbs = ["export --to", "export --to-key-file"]
+objects = ["ec"]
+expect = { exit = 15 }
+
+[[block]]
+lies = ["dev.find"]
+verbs = ["migrate", "migrate --dry-run", "export --to", "export --dry-run"]
+objects = ["ec", "aes", "cert", "data"]
+expect = { exit = 16 }
+
+[[block.override]]
+verbs = ["migrate"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["dev.unwrap"]
+verbs = ["import"]
+objects = ["ec-in", "aes-in"]
+expect = { exit = 16, rule = "unwraps", device = true }
+
+[[block]]
+lies = ["refused.unwrap"]
+verbs = ["import"]
+objects = ["ec-in", "aes-in"]
+expect = { exit = 15 }
+
+# ── LOSS: the device gone from one call of a run on.
+
+[lies."loss.wrap"]
+class = "LOSS"
+plan = '''
+[[rule]]
+fn = "*"
+from_seq = {seq:C_WrapKey}
+rv = "CKR_DEVICE_REMOVED"
+'''
+
+[lies."loss.unwrap"]
+class = "LOSS"
+plan = '''
+[[rule]]
+fn = "*"
+from_seq = {seq:C_UnwrapKey}
+rv = "CKR_DEVICE_REMOVED"
+'''
+
+[[block]]
+lies = ["loss.wrap"]
+verbs = ["migrate"]
+objects = ["ec", "aes"]
+expect = { exit = 16, device = true }
+
+[[block]]
+lies = ["loss.wrap"]
+verbs = ["export --to", "export --to-key-file"]
+objects = ["ec"]
+expect = { exit = 16 }
+
+[[block]]
+lies = ["loss.unwrap"]
+verbs = ["import"]
+objects = ["ec-in", "aes-in"]
+expect = { exit = 16, device = true }
+
+# ── What no cell covers, decided.
+
+[[na]]
+classes = "*"
+verbs = ["migrate", "migrate --dry-run", "export --to", "export --dry-run", "export --to-key-file"]
+objects = ["private", "secret"]
+why = "placeholder"
