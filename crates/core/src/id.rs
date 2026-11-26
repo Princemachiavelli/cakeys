@@ -183,9 +183,9 @@ impl Scheme {
 }
 
 /// Whether a unit test of this crate marked `scheme` deprecated on its own thread
-/// ([`DEPRECATED_IN_TEST`]). [`Scheme::DEPRECATED`] is empty, so without this mark no test could
-/// reach the rule that a deprecated scheme is never newly recorded. Outside this crate's unit
-/// tests the function always returns false.
+/// (`DEPRECATED_IN_TEST`, which only the unit tests compile). [`Scheme::DEPRECATED`] is empty, so
+/// without this mark no test could reach the rule that a deprecated scheme is never newly
+/// recorded. Outside this crate's unit tests the function always returns false.
 #[cfg(not(test))]
 fn deprecated_in_test(_scheme: Scheme) -> bool {
     false
