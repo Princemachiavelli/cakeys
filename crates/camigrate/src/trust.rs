@@ -1,10 +1,12 @@
-//! What a file claims, and the transport key the lock binds to the target the operator names
-//! (docs/CAMIGRATE.md D3, D5; review 2026-11-24 D-1, D-8, D-10). A transport file and a bundle
-//! may cross untrusted channels, so every name read from one is a [`Claimed`] value: it chooses
-//! nothing. The transport key a source seals to, a target unwraps with or a source's SO trusts
-//! is a [`BoundTransport`]: the one the lock realises as the transport key of the token the
-//! operator named (`--to`, `--token`), held to one rule. Its constructors are the only way to
-//! make one, and each runs that rule; a [`BoundBundle`] is a bundle held to it.
+//! The content of untrusted files, and the transport key that the lock binds to the target that
+//! the operator names (docs/CAMIGRATE.md D3, D5; review 2026-11-24 D-1, D-8, D-10). A transport
+//! file and a bundle may cross untrusted channels, so every name read from one is wrapped in a
+//! [`Claimed`] value, and no such name selects anything. The transport key to which a source seals,
+//! with which a target unwraps, or which a source's SO trusts is a [`BoundTransport`]. It is the
+//! key that the lock realises as the transport key of the token that the operator named (`--to`,
+//! `--token`), and it must pass one rule. Its constructors are the only way to make a
+//! [`BoundTransport`], and each constructor checks that rule. A [`BoundBundle`] is a bundle that
+//! has been checked against such a key.
 
 use cakeys_core::config::{Config, Lock};
 use cakeys_core::id::Scheme;
@@ -18,28 +20,30 @@ use cakeys_pkcs11::ops::{self, Notes};
 use crate::bundle::Bundle;
 use crate::transport::Transport;
 
-/// What a file says, before anything vouches for it: what it names chooses nothing until
-/// [`BoundTransport`] or [`BoundBundle`] has held it to the lock and to the target named.
+/// The content of a file before anything has verified it. A name in it selects nothing until
+/// [`BoundTransport`] or [`BoundBundle`] has checked it against the lock and against the named
+/// target.
 #[derive(Debug)]
 pub(crate) struct Claimed<T>(T);
 
 impl<T> Claimed<T> {
-    /// What a file says.
+    /// Wraps the content of a file.
     pub(crate) fn new(claim: T) -> Claimed<T> {
         Claimed(claim)
     }
 
-    /// What it says, for messages and for planning what its target will check again: never a
-    /// name to act on.
+    /// Returns the unverified content, for messages and for planning steps that the target will
+    /// check again. A name from it must never be used to select an object or a token.
     pub(crate) fn unverified(&self) -> &T {
         &self.0
     }
 }
 
 impl Claimed<Transport> {
-    /// The file is the transport file of `to`, the target the operator named (review
-    /// 2026-11-24 D-1: whoever swapped it may hold another target's genuine file, whose own
-    /// token the lock binds just as well).
+    /// Checks that the file is the transport file of `to`, the target that the operator named
+    /// (review 2026-11-24 D-1). This check is needed because a person who swapped the file may
+    /// hold the genuine transport file of another target, and the lock binds that other token's
+    /// transport key just as well.
     ///
     /// # Errors
     ///
@@ -60,10 +64,11 @@ impl Claimed<Transport> {
     }
 }
 
-/// A token's transport key as the lock binds it (docs/CAMIGRATE.md D3): the spec named for the
-/// token (`--transport-spec`, else its `transportWith`), realised there as an RSA private key the
-/// lock records as allowed to unwrap and known never to leave it, under its locked identity;
-/// with its public key, when one is known, held to that identity and to the 2048-bit rule.
+/// A token's transport key as the lock binds it (docs/CAMIGRATE.md D3). It is the spec that is
+/// named for the token (`--transport-spec`, or else the token's `transportWith`). The lock must
+/// realise that spec on the token as an RSA private key that is allowed to unwrap and is known
+/// never to leave the token, and the lock must pin its identity. When the public key is known, it
+/// must match that identity and have at least 2048 bits.
 #[derive(Debug, Clone)]
 pub(crate) struct BoundTransport {
     token: String,
@@ -74,17 +79,20 @@ pub(crate) struct BoundTransport {
 }
 
 impl BoundTransport {
-    /// `to`'s transport key, from the lock: the spec `spec` names (`--transport-spec`, or the one
-    /// `transport --spec` names), else `to`'s `transportWith`; and the public key the lock
-    /// records for it, if any.
+    /// Returns `to`'s transport key from the lock. The key is the spec that `spec` names
+    /// (`--transport-spec`, or the spec that `transport --spec` names), or else `to`'s
+    /// `transportWith`. The result includes the public key that the lock records for it, if any.
     ///
     /// # Errors
     ///
-    /// `PreconditionFailed` (14) when no key is named, or the one named is not realised on `to`,
-    /// is gone from keys.toml, is no transport key as the lock records it (an RSA private key
-    /// with `CKA_UNWRAP = true` and `CKA_EXTRACTABLE = false`: one the lock does not record is
-    /// none) or has no locked identity; `Validation` (17) for one keys.toml says is no RSA
-    /// private key, a recorded public key that does not decode, or one below 2048 bits.
+    /// `PreconditionFailed` (14) in these cases: no key is named; the named key is not realised on
+    /// `to`; its spec is gone from keys.toml; the lock does not record it as a transport key; or
+    /// the lock pins no identity for it. A transport key is an RSA private key with
+    /// `CKA_UNWRAP = true` and `CKA_EXTRACTABLE = false`, and an attribute that the lock does not
+    /// record does not count. `Validation` (17) in these cases: keys.toml says that the key is not
+    /// an RSA private key; the recorded public key does not decode; or the recorded public key has
+    /// fewer than 2048 bits. `HashMismatch` (10) when the hash of the recorded public key is not
+    /// the locked identity.
     pub(crate) fn from_lock(cfg: &Config, lock: &Lock, to: &str, spec: Option<&str>) -> Result<BoundTransport> {
         let precondition = |check, msg: String| KmError::PreconditionFailed(Reason::check(check, msg));
         let named = spec.or_else(|| cfg.tokens.get(to).and_then(|t| t.migrate.transport_with.as_deref()));
@@ -128,8 +136,9 @@ impl BoundTransport {
         } else if !r.observed(Permission::Unwrap.attr()).permits() {
             Some("must allow CKA_UNWRAP".to_owned())
         } else {
-            // Known never to leave: a policy that does not record it is no verdict (review
-            // 2026-11-24 §2.2: an absent CKA_EXTRACTABLE passed).
+            // The key must be known never to leave the token. A policy that does not record
+            // CKA_EXTRACTABLE gives no answer, so it fails this check (review 2026-11-24 §2.2: an
+            // absent CKA_EXTRACTABLE used to pass).
             match r.observed(Permission::Extractable.attr()) {
                 Known::Is(false) => None,
                 Known::Is(true) => Some("must never leave the token (CKA_EXTRACTABLE = false)".to_owned()),
@@ -172,14 +181,15 @@ impl BoundTransport {
         }
     }
 
-    /// `to`'s transport key, from its transport file: the file must be `to`'s
-    /// ([`Claimed::check_target`]) and name the key [`Self::from_lock`] binds there, with its
-    /// identity; its public key is that identity's.
+    /// Returns `to`'s transport key from its transport file. The file must be `to`'s
+    /// ([`Claimed::check_target`]), and it must name the key that [`Self::from_lock`] binds there,
+    /// with that key's identity. The public key in the file must have that identity.
     ///
     /// # Errors
     ///
-    /// As [`Self::from_lock`], each led by the file's path; `Validation` (17) for a file of
-    /// another token; `PreconditionFailed` (14) for a file naming another object or identity.
+    /// The errors of [`Self::from_lock`], each prefixed with the file's path. `Validation` (17)
+    /// for a file of another token. `PreconditionFailed` (14) for a file that names another object
+    /// or another identity.
     pub(crate) fn from_file(
         file: &Claimed<Transport>,
         path: &std::path::Path,
@@ -213,13 +223,14 @@ impl BoundTransport {
         bound.with_key(t.spki()?).map_err(|e| e.prefixed(&shown))
     }
 
-    /// The key read from the open target `tok`, verified there against the lock (its proof
-    /// included): for a lock that records no public key for it yet, and for `transport --out`.
+    /// Reads the key from the open target `tok`, after `ops::verify` checks it there against the
+    /// lock, including its proof. This is used when the lock records no public key for the key
+    /// yet, and for `transport --out`.
     ///
     /// # Errors
     ///
-    /// What `ops::verify` refuses; `NotFound` for a key not under its locator; as
-    /// [`Self::with_key`].
+    /// The errors of `ops::verify`; `NotFound` (11) for a key that is not under its locator; and
+    /// the errors of [`Self::with_key`].
     pub(crate) fn read(self, cfg: &Config, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<BoundTransport> {
         let t = self.target(cfg)?;
         ops::verify(&t, tok, lock, notes)?;
@@ -230,8 +241,9 @@ impl BoundTransport {
         self.with_key(spki)
     }
 
-    /// The bound key with its public key `spki`, held to the locked identity and to the size
-    /// rule, whichever way it came: the lock, the file or the token.
+    /// Returns the bound key with its public key `spki`, after it checks `spki` against the locked
+    /// identity (`HashMismatch`, 10) and against the size rule. The public key may come from the
+    /// lock, from the transport file, or from the token.
     fn with_key(self, spki: Vec<u8>) -> Result<BoundTransport> {
         let got = cakeys_core::id::sri(&spki);
         if got != self.rfc7093m4 {
@@ -246,31 +258,33 @@ impl BoundTransport {
         Ok(BoundTransport { spki: Some(spki), ..self })
     }
 
-    /// The token it is the transport key of: the one the operator named.
+    /// The token whose transport key this is, which is the token that the operator named.
     pub(crate) fn token(&self) -> &str {
         &self.token
     }
 
-    /// Its object's name.
+    /// The name of the key's object.
     pub(crate) fn object(&self) -> &str {
         &self.object
     }
 
-    /// Its locked identity.
+    /// The key's locked identity.
     pub(crate) fn rfc7093m4(&self) -> &str {
         &self.rfc7093m4
     }
 
-    /// Its public key (canonical SPKI DER), when the lock, the file or the token gave it.
+    /// The key's public key (canonical SPKI DER), when the lock, the file or the token gave it.
     pub(crate) fn spki(&self) -> Option<&[u8]> {
         self.spki.as_deref()
     }
 
-    /// It, as a target on its token: its spec and object in `cfg`.
+    /// Returns the key as a target on its token: its spec and its object in `cfg`.
     ///
     /// # Errors
     ///
-    /// As `Target::new`, for a `cfg` other than the one it was bound with.
+    /// `PreconditionFailed` (14) when the spec or the token is gone from `cfg`, and the errors of
+    /// `Target::new`. These can happen only for a `cfg` other than the one with which the key was
+    /// bound.
     pub(crate) fn target<'a>(&self, cfg: &'a Config) -> Result<Target<'a>> {
         let gone = || {
             KmError::PreconditionFailed(Reason::check(
@@ -283,18 +297,19 @@ impl BoundTransport {
         Target::new(cfg, spec, token)
     }
 
-    /// The transport file of it, as `transport --out` writes it: its key and `tok`'s provider
-    /// and mechanisms.
+    /// Returns the transport file for this key, as `transport --out` writes it: the key, and
+    /// `tok`'s provider and mechanisms.
     ///
     /// # Errors
     ///
-    /// `PreconditionFailed` for a key with no public key known (read it first, [`Self::read`]).
+    /// `PreconditionFailed` (14) for a key whose public key is not known. Read the key from the
+    /// token first with [`Self::read`].
     pub(crate) fn transport_file(&self, tok: &Token) -> Result<Transport> {
         let spki = self.spki().ok_or_else(|| self.no_public_key())?;
         Transport::new(&tok.name, tok.provider.name(), &self.object, spki, &tok.mechanism_names())
     }
 
-    /// The refusal for a key whose public key is not known.
+    /// Returns the refusal (14) for a key whose public key is not known.
     pub(crate) fn no_public_key(&self) -> KmError {
         KmError::PreconditionFailed(Reason::check(
             Check::ImportTransport,
@@ -306,9 +321,9 @@ impl BoundTransport {
         ))
     }
 
-    /// A transport key that may also decrypt is warned about: the target's PIN holder could
-    /// `C_Decrypt` a bundle's wrapped key-encryption key out of the token. One the lock does not
-    /// record as unable to is warned about too.
+    /// Warns when the transport key may also decrypt, because the holder of the target's PIN could
+    /// then `C_Decrypt` a bundle's wrapped key-encryption key out of the token. It also warns when
+    /// the lock does not record that the key cannot decrypt.
     pub(crate) fn warn_decrypting(&self, lock: &Lock, notes: &mut Notes) {
         let decrypt = lock
             .realisation(&self.spec, &self.token)
@@ -324,19 +339,20 @@ impl BoundTransport {
     }
 }
 
-/// The text of a refusal, without its class: the reason a plan gives.
+/// Returns the text of a refusal without its error class. A plan gives this text as its reason.
 #[must_use]
 pub(crate) fn reason(e: KmError) -> String {
     let said = e.to_string();
     e.into_msg().map_or(said, cakeys_core::Msg::into_text)
 }
 
-/// A transport key for a plan: bound; not bound, for the reason the plan gives (`Err`); or an
-/// error, for one that is malformed (17), which no plan can carry.
+/// Converts the result of binding a transport key for a plan. A bound key is returned as `Ok`.
+/// A key that is not bound is returned as an inner `Err` with the reason that the plan gives. A
+/// malformed key (17) is returned as an error, because no plan can carry it.
 ///
 /// # Errors
 ///
-/// `Validation`, as the binding said it.
+/// `Validation` (17), as the binding returned it.
 pub(crate) fn planned(bound: Result<BoundTransport>) -> Result<std::result::Result<BoundTransport, String>> {
     match bound {
         Ok(b) => Ok(Ok(b)),
@@ -345,24 +361,26 @@ pub(crate) fn planned(bound: Result<BoundTransport>) -> Result<std::result::Resu
     }
 }
 
-/// A bundle held to the target it is imported on: made for it (`target`), from a source
-/// keys.toml names, and sealed to its transport key as the lock binds it ([`BoundTransport`]),
-/// never to whichever key the bundle names (review 2026-11-24 D-8).
+/// A bundle that has been checked against the target on which it is imported. The bundle must be
+/// made for that target (`target`), must come from a source that keys.toml names, and must be
+/// sealed to the target's transport key as the lock binds it ([`BoundTransport`]). The key that
+/// the bundle itself names is never trusted (review 2026-11-24 D-8).
 pub(crate) struct BoundBundle<'a> {
     bundle: Bundle,
     transport: Option<Target<'a>>,
 }
 
 impl<'a> BoundBundle<'a> {
-    /// A bundle read from a file, for `to`: a version-1 bundle names no target and is held to
-    /// `to`'s transport key alone, said in a warning. `spec` is `--transport-spec`.
+    /// Checks a bundle that was read from a file for an import on `to`. A version-1 bundle names
+    /// no target, so it is checked only against `to`'s transport key, and a warning says so.
+    /// `spec` is `--transport-spec`.
     ///
     /// # Errors
     ///
-    /// `PreconditionFailed` (14) for a bundle made for another target, or sealed to another key
-    /// than `to`'s transport key; `HashMismatch` (10) for one naming that key under another
-    /// identity; as [`BoundTransport::from_lock`] for a bundle that seals to
-    /// one; `Validation` (17) for a source keys.toml does not name.
+    /// `PreconditionFailed` (14) for a bundle that was made for another target, or that is sealed
+    /// to another key than `to`'s transport key. `HashMismatch` (10) for a bundle that names that
+    /// key with another identity. The errors of [`BoundTransport::from_lock`] for a bundle that is
+    /// sealed to a transport key. `Validation` (17) for a source that keys.toml does not name.
     pub(crate) fn from_file(
         file: Claimed<Bundle>,
         cfg: &'a Config,
@@ -386,7 +404,7 @@ impl<'a> BoundBundle<'a> {
             )),
         }
         bundle.check_source(cfg)?;
-        // Public objects alone are sealed to nothing, and need no transport key.
+        // A bundle of public objects alone is sealed to nothing, so it needs no transport key.
         let transport = if bundle.transport.is_some() {
             let bound =
                 BoundTransport::from_lock(cfg, lock, to, spec).map_err(|e| e.prefixed("the bundle's transport key"))?;
@@ -397,11 +415,13 @@ impl<'a> BoundBundle<'a> {
         Ok(BoundBundle { bundle, transport })
     }
 
-    /// A bundle this run sealed to `transport` (`migrate`, in memory), held to it as a file is.
+    /// Checks a bundle that this run sealed to `transport` (`migrate`, in memory) in the same way
+    /// as a bundle from a file.
     ///
     /// # Errors
     ///
-    /// `PreconditionFailed` for a bundle that is not.
+    /// `PreconditionFailed` (14) for a bundle that was not made for `transport`'s token, and the
+    /// errors of `sealed_to` for a bundle that is not sealed to `transport`.
     pub(crate) fn made(bundle: Bundle, transport: &BoundTransport, cfg: &'a Config) -> Result<BoundBundle<'a>> {
         if bundle.target.as_deref() != Some(transport.token()) {
             return Err(KmError::PreconditionFailed(Reason::check(
@@ -413,8 +433,9 @@ impl<'a> BoundBundle<'a> {
         Ok(BoundBundle { bundle, transport })
     }
 
-    /// The bundle's transport key is `bound`, as a target: another object is another key (14);
-    /// the same object under another identity, a key the lock does not pin (10).
+    /// Checks that the bundle's transport key is `bound`, and returns it as a target. A bundle that
+    /// names another object names another key (14). A bundle that names the same object with
+    /// another identity names a key that the lock does not pin (10).
     fn sealed_to(bundle: &Bundle, bound: &BoundTransport, cfg: &'a Config) -> Result<Target<'a>> {
         match &bundle.transport {
             Some(named) if named.object == bound.object && named.rfc7093m4 == bound.rfc7093m4 => bound.target(cfg),
@@ -444,8 +465,8 @@ impl<'a> BoundBundle<'a> {
         &self.bundle
     }
 
-    /// The transport key its wrapped keys unwrap under, on the target: none for public objects
-    /// alone.
+    /// The transport key on the target under which the bundle's wrapped keys unwrap. It is `None`
+    /// for a bundle of public objects alone.
     pub(crate) fn transport(&self) -> Option<&Target<'a>> {
         self.transport.as_ref()
     }
@@ -474,8 +495,8 @@ mod tests {
 
     const RSA: &str = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"";
 
-    /// A lock realising `t` on `tok` as `tr`, recording `policy`, its type, its identity and
-    /// public key `spki`.
+    /// Returns a lock that realises the spec `tr` on `tok` as the object `t`, and records `policy`,
+    /// the object's type, its identity and the public key `spki`.
     fn lock(policy: &str, spki: &[u8]) -> Lock {
         let key = base64::engine::general_purpose::STANDARD.encode(spki);
         let id = cakeys_core::id::sri(spki);
@@ -494,9 +515,10 @@ mod tests {
 
     const GOOD: &str = "CKA_UNWRAP = true, CKA_EXTRACTABLE = false, CKA_DECRYPT = false";
 
-    /// The one rule, from the lock (review 2026-11-24 D-10, §2.2): named, realised, an RSA key
-    /// that may unwrap and is known never to leave, at least 2048 bits; an unrecorded
-    /// `CKA_EXTRACTABLE` is no verdict.
+    /// Checks the one rule for a transport key from the lock (review 2026-11-24 D-10, §2.2). The
+    /// key must be named and realised, and it must be an RSA key that may unwrap, is known never to
+    /// leave the token, and has at least 2048 bits. An unrecorded `CKA_EXTRACTABLE` fails the
+    /// rule.
     #[test]
     fn the_lock_binds_one_transport_key_per_target() {
         let cfg = config("", RSA);
@@ -513,7 +535,8 @@ mod tests {
         refused(lock("CKA_EXTRACTABLE = false", &good), "tok", Some("tr"), 14, "must allow CKA_UNWRAP");
         refused(lock("CKA_UNWRAP = true, CKA_EXTRACTABLE = true", &good), "tok", Some("tr"), 14, "never leave");
         refused(lock("CKA_UNWRAP = true", &good), "tok", Some("tr"), 14, "its CKA_EXTRACTABLE is not recorded");
-        // keys.toml's transportWith names it; keys.toml no longer having it, or as no RSA key.
+        // The key may be named by transportWith in keys.toml. The binding is refused when
+        // keys.toml no longer has the spec, or when keys.toml declares it as a key that is not RSA.
         let named = config("[tokens.tok.migrate]\ntransportWith = \"tr\"\n", RSA);
         assert!(BoundTransport::from_lock(&named, &lock(GOOD, &good), "tok", None).is_ok());
         let ec = config("", "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"");
@@ -523,12 +546,14 @@ mod tests {
         gone.realisations.insert("gone".into(), gone.realisations["tr"].clone());
         let e = BoundTransport::from_lock(&cfg, &gone, "tok", Some("gone")).unwrap_err();
         assert!(e.to_string().contains("'gone' is gone from keys.toml"), "{e}");
-        // A public key that does not decode is 17, never "none" (review lib.rs F10).
+        // A recorded public key that does not decode is refused (17). It is never treated as an
+        // absent public key (review lib.rs F10).
         let mut bad = lock(GOOD, &good);
         bad.objects.get_mut("t").unwrap().public_key = Some("!".into());
         let e = BoundTransport::from_lock(&cfg, &bad, "tok", Some("tr")).unwrap_err();
         assert!(e.exit_code() == 17 && e.to_string().contains("publicKey"), "{e}");
-        // None recorded: bound, with no key to seal to until the token gives it.
+        // When no public key is recorded, the key is bound, but there is no public key to seal to
+        // until the token gives it.
         let mut none = lock(GOOD, &good);
         none.objects.get_mut("t").unwrap().public_key = None;
         let b = BoundTransport::from_lock(&cfg, &none, "tok", Some("tr")).unwrap();
@@ -537,14 +562,15 @@ mod tests {
     }
 
     impl BoundTransport {
-        /// [`Self::transport_file`]'s refusal, without a token to name.
+        /// Returns the refusal of [`Self::transport_file`], without a token to pass.
         fn transport_file_without_token(&self) -> Result<()> {
             self.spki().map(|_| ()).ok_or_else(|| self.no_public_key())
         }
     }
 
-    /// A transport file binds only as the transport file of the target named (review 2026-11-24
-    /// D-1): another token's genuine file is 17; one naming another object or identity is 14.
+    /// Checks that a transport file binds only as the transport file of the named target (review
+    /// 2026-11-24 D-1). The genuine file of another token is refused with 17, and a file that names
+    /// another object or another identity is refused with 14.
     #[test]
     fn a_transport_file_binds_only_to_the_target_named() {
         let cfg = config("", RSA);
@@ -566,8 +592,9 @@ mod tests {
         assert!(e.exit_code() == 14 && e.to_string().contains("the lock pins for 't'"), "{e}");
     }
 
-    /// A bundle binds only on the target it names, sealed to that target's transport key
-    /// (review 2026-11-24 D-8); a version-1 bundle, which names none, with a warning.
+    /// Checks that a bundle binds only on the target that it names, and only when it is sealed to
+    /// that target's transport key (review 2026-11-24 D-8). A version-1 bundle names no target,
+    /// and it binds with a warning.
     #[test]
     fn a_bundle_binds_only_to_its_targets_transport_key() {
         let cfg = cakeys_core::config::parse_config_with(

@@ -1,14 +1,14 @@
-//! The transport file (docs/CAMIGRATE.md D3): a target's transport key, as a source needs it to wrap to
-//! that target without reaching it.
+//! The transport file (docs/CAMIGRATE.md D3). It holds a target's transport key in the form that
+//! a source needs to wrap keys to that target without a connection to it.
 
 use cakeys_core::{KmError, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::trust::Claimed;
 
-/// The transport file (`camigrate transport`, docs/CAMIGRATE.md D3): what a source needs to wrap to a
-/// target's transport key without reaching the target: the public key, its locked identity,
-/// and the target's provider and mechanisms for planning.
+/// The transport file (`camigrate transport`, docs/CAMIGRATE.md D3). It holds what a source needs
+/// to wrap keys to a target's transport key without a connection to the target: the public key,
+/// its locked identity, and the target's provider and mechanisms for planning.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Transport {
@@ -27,11 +27,12 @@ pub(crate) const TRANSPORT_FORMAT: &str = "cakeys-transport";
 pub(crate) const TRANSPORT_VERSION: u32 = 1;
 
 impl Transport {
-    /// The transport file for `object`'s public key on `token`.
+    /// Returns the transport file for `object`'s public key on `token`.
     ///
     /// # Errors
     ///
-    /// `Validation` when `spki` is not a public key cakeys can canonicalize.
+    /// `Validation` (17) when `spki` is not a public key that cakeys can canonicalize, or when it
+    /// is smaller than a transport key may be.
     pub(crate) fn new(
         token: &str,
         provider: &str,
@@ -54,13 +55,14 @@ impl Transport {
         })
     }
 
-    /// Read a transport file, checking that its identity is the hash of its public key: a file
-    /// edited to wrap to another key fails here. What it names is claimed until it is bound to
-    /// the target the operator names and to the lock (`trust::BoundTransport::from_file`).
+    /// Reads a transport file and checks that its identity is the hash of its public key, so that
+    /// a file that was edited to wrap to another key fails here. The names in the file are only
+    /// claimed until the file is bound to the target that the operator names and to the lock
+    /// (`trust::BoundTransport::from_file`).
     ///
     /// # Errors
     ///
-    /// `Validation` for another format or version, malformed base64, a key smaller than a
+    /// `Validation` (17) for another format or version, malformed base64, a key smaller than a
     /// transport key may be, or an identity that is not the public key's.
     pub(crate) fn parse(text: &str, path: &std::path::Path) -> Result<Claimed<Transport>> {
         let t: Transport =
@@ -71,7 +73,8 @@ impl Transport {
             ));
         }
         let spki = t.spki()?;
-        // Refused on read, as `new` and `key` refuse it: a dry run says so too, not only the export.
+        // A small key is refused when the file is read, as `new` and `BoundTransport::with_key`
+        // refuse it, so that a dry run reports it too, not only the export.
         crate::sealed::check_transport_size(&spki)
             .map_err(|e| KmError::Validation(format!("{}: {}", path.display(), msg_of(e)).into()))?;
         let computed = cakeys_core::id::sri(&spki);
@@ -88,20 +91,21 @@ impl Transport {
         Ok(Claimed::new(t))
     }
 
-    /// The file's text.
+    /// Returns the file's text.
     ///
     /// # Errors
     ///
-    /// `Unavailable` when it does not serialize: never an empty file in its place.
+    /// `Unavailable` (16) when the file does not serialize, so that an empty file is never written
+    /// in its place.
     pub(crate) fn to_toml(&self) -> Result<String> {
         toml::to_string(self).map_err(|e| KmError::Unavailable(format!("serializing the transport file: {e}").into()))
     }
 
-    /// The canonical SPKI DER.
+    /// Returns the canonical SPKI DER.
     ///
     /// # Errors
     ///
-    /// `Validation` for malformed base64 or a public key cakeys cannot canonicalize.
+    /// `Validation` (17) for malformed base64 or for a public key that cakeys cannot canonicalize.
     pub(crate) fn spki(&self) -> Result<Vec<u8>> {
         use base64::Engine;
         let der = base64::engine::general_purpose::STANDARD
@@ -111,7 +115,7 @@ impl Transport {
     }
 }
 
-/// The text of an error's message, without its class.
+/// Returns the text of an error's message without its error class.
 fn msg_of(e: KmError) -> String {
     e.into_msg().map_or_else(String::new, cakeys_core::Msg::into_text)
 }
@@ -121,10 +125,11 @@ mod tests {
     use super::*;
     use base64::Engine as _;
 
-    /// A transport file round-trips, and one edited to name another key's identity is refused.
+    /// Checks that a transport file reads back as written, and that a file that was edited to name
+    /// another key's identity is refused.
     #[test]
     fn transport_files_check_their_identity() {
-        // Any RSA public key will do: an all-0xc5 2048-bit modulus.
+        // Any RSA public key is suitable, so the test uses a 2048-bit modulus of 0xc5 bytes.
         let n = [0xc5u8; 256];
         let spki = cakeys_core::id::rsa_spki(&n, &[1, 0, 1]).unwrap();
         let t = Transport::new("kryoptic", "kryoptic", "import-kek", &spki, &["CKM_RSA_PKCS_OAEP".into()]).unwrap();
@@ -135,12 +140,12 @@ mod tests {
         assert!(Transport::parse(&other, path).unwrap_err().to_string().contains("is not the identity"));
         let old = text.replace("version = 1", "version = 2");
         assert_eq!(Transport::parse(&old, path).unwrap_err().exit_code(), 17);
-        // A transport key is at least 2048 bits: a smaller one makes no transport file.
+        // A transport key has at least 2048 bits, so a smaller key makes no transport file.
         let small = cakeys_core::id::rsa_spki(&[0xc5u8; 128], &[1, 0, 1]).unwrap();
         let e = Transport::new("kryoptic", "kryoptic", "import-kek", &small, &[]).unwrap_err();
         assert!(e.to_string().contains("at least 2048 bits; this one has 1024"), "{e}");
-        // Nor does a file edited to hold one read, its identity made to match (review
-        // transport.rs F1): the dry run refuses it as the export would.
+        // A file that was edited to hold a smaller key, with its identity changed to match, does
+        // not read either (review transport.rs F1). The dry run refuses it as the export would.
         let edited = Transport {
             spki: base64::engine::general_purpose::STANDARD.encode(&small),
             rfc7093m4: cakeys_core::id::sri(&cakeys_core::id::spki_canonical(&small).unwrap()),

@@ -1,16 +1,18 @@
-//! Every rule a write asks (`cakeys_pkcs11::ops::Rule`), and where camigrate holds it
-//! (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4, T-4): the tests that run it on
-//! camigrate's entry paths (`migrate`, `export`, `import` of a bundle, of a key file or of
-//! objects' own files), dry and real, or why none of them meets it. A `match` with no wildcard: a
-//! new rule without its case does not compile. No token needed.
+//! Lists every rule that a write checks (`cakeys_pkcs11::ops::Rule`), and where camigrate enforces
+//! it (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4, T-4). For each rule, the list names
+//! the tests that run it on camigrate's entry paths (`migrate`, `export`, and `import` of a
+//! bundle, of a key file or of objects' own files), both in a dry run and in a real run, or it
+//! says why none of those paths meets the rule. The `match` has no wildcard, so a new rule without
+//! its case does not compile. These tests need no token.
 
 use cakeys_pkcs11::ops::Rule;
 
-/// Where camigrate holds a rule.
+/// Where camigrate enforces a rule.
 enum Held {
-    /// By these tests (`file` under the package, `fn`), each running it dry and real.
+    /// These tests enforce it, given as (`file` under the package, `fn`). Each test runs the rule
+    /// in a dry run and in a real run.
     By(&'static [(&'static str, &'static str)]),
-    /// No entry path of camigrate's meets it, for this reason.
+    /// No entry path of camigrate meets the rule, for the given reason.
     NotMet(&'static str),
 }
 
@@ -39,7 +41,7 @@ fn held(rule: Rule) -> Held {
     }
 }
 
-/// Each rule is held by tests that exist, or said not to be met.
+/// Checks that each rule is enforced by tests that exist, or is stated as not met.
 #[test]
 fn every_rule_is_held_or_said_not_to_be_met() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

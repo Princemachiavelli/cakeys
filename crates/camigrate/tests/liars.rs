@@ -1,15 +1,16 @@
-//! camigrate's liar matrix (`tests/liars/camigrate.toml`, run by cakeys' runner,
-//! `crates/cli/tests/common/liars.rs`; docs/archive/REVIEW-2026-11-24/phase2-3-design.md §1):
-//! `SoftHSM` behind p11-fault as the source of a move (and the target of an import), kryoptic as
-//! the other side, told one lie per cell; one test per class of lie, each on tokens of its own.
-//! Every cell asserts its exit, the rule and device bit its row names (or what its plan names),
-//! what it left of the lock, each token and the file it writes, and that the lie fired; every
-//! run, the honest ones too, exits 22 exactly when it changed the lock, and a dry run changes
-//! nothing.
+//! camigrate's liar matrix: the fault table `tests/liars/camigrate.toml`, which cakeys' runner
+//! (`crates/cli/tests/common/liars.rs`) runs (docs/archive/REVIEW-2026-11-24/phase2-3-design.md
+//! §1). `SoftHSM` runs behind p11-fault as the source of a move (and as the target of an import),
+//! and kryoptic is the other side. p11-fault injects one false answer in each cell. There is one
+//! test for each class of injected fault, and each test uses its own tokens. Every cell asserts
+//! its exit code; the rule and the device bit that its row names (or what its plan names); what
+//! it left of the lock, of each token and of the file that it writes; and that the fault was
+//! injected. Every run, including the runs without a fault, exits 22 exactly when it changed the
+//! lock, and a dry run changes nothing.
 //!
-//! Needs what `tests/fault.rs` needs: `P11_FAULT_MODULE` naming `SoftHSM` and
-//! `CAKEYS_KRYOPTIC_MODULE`, which the per-test runner (nix/test-tokens.sh) sets, and
-//! `libp11_fault.so` built beside the test binaries.
+//! The tests need what `tests/fault.rs` needs: `P11_FAULT_MODULE` naming `SoftHSM`, and
+//! `CAKEYS_KRYOPTIC_MODULE`, which the runner for each test (nix/test-tokens.sh) sets, and
+//! `libp11_fault.so` built next to the test binaries.
 
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
@@ -25,46 +26,51 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-// One test per class of lie, written out (nix/test-count.py counts no test a macro makes).
+// There is one test for each class of injected fault, written out by hand, because
+// nix/test-count.py does not count a test that a macro generates.
 
-/// Class OK ([`run_table`]): a call answered `CKR_OK`, and nothing done; and a state no lie
-/// makes (a profile's unverified row).
+/// Runs the class OK ([`run_table`]): a call that returns `CKR_OK` but does nothing, and a state
+/// that no injected fault makes (a profile's unverified row).
 #[test]
 fn liars_ok() {
     run("OK");
 }
 
-/// Class OTHER ([`run_table`]): another object than the one asked for.
+/// Runs the class OTHER ([`run_table`]): a call that returns another object than the one that was
+/// asked for.
 #[test]
 fn liars_other() {
     run("OTHER");
 }
 
-/// Class FLAG ([`run_table`]): what the token says of itself or of an object, hidden.
+/// Runs the class FLAG ([`run_table`]): a call that hides what the token reports about itself or
+/// about an object.
 #[test]
 fn liars_flag() {
     run("FLAG");
 }
 
-/// Class FORGE ([`run_table`]): an output the key did not make.
+/// Runs the class FORGE ([`run_table`]): an output that the key did not produce.
 #[test]
 fn liars_forge() {
     run("FORGE");
 }
 
-/// Class BLOB ([`run_table`]): a blob the module round-trips that is not what it made.
+/// Runs the class BLOB ([`run_table`]): a blob that the module returns and accepts back, but that
+/// is not the blob that the module produced.
 #[test]
 fn liars_blob() {
     run("BLOB");
 }
 
-/// Class DEV ([`run_table`]): a call failing as a device, and the same call refused.
+/// Runs the class DEV ([`run_table`]): a call that fails with a device error, and the same call
+/// refused.
 #[test]
 fn liars_dev() {
     run("DEV");
 }
 
-/// Class LOSS ([`run_table`]): the device gone from one call of a run on.
+/// Runs the class LOSS ([`run_table`]): the device disappears from one call of a run onward.
 #[test]
 fn liars_loss() {
     run("LOSS");
@@ -75,18 +81,18 @@ fn run(class: &str) {
     run_table(&table, class, Moves::plant);
 }
 
-/// The two tokens of a move, planted.
+/// The two tokens of a move, with their objects planted.
 struct Moves {
     w: Workdir,
-    /// `SoftHSM` itself, behind the shim.
+    /// The `SoftHSM` module itself, which runs behind the shim.
     real: String,
     kryoptic: Ref,
-    /// The lock as planted: each cell starts from it.
+    /// The lock after planting. Each cell starts from it.
     planted: Vec<u8>,
 }
 
-/// The objects moved from `softhsm` (the rest are imported into it), their keys.toml type lines
-/// and their spec's attributes; each spec's locator is its name.
+/// The objects that move from `softhsm` (the other objects are imported into it), with their
+/// keys.toml type lines and their spec's attributes. Each spec's locator is its name.
 const MOVED: [(&str, &str, &str); 7] = [
     ("ec", EC, "CKA_SIGN = true, CKA_EXTRACTABLE = true"),
     ("rsa-unwrap", RSA, "CKA_UNWRAP = true, CKA_EXTRACTABLE = true"),
@@ -94,14 +100,15 @@ const MOVED: [(&str, &str, &str); 7] = [
     ("hmac", HMAC, "CKA_SIGN = true, CKA_EXTRACTABLE = true"),
     ("aes-u", AES, "CKA_ENCRYPT = true, CKA_EXTRACTABLE = true"),
     ("cert", "class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"", ""),
-    // No CKA_PRIVATE declared: the lock records what the token says (false), or that it did not
-    // say (flag.hide.CKA_PRIVATE), which a declared flag would refuse.
+    // The spec declares no CKA_PRIVATE, so the lock records the value that the token reports
+    // (false), or records that the token did not report it (flag.hide.CKA_PRIVATE). A declared
+    // flag would refuse that second case.
     ("data", "class = \"CKO_DATA\"", ""),
 ];
 
-/// The objects born on kryoptic and imported into `softhsm` from a bundle: a private key alone,
-/// since `SoftHSM` unwraps no secret key with its length (its profile's `move.secret-unwrap`), so
-/// no bundle carries one to it.
+/// The objects that are born on kryoptic and imported into `softhsm` from a bundle. Only a private
+/// key is imported, because `SoftHSM` unwraps no secret key with its length (its profile's
+/// `move.secret-unwrap`), so no bundle carries a secret key to it.
 const IMPORTED: [(&str, &str, &str); 1] = [("ec-in", EC, "CKA_SIGN = true, CKA_EXTRACTABLE = true")];
 
 const EC: &str = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
@@ -109,16 +116,17 @@ const RSA: &str = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBi
 const AES: &str = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32";
 const HMAC: &str = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 32";
 
-/// The profile `kryoptic-u` is pinned to: kryoptic's own, its sealed rows (`export.sealed.*`,
-/// `unwrap.*`) said by the module alone.
+/// The profile to which `kryoptic-u` is pinned. It is kryoptic's own profile, with its sealed rows
+/// (`export.sealed.*`, `unwrap.*`) marked as claimed by the module alone.
 const UNVERIFIED: &str = "kryoptic/1.5+unverified";
 
 impl Moves {
-    /// `softhsm` behind the shim and kryoptic, as test `name`'s: the transport keys, the moved
-    /// keys made on `softhsm` and the imported ones on kryoptic by `cakeys create`, the
-    /// certificate and the data object put on `softhsm` and recorded by `cakeys lock`, a decoy of
-    /// each key's kind beside it, and a bundle of each imported object. `None` (skipped) without
-    /// the two modules.
+    /// Plants `softhsm` behind the shim and kryoptic for the test `name`. It makes the transport
+    /// keys, the keys to move on `softhsm` and the keys to import on kryoptic with
+    /// `cakeys create`. It puts the certificate and the data object on `softhsm` and records them
+    /// with `cakeys lock`, puts a decoy of each object's kind next to it, and exports a bundle of
+    /// each imported object. It returns `None` (the test is skipped) when either module is
+    /// missing.
     fn plant(name: &str, wrong: &mut Vec<String>) -> Option<Moves> {
         let real = suite_var("P11_FAULT_MODULE", "CAKEYS_FAULT_REQUIRE", name)?;
         let kryoptic = suite_var("CAKEYS_KRYOPTIC_MODULE", "CAKEYS_KRYOPTIC_REQUIRE", name)?;
@@ -151,8 +159,8 @@ impl Moves {
         Some(Moves { planted: std::fs::read(f.lock()).unwrap(), ..f })
     }
 
-    /// keys.toml: the three tokens, then each object's two specs, where it is born and where it
-    /// lands.
+    /// Returns keys.toml: the three tokens, and then each object's two specs, one where the object
+    /// is born and one where it lands.
     fn config(&self) -> String {
         let (dir, pin) = (self.w.dir.display(), self.w.dir.join("pin"));
         let mut text = format!("profileDirs = [\"{dir}/profiles\"]\n\n");
@@ -181,7 +189,7 @@ impl Moves {
                  tokens.{t} = {{ locator = {{ CKA_LABEL = \"tk-{t}\" }}, origin = \"create\", binding = \"pop-unwrap\" }}\n"
             );
         }
-        // kryoptic-u is kryoptic: its transport key is the one there.
+        // kryoptic-u is the same kryoptic token, so its transport key is the one on kryoptic.
         text += "tokens.kryoptic-u = { locator = { CKA_LABEL = \"tk-kryoptic\" }, origin = \"adopt\", binding = \"pop-unwrap\" }\n\n";
         let spec = |o: &str, ty: &str, attributes: &str, born: &str, lands: &str| {
             let binding = match o {
@@ -207,8 +215,8 @@ impl Moves {
         text
     }
 
-    /// kryoptic's committed profile under [`UNVERIFIED`], its sealed rows `by = "unverified"`, in
-    /// the directory keys.toml's `profileDirs` names.
+    /// Writes kryoptic's committed profile under the name [`UNVERIFIED`], with its sealed rows set
+    /// to `by = "unverified"`, in the directory that keys.toml's `profileDirs` names.
     fn unverified_profile(&self) {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles/modules/kryoptic/1.5.toml");
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
@@ -227,9 +235,9 @@ impl Moves {
         std::fs::write(dir.join("kryoptic-unverified.toml"), lines.join("\n") + "\n").unwrap();
     }
 
-    /// What `softhsm` holds beside what cakeys makes: the certificate and the data object under
-    /// their labels, and a decoy of each object's kind under `<name>-other`, extractable, so a
-    /// lie may wrap it in the object's place.
+    /// Puts on `softhsm` the objects that cakeys does not make: the certificate and the data object
+    /// under their labels, and an extractable decoy of each object's kind under `<name>-other`, so
+    /// that an injected fault can wrap the decoy in the object's place.
     fn put(&self) {
         let s = open_session(&self.real, "kmtest", "1234");
         let label = |n: &str| Attribute::Label(n.as_bytes().to_vec());
@@ -278,18 +286,20 @@ impl Moves {
         self.w.dir.join("keys.lock")
     }
 
-    /// The bundle of an imported object, exported from kryoptic at planting.
+    /// Returns the path of the bundle of an imported object, which is exported from kryoptic
+    /// during planting.
     fn bundle(&self, object: &str) -> PathBuf {
         self.w.dir.join(format!("{object}.bundle.toml"))
     }
 
-    /// What `export` writes: a bundle, or a key file.
+    /// Returns the path that `export` writes: a bundle or a key file.
     fn out(&self) -> PathBuf {
         self.w.dir.join("out")
     }
 
-    /// Both tokens by their objects: kryoptic's too, not its database's bytes, which an object
-    /// made and undone changes (a move refused after the target made the public half).
+    /// Returns both tokens, compared by their objects. kryoptic is also compared by its objects
+    /// and not by its database's bytes, because an object that is made and then removed changes
+    /// those bytes (for example, in a move that is refused after the target made the public half).
     fn views(&self) -> [TokenView<'_>; 2] {
         [
             TokenView { name: "softhsm", module: &self.real, label: "kmtest", env: &[], db: vec![] },
@@ -298,7 +308,7 @@ impl Moves {
     }
 }
 
-/// The token an object moves to.
+/// Returns the token to which an object moves.
 fn to(object: &str) -> &'static str {
     match object {
         "aes-u" => "kryoptic-u",
@@ -307,7 +317,7 @@ fn to(object: &str) -> &'static str {
     }
 }
 
-/// The token an object is born on.
+/// Returns the token on which an object is born.
 fn from(object: &str) -> &'static str {
     if object.ends_with("-in") { "kryoptic" } else { "softhsm" }
 }
@@ -332,7 +342,8 @@ impl Tool for Moves {
             .collect()
     }
 
-    /// camigrate on the fixture's keys.toml; `["cakeys", …]`: cakeys itself (a planting step).
+    /// Runs camigrate on the fixture's keys.toml. Arguments that start with `"cakeys"` run cakeys
+    /// itself instead (a planting step).
     fn run(&self, args: &[&str], env: &[(&str, &Path)]) -> Output {
         let config = self.w.dir.join("keys.toml");
         match args {
@@ -341,7 +352,7 @@ impl Tool for Moves {
         }
     }
 
-    /// A `before` step is cakeys' (`lock` under the lie).
+    /// Runs a `before` step, which is a cakeys step (`lock` under the injected fault).
     fn before(&self, args: &[&str], env: &[(&str, &Path)]) -> Output {
         self.run(&[&["cakeys"], args].concat(), env)
     }
@@ -360,14 +371,16 @@ impl Tool for Moves {
         .to_owned()
     }
 
-    /// A move or an import writes the lock (22); an export and a dry run do not (0). The verbs
-    /// whose names start with "migrate" and do not end with "--dry-run" are moves.
+    /// Returns the exit code of a run without a fault. A move or an import writes the lock (22),
+    /// and an export or a dry run does not (0). The verbs whose names start with "migrate" and do
+    /// not end with "--dry-run" are moves.
     fn honest_exit(&self, _table: &Table, verb: &str, _object: &str) -> i32 {
         let moves = verb.starts_with("migrate") && !verb.ends_with("--dry-run");
         if moves || verb == "import" { 22 } else { 0 }
     }
 
-    /// 22 exactly when the lock changed, and a dry run changes nothing.
+    /// Checks that a run exits 22 exactly when the lock changed, and that a dry run changes
+    /// nothing.
     fn invariants(&self, args: &[&str], exit: Option<i32>, changed: &BTreeSet<String>) -> Vec<String> {
         let mut wrong = lock_invariant(args, exit, changed);
         if args.contains(&"--dry-run") && !changed.is_empty() {
@@ -376,8 +389,8 @@ impl Tool for Moves {
         wrong
     }
 
-    /// The lock as planted, no file written, and nothing a move or an import made left on
-    /// either token.
+    /// Restores the state after planting: the planted lock, no written file, and no object that a
+    /// move or an import made on either token.
     fn restore(&self, _table: &Table) {
         std::fs::write(self.lock(), &self.planted).unwrap();
         let _ = std::fs::remove_file(self.out());

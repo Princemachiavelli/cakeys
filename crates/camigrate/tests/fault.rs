@@ -1,9 +1,10 @@
-//! camigrate against a module that fails or lies (`crates/p11-fault`, `docs/FAULT_SHIM.md`):
-//! `SoftHSM` behind the shim as the source or the target of a move, kryoptic as the other side.
-//! A move that cannot finish leaves the target as it was and the lock unchanged, and says why.
+//! Tests camigrate against a module that fails or returns false answers (`crates/p11-fault`,
+//! `docs/FAULT_SHIM.md`). `SoftHSM` runs behind the shim as the source or the target of a move,
+//! and kryoptic is the other side. A move that cannot finish leaves the target as it was and the
+//! lock unchanged, and it reports why.
 //!
-//! Needs `P11_FAULT_MODULE` naming `SoftHSM` and `CAKEYS_KRYOPTIC_MODULE`, which the per-test
-//! runner (nix/test-tokens.sh) sets; skipped without them.
+//! The tests need `P11_FAULT_MODULE` naming `SoftHSM`, and `CAKEYS_KRYOPTIC_MODULE`, which the
+//! runner for each test (nix/test-tokens.sh) sets. The tests are skipped without them.
 
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
@@ -17,9 +18,9 @@ use x509_cert::der::{Decode as _, Encode as _};
 
 const CERT: &[u8] = include_bytes!("../../cli/tests/fixtures/adopt-cert.der");
 
-/// `SoftHSM` behind the shim (`softhsm`) and kryoptic, each naming a transport key of its own,
-/// with three keys realised where they are born: `ek` (P-256) on `softhsm`, `kk` (P-256) and
-/// `ks` (AES) on kryoptic, each with a spec on the other token.
+/// Sets up `SoftHSM` behind the shim (`softhsm`) and kryoptic, each naming its own transport key,
+/// with three keys realised where they are born: `ek` (P-256) on `softhsm`, and `kk` (P-256) and
+/// `ks` (AES) on kryoptic. Each key also has a spec on the other token.
 fn tokens(name: &str) -> Option<(Env, String)> {
     let real = suite_var("P11_FAULT_MODULE", "CAKEYS_FAULT_REQUIRE", name)?;
     let kryoptic = suite_var("CAKEYS_KRYOPTIC_MODULE", "CAKEYS_KRYOPTIC_REQUIRE", name)?;
@@ -52,7 +53,7 @@ fn tokens(name: &str) -> Option<(Env, String)> {
         + "[objects.crt]\nclass = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"\n\n"
         + &Env::spec("crt-src", "crt", "", &[kry], "f-crt", "")
         + &Env::spec("crt-dst", "crt", "", &[soft], "f-crt", ", origin = \"import\"");
-    // A certificate, planted on kryoptic: a public object, moved as it is.
+    // Plant a certificate on kryoptic. It is a public object, so it moves as it is.
     let cert = x509_cert::Certificate::from_der(CERT).unwrap();
     open_session(&kry.module, "kmtest", "1234")
         .create_object(&[
@@ -64,7 +65,8 @@ fn tokens(name: &str) -> Option<(Env, String)> {
             Attribute::Label(b"f-crt".to_vec()),
         ])
         .unwrap();
-    // SoftHSM's SO, for `transport --trust-on` (the runner initialises it with SO PIN 5678).
+    // SoftHSM's SO PIN, for `transport --trust-on` (the runner initialises the token with the SO
+    // PIN 5678).
     let so_pin = e.dir.join("so-pin");
     std::fs::write(&so_pin, "5678\n").unwrap();
     e.config_with(&body, &|r| {
@@ -72,7 +74,7 @@ fn tokens(name: &str) -> Option<(Env, String)> {
             if r.name == "softhsm" { format!("soCredentialFile = \"{}\"\n", so_pin.display()) } else { String::new() };
         format!("migrate = {{ transportWith = \"tk-{}\" }}\n{so}", r.name)
     });
-    // The keys are made where they are born; the planted certificate is adopted.
+    // The keys are made where they are born, and the planted certificate is adopted.
     for (verb, spec, r) in [
         ("create", "tk-softhsm", soft),
         ("create", "tk-kryoptic", kry),
@@ -87,8 +89,9 @@ fn tokens(name: &str) -> Option<(Env, String)> {
     Some((e, real))
 }
 
-/// Run camigrate under `plan` (no dry-run twin: the plan's calls are counted for this run), and
-/// what it said, its exit, and how many rules fired.
+/// Runs camigrate under the fault plan `plan`, and returns its exit code, its standard error, and
+/// the number of rules that fired. It runs no dry-run twin, because the plan's calls are counted
+/// for this run.
 fn faulted(e: &Env, name: &str, plan: &str, args: &[&str]) -> (i32, String, usize) {
     let (path, trace) = (e.dir.join(format!("{name}.toml")), e.dir.join(format!("{name}.jsonl")));
     std::fs::write(&path, plan).unwrap();
@@ -100,7 +103,8 @@ fn faulted(e: &Env, name: &str, plan: &str, args: &[&str]) -> (i32, String, usiz
     (code(&o), stderr(&o), fired)
 }
 
-/// The sessions run `name` of [`faulted`] opened on the shimmed token, each by its flags.
+/// Returns the flags of each session that the run `name` of [`faulted`] opened on the shimmed
+/// token.
 fn sessions(e: &Env, name: &str) -> Vec<u64> {
     let text = std::fs::read_to_string(e.dir.join(format!("{name}.jsonl"))).unwrap_or_default();
     text.lines()
@@ -110,16 +114,17 @@ fn sessions(e: &Env, name: &str) -> Vec<u64> {
         .collect()
 }
 
-/// The lock and both tokens as they are now (`state::snapshot`): `SoftHSM` itself, past the
-/// shim (`real`), and kryoptic.
+/// Returns the current state of the lock and of both tokens (`state::snapshot`): `SoftHSM` itself,
+/// read without the shim (`real`), and kryoptic.
 fn now(e: &Env, real: &str) -> state::Snapshot {
     let softhsm = state::TokenView { module: real, ..e.refs[0].view() };
     state::snapshot(&[&e.dir.join("keys.lock")], &[softhsm, e.refs[1].view()])
 }
 
-/// A move the module fails part-way: the source's wrap, the target's unwrap, the creation or
-/// the proof after it. Each is refused with the step named, the target is left without the
-/// object, and the lock is as it was; with no plan, the same moves then succeed.
+/// Checks moves that the module fails part of the way through: the source's wrap, the target's
+/// unwrap, the creation, or the proof after it. Each move is refused with the step named, the
+/// target is left without the object, and the lock stays as it was. Without a fault plan, the
+/// same moves then succeed.
 #[test]
 fn a_move_the_module_fails_is_refused_and_undone() {
     let Some((e, real)) = tokens("fault-moves") else { return };
@@ -134,34 +139,40 @@ fn a_move_the_module_fails_is_refused_and_undone() {
     let cert: &[&str] = &["migrate", "crt", "--from", "kryoptic", "--to", "softhsm"];
     let wrong_type =
         "[[rule]]\nfn = \"C_GetAttributeValue\"\nattribute = \"CKA_CERTIFICATE_TYPE\"\nvalue = \"0100000000000000\"\n";
-    // `C_Sign` is asked the length first: the second call of a signature is the one that signs,
-    // and it fails after the real call, which ends the operation (docs/FAULT_SHIM.md). A step
-    // that fails as a device (`CKR_DEVICE_ERROR`) is 16, the step it was at named; only the
-    // module's refusal of the step is 15 (review 2026-11-24 L4a-1: the device's were 15 too).
+    // `C_Sign` is first called for the length, so the second call of a signature is the one that
+    // signs. That call fails after the real call, which ends the operation (docs/FAULT_SHIM.md).
+    // A step that fails with a device error (`CKR_DEVICE_ERROR`) exits 16 and names the step. Only
+    // the module's refusal of the step exits 15 (review 2026-11-24 L4a-1 found that device
+    // failures also exited 15).
     let cases: Vec<(&str, &[&str], String, i32, &str)> = vec![
-        // The source (softhsm) wraps: its key-encryption key, the transport key it loads, each wrap.
+        // The source (softhsm) wraps. The faults hit its key-encryption key, the transport key
+        // that it loads, and each wrap.
         ("kek", out, fails("C_GenerateKey", ""), 16, "making the KEK"),
         ("kek-refused", out, refuses("C_GenerateKey"), 15, "making the KEK"),
         ("transport", out, fails("C_CreateObject", ""), 16, "loading the transport key"),
-        // `C_WrapKey` too is asked the length first: calls 1 and 2 wrap the KEK to the transport
-        // key (OAEP), 3 is the first of the key's own wrap under the KEK (RFC 5649) [run].
+        // `C_WrapKey` is also first called for the length. Calls 1 and 2 wrap the KEK to the
+        // transport key (OAEP), and call 3 is the first call of the key's own wrap under the KEK
+        // (RFC 5649) [run].
         ("wrap-kek", out, fails("C_WrapKey", "call = 1\n"), 16, "wrapping the KEK"),
         ("wrap-key", out, fails("C_WrapKey", "call = 3\n"), 16, "wrapping the key"),
-        // The target (softhsm) unwraps (after its transport key proved possession by unwrapping,
-        // twice: calls 1 and 2), then proves possession of what it unwrapped. A module that fails
-        // the unwrap is 16, said as what may be a damaged bundle; one that says the blob is bad,
-        // 13 (review sealed.rs F2: every unwrap failure was 13, "tampered with").
+        // The target (softhsm) unwraps, after its transport key proved possession by unwrapping
+        // twice (calls 1 and 2), and then proves possession of what it unwrapped. When the module
+        // fails the unwrap, the run exits 16 and says that the bundle may be damaged. When the
+        // module says that the blob is invalid, the run exits 13 (review sealed.rs F2 found that
+        // every unwrap failure was 13, "tampered with").
         ("unwrap-kek", into, fails("C_UnwrapKey", "call = 3\n"), 16, "unwrapping the KEK"),
         ("unwrap-key", into, fails("C_UnwrapKey", "call = 4\n"), 16, "damaged or altered bundle"),
         ("unwrap-bad", into, bad("C_UnwrapKey", "call = 4\n"), 13, "the bundle was tampered with"),
-        // Each of the transport key's two proofs signs an HMAC of the secret it unwrapped (calls 1
-        // to 4, the length then the MAC); `kk`'s own proof is then calls 5 and 6 (ECDSA) [run].
+        // Each of the transport key's two proofs signs an HMAC of the secret that it unwrapped
+        // (calls 1 to 4, first the length and then the MAC). `kk`'s own proof is then calls 5
+        // and 6 (ECDSA) [run].
         ("proof", into, fails("C_Sign", "call = 6\nwhen = \"after\"\n"), 16, "just imported for 'kk'"),
-        // The host path into softhsm: the creation, then the commitment of what was created.
+        // The host path into softhsm: the creation, and then the commitment of what was created.
         ("create", host, fails("C_CreateObject", ""), 16, "creating the key"),
         ("create-refused", host, refuses("C_CreateObject"), 15, "creating the key"),
         ("commit", host, fails("C_Sign", "call = 2\nwhen = \"after\"\n"), 16, "just imported for 'ks'"),
-        // A certificate created on softhsm, which then says it is of another type than X.509.
+        // A certificate is created on softhsm, and softhsm then reports a type other than X.509
+        // for it.
         ("cert-type", cert, wrong_type.to_owned(), 13, "just imported for 'crt'"),
     ];
     let lock = std::fs::read(e.dir.join("keys.lock")).unwrap();
@@ -169,32 +180,33 @@ fn a_move_the_module_fails_is_refused_and_undone() {
         let module = if label == "f-ek" { &e.refs[1].module } else { &real };
         open_session(module, "kmtest", "1234").labelled(label).len()
     };
-    // Both tokens, the source's too: a key-encryption key or a loaded transport key the error
-    // path left as a token object would show there (review fault.rs F1: only the target's label
-    // was looked for); and the lock.
+    // Take a snapshot of both tokens, including the source, and of the lock. A key-encryption key
+    // or a loaded transport key that the error path left as a token object would show there
+    // (review fault.rs F1 found that only the target's label was checked).
     let before = now(&e, &real);
     for (name, args, plan, exit, why) in &cases {
         let (code, said, fired) = faulted(&e, name, plan, args);
         assert_eq!(code, *exit, "{name}: {said}");
         assert!(said.contains(why), "{name}: expected {why:?} in {said}");
         assert_eq!(fired, 1, "{name}: the rule fired {fired} times");
-        // The shimmed token, source or target, is opened once per run (review lib.rs F5: a
-        // target was opened read-only for the plan, then again read-write for the move).
+        // The shimmed token, as the source or the target, is opened once in each run (review
+        // lib.rs F5 found that a target was opened read-only for the plan, and then again
+        // read-write for the move).
         assert_eq!(sessions(&e, name).len(), 1, "{name}: sessions opened {:?}", sessions(&e, name));
         assert_eq!(on_target(&format!("f-{}", args[1])), 0, "{name}: left objects on the target");
         state::assert_unchanged(&before, &now(&e, &real), name);
     }
-    // The undoing itself refused: what was imported is still there, and said to be. (`call = 6`:
-    // `kk`'s proof, as in "proof".)
+    // When the removal itself is refused, the imported object stays on the token, and the run
+    // says so. (`call = 6` is `kk`'s proof, as in the "proof" case.)
     let kept = fails("C_Sign", "call = 6\nwhen = \"after\"\n") + &fails("C_DestroyObject", "");
     let (code, said, _) = faulted(&e, "kept", &kept, into);
     assert_eq!(code, 16, "{said}");
     assert!(said.contains("is still on the token"), "{said}");
     assert!(on_target("f-kk") > 0);
     assert_eq!(std::fs::read(e.dir.join("keys.lock")).unwrap(), lock, "kept: changed the lock");
-    // Nothing was the moves' own fault: with no plan, the three not left half-done go through,
-    // and each lands where it was sent, recorded and verified (review fault.rs F2: exit 0
-    // alone passed a move that recorded nothing).
+    // The failures came only from the fault plans. Without a plan, the three moves that were not
+    // left half-done go through, and each lands where it was sent, recorded and verified (review
+    // fault.rs F2 found that a check of exit 0 alone passed a move that recorded nothing).
     for args in [out, host, cert] {
         let o = e.km_alone(&e.refs[0], args);
         assert_eq!(common::code(&o), 22, "{args:?}: {}", stderr(&o));
@@ -204,23 +216,24 @@ fn a_move_the_module_fails_is_refused_and_undone() {
     }
 }
 
-/// A source that hands over another key than the one asked for (p11-fault's `wrap_label`:
-/// `C_WrapKey` wraps `f-kk` where it was asked for `f-ek`) is caught on the host before anything
-/// is written (review 2026-11-24 D-5, and C-13 for the host move): no key file is written, no
-/// key is made on the target, each run is 10, and the lock and both tokens are as they were.
-/// Without the substitution, each goes through.
+/// Checks that a source that hands over another key than the one that was asked for is caught on
+/// the host before anything is written (review 2026-11-24 D-5, and C-13 for the host move). The
+/// fault is p11-fault's `wrap_label`: `C_WrapKey` wraps `f-kk` when it was asked for `f-ek`. No
+/// key file is written, no key is made on the target, each run exits 10, and the lock and both
+/// tokens stay as they were. Without the substitution, each run goes through.
 #[test]
 fn a_source_that_hands_over_another_key_writes_nothing() {
     let Some((e, real)) = tokens("fault-other-key") else { return };
     let (soft, kry) = (&e.refs[0], &e.refs[1]);
-    // A second extractable P-256 key on the shimmed token, to hand over in `ek`'s place.
+    // Put a second extractable P-256 key on the shimmed token, to hand over in place of `ek`.
     let o = e.km_alone(soft, &["migrate", "kk", "--from", "kryoptic", "--to", "softhsm"]);
     assert_eq!(code(&o), 22, "{}", stderr(&o));
     let (out, pass, lock) = (e.dir.join("ek.p8"), e.dir.join("pass"), e.dir.join("keys.lock"));
     std::fs::write(&pass, "correct horse\n").unwrap();
     let (out_s, pass_s) = (out.to_str().unwrap(), pass.to_str().unwrap());
     let other = "[[rule]]\nfn = \"C_WrapKey\"\nof_label = \"f-ek\"\nwrap_label = \"f-kk\"\n";
-    // The host path out of softhsm: its sealed ways hidden, RFC 5649 to the host is what is left.
+    // Force the host path out of softhsm: its sealed methods are hidden, so RFC 5649 to the host
+    // is the only method left.
     let host_only = "[[rule]]\nfn = \"C_GetMechanismList\"\n\
                      hide_mechanisms = [\"CKM_RSA_PKCS_OAEP\", \"CKM_RSA_AES_KEY_WRAP\", \"CKM_ECDH1_DERIVE\"]\n\n";
     let file: &[&str] = &[
@@ -237,7 +250,7 @@ fn a_source_that_hands_over_another_key_writes_nothing() {
         "--allow-host-plaintext",
     ];
     let host: &[&str] = &["migrate", "ek", "--from", "softhsm", "--to", "kryoptic", "--allow-host-plaintext"];
-    // SoftHSM itself, past the shim, as the other tests look at it.
+    // Read SoftHSM itself without the shim, as the other tests do.
     let softhsm = state::TokenView { module: &real, ..soft.view() };
     let views = [softhsm, kry.view()];
     let now = || state::snapshot(&[&lock, &out], &views);
@@ -254,14 +267,15 @@ fn a_source_that_hands_over_another_key_writes_nothing() {
     assert!(out.exists(), "no key file without the substitution");
 }
 
-/// An SO step that succeeded is said to have succeeded (token/mod.rs F2): the SO's
-/// `C_Logout` after `transport --trust-on` made the trusted copy fails, and the run says the copy
-/// was made, never only the logout's error; the next run finds the copy and has nothing to do.
+/// Checks that an SO step that succeeded is reported as succeeded (token/mod.rs F2). The SO's
+/// `C_Logout` fails after `transport --trust-on` made the trusted copy, and the run says that the
+/// copy was made, not only the logout's error. The next run finds the copy and has nothing to do.
 #[test]
 fn an_so_step_that_was_done_is_said_to_be_done() {
     let Some((e, _real)) = tokens("fault-so-logout") else { return };
     let trust: &[&str] = &["transport", "--spec", "tk-kryoptic", "--token", "kryoptic", "--trust-on", "softhsm"];
-    // The user's logout before the SO's login is the first; the SO's own, after the step, the second.
+    // The user's logout before the SO's login is the first `C_Logout` call, and the SO's own
+    // logout after the step is the second.
     let (code, said, fired) =
         faulted(&e, "so-logout", "[[rule]]\nfn = \"C_Logout\"\ncall = 2\nrv = \"CKR_DEVICE_ERROR\"\n", trust);
     assert_ne!(code, 0, "{said}");
@@ -272,10 +286,11 @@ fn an_so_step_that_was_done_is_said_to_be_done() {
     assert!(stderr(&o).contains("already trusts"), "{}", stderr(&o));
 }
 
-/// A run records each object as it lands (docs/REVIEW D2, camigrate lib.rs F4): an import of a
-/// bundle carrying `kk` and `crt` into `softhsm`, killed at `crt`'s `C_CreateObject` (the second:
-/// the first is `kk`'s public half), has recorded `kk`, so nothing it made sits on the target
-/// unrecorded; the next run finds `kk` there, verifies it, and imports `crt`.
+/// Checks that a run records each object as it lands (docs/REVIEW D2, camigrate lib.rs F4). An
+/// import of a bundle that carries `kk` and `crt` into `softhsm` is killed at `crt`'s
+/// `C_CreateObject` (the second call; the first call creates `kk`'s public half). By then, the run
+/// has recorded `kk`, so nothing that it made is on the target without a record. The next run
+/// finds `kk` there, verifies it, and imports `crt`.
 #[test]
 fn an_import_killed_part_way_has_recorded_what_it_made() {
     let Some((e, real)) = tokens("fault-killed") else { return };
@@ -301,9 +316,10 @@ fn an_import_killed_part_way_has_recorded_what_it_made() {
     assert_eq!(on_target("f-crt"), 1);
 }
 
-/// A token's transport key never leaves, as if `noExport` (docs/CONFIG.md): named, a move is
-/// refused (15) and says it is the transport key; without names, an export leaves it out without
-/// a warning and a migrate moves everything else, where it stopped at it (15) before.
+/// Checks that a token's transport key never leaves, as if its spec said `noExport`
+/// (docs/CONFIG.md). When the key is named, a move is refused (15) and says that it is the
+/// transport key. Without names, an export leaves the key out without a warning, and a migrate
+/// moves everything else; before this change, the migrate stopped at the key (15).
 #[test]
 fn a_transport_key_never_leaves() {
     let Some((e, real)) = tokens("transport-stays") else { return };
@@ -323,9 +339,10 @@ fn a_transport_key_never_leaves() {
     assert!(["f-kk", "f-ks", "f-crt"].iter().all(|l| on_target(l) > 0), "the others did not move");
 }
 
-/// An export to a bundle opens its target token once (review lib.rs F5): with no public key of
-/// the transport key in the lock, the plan's session reads it, where the export opened the token
-/// a second time and logged in again (`CKR_USER_ALREADY_LOGGED_IN` in the coverage trace).
+/// Checks that an export to a bundle opens its target token once (review lib.rs F5). When the lock
+/// has no public key for the transport key, the plan's session reads it. Before this change, the
+/// export opened the token a second time and logged in again (`CKR_USER_ALREADY_LOGGED_IN` in the
+/// coverage trace).
 #[test]
 fn an_export_opens_its_target_once() {
     let Some((e, _)) = tokens("export-opens-once") else { return };
@@ -342,12 +359,12 @@ fn an_export_opens_its_target_once() {
     assert_eq!(sessions(&e, "export-once").len(), 1, "the export opened its target more than once");
 }
 
-/// Each object of a `migrate` moves on its own, as a bundle's keys import (review D8): the one
-/// the module fails is undone and its row shows the failure's code, and the others still move
-/// and the lock records them. Because the lock was written, the run exits 22 (before review
-/// 2026-11-24 L5, it exited with the failure's code although the lock had changed). Two
-/// certificates on kryoptic move into `SoftHSM`; `SoftHSM` reports the first one as a type other
-/// than X.509 after it is created (13), and the second one moves.
+/// Checks that each object of a `migrate` moves on its own, in the same way as a bundle's keys
+/// import (review D8). The object that the module fails is undone, and its row shows the failure's
+/// code. The other objects still move, and the lock records them. Because the lock was written,
+/// the run exits 22 (before review 2026-11-24 L5, it exited with the failure's code although the
+/// lock had changed). Two certificates on kryoptic move into `SoftHSM`. `SoftHSM` reports the
+/// first one as a type other than X.509 after it is created (13), and the second one moves.
 #[test]
 fn a_failed_move_leaves_the_others_moving() {
     let name = "fault-migrate-rest";
@@ -393,16 +410,17 @@ fn a_failed_move_leaves_the_others_moving() {
     assert_eq!((realised("c1-dst"), realised("c2-dst")), (false, true), "{lock}");
 }
 
-/// A write-protected target (`CKF_WRITE_PROTECTED`) is refused (15) by every entry path that
-/// would write there, the dry run as the run (review 2026-11-24 L4a-3: the dry runs opened their
-/// target read-only and passed it): a `migrate`, whose plan takes the target from the lock when
-/// it does not open, an `import` of a bundle and one of a key file. Nothing changes, and the lie
-/// fires; without it, each dry run passes.
+/// Checks that every entry path that would write to a write-protected target
+/// (`CKF_WRITE_PROTECTED`) refuses it (15), in the dry run as in the run. Review 2026-11-24
+/// L4a-3 found that the dry runs opened their target read-only and passed it. The entry paths are
+/// a `migrate`, whose plan takes the target from the lock when the target does not open, an
+/// `import` of a bundle, and an `import` of a key file. Nothing changes, and the injected fault
+/// fires. Without the fault, each dry run passes.
 #[test]
 fn a_write_protected_target_is_refused_by_each_dry_run_as_by_its_run() {
     let Some((e, real)) = tokens("write-protected") else { return };
     let (soft, kry) = (&e.refs[0], &e.refs[1]);
-    // What the imports take, made before: a bundle of kk for softhsm, and kk as a key file.
+    // Make the inputs of the imports first: a bundle of kk for softhsm, and kk as a key file.
     let (bundle, file, pass) = (e.dir.join("kk.bundle.toml"), e.dir.join("kk.p8"), e.dir.join("pass"));
     std::fs::write(&pass, "correct horse\n").unwrap();
     let (bundle, file, pass) = (bundle.to_str().unwrap(), file.to_str().unwrap(), pass.to_str().unwrap());
