@@ -1,70 +1,78 @@
-# p11-fault: a PKCS#11 module that forwards, and misbehaves on request
+# p11-fault: a PKCS#11 module that forwards calls and injects faults on request
 
-Design for [PLAN.md](PLAN.md) A3 and tier 4 of [archive/COVERAGE_PLAN.md](archive/COVERAGE_PLAN.md), written
-2026-11-14. Steps 1 and 2 of the order below are built (`crates/p11-fault`,
-`packages.p11-fault`): the forwarders, every rule kind, the trace, the parity run, the
-`pkcs11-tool` check and the first table of lies.
+This is the design for [PLAN.md](PLAN.md) A3 and for tier 4 of
+[archive/COVERAGE_PLAN.md](archive/COVERAGE_PLAN.md), written on 2026-11-14. Steps 1 and 2 of
+the order below are built (`crates/p11-fault`, `packages.p11-fault`): the forwarders, every rule
+kind, the trace, the parity run, the `pkcs11-tool` check and the first table of lies.
 
-`libp11_fault.so` is a PKCS#11 module that loads a real one (SoftHSM, kryoptic, a vendor
-module) and forwards every call to it, changing exactly what a fault plan says: a return
-value on the n-th call of a function, an attribute dropped or taken from another object, a
-token flag set, a handle swapped between find and use. Everything else is the real module's
-own behaviour, so nothing in it implements cryptography, objects or sessions.
+`libp11_fault.so` is a PKCS#11 module that loads a real module (SoftHSM, kryoptic, a vendor
+module) and forwards every call to it. It changes exactly what a fault plan says, for example a
+return value on the n-th call of a function, an attribute that is dropped or taken from another
+object, a token flag that is set, or a handle that is swapped between the search and the use.
+Everything else is the real module's own behavior, so the shim implements no cryptography, no
+objects and no sessions.
 
-## Any client, for free
+## Any client can load it, unchanged
 
-A PKCS#11 module is already the one interface every client loads, so a forwarding module
-works under any of them unchanged: `cakeys`, `pkcs11-tool`, OpenSSL's `pkcs11-provider`, NSS
-`modutil`, `p11-kit` (as a module in its configuration, or in front of `p11-kit-client.so`).
-Being general costs three choices, none of which changes the implementation:
+Every PKCS#11 client already loads modules through the same interface, so a forwarding module
+works under any client without changes: `cakeys`, `pkcs11-tool`, OpenSSL's `pkcs11-provider`,
+NSS `modutil`, and `p11-kit` (as a module in its configuration, or in front of
+`p11-kit-client.so`). To stay general, the shim makes three choices, and none of them changes
+the implementation:
 
-- **Configured from the environment**, which every client passes to the modules it loads:
-  `P11_FAULT_MODULE` (the real module), `P11_FAULT_PLAN` (the plan file; unset, the shim is a
-  pure forwarder), `P11_FAULT_TRACE` (a call log). No `CAKEYS_` names, no keys.toml. A copy
-  of the library named `libp11_fault-<tag>.so` reads `P11_FAULT_MODULE_<TAG>`,
-  `P11_FAULT_PLAN_<TAG>` and `P11_FAULT_TRACE_<TAG>` (upper-cased, `-` as `_`) and never the
-  untagged names, so one process can hold several shims: one in front of each of several
+- **The environment configures it**, because every client passes its environment to the modules
+  that it loads. `P11_FAULT_MODULE` names the real module, `P11_FAULT_PLAN` names the plan file
+  (when it is unset, the shim only forwards), and `P11_FAULT_TRACE` names a call log. The shim
+  reads no `CAKEYS_` variables and no keys.toml. A copy of the library named
+  `libp11_fault-<tag>.so` reads `P11_FAULT_MODULE_<TAG>`, `P11_FAULT_PLAN_<TAG>` and
+  `P11_FAULT_TRACE_<TAG>` (the tag in upper case, with `-` written as `_`), and it never reads
+  the untagged names. So one process can load several shims: one in front of each of several
   modules (camigrate between two tokens), or one in front of another (a tracing shim around a
-  faulting one). A shim whose module is its own file fails with that reason instead of waiting
-  on its own initialisation.
-- **Plans name PKCS#11 things only**: function names, `CKR_*`, `CKA_*`, `CKF_*`, objects by
-  `CKA_LABEL`. Any other value as a number (`rv = 0x30`).
-- **Packaged on its own** (`packages.p11-fault`), outside the cakeys packages, so it is usable
-  without cakeys.
+  faulting one). If a shim's module is the shim's own file, the shim fails and names that
+  reason, instead of waiting for its own initialization.
+- **Plans name only PKCS#11 things**: function names, `CKR_*`, `CKA_*`, `CKF_*`, and objects by
+  their `CKA_LABEL`. Any other value is written as a number (`rv = 0x30`).
+- **It is packaged on its own** (`packages.p11-fault`), outside the cakeys packages, so it can
+  be used without cakeys.
 
-The one general concern that does touch the code is the 3.x interface (below): v1 exports
-only the 2.40 entry point, and a client that needs a 3.x-only function (`C_LoginUser`,
-message-based encryption, KEM) gets `CKR_FUNCTION_NOT_SUPPORTED` from it. cakeys calls none.
+The one general concern that does affect the code is the 3.x interface (described below). v1
+exports only the 2.40 entry point, so a client that needs a function that only 3.x has
+(`C_LoginUser`, message-based encryption, KEM) gets `CKR_FUNCTION_NOT_SUPPORTED` for it. cakeys
+calls none of these functions.
 
-## Shape
+## Files
 
 ```text
 crates/p11-fault/
   Cargo.toml       cdylib + rlib (the rlib for unit tests), publish = false
   src/lib.rs       C_GetFunctionList, loading, the guard around every entry
-  src/forward.rs   the 68 forwarders, generated from one signature list
+  src/forward.rs   the 67 forwarders (every 2.40 function but C_GetFunctionList), generated from one signature list
   src/plan.rs      the plan: parsing, matching, call counting
   src/hooks.rs     what rules do to the outputs of the few functions that need it
   src/trace.rs     one JSON line per call
+  src/record.rs    the public values a trace line records (P11_FAULT_RECORD_VALUES=public)
 crates/p11-names/
   src/lib.rs       CKR_/CKA_/CKF_/CKM_ names <-> values (the set the plans use; numbers
                    otherwise), re-exported as p11_fault::names; cakeys_pkcs11 names return
                    values with it too
 ```
 
-Dependencies: `cryptoki-sys` (the C types), `libloading`, `serde` and `toml`, all already in
-the tree, and `p11-names`, which depends on `cryptoki-sys` alone. About 2.2k lines, and 0.9k for
-`p11-names` (most of it the name tables).
+The dependencies are `cryptoki-sys` (the C types), `libloading`, `libc`, `serde`, `serde_json`
+and `toml`, which the tree already has, and `p11-names`, which depends on `cryptoki-sys` alone.
+On 2026-11-26, the shim's sources held about 3,200 lines (unit tests included), and `p11-names`
+held about 1,000, most of them in the name tables.
 
 ### Loading
 
-The first `C_GetFunctionList` loads the real module (`dlopen`, kept for the life of the
-process), asks it for its `CK_FUNCTION_LIST`, reads the plan, and builds the shim's own table:
-the real table's `version`, capped at 2.40 (the table is the 2.40 one: a 3.x version would tell
-a client that picks the layout by version to read past its end), and the shim's forwarder in
-every slot the real module fills (a slot the real module leaves `NULL` stays `NULL`). Both live in `OnceLock`s. A plan that does not
-parse fails that first call with `CKR_GENERAL_ERROR` and a message on stderr: a typo in a fault
-plan must never turn into a test of nothing.
+The first `C_GetFunctionList` call loads the real module (with `dlopen`, and the module stays
+loaded for the life of the process). It asks the module for its `CK_FUNCTION_LIST`, reads the
+plan, and builds the shim's own table. The table takes the real table's `version`, capped at
+2.40, because the table has the 2.40 layout: a 3.x version would tell a client that chooses the
+layout by the version to read past the table's end. The table holds the shim's forwarder in every
+slot that the real module fills, and a slot that the real module leaves `NULL` stays `NULL`. Both
+are kept in `OnceLock`s. If the plan does not parse, that first call fails with
+`CKR_GENERAL_ERROR` and a message on stderr, so that a typo in a fault plan never makes a test
+silently test nothing.
 
 ```rust
 #[unsafe(no_mangle)]
@@ -90,9 +98,10 @@ fn guard(f: impl FnOnce() -> Result<CK_RV, Fatal>) -> CK_RV {
 
 ### The forwarders
 
-One macro invocation lists the 68 2.40 functions with their parameters; each expands to an
-`extern "C"` function that counts the call, asks the plan, forwards, and lets the function's
-hook (if any) change the outputs:
+One macro invocation lists the 2.40 functions with their parameters. Each entry expands to an
+`extern "C"` function that counts the call, asks the plan, forwards the call, and lets the
+function's hook (if it has one) change the outputs. The sketch below shows the idea; the real
+macro is in `src/forward.rs`.
 
 ```rust
 forward! {
@@ -103,7 +112,7 @@ forward! {
     C_GetAttributeValue(s: CK_SESSION_HANDLE, h: CK_OBJECT_HANDLE, t: *mut CK_ATTRIBUTE, n: CK_ULONG)
         => hooks::attribute_value;
     C_SignInit(s: CK_SESSION_HANDLE, m: *mut CK_MECHANISM, key: CK_OBJECT_HANDLE) => substitute_key;
-    // ... the other 63, most with no hook
+    // ... the other 62, most with no hook
 }
 
 // What each line expands to (C_FindObjects shown):
@@ -123,40 +132,43 @@ unsafe extern "C" fn C_FindObjects(s: CK_SESSION_HANDLE, out: *mut CK_OBJECT_HAN
 }
 ```
 
-The `=> substitute_key` form marks the functions that take a key (`C_SignInit`, `C_DecryptInit`,
-`C_DeriveKey`, ...): a `use_label` rule substitutes the handle before forwarding.
-`C_WrapKey`'s `=> wrap_key` does that too, substitutes the key wrapped under a `wrap_label`
-rule, and changes the blob as `corrupt_output` does; `C_UnwrapKey`'s `=> unwrap_key` undoes a
-`transcode`. `=> corrupt_output` marks those whose output a rule may change (`corrupt`,
-`replay_output`). The plan's lists are generated from these marks.
+The `=> substitute_key` mark is on the functions that take a key (`C_SignInit`,
+`C_DecryptInit`, `C_DeriveKey`, ...). Before such a function forwards the call, a `use_label`
+rule replaces the key handle. `C_WrapKey`'s `=> wrap_key` mark does the same, and it also
+replaces the key to be wrapped under a `wrap_label` rule and changes the blob in the way that
+`corrupt_output` does. `C_UnwrapKey`'s `=> unwrap_key` mark undoes a `transcode`. The
+`=> corrupt_output` mark is on the functions whose output a rule may change (`corrupt`,
+`replay_output`). The plan's lists of which functions take which rules are generated from these
+marks.
 
 ### The plan
 
-TOML, read once per process. cakeys runs one process per verb, so one plan is one run's
-behaviour. Rules apply in file order. A rule matches a function (`fn = "*"`: every one), and
-optionally narrows it:
+The plan is a TOML file, and each process reads it once. cakeys runs one process per verb, so
+one plan describes the behavior of one run. The rules apply in the order of the file. A rule
+matches a function (`fn = "*"` matches every function), and it may narrow the match further:
 
-- `call`: only the function's n-th call in the process (from 1).
-- `of_label`: only calls on an object with this label: the key used under `use_label`, the
-  key wrapped under `wrap_label`, any object the call names otherwise (`C_WrapKey`: either
-  key). For the functions that name an object (`C_GetAttributeValue`, `C_DestroyObject`,
-  `C_SignInit`, ...).
+- `call`: only the function's n-th call in the process (counted from 1).
+- `of_label`: only calls on an object with this label. This is the key used for a `use_label`
+  rule, the key wrapped for a `wrap_label` rule, and otherwise any object that the call names
+  (for `C_WrapKey`, either key). It applies to the functions that name an object
+  (`C_GetAttributeValue`, `C_DestroyObject`, `C_SignInit`, ...).
 - `mechanism`: only calls with this mechanism (the `*Init` functions, `C_GenerateKey`,
   `C_WrapKey`, `C_GetMechanismInfo`, ...).
-- `class`, `key_type`: only calls whose input template says this class or key type
+- `class`, `key_type`: only calls whose input template states this class or key type
   (`C_FindObjectsInit`, `C_CreateObject`, `C_GenerateKey`, `C_UnwrapKey`, ...).
-- `nth`: only the n-th call that meets the rule's other matchers; `from`: that one and those
-  after. `call`, `nth` and `from` exclude each other.
-- `from_seq`: only the process's n-th call of any function (the trace's `seq`), and those
-  after; with `fn = "*"`, the module failing from one point of a run on.
+- `nth`: only the n-th call that meets the rule's other matchers. `from`: that call and every
+  call after it. A rule can give only one of `call`, `nth` and `from`.
+- `from_seq`: the process's n-th call of any function (the trace's `seq`) and every call after
+  it. With `fn = "*"`, this makes the module fail from one point of a run onward.
 
-A matcher is read from the call's arguments before it reaches the module (forward.rs's
-`[kind(args)]` lists), and refused where the function has none: it would never match. `fn =
-"*"` takes no `call` and no matcher on the arguments, and gives `rv` or `abort` only. The rule
-then does one thing:
+The shim reads a matcher from the call's arguments before the call reaches the module (the
+`[kind(args)]` lists in forward.rs). The parser refuses a matcher on a function that has no such
+argument, because the matcher would never match. A rule with `fn = "*"` takes no `call` and no
+matcher on the arguments, and it can give only `rv` or `abort`. Each rule then does one thing:
 
 ```toml
-# A return value, without forwarding (default), or after forwarding (the real effect happened).
+# A return value, without forwarding the call (the default), or after forwarding it (the real
+# effect happened).
 [[rule]]
 fn = "C_FindObjects"
 call = 2
@@ -167,8 +179,9 @@ fn = "C_Login"
 when = "after"
 rv = "CKR_PIN_INCORRECT"
 
-# Token and slot flags: the PIN counters, write protection, a removed token. Each function takes
-# its own structure's names (`C_GetSlotInfo` the three slot flags): the two words share bit values.
+# Token and slot flags (set_flags, or clear_flags): the PIN counters, write protection, a
+# removed token. Each function takes the flag names of its own structure (C_GetSlotInfo takes
+# the three slot flags), because the two flag words share bit values.
 [[rule]]
 fn = "C_GetTokenInfo"
 set_flags = ["CKF_USER_PIN_FINAL_TRY"]
@@ -181,9 +194,10 @@ of_label = "victim"
 attribute = "CKA_EC_POINT"
 from_label = "other" # or: drop = true | value = "0441…" | length = "unavailable" | truncate = 3
 
-# Handles: a second object under the locator (added where the real search finds something:
-# a client reads until a call returns nothing), or another key used than the one shown (of
-# the same class; none under the label fails the call, as `from_label` does).
+# Handles: a second object under the locator, or a key used other than the one shown. The
+# second object is added only where the real search finds something, because a client reads
+# until a call returns nothing. The key used has the same class as the one shown; when no
+# object has the label, the call fails, as it does for `from_label`.
 [[rule]]
 fn = "C_FindObjects"
 call = 2
@@ -194,17 +208,19 @@ fn = "C_DecryptInit"
 of_label = "shown"
 use_label = "used"
 
-# Another key wrapped than the one named (of its class; none under the label fails the call):
-# the blob holds another key's material. `of_label` names the key wrapped.
+# A key wrapped other than the one named, of the same class (when no object has the label, the
+# call fails): the blob holds the other key's material. `of_label` names the key that the
+# caller asked to wrap.
 [[rule]]
 fn = "C_WrapKey"
 of_label = "shown"
 wrap_label = "other"
 
-# Found objects hidden, or others found in their place (the one labelled `by` of each one's
-# class; none under it fails the call); a byte of what a call returns changed (C_Sign,
-# C_SignFinal, C_Encrypt, C_Decrypt, C_WrapKey), or what it returned n calls before returned
-# again (where there was one and it fits the caller's buffer); mechanisms no longer listed.
+# Found objects hidden, or other objects found in their place: each object labelled
+# `of_label` is replaced by the object of its class labelled `replace_label` (when there is
+# none, the call fails). The last byte of a call's output changed (C_Sign, C_SignFinal,
+# C_Encrypt, C_Decrypt, C_WrapKey), or the output of the call n calls earlier returned again
+# (when there was one and it fits the caller's buffer). Mechanisms no longer listed.
 [[rule]]
 fn = "C_FindObjects"
 hide_label = "gone"
@@ -223,9 +239,10 @@ corrupt = true
 fn = "C_Sign"
 replay_output = 1
 
-# A wrapped blob that round-trips through the module and is not what it made: every byte
-# C_WrapKey returns padded, and every C_UnwrapKey's blob unpadded (on a copy) before it reaches
-# the module. No matcher: the unwrap that undoes it cannot tell which wraps were padded.
+# A wrapped blob that passes through the module and back but is not what the module made: the
+# shim pads every byte that C_WrapKey returns, and it removes the padding from a copy of every
+# blob given to C_UnwrapKey before the blob reaches the module. The rule takes no matcher,
+# because the unwrap that undoes the padding cannot tell which wraps were padded.
 [[rule]]
 fn = "C_WrapKey"
 transcode = true
@@ -235,7 +252,7 @@ fn = "C_GetMechanismList"
 hide_mechanisms = ["CKM_ECDH1_DERIVE"]
 
 # Matchers: the second ECDSA signing fails; a delete of `k` succeeds and does nothing; every
-# function's call fails from the process's 40th on (its trace `seq`).
+# call of every function fails from the process's 40th call on (the trace's `seq`).
 [[rule]]
 fn = "C_SignInit"
 mechanism = "CKM_ECDSA"
@@ -252,87 +269,96 @@ fn = "*"
 from_seq = 40
 rv = "CKR_DEVICE_REMOVED"
 
-# The process dies at the call, before it reaches the module (std::process::abort): a crash,
-# a kill or an OOM between two of a run's writes.
+# The process ends at the call, before the call reaches the module (std::process::abort). This
+# models a crash, a kill or an out-of-memory error between two of a run's writes.
 [[rule]]
 fn = "C_UnwrapKey"
 call = 4
 abort = true
 ```
 
-**Failing half of an operation.** `C_Sign` and its like end the operation `C_SignInit` began,
-also when they fail. A rule that answers instead of the module (`when = "before"`), or on the
-call that only asks the output length, leaves the real operation open, and the module then
-refuses what the client does next. To model a module that fails the operation, fail the call
-that does the work, after it: `call = 2`, `when = "after"` for a client that asks the length
-first.
+**Failing one half of an operation.** `C_Sign` and the functions like it end the operation that
+`C_SignInit` began, also when they fail. A rule that answers in place of the module
+(`when = "before"`), or a rule on the call that only asks for the output length, leaves the
+real operation open, and the module then refuses what the client does next. To model a module
+that fails the operation, fail the call that does the work, after it runs: `call = 2` and
+`when = "after"` for a client that asks for the length first.
 
-**Labels to handles.** `of_label`, `from_label`, `add_label`, `use_label`, `wrap_label` and `replace_label` are resolved
-through a session of the shim's own (`C_OpenSession` on the caller's slot, read from
-`C_GetSessionInfo`), so resolving never interrupts a find the caller has open. The session is
-read-only, or read-write where the module refuses a read-only one because the caller holds an
-SO session (`CKR_SESSION_READ_WRITE_SO_EXISTS`). Object handles are valid across an
-application's sessions, which is what makes this work.
+**Labels to handles.** The shim resolves `of_label`, `from_label`, `add_label`, `use_label`,
+`wrap_label` and `replace_label` through a session of its own (`C_OpenSession` on the caller's
+slot, which it reads from `C_GetSessionInfo`), so that a resolution never interrupts a search
+that the caller has open. The session is read-only. It is read-write only where the module
+refuses a read-only session because the caller holds an SO session
+(`CKR_SESSION_READ_WRITE_SO_EXISTS`). This works because object handles are valid across all of
+an application's sessions.
 
 ### The trace
 
-With `P11_FAULT_TRACE`, one JSON line per call, appended (`O_APPEND`, so the per-process
-writers of a test run interleave whole lines):
+With `P11_FAULT_TRACE`, the shim appends one JSON line per call to the file. It opens the file
+with `O_APPEND`, so that the lines of the separate processes of a test run interleave as whole
+lines:
 
 ```json
 {"exe":"cakeys","fn":"C_SignInit","mechanism":4164,"n":2,"pid":4711,"rule":null,"rv":"CKR_OK","seq":17}
 ```
 
-`n` is the call's number among its function's in the process, and `seq` among every
-function's (both from 1): what `call`, `nth`/`from` and `from_seq` count.
+`n` is the call's number among the calls of its function in the process, and `seq` is its
+number among the calls of every function (both are counted from 1). These are the numbers that
+`call`, `nth` and `from`, and `from_seq` count.
 
 **Public values.** With `P11_FAULT_RECORD_VALUES=public` (beside `P11_FAULT_TRACE`, which it
-requires), a line also records the values a test compares with what the token holds, and only
-public ones (`record.rs`): `"values": [[type, "hex"], ...]` for what `C_GetAttributeValue`
-returned of `CKA_EC_POINT`, `CKA_EC_PARAMS`, `CKA_PUBLIC_KEY_INFO`, `CKA_MODULUS`,
-`CKA_PUBLIC_EXPONENT` and tpm2-pkcs11's `CKA_TPM2_PUB_BLOB`, and `CKA_VALUE` of a certificate
-only; `"signed": {"data": "hex", "signature": "hex"}` for a `C_Sign` that ends a TPM2
-certification (`CKM_TPM2_CERTIFY`, `CKM_TPM2_CERTIFY_OBJECT`: the nonce and the attestation's
-signature). No template a caller sends is recorded (it may carry key material), nor any other
-signature. Any other value of the variable, or `public` with no trace, is refused, never
-ignored: a test that asks for values never reads a trace without them.
+requires), a line also records the values that a test compares with what the token holds, and
+only public ones (`record.rs`). `"values": [[type, "hex"], ...]` holds what
+`C_GetAttributeValue` returned of `CKA_EC_POINT`, `CKA_EC_PARAMS`, `CKA_PUBLIC_KEY_INFO`,
+`CKA_MODULUS`, `CKA_PUBLIC_EXPONENT` and tpm2-pkcs11's `CKA_TPM2_PUB_BLOB`, and `CKA_VALUE` only
+of a certificate. `"signed": {"data": "hex", "signature": "hex"}` holds the nonce and the
+attestation's signature of a `C_Sign` that ends a TPM2 certification (`CKM_TPM2_CERTIFY`,
+`CKM_TPM2_CERTIFY_OBJECT`). The shim records no template that a caller sends (it may carry key
+material) and no other signature. Any other value of the variable, or `public` without a trace,
+is refused and never ignored, so a test that asks for values never reads a trace without them.
 
-The function and return value are names; what the call was about (`mechanism`, here
-`CKM_ECDSA_SHA256`, attribute types, classes, ...) is numbers, which the reader maps to names
-(`trace.rs`). This is PLAN.md A1's trace if `pkcs11-spy` proves too lossy: which functions, mechanisms,
-attribute types and return values cakeys really meets, per reference token.
+The function and the return value are written as names. What the call was about (the
+`mechanism`, here `CKM_ECDSA_SHA256`, the attribute types, the classes, ...) is written as
+numbers, which the reader maps to names (`trace.rs`). This is the trace of PLAN.md A1: with
+`CAKEYS_TRACE_DIR`, `nix/test-tokens.sh` puts every module of a test behind a tagged copy of the
+shim, and the trace shows which functions, mechanisms, attribute types and return values cakeys
+really meets on each reference token.
 
-What a call returns through its arguments (the flags of an info structure, the classes and key
-types of a `C_GetAttributeValue` template) is read only when the real call ran and returned
-`CKR_OK`: a rule that answered in its place filled nothing. A call the shim fails itself (a
-label a rule names resolves to nothing) has its line too, with the `CKR_GENERAL_ERROR` the
-caller saw and the reason under `"fatal"`.
+The shim reads what a call returns through its arguments (the flags of an info structure, the
+classes and key types of a `C_GetAttributeValue` template) only when the real call ran and
+returned `CKR_OK`, because a rule that answered in place of the module filled nothing. A call
+that the shim fails itself (for example, when a label that a rule names resolves to no object)
+also has its line, with the `CKR_GENERAL_ERROR` that the caller received and the reason under
+`"fatal"`.
 
 ## Testing the shim itself
 
-1. **Unit tests** (the rlib): plans parse, refuse unknown names and fields, and match the n-th
-   call; an attribute served into a caller's entry; and, against a fake module of the test's
-   own functions, the hooks (`add_label` once per search, `corrupt` inside the caller's
-   buffer), the trace of a failed call, and the table's version.
+1. **Unit tests** (the rlib) check that plans parse, refuse unknown names and fields, and match
+   the n-th call, and that an attribute is written into the caller's entry. Against a fake
+   module made of the test's own functions, they check the hooks (`add_label` adds once per
+   search, and `corrupt` stays inside the caller's buffer), the trace of a failed call, and the
+   table's version.
 2. **Parity**: the reference suite runs a third time, through the shim with no plan, in front of
-   SoftHSM (a `tests/fault.rs` like `tests/softhsm.rs`, its `Reference` naming
-   `libp11_fault.so`). It must pass exactly as directly. That proves the forwarder transparent
-   before any test trusts it to lie.
-3. **Another client**: in the Nix check, `pkcs11-tool --module libp11_fault.so` lists the
-   slots, then, under a plan failing `C_GetSlotList`, fails with that return value. This is
-   the "any client" claim tested.
+   SoftHSM (`tests/fault.rs`, like `tests/softhsm.rs`, with a `Reference` that names
+   `libp11_fault.so`). It must pass exactly as it passes without the shim. This proves that the
+   forwarder changes nothing before any test relies on it to inject faults.
+3. **Another client**: in the Nix check, `pkcs11-tool --module libp11_fault.so` lists the slots,
+   and then, under a plan that fails `C_GetSlotList`, fails with that return value. This tests
+   the claim that any client can load the shim.
 
 ## What cakeys tests with it
 
-The liar matrix (`tests/liars.rs`, its table `tests/liars/cakeys.toml`, its runner
-`tests/common/liars.rs`): each lie a plan, told to each verb of cakeys about each kind of object
-(five private-key bindings, four secret-key commitments, a certificate, two data objects and a
-public key, each beside another of its kind), one test per class of lie. Every cell asserts its
-exit, the rule and device bit of its row, that the lock and the token are as it found them (or
-how they changed, with why), and that its rule fired in the trace; `liar_lint.rs` holds every
-rule of the plan to a cell, a unit test or an exemption, and every (lie class, verb, object
-class) to a cell or an `na` row with its why. It took in `tests/fault.rs`'s table of lies, whose
-rows read, on SoftHSM [run]:
+The liar matrix (`tests/liars.rs`, with its table `tests/liars/cakeys.toml` and its runner
+`tests/common/liars.rs`) tells each lie, as a plan, to each verb of cakeys about each kind of
+object. The objects are five private keys, one for each proof of possession (`pop-sign`,
+`pop-sign-pin`, `pop-ecdh`, `pop-decrypt`, `pop-unwrap`), four secret keys with different
+commitments (`cmac` and `kcv-ecb`, an HMAC, `kw`, and wrap-rebind), a certificate, two data
+objects and a public key. Each object sits beside another object of its kind. There is one test per class of lie. Every cell asserts its exit
+code, the rule and the device bit of its output row, that the lock and the token are as the run
+found them (or how they changed, and why), and that its rule fired in the trace. `liar_lint.rs`
+checks that every rule of the plan is covered by a cell, a unit test or an exemption, and that
+every (lie class, verb, object class) has a cell or an `na` row that gives the reason. The
+matrix took over the table of lies in `tests/fault.rs`, whose rows were, on SoftHSM [run]:
 
 | The lie | `check` gives |
 |---|---|
@@ -351,90 +377,98 @@ rows read, on SoftHSM [run]:
 | the per-use login of a `CKA_ALWAYS_AUTHENTICATE` key refused | 16, not retried |
 | the MAC with the derived or unwrapped secret failing | 16, the call named |
 
-**Found with it.** A swapped RSA key under `pop-decrypt` was reported as unavailable (16): the
-token answers `CKR_ENCRYPTED_DATA_INVALID`, since OAEP under the wrong key fails outright and
-never yields a wrong plaintext to compare. The challenge was encrypted to the public key the
-identity names, so that answer means another key: `CKR_ENCRYPTED_DATA_INVALID`/`_LEN_RANGE`
-and `CKR_WRAPPED_KEY_INVALID`/`_LEN_RANGE` are now a conflict (13). A module that answers a
-general error instead (SoftHSM's `C_UnwrapKey`) stays unavailable: nothing in it says which.
+**Found with it.** A swapped RSA key under `pop-decrypt` was reported as unavailable (16). The
+token answers `CKR_ENCRYPTED_DATA_INVALID`, because OAEP decryption under the wrong key fails
+outright and never yields a wrong plaintext to compare. The challenge was encrypted to the
+public key that the identity names, so that answer means that the token used another key.
+`CKR_ENCRYPTED_DATA_INVALID`/`_LEN_RANGE` and `CKR_WRAPPED_KEY_INVALID`/`_LEN_RANGE` are
+therefore now a conflict (13). A module that answers with a general error instead (SoftHSM's
+`C_UnwrapKey`) stays unavailable, because nothing in that answer says which case it is.
 
-`each_lie_kind_fires` takes each rule kind added since, one row each on a token of its own
-(`told`): the rule, the run, the exit and the message, and the functions the trace shows it
-fired on. Another key wrapped (`wrap_label`) under a secret key's wrap-rebind gives 10: the
-session copy committed on is another key's. Each matcher has a row where it fires and, where
-the point is what it leaves alone, one where it must not: `of_label` fails k's attribute reads
-(16) and not k2's; `nth` and `from` fire on the call they count to (the trace's `n`);
-`fn = "*"` with `from_seq` fails every call from a run's first signing on (16) and none before;
-`mechanism`, `class` and `key_type` each fail the one call (15, 16, 16) and not another.
-Another key pair found (`replace_label`), a wrap commitment corrupted, and a transcoded wrap
-commitment each give 10; a transcoded wrap-rebind still verifies (the unwrap undoes it), and a
-replayed signature fails the second key's proof (13). Under `P11_FAULT_RECORD_VALUES=public`
-a `check` records k's EC point as the token holds it and nothing outside the public
-attributes, and `=all` is refused.
+`each_lie_kind_fires` covers each rule kind added since then, with one row each on a token of
+its own (`told`). Each row gives the rule, the run, the exit code and the message, and the
+functions on which the trace shows the rule fired. Another key wrapped (`wrap_label`) under a
+secret key's wrap-rebind gives 10, because the session copy that the commitment is computed on is
+another key's. Each matcher has a row where it fires and, where the point is what the matcher
+leaves alone, a row where it must not fire. `of_label` fails the attribute reads of `k` (16) and
+not those of `k2`. `nth` and `from` fire on the call that they count to (the trace's `n`).
+`fn = "*"` with `from_seq` fails every call from a run's first signing on (16) and none before
+it. `mechanism`, `class` and `key_type` each fail one call (15, 16, 16) and not another. Another
+key pair found (`replace_label`), a corrupted wrap commitment, and a transcoded wrap commitment
+each give 10. A transcoded wrap-rebind still verifies (the unwrap undoes the padding), and a
+replayed signature fails the second key's proof (13). Under `P11_FAULT_RECORD_VALUES=public`, a
+`check` records `k`'s EC point as the token holds it and nothing outside the public attributes,
+and `=all` is refused.
 
-A second test, `a_creation_that_cannot_be_identified_is_undone_or_reported`, takes §8.1's
-"refused operations leave nothing behind": a key created whose proof then fails is removed
-again, and where `C_DestroyObject` fails too, cakeys says the key is still on the token.
+A second test, `a_creation_that_cannot_be_identified_is_undone_or_reported`, covers §8.1's
+"refused operations leave nothing behind". A created key whose proof then fails is removed
+again, and where `C_DestroyObject` fails too, cakeys says that the key is still on the token.
 
-Later rows use three more rule kinds: a signature or a plaintext with one byte changed (13;
-for `pop-decrypt` this is the wrong plaintext OAEP never yields by itself), the proof's
-mechanism no longer listed (15), and the key hidden from every search once created (11,
+Later rows use three more rule kinds: a signature or a plaintext with one byte changed (13; for
+`pop-decrypt`, this is the wrong plaintext that OAEP never yields by itself), the proof's
+mechanism no longer listed (15), and the key hidden from every search after its creation (11,
 "vanished after creation").
 
-**camigrate** (`crates/camigrate/tests/fault.rs`): SoftHSM behind the shim as the source or
-the target of a move, kryoptic the other side. The source's key-encryption key, its copy of the
-transport key and each wrap failing (15); the target's unwrap of the KEK or the key (13), the
-proof after the import (16), the host path's creation and commitment (15), a certificate the
-target then reports as another type (13). Each leaves the target without the object and the
-lock as it was; where the target will not delete either, what was imported is said to be still
-there.
+**camigrate** (`crates/camigrate/tests/fault.rs`) puts SoftHSM behind the shim as the source or
+the target of a move, with kryoptic on the other side. The rows are: the source's
+key-encryption key, its copy of the transport key, and each wrap failing (15); the target's
+unwrap of the KEK or of the key (13); the proof after the import (16); the creation and the
+commitment on the host path (15); and a certificate that the target then reports as another type
+(13). Each row leaves the target without the object and the lock as it was. Where the target
+also refuses to delete, camigrate says that what it imported is still there.
 
-**caprobe** (`crates/caprobe/tests/fault.rs`): the write probes against the shim. Usage
-attributes refused at generation, or a public key without its point, are said undetermined;
-another key signing or deriving, a sealed derived secret refused, no derivation at all, a key
-deriving while reporting `CKA_DERIVE` false and a wrap that does not unwrap become the row
-and the note of what was seen, and drift from the committed profile (15).
+**caprobe** (`crates/caprobe/tests/fault.rs`) runs the write probes against the shim. Usage
+attributes refused at generation, or a public key without its point, are reported as
+undetermined. Another key signing or deriving, a sealed derived secret refused, no derivation at
+all, a key that derives while it reports `CKA_DERIVE` false, and a wrap that does not unwrap
+each become the row and the note of what the probe saw, and a drift from the committed profile
+(15).
 
-Still to add: a derived secret with no value, and a certificate with no readable value. Two
-rule kinds that native-pkcs11 shows real modules need (PLAN.md A0b): an attribute answered
-with `CKR_ATTRIBUTE_TYPE_INVALID` but its entry left untouched (`untouched = true`, beside
-`drop`, which sets the length unavailable as the spec asks; OPEN.md, "rust-cryptoki"), and a
-search that returns only its first match (`first_only = true` on `C_FindObjects`), against
-which the locator's 12 cannot fire. Its other search fault, one key under two handles, the shim
-cannot make (`add_label` skips a handle the search already returned), but a decoy under
-`add_label` gives cakeys the same two handles to refuse.
+Still to add: a derived secret with no value, and a certificate with no readable value. Two rule
+kinds that native-pkcs11 shows real modules need (PLAN.md A0b) are also still to add. The first
+is an attribute answered with `CKR_ATTRIBUTE_TYPE_INVALID` whose entry is left untouched
+(`untouched = true`, beside `drop`, which sets the length to unavailable as the spec requires;
+OPEN.md, "rust-cryptoki"). The second is a search that returns only its first match
+(`first_only = true` on `C_FindObjects`), against which the locator's exit 12 cannot fire. The
+shim cannot make the other search fault, one key under two handles, because `add_label` skips a
+handle that the search already returned. A decoy under `add_label` gives cakeys the same two
+handles to refuse, though.
 
 ## Nix
 
-- A default member of the workspace, so the build makes `libp11_fault.so` beside the binaries
-  and the tests find it there (`common::fault_shim`). `cargo test` alone does not build a
-  `cdylib`: `scripts/local-tests.sh` builds it first.
-- One more output of the same build, `p11fault` (as `caprobe` and `camigrate` are), holding
-  `lib/libp11_fault.so`: `packages.p11-fault`. The `cakeys` output's closure does not carry it.
+- p11-fault is a default member of the workspace, so the build makes `libp11_fault.so` beside the
+  binaries. The tests of cakeys, caprobe, camigrate and cakeys-cli-common have a dev-dependency
+  on p11-fault, so every build of those tests also makes the library. The tests find it beside
+  the binaries or among the tests' dependencies in `deps/` (`common::fault_shim`).
+- `p11fault` is one more output of the same build (as `caprobe` and `camigrate` are), and it
+  holds `lib/libp11_fault.so`: `packages.p11-fault`. The closure of the `cakeys` output does not
+  contain it.
 - The per-test runner (`nix/test-tokens.sh`) points `P11_FAULT_MODULE` at the test's own SoftHSM
-  token for `tests/fault.rs` and `tests/liars.rs`.
+  token for the `fault` and `liars` test binaries, and for cli-common's
+  `tests/provider_contract.rs` together with a plan file in the test's directory.
 
 ## The 3.x interface, later
 
-A client that finds `C_GetInterface` uses it; one that does not falls back to
+A client that finds `C_GetInterface` uses it, and a client that does not find it falls back to
 `C_GetFunctionList` (cryptoki, OpenSC and p11-kit all do). v1 therefore exports only the 2.40
-entry point. When a 3.x function is needed, the same macro lists the 24 functions of
-`CK_FUNCTION_LIST_3_0`, and the shim exports `C_GetInterfaceList` and `C_GetInterface`
-returning its 3.0 table. `pkcs11-abi` (PLAN.md A0b) has the table layouts, should 3.2's be
-needed too.
+entry point. When a 3.x function is needed, the same macro will list the 24 functions of
+`CK_FUNCTION_LIST_3_0`, and the shim will export `C_GetInterfaceList` and `C_GetInterface`,
+which return its 3.0 table. `pkcs11-abi` (PLAN.md A0b) has the table layouts, in case 3.2's
+table is needed too.
 
 ## Order
 
-1. Done: the forwarder, `rv` rules, the trace, the parity test and the `pkcs11-tool` check.
+1. Done: the forwarder, the `rv` rules, the trace, the parity test and the `pkcs11-tool` check.
 2. Done: the hooks (attributes, flags, handles, malformed lengths) and the first cakeys table.
-   The rows listed above remain.
+   The rows listed above under "Still to add" remain.
 3. The 3.x interface, when a client needs it.
 
 ## Risks
 
-- **ABI.** Linux LP64 only, as cryptoki-sys's bindings are; Windows packing is out of scope.
+- **ABI.** The shim supports only Linux LP64, as cryptoki-sys's bindings do. Windows packing is
+  out of scope.
 - **Modules that keep per-process state** (tpm2-pkcs11 reads its store at `C_Initialize`) see
-  the same calls through the shim as without it; the parity test runs on SoftHSM, and a
-  kryoptic and a tpm2-pkcs11 leg can follow if a row needs them.
-- **A plan that matches nothing** makes a test pass for the wrong reason. Each test asserts in
-  the trace that its rule fired (`"rule"` is set on the line it changed).
+  the same calls through the shim as without it. The parity test runs on SoftHSM, and a kryoptic
+  leg and a tpm2-pkcs11 leg can follow if a row needs them.
+- **A plan that matches nothing** makes a test pass for the wrong reason. Each test therefore
+  asserts in the trace that its rule fired (`"rule"` is set on the line that the rule changed).
