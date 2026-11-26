@@ -136,6 +136,20 @@ class Scopes(Case):
         self.scopes(SCOPES.replace('re = "check_slot|Draft::|finish"', 're = "check_slot|only_in_tests"'))
         self.assertFails("re part 'only_in_tests' matches no function")
 
+    def test_a_function_after_a_nested_test_module_matches(self):
+        # A `#[cfg(test)]` module inside another module removes only that module. The functions
+        # after it are still code that cargo-mutants mutates (camigrate's lib.rs has this shape).
+        nested = "mod inner {\n    #[cfg(test)]\n    mod t {\n        fn nested_test() {}\n    }\n}\n"
+        self.write("crates/b/src/lib.rs", nested + SOURCES["crates/b/src/lib.rs"])
+        got = self.check()
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+
+    def test_a_function_only_a_nested_test_module_defines_matches_nothing(self):
+        nested = "mod inner {\n    #[cfg(test)]\n    mod t {\n        fn nested_test() {}\n    }\n}\n"
+        self.write("crates/b/src/lib.rs", nested + SOURCES["crates/b/src/lib.rs"])
+        self.scopes(SCOPES.replace('re = "check_slot|Draft::|finish"', 're = "check_slot|nested_test"'))
+        self.assertFails("re part 'nested_test' matches no function")
+
     def test_a_file_taken_twice_fails(self):
         self.scopes(SCOPES + '\n[[tokens]]\npackage = "crate-a"\nname = "again"\nfiles = ["crates/a/src/plan.rs"]\n')
         self.assertFails("crates/a/src/plan.rs: taken more than once, by [[unit]] crate-a, [[tokens]] again")

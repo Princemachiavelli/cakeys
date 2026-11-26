@@ -14,7 +14,7 @@ The check fails in these cases:
   (`Draft::`), as cargo-mutants names a mutant. The old name of a renamed function fails this way.
 - A `left-out` entry has an empty reason.
 
-The function names come from a reading of the source text up to its first `#[cfg(test)]`
+The function names come from the source text with every `#[cfg(test)]` item removed
 (cargo-mutants does not mutate test code), not from a parser: every `fn` name, and the type of
 every `impl` block.
 
@@ -88,12 +88,33 @@ def sources(root, members):
     return sorted(p.relative_to(root).as_posix() for d in members.values() for p in (root / d / "src").rglob("*.rs"))
 
 
+def without_tests(text):
+    """The source text with each `#[cfg(test)]` item removed, from the attribute to the closing
+    brace that matches the item's first opening brace, or to the first `;` of an item that has no
+    body. An item inside a module removes only that item, so the functions after it stay."""
+    out, i = [], 0
+    while (j := text.find("#[cfg(test)]", i)) != -1:
+        out.append(text[i:j])
+        brace, semi = text.find("{", j), text.find(";", j)
+        if brace == -1 or (semi != -1 and semi < brace):
+            i = len(text) if semi == -1 else semi + 1
+            continue
+        depth, k = 0, brace
+        for k in range(brace, len(text)):
+            depth += {"{": 1, "}": -1}.get(text[k], 0)
+            if depth == 0:
+                break
+        i = k + 1
+    out.append(text[i:])
+    return "".join(out)
+
+
 def functions(root, files):
     """The names that a part of `re` may match in these files: each `fn` name and each `Type::`
-    of an `impl` block, read up to the first `#[cfg(test)]`."""
+    of an `impl` block, with every `#[cfg(test)]` item removed."""
     names = set()
     for f in files:
-        text = (root / f).read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
+        text = without_tests((root / f).read_text(encoding="utf-8"))
         names |= set(FN.findall(text))
         names |= {f"{t}::" for t in IMPL.findall(text)}
     return names

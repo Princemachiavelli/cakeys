@@ -42,6 +42,14 @@ files = [
   "crates/camigrate/src/trust.rs",
 ]
 
+# Only refuse_admin_in_nix_build, which refuses an export, a key-file read and a change of trust
+# inside a Nix build. The rest of lib.rs parses the command line and dispatches to the verbs.
+[[unit]]
+package = "camigrate"
+name = "camigrate-lib"
+files = ["crates/camigrate/src/lib.rs"]
+re = "refuse_admin_in_nix_build"
+
 # The attestation verifiers, and fix_ec_point, which repairs a malformed P-521 point and which a
 # proptest of the crate tests. Linux only, because darwin does not build this crate.
 [[unit]]
@@ -117,6 +125,7 @@ files = [
   "crates/caprobe/src/probe/bound.rs",
   "crates/caprobe/src/probe/wraps.rs",
   "crates/caprobe/src/probe/scratch.rs",
+  "crates/caprobe/src/probe/checked.rs",
 ]
 
 [[tokens]]
@@ -151,7 +160,6 @@ files = ["crates/tpm2-pkcs11/src/ptool.rs"]
 "crates/caprobe/src/baseline.rs" = "a #[cfg(test)] module that regenerates the spec baseline: cargo-mutants mutates no test code"
 "crates/caprobe/src/supports.rs" = "report code, which golden files check"
 "crates/cli/src/lib.rs" = "the command line's parsing and dispatch; Phase 1 moved its decisions into the plan and execute steps"
-"crates/camigrate/src/lib.rs" = "the command line's parsing and dispatch, as in crates/cli/src/lib.rs; the plan and the verb files hold the decisions"
 "crates/caprobe/src/lib.rs" = "the command line's parsing and dispatch, as in crates/cli/src/lib.rs; the probe files hold the decisions"
 "crates/cli/src/main.rs" = "the entry point, which calls the library"
 "crates/camigrate/src/main.rs" = "the entry point, which calls the library"
