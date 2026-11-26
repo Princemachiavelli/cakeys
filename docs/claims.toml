@@ -14,7 +14,7 @@
 # An entry registers the whole line its phrase is on, so an enforced entry's tests hold every
 # universal claim of that line; a line with one claim no test holds stays unregistered.
 
-max-unregistered = 7
+max-unregistered = 6
 
 # CAMIGRATE.md D5: a bundle's transport key is the target's own (review 2026-11-24 D-8).
 
@@ -528,6 +528,21 @@ doc = "docs/CAPROBE.md"
 says = "On 2026-11-25 every hardware and cloud profile and"
 kind = "descriptive"
 why = "the ledger's state on one date, which `checks.ledger` prints"
+
+# The scratch slot's mark (review 2026-11-24 E-6, Phase 2 L4b). a_slot_run_writes_its_mark_last
+# checks that the mark certificate is the last write of a slot run, and that a run whose mark
+# fails leaves a slot that the next run refuses with exit code 17. The two scratch guard tests
+# check that each mark is issued over the key in the slot.
+
+[[claim]]
+doc = "docs/CAPROBE.md"
+says = "which every slot run writes there last"
+kind = "enforced"
+tests = [
+  "a_slot_run_writes_its_mark_last",
+  "softhsm_the_scratch_guard_names_one_slot",
+  "kryoptic_the_scratch_guard_names_one_slot",
+]
 
 # DESIGN.md, beyond §8.1 (Phase 2 L7b).
 
