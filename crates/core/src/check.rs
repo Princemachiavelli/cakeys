@@ -188,7 +188,8 @@ names! {
         LockSameObject = "lock.same-object",
 
         // Attestation chains (PIV device certificates, TPM EK certificates).
-        /// Each certificate of the chain is valid at the time it is judged at: 13.
+        /// Each certificate of the chain is valid at the time for which the run checks the chain
+        /// (`at` in `chain::chain_to_anchor`): 13.
         ChainValidity = "chain.validity",
         /// Each issuer is a CA that may sign certificates (`basicConstraints`, its `pathLen`, and
         /// `keyCertSign` when it has a `keyUsage`): 13.
