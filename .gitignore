@@ -14,3 +14,5 @@ result*
 # A regeneration waiting beside the golden file it would replace (docs/DEVELOPMENT.md, "Golden
 # files"): reviewed and accepted, never committed.
 *.new
+# Python bytecode of the nix/ scripts that load each other (nix/golden-rows.py, nix/claims.py).
+__pycache__/
