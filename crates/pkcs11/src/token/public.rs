@@ -1,6 +1,7 @@
-//! A public object's attributes from its value: what `C_CreateObject` takes for a certificate, a
-//! data object or a public key. camigrate creates public objects with them (docs/CAMIGRATE.md,
-//! `public`), and caprobe asks a module to create each kind (`docs/archive/CAPROBE_MIGRATION.md`).
+//! The attributes of a public object, built from its value. These are the attributes that
+//! `C_CreateObject` takes for a certificate, a data object or a public key. camigrate creates
+//! public objects with them (docs/CAMIGRATE.md, `public`), and caprobe asks a module to create
+//! each kind of object with them (`docs/archive/CAPROBE_MIGRATION.md`).
 
 #[allow(
     clippy::wildcard_imports,
@@ -11,14 +12,16 @@ use cakeys_core::id::KeyAlg;
 use rsa::traits::PublicKeyParts as _;
 use x509_cert::der::{Decode as _, Encode as _};
 
-/// The class and value of the public `object` from `bytes`: a certificate's DER with its
-/// subject, issuer and serial number, a data object's value, or a public key from its canonical
-/// SPKI ([`public_key_attrs`]). No locator, `CKA_TOKEN` or policy: the caller's.
+/// Returns the class and the value attributes of the public `object`, built from `bytes`. For a
+/// certificate, these are its DER with its subject, issuer and serial number. For a data object,
+/// this is its value. For a public key, these are built from its canonical SPKI
+/// ([`public_key_attrs`]). The result has no locator, `CKA_TOKEN` or policy attributes, because
+/// the caller adds them.
 ///
 /// # Errors
 ///
-/// `Conflict` when `bytes` is not what the class holds; `Validation` for a class that is no
-/// public object.
+/// `Conflict` when `bytes` is not the kind of value that the class holds. `Validation` for a
+/// class that is not a public object.
 pub fn public_object_attrs(object: Object<'_>, bytes: &[u8]) -> Result<Vec<Attribute>> {
     match object.class {
         Class::Certificate => {
@@ -51,15 +54,15 @@ pub fn public_object_attrs(object: Object<'_>, bytes: &[u8]) -> Result<Vec<Attri
     }
 }
 
-/// A public key's material from its canonical SPKI, in PKCS#11's encoding: an EC or Edwards
-/// point as a DER OCTET STRING beside the curve's parameters, an RSA key as its modulus and
-/// exponent. `object` gives the key type and curve, which the SPKI's algorithm (and an EC key's
-/// curve) must be.
+/// Returns a public key's material, built from its canonical SPKI, in the PKCS#11 encoding. An EC
+/// or Edwards point becomes a DER OCTET STRING next to the curve's parameters, and an RSA key
+/// becomes its modulus and exponent. `object` gives the key type and the curve, and the SPKI's
+/// algorithm (and, for an EC key, its curve) must match them.
 ///
 /// # Errors
 ///
-/// `Conflict` when the SPKI is not a key of `object`'s type and curve; `Validation` for an
-/// object with no curve cakeys knows.
+/// `Conflict` when the SPKI cannot be decoded, or when it is not a key of the type and curve of
+/// `object`.
 pub fn public_key_attrs(object: Object<'_>, spki: &[u8]) -> Result<Vec<Attribute>> {
     let bad = |e: &dyn std::fmt::Display| {
         KmError::Conflict(Reason::check(Check::PublicKeyType, format!("the public key: {e}")))
@@ -100,8 +103,9 @@ mod tests {
     use x509_cert::der::asn1::{Any, BitString, ObjectIdentifier};
     use x509_cert::spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned};
 
-    /// An SPKI naming a key on `c`, its algorithm as RFC 5480 and RFC 8410 write it: what
-    /// `KeyAlg::of_spki` reads. The point is any bytes.
+    /// Returns an SPKI that names a key on the curve `c`, with its algorithm written as RFC 5480
+    /// and RFC 8410 write it, which is the form that `KeyAlg::of_spki` reads. The point is
+    /// arbitrary bytes.
     fn spki_on(c: Curve) -> Vec<u8> {
         let algorithm = if c.edwards() {
             AlgorithmIdentifierOwned { oid: ObjectIdentifier::from_der(c.params()).unwrap(), parameters: None }
@@ -122,9 +126,10 @@ mod tests {
         o
     }
 
-    /// A public key's SPKI must be of the object's key type and curve (public.rs F1): every
-    /// curve against every other and RSA, each way, is a conflict (13) naming both, never
-    /// `CKA_EC_PARAMS` of one curve beside another key's point.
+    /// A public key's SPKI must have the object's key type and curve (public.rs F1). Every curve
+    /// paired with every other curve and with RSA, in both directions, is a conflict (exit 13)
+    /// that names both. The result is never `CKA_EC_PARAMS` of one curve next to the point of a
+    /// key on another curve.
     #[test]
     fn the_spki_must_be_the_objects_type_and_curve() {
         let rsa = id::rsa_spki(&[0xc5; 256], &[1, 0, 1]).unwrap();

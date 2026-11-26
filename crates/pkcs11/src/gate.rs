@@ -1,14 +1,16 @@
-//! The static gate (docs/CAPROBE.md): what each spec needs of its token, checked
-//! against the token's capability profiles with no token attached — `validate`'s second half,
-//! and what `create` checks before it opens any token. The needs are [`ops::needs`], the same
-//! the live check refuses by before anything is created, and the provider's static rules are the
-//! same function's ([`ops::static_rules`]); here a profile's *no* refuses (15, naming the profile
-//! that decided it) and its *unknown* is deferred to the open token, never a failure. The
-//! generation is asked only of a pair `create` makes (`origin = "create"`, not yet pinned).
+//! The static gate (docs/CAPROBE.md). It checks what each spec needs of its token against the
+//! token's capability profiles, without a token attached. It is the second half of `validate`,
+//! and it is what `create` checks before it opens any token. The needs come from [`ops::needs`],
+//! which the live check also uses to refuse before anything is created, and the provider's static
+//! rules come from the same module ([`ops::static_rules`]). Here, a profile's *no* refuses (exit
+//! 15, with the name of the profile that decided it), and its *unknown* is deferred to the open
+//! token, so it is never a failure. The generation is checked only for a pair that `create` makes
+//! (`origin = "create"`, not yet pinned).
 //!
-//! A token's profiles resolve statically from what is known without opening it: the module and
-//! token its realisations recorded in the lock (D9/D10's match keys), and the `provider` and
-//! `profiles` keys.toml names. A token with neither is skipped, with a note.
+//! A token's profiles are resolved statically from what is known without opening the token: the
+//! module and the token that its realisations recorded in the lock (the match keys of D9 and
+//! D10), and the `provider` and `profiles` that keys.toml names. A token with neither is skipped,
+//! with a note.
 
 use crate::ops::{self, Target};
 use crate::registry::Registry;
@@ -17,23 +19,26 @@ use cakeys_core::config::{Lock, Mode, TokenCfg, TokenObservation};
 use cakeys_core::{KmError, Result};
 use cakeys_profile::Set;
 
-/// A token's profile stack as known without opening it.
+/// A token's profile stack, as far as it is known without opening the token.
 pub struct Stack {
-    /// The module and token profiles the stack resolved to.
+    /// The module and token profiles to which the stack resolved.
     pub resolved: Resolved,
-    /// The provider: named in keys.toml, else recorded in the lock.
+    /// The provider, as keys.toml names it, or otherwise as the lock records it.
     pub provider: String,
-    /// Where the module and token came from, for messages.
+    /// The source of the module and the token, for messages.
     pub source: &'static str,
 }
 
-/// Resolve token `name`'s profiles from keys.toml and the lock. `Ok(None)` when nothing says
-/// which module the token is (no `provider`, no recorded realisation), with the reason.
+/// Resolves the profiles of the token `name` from keys.toml and the lock. Returns `Ok(Err(why))`
+/// when the profiles cannot be known before the token opens, with the reason: for example, when
+/// nothing says which module the token uses (no `provider` and no recorded realisation), or when
+/// the lock records several observations of the token.
 ///
 /// # Errors
 ///
-/// `Validation` (17) for a profile keys.toml names in `tokens.<t>.profiles` that no loaded
-/// profile set has — a config error, as at token open.
+/// `Validation` (exit 17) when no profile set is active, and for a profile that keys.toml names in
+/// `tokens.<t>.profiles` but that no loaded profile set has. The second case is a configuration
+/// error, as it is at token open.
 pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Result<Stack, String>> {
     let set = Set::active().map_err(|e| KmError::Validation(e.into()))?;
     for p in &cfg.profiles {
@@ -61,19 +66,21 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
         Some((m, t)) => (m.clone(), Some(t.clone()), "the lock's recorded module and token"),
         None => (crate::resolution::moduleless_info(), None, "keys.toml's provider"),
     };
-    // What resolution refuses (a profile set that does not parse) is not a config error here:
-    // the open decides it.
+    // An error from resolution (for example, a profile set that does not parse) is not a
+    // configuration error here, because the open decides it.
     Ok(match resolution::resolve(cfg, &module, token.as_ref(), &provider) {
         Ok(mut resolved) => {
             if recorded.is_none() {
-                // Resolution's version notes compare against a module nobody has seen yet.
+                // Resolution's version notes compare against a module that nobody has seen yet,
+                // so they are replaced with one note that says so.
                 resolved.notes = vec![format!(
                     "module profile {} chosen by provider alone: no module recorded yet, so neither \
                      its version nor its hardware is checked",
                     resolved.module_name().unwrap_or("(none)")
                 )];
             }
-            // After the notes above, so the one the recorded answers add stays.
+            // This runs after the notes above are set, so that the note that the recorded
+            // answers add is kept.
             if let Some(o) = observed {
                 resolved.with_answers(name, o);
             }
@@ -83,16 +90,17 @@ pub fn stack(name: &str, cfg: &TokenCfg, lock: &Lock) -> Result<std::result::Res
     })
 }
 
-/// Check `t` in `mode`, for the write `verb` ([`ops::Verb::of`]), against `stack` ([`stack`]'s
-/// answer for its token): the static rules ([`ops::static_rules`]) with the provider `stack`
-/// names and its profiles: placement, an attestation the provider must produce, every mechanism
-/// group [`ops::needs`] lists, and when `create` generates the key its generation, the
-/// mechanism and the type, curve and size. A stack that does not resolve, or a provider this
-/// build lacks, defers by name what only the open token could decide (review 2026-11-24 B-1).
+/// Checks `t` in `mode`, for the write `verb` ([`ops::Verb::of`]), against `stack` (the result
+/// of [`stack`] for its token). The check applies the static rules ([`ops::static_rules`]) with
+/// the provider that `stack` names and with its profiles. The rules cover placement, an
+/// attestation that the provider must produce, every mechanism group that [`ops::needs`] lists,
+/// and, when `create` generates the key, its generation: the mechanism, and the type, curve and
+/// size. When the stack does not resolve, or when this build lacks the provider, every rule that
+/// only the open token could decide is deferred by name (review 2026-11-24 B-1).
 ///
 /// # Errors
 ///
-/// `Validation` (17) when no profile set is active ([`Registry::named`]).
+/// `Validation` (exit 17) when no profile set is active ([`Registry::named`]).
 pub fn check(
     t: &Target,
     mode: Mode,
@@ -105,8 +113,8 @@ pub fn check(
         Err(why) => return ops::static_rules(t, mode, ops::Seat::Unresolved(why.clone()), verb, None),
     };
     let provider = registry.named(&stack.provider)?;
-    // A provider this build lacks and no profile names (a downstream one, as in the
-    // custom-provider example): what it places, attests and adjusts is known only when the
+    // A provider that this build lacks and that no profile names (a downstream provider, as in
+    // the custom-provider example). What it places, attests and adjusts is known only when the
     // token opens with it.
     let seat = match &provider {
         Some(p) => ops::Seat::Resolved(p.as_ref()),
@@ -126,16 +134,18 @@ mod tests {
     use cakeys_profile::{KeyKind, Proof};
     use std::sync::{Arc, Mutex};
 
-    /// The profile crate names key types and proofs on its own (ISSUES.md Q28): every key type
-    /// keys.toml takes and every proof a binding gives is one of its known names, never a name
-    /// it keeps as read, so a row the gate asks about is the row a probe wrote. (Curves are the
-    /// names table's on both sides: `cakeys_core::id`'s `the_curves_are_the_names_tables`.)
+    /// The profile crate has its own names for key types and proofs (ISSUES.md Q28). Every key
+    /// type that keys.toml accepts, and every proof that a binding gives, must be one of its known
+    /// names, and never a name that it keeps as read, so that a row that the gate asks about is
+    /// the row that a probe wrote. (Both sides take curve names from the names table; see the
+    /// test `the_curves_are_the_names_tables` in `cakeys_core::id`.)
     #[test]
     fn the_profiles_know_every_key_type_and_proof_cakeys_has() {
         for kt in cakeys_core::types::KeyType::ALL {
             assert!(!matches!(KeyKind::from(kt.name()), KeyKind::Other(_)), "{kt}");
         }
-        // By the name a capability row is keyed by (`proof_capability`), not the binding's own.
+        // Use the name by which a capability row is keyed (`proof_capability`), and not the
+        // binding's own name.
         let proofs = [Binding::PopSign, Binding::PopSignPin, Binding::PopEcdh, Binding::PopDecrypt, Binding::PopUnwrap];
         for b in proofs {
             let name = b.proof_name().unwrap();
@@ -153,8 +163,9 @@ mod tests {
         .unwrap()
     }
 
-    /// A provider this build does not have, and no profile family: the rules only it could
-    /// decide are deferred, each named (gate.rs F1), never passed in silence.
+    /// For a provider that this build does not have, and with no profile family, the rules that
+    /// only the provider could decide are deferred, each by name (gate.rs F1). They are never
+    /// passed without a message.
     #[test]
     fn a_provider_this_build_lacks_is_said() {
         cakeys_profile::Set::activate_embedded().unwrap();
@@ -178,8 +189,8 @@ mod tests {
         let v = check(&t, ops::plan_mode(&t).unwrap(), &stack("softhsm"), &Registry::new(), ops::Verb::Create).unwrap();
         assert!(!v.deferred.iter().any(|d| d.why.contains("is not in this build")), "{:?}", v.deferred);
 
-        // A token whose stack does not resolve: every rule a resolved one would ask is deferred,
-        // saying why (review 2026-11-24 B-1).
+        // For a token whose stack does not resolve, every rule that a resolved stack would check
+        // is deferred, with the reason (review 2026-11-24 B-1).
         let unresolved = Err("token 't': no provider named".to_owned());
         let v = check(&t, ops::plan_mode(&t).unwrap(), &unresolved, &Registry::new(), ops::Verb::Create).unwrap();
         let rules: Vec<ops::Rule> = v.deferred.iter().map(|d| d.rule).collect();
@@ -188,9 +199,9 @@ mod tests {
         assert!(v.deferred.iter().all(|d| d.why.ends_with("token 't': no provider named")), "{:?}", v.deferred);
     }
 
-    /// A lock observation that recorded answers but no module or token (an older lock): the
-    /// stack resolves by provider alone, and both notes stand, the recorded answers' too
-    /// (gate.rs F2).
+    /// A lock observation that recorded answers but no module or token (an older lock) makes the
+    /// stack resolve by the provider alone. Both notes are kept, including the note of the
+    /// recorded answers (gate.rs F2).
     #[test]
     fn the_recorded_answers_note_survives_the_provider_alone() {
         cakeys_profile::Set::activate_embedded().unwrap();
@@ -213,8 +224,8 @@ mod tests {
         assert!(notes.iter().any(|n| n.contains("chosen by provider alone")), "{notes:?}");
     }
 
-    /// A provider that records the generation templates it is asked about, refusing them when
-    /// it says so.
+    /// A provider that records the generation templates that it is asked about, and refuses
+    /// them when its second field is true.
     struct Asked(Arc<Mutex<Vec<String>>>, bool);
 
     impl Provider for Asked {
@@ -235,8 +246,8 @@ mod tests {
         }
     }
 
-    /// The gate asks the provider about the generation `create` will send, with no token: what it
-    /// refuses is a refusal here; a verb that creates nothing asks nothing.
+    /// The gate asks the provider about the generation that `create` will send, without a token.
+    /// What the provider refuses is a refusal here. A verb that creates nothing asks nothing.
     #[test]
     fn the_gate_asks_the_provider_about_a_generation() {
         cakeys_profile::Set::activate_embedded().unwrap();

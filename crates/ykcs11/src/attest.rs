@@ -1,25 +1,27 @@
-//! `YubiKey` PIV attestation (`piv-attestation`, docs/DESIGN.md §3.7), verified on the host.
+//! `YubiKey` PIV attestation (`piv-attestation`, docs/DESIGN.md §3.7), which the host verifies.
 //!
-//! ykcs11 exposes, per key slot, the on-demand attestation certificate the device signed with
-//! its attestation key in slot f9 (`"X.509 Certificate for PIV Attestation 9a"`, sharing the
-//! slot's `CKA_ID`). Yubico signs each device's f9 certificate with a PIV CA; cakeys verifies
-//! the whole chain to a *pinned* root — never to f9 alone, because a holder of the management
-//! key can overwrite f9.
+//! For each key slot, ykcs11 exposes the on-demand attestation certificate that the device signed
+//! with its attestation key in slot f9 (for example, `"X.509 Certificate for PIV Attestation
+//! 9a"`, which shares the slot's `CKA_ID`). Yubico signs each device's f9 certificate with a PIV
+//! CA. cakeys verifies the whole chain against a *pinned* root, and never against f9 alone,
+//! because anyone who holds the management key can overwrite f9.
 //!
-//! The commitment hashes the certificate's asserted fields, not its bytes: the device
-//! generates the certificate on demand with a random serial and a randomized ECDSA signature,
-//! so only the asserted content is stable.
+//! The commitment hashes the fields that the certificate asserts, not its bytes. The device
+//! generates the certificate on demand with a random serial number and a randomized ECDSA
+//! signature, so only the asserted content is stable.
 //!
-//! The chain walk itself (signatures, `basicConstraints`, validity) is generic and lives in
-//! `cakeys_core::chain`; what is PIV here is the pool, the roots and what the chain asserts.
+//! The chain walk itself (signatures, `basicConstraints`, validity) is generic, and it is in
+//! `cakeys_core::chain`. The parts that are specific to PIV are here: the intermediate pool, the
+//! roots, and the check of what the chain asserts.
 
 use cakeys_core::chain::{Cert, Start, chain_to_anchor, link};
 use cakeys_core::id;
 use cakeys_core::{Check, KmError, Reason, Result};
 use x509_cert::der::asn1::ObjectIdentifier;
 
-/// The label prefix ykcs11 gives every slot's attestation certificate (suffix: the slot, e.g.
-/// "9a"); the slot f9 device certificate itself has the bare label without a suffix.
+/// The label prefix that ykcs11 gives to every slot's attestation certificate. The suffix is the
+/// slot, for example "9a". The slot f9 device certificate itself has the bare label without a
+/// suffix.
 pub(crate) const ATTESTATION_LABEL: &str = "X.509 Certificate for PIV Attestation";
 
 /// Yubico's PIV attestation extension OIDs (the Yubico Attestation OID arc 1.3.6.1.4.1.41482.3).
@@ -28,24 +30,29 @@ const SERIAL: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.41482
 const PIN_TOUCH_POLICY: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.41482.3.8");
 const FORMFACTOR: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.41482.3.9");
 
-/// The computed `piv-attestation` commitment: the canonical ID, and the anchor it verified to.
+/// The computed `piv-attestation` commitment: the canonical ID, and the anchor against which the
+/// chain was verified.
 #[derive(Debug)]
 pub(crate) struct PivAttested {
     pub id: String,
     pub root: String,
 }
 
-/// Verify the slot's attestation certificate and the device certificate that signed it against
-/// the pinned anchors (with Yubico's intermediate pool), then commit over what they assert.
+/// Verifies the slot's attestation certificate, and the device certificate that signed it,
+/// against the pinned anchors (with Yubico's intermediate pool), and then computes the commitment
+/// over what they assert.
 ///
-/// `spki` is the canonical SPKI of the object's material — the same bytes its `rfc7093m4` ID
-/// hashes. The attestation must name exactly that key: this is what makes an attested identity
-/// *verifiable as key identity* on a token where no attestation exists. A copy of the key on
-/// another token cannot attest (Yubico attests only keys generated on the device); the shared
-/// `rfc7093m4`, which the attestation's subject is checked against, still links the material.
+/// `spki` is the canonical SPKI of the object's material, which is the same bytes that its
+/// `rfc7093m4` ID hashes. The attestation must name exactly that key. This requirement makes an
+/// attested identity *verifiable as key identity* on a token where no attestation exists. A copy
+/// of the key on another token cannot be attested (Yubico attests only keys that were generated
+/// on the device), but the shared `rfc7093m4` ID, which is checked against the attestation's
+/// subject, still links the material.
 ///
-/// `at` (seconds since the Unix epoch), under `check` only: every certificate, from the slot's
-/// to the pinned root, must be valid then (ISSUES.md B8).
+/// `at` is a time in seconds since the Unix epoch, or `None` when the dates are not checked.
+/// Every certificate, from the slot certificate to the pinned root, must be valid at that time
+/// (ISSUES.md B8). Only `check` makes this failure fatal; the other verbs turn it into a warning
+/// (`ChainTime::Warn`).
 pub(crate) fn verify_piv_attestation(
     slot: &[u8],
     device: &[u8],
@@ -56,13 +63,14 @@ pub(crate) fn verify_piv_attestation(
 ) -> Result<PivAttested> {
     let slot = Cert::from_der(slot.to_vec())?;
     let device = Cert::from_der(device.to_vec())?;
-    // The device certificate must chain to a pinned root, and the slot certificate must be
-    // signed by that same device attestation key. Real chains are one link (f9 ← classic root)
-    // or three (f9 ← PIV intermediate ← attestation intermediate ← root, firmware 5.7.4+): a
-    // longer one is no PIV attestation chain.
-    // The slot link keeps every rule of the walk's links (review 2026-11-24 A-7): the device
-    // may issue (CA, keyCertSign), neither has a critical extension cakeys does not process,
-    // both are valid at `at`, and the device's key signed the slot's certificate.
+    // The device certificate must chain to a pinned root, and that same device attestation key
+    // must have signed the slot certificate. Real chains have one link (f9 ← classic root) or
+    // three links (f9 ← PIV intermediate ← attestation intermediate ← root, on firmware 5.7.4
+    // and later). A longer chain is not a PIV attestation chain.
+    // The slot link follows every rule that the walk applies to its links (review 2026-11-24
+    // A-7): the device certificate may issue certificates (CA, keyCertSign), neither certificate
+    // has a critical extension that cakeys does not process, both are valid at `at`, and the
+    // device's key signed the slot's certificate.
     let anchor = chain_to_anchor(&device, Start::Intermediate, anchors, pool, at, 3)?;
     link(&slot, Start::EndEntity, &device, at).map_err(|e| {
         KmError::Conflict(Reason::check(
@@ -70,8 +78,9 @@ pub(crate) fn verify_piv_attestation(
             format!("the slot attestation certificate does not link to the device attestation certificate: {e}"),
         ))
     })?;
-    // The attested key is the certificate's subject: it must be the material the identity is
-    // for, or the attestation attests something else (13, never a pass).
+    // The attested key is the certificate's subject key. It must be the material that the
+    // identity is for. Otherwise the attestation attests a different key, which is a conflict
+    // (exit 13) and never a pass.
     let subject = slot.spki()?;
     if spki != subject {
         return Err(KmError::Conflict(Reason::check(
@@ -96,11 +105,11 @@ pub(crate) fn verify_piv_attestation(
     })
 }
 
-/// The fuzz target's input (`crate::fuzzing::piv_attestation`): a big-endian two-byte length,
-/// the slot certificate's DER, then the device certificate's; verified at a fixed time (2030)
-/// against the slot certificate's own key, to Yubico's pinned roots with their pool and to the
-/// test fixture's root, which a fuzzed chain can reach. Never in a product: the fixture root is
-/// a test key.
+/// Reads the fuzz target's input (`crate::fuzzing::piv_attestation`): a big-endian two-byte
+/// length, the slot certificate's DER, and then the device certificate's DER. It verifies them
+/// at a fixed time (2030) against the slot certificate's own key, first against Yubico's pinned
+/// roots with their pool and then against the test fixture's root, which a fuzzed chain can
+/// reach. This function is never built into a product, because the fixture root is a test key.
 #[cfg(any(test, feature = "fuzzing", kani))]
 pub(crate) fn fuzz_piv_attestation(bytes: &[u8], anchors: &[Cert], pool: &[Cert]) -> Result<()> {
     static FIXTURE_ROOT: std::sync::LazyLock<Vec<Cert>> = std::sync::LazyLock::new(|| {
@@ -116,10 +125,11 @@ pub(crate) fn fuzz_piv_attestation(bytes: &[u8], anchors: &[Cert], pool: &[Cert]
         .map(drop)
 }
 
-/// The pooled Yubico intermediates a PIV chain may pass through: the PIV attestation CAs and
-/// the generic "Attestation Intermediate" CAs above them. Yubico's published pool also holds
-/// the FIDO, `OpenPGP`, SD and `YubiHSM` attestation CAs under the same "Yubico Attestation Root
-/// 1"; a device certificate issued by one of those is not PIV evidence, so they are left out.
+/// Returns the pooled Yubico intermediates that a PIV chain may pass through: the PIV attestation
+/// CAs and the generic "Attestation Intermediate" CAs above them. Yubico's published pool also
+/// holds the FIDO, `OpenPGP`, SD and `YubiHSM` attestation CAs under the same "Yubico Attestation
+/// Root 1". A device certificate that one of those CAs issued is not PIV evidence, so the
+/// function leaves those CAs out.
 pub(crate) fn piv_pool(pool: Vec<Cert>) -> Vec<Cert> {
     pool.into_iter()
         .filter(|c| {
@@ -142,18 +152,19 @@ mod tests {
         std::fs::read(format!("{FIXTURES}/{name}")).unwrap()
     }
 
-    /// A fixture public key's canonical SPKI, from its PEM.
+    /// Returns the canonical SPKI of a fixture public key, read from its PEM.
     fn spki_of(name: &str) -> Vec<u8> {
         id::spki_canonical(&der_of(name)).unwrap()
     }
 
-    /// A fixture certificate's DER, from its PEM.
+    /// Returns the DER of a PEM fixture (a certificate or a public key).
     fn der_of(name: &str) -> Vec<u8> {
         x509_cert::der::pem::decode_vec(&fixture(name)).unwrap().1
     }
 
-    /// The embedded Yubico anchors and intermediate pool parse, and every published
-    /// intermediate chains to an anchor — the real chain walk, on Yubico's own certificates.
+    /// The embedded Yubico anchors and the intermediate pool parse, and every published
+    /// intermediate chains to an anchor. This test runs the real chain walk on Yubico's own
+    /// certificates.
     #[test]
     fn the_yubico_roots_are_pinned() {
         let mut anchors = pem_certs(include_str!("../roots/yubico-piv-ca-1.pem")).unwrap();
@@ -161,9 +172,10 @@ mod tests {
         assert_eq!(anchors.len(), 2);
         let pool = pem_certs(include_str!("../roots/yubico-intermediate.pem")).unwrap();
         assert_eq!(pool.len(), 15, "Yubico published 15 intermediates (2025-02-03)");
-        // Pinned by digest: updating the roots directory is a deliberate diff. The classic PIV
-        // root (RSA-2048, "Yubico PIV Root CA Serial 263751") signs the f9 certificates of
-        // firmware before 5.7.4; "Yubico Attestation Root 1" terminates the chains after.
+        // The anchors are pinned by digest, so an update of the roots directory is a deliberate
+        // change. The classic PIV root (RSA-2048, "Yubico PIV Root CA Serial 263751") signs the
+        // f9 certificates of firmware before 5.7.4, and "Yubico Attestation Root 1" ends the
+        // chains of firmware 5.7.4 and later.
         assert_eq!(
             anchors[0].spki().map(|s| id::sri(&s)).unwrap(),
             "sha256-Sxhbd4PXkvkCzZYM0clBeXfYjTB3sWvJ69zvcxPy4p4="
@@ -176,8 +188,9 @@ mod tests {
         for c in &pool {
             chain_to_anchor(c, Start::Intermediate, &anchors, &pool, None, 3).unwrap();
         }
-        // A PIV chain passes only through the PIV CAs and the generic intermediates above them;
-        // the other products' CAs (FIDO, OpenPGP, SD, YubiHSM) issue no PIV device certificate.
+        // A PIV chain passes only through the PIV CAs and the generic intermediates above them.
+        // The CAs of the other products (FIDO, OpenPGP, SD, YubiHSM) issue no PIV device
+        // certificates.
         let piv: Vec<String> = piv_pool(pem_certs(include_str!("../roots/yubico-intermediate.pem")).unwrap())
             .iter()
             .map(|c| c.parsed().tbs_certificate().subject().to_string())
@@ -194,9 +207,10 @@ mod tests {
         );
     }
 
-    /// The fixture chain (root → device f9 → slot attestation) verifies to its anchor, and the
-    /// commitment is the pinned digest of what it asserts. Material the attestation does not
-    /// name is a conflict — the cross-check that keeps an attestation an identity.
+    /// The fixture chain (root → device f9 → slot attestation) verifies against its anchor, and
+    /// the commitment is the pinned digest of what the chain asserts. Material that the
+    /// attestation does not name is a conflict. This cross-check makes sure that an attestation
+    /// identifies the key of the object.
     #[test]
     fn fixture_chain_verifies_and_pins() {
         let anchors = pem_certs(&String::from_utf8(fixture("root.pem")).unwrap()).unwrap();
@@ -222,18 +236,19 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("the attestation names"), "{err}");
-        // No pinned anchor: f9 overwritten with a self-made key, or another vendor's device.
+        // No pinned anchor, as when f9 was overwritten with a self-made key or when the device is
+        // from another vendor.
         let err =
             verify_piv_attestation(&der_of("slot.pem"), &der_of("f9.pem"), &[], &[], &spki_of("slotpub.pem"), None)
                 .unwrap_err();
         assert!(err.to_string().contains("signed by no pinned root"), "{err}");
     }
 
-    /// The slot link is held to the chain's rules (review 2026-11-24 A-7): a device certificate
-    /// whose keyUsage lacks keyCertSign signs no slot certificate, and a slot certificate with a
-    /// critical extension cakeys does not process is refused, as each is anywhere in the walk.
-    /// Core's chain-rules fixtures, each `piv-` chain differing from `piv-slot`'s in its one rule
-    /// (openssl refuses both).
+    /// The slot link follows the chain's rules (review 2026-11-24 A-7). A device certificate whose
+    /// keyUsage lacks keyCertSign cannot sign a slot certificate, and a slot certificate with a
+    /// critical extension that cakeys does not process is refused, as each one is anywhere in the
+    /// walk. The test uses core's chain-rules fixtures, in which each `piv-` chain differs from
+    /// the `piv-slot` chain in one rule (openssl refuses both).
     #[test]
     fn the_slot_link_keeps_the_chain_rules() {
         let rule = |name: &str| {
@@ -254,32 +269,34 @@ mod tests {
         assert!(e.to_string().contains("its keyUsage lacks keyCertSign"), "{e}");
         let e = verify("piv-slot-critical", "piv-device").unwrap_err();
         assert!(e.to_string().contains("the critical extension 1.2.3.4"), "{e}");
-        // A slot certificate another key signed (review 2026-11-24 B-11's instance).
+        // A slot certificate that another key signed (the case of review 2026-11-24 B-11).
         let e = verify("piv-slot-no-certsign", "piv-device").unwrap_err();
         assert!(e.to_string().contains("signature does not verify"), "{e}");
     }
 
-    /// A certificate of the forged chains (tests/fixtures/forged/make.sh): one of Yubico's shape,
-    /// root, attestation CA, PIV CA, device (f9) and slot, and the forgeries beside it.
+    /// Returns a certificate of the forged chains (tests/fixtures/forged/make.sh). The fixtures
+    /// hold one chain in Yubico's shape (root, attestation CA, PIV CA, device (f9) and slot) and
+    /// the forgeries next to it.
     fn forged(name: &str) -> Cert {
         pem_certs(&String::from_utf8(fixture(&format!("forged/{name}.pem"))).unwrap()).unwrap().remove(0)
     }
 
-    /// Slot certificate `slot` verified as device `device`'s attestation of the slot's own key, to
-    /// the forged root through its attestation and PIV CAs and the certificates `more` names.
+    /// Verifies the slot certificate `slot` as the attestation by the device `device` of the
+    /// slot's own key. The chain goes to the forged root through the forged attestation and PIV
+    /// CAs and the certificates that `more` names.
     fn verify_forged(slot: &str, device: &str, more: &[&str]) -> Result<PivAttested> {
         let slot = forged(slot);
         let pool: Vec<Cert> = ["attestation-ca", "piv-ca"].iter().chain(more).map(|n| forged(n)).collect();
         verify_piv_attestation(slot.der(), forged(device).der(), &[forged("root")], &pool, &slot.spki().unwrap(), None)
     }
 
-    /// Whether `e` is the refusal of a slot certificate the device's key did not sign.
-    /// A slot's attestation is the device's only when the device's key signed it (review
-    /// 2026-11-24 B-11): f9 certificates are public, so that one chains to a pinned root says
-    /// nothing of a slot certificate another key signed. Beside a genuine device three links below
-    /// the root, each forgery is a valid certificate of the key it names: one its key signed, one
-    /// whose issuer takes the device's name, and another device's genuine attestation of its own
-    /// key. Each is refused by the link to the device, where the genuine pairs verify.
+    /// A slot attestation comes from the device only when the device's key signed it (review
+    /// 2026-11-24 B-11). f9 certificates are public, so the fact that an f9 certificate chains to
+    /// a pinned root says nothing about a slot certificate that another key signed. Next to a
+    /// genuine device three links below the root, each forgery is a valid certificate of the key
+    /// that it names: `slot-self` is signed by its own key, `slot-forged` has an issuer that takes
+    /// the device's name, and `slot-b` is another device's genuine attestation of its own key. The
+    /// link to the device refuses each forgery, while the genuine pairs verify.
     #[test]
     fn a_slot_certificate_signed_by_another_key_is_refused() {
         verify_forged("slot", "f9", &[]).unwrap();
@@ -289,11 +306,13 @@ mod tests {
         }
     }
 
-    /// A PIV attestation chain is the slot, the device, and at most three links from the device
-    /// to the root (UD-19). A device four links below it is refused, though the walk alone takes
-    /// that chain at four; and a slot one link below the device, under a CA the device issued, is
-    /// refused whichever of the two is shown as the device: by the link under f9, by the length
-    /// under the CA, each link of it otherwise valid.
+    /// A PIV attestation chain consists of the slot, the device, and at most three links from the
+    /// device to the root (UD-19). A device four links below the root is refused, although the
+    /// walk alone accepts that chain with a limit of four. A slot one link further below the
+    /// device, under a CA that the device issued (`device-sub`), is refused whichever of the two
+    /// certificates is presented as the device. With f9 as the device, the slot's link to f9 is
+    /// refused. With the CA as the device, the chain length is refused. Each link of that chain is
+    /// otherwise valid.
     #[test]
     fn a_chain_longer_than_three_is_refused() {
         let deep = ["attestation-ca", "piv-ca", "piv-ca-deep"].map(forged);
@@ -306,8 +325,9 @@ mod tests {
         assert_fires(&verify_forged("slot-sub", "device-sub", &["f9"]), Check::ChainLength);
     }
 
-    /// The fuzz target's input format reaches the whole chain: the fixture chain, length-prefixed
-    /// as `nix/fuzz.nix` seeds it, verifies; a short or cut input is refused, never a panic.
+    /// The fuzz target's input format reaches the whole chain. The fixture chain, with the length
+    /// prefix that `nix/fuzz.nix` uses to seed it, verifies. A short or truncated input is refused
+    /// with an error and never causes a panic.
     #[test]
     fn the_fuzz_entry_point_reads_the_fixture_chain() {
         let (slot, device) = (der_of("slot.pem"), der_of("f9.pem"));
@@ -317,11 +337,12 @@ mod tests {
         assert!(fuzz_piv_attestation(&input[..40], &[], &[]).is_err());
     }
 
-    /// Under `check`, every certificate of the chain is held to its validity period (ISSUES.md
-    /// B8): the fixture chain is valid from 2026-11-12 to 2036-11-09, so it verifies in 2030
-    /// and is a conflict before and after, naming the time and the period; without a time
-    /// (`--ignore-validity`) the dates are not read. Every other verb warns: out of its dates the
-    /// chain verifies, the dated failure its warning (`ChainTime::Warn`).
+    /// Under `check`, every certificate of the chain must be within its validity period
+    /// (ISSUES.md B8). The fixture chain is valid from 2026-11-12 to 2036-11-09, so it verifies in
+    /// 2030 and is a conflict before and after that period, and the error names the time and the
+    /// period. Without a time (`--ignore-validity`), the dates are not read. Every other verb only
+    /// warns: outside its dates, the chain verifies, and the failure about the dates becomes the
+    /// warning (`ChainTime::Warn`).
     #[test]
     fn check_holds_the_chain_to_its_dates() {
         let anchors = pem_certs(&String::from_utf8(fixture("root.pem")).unwrap()).unwrap();

@@ -1,9 +1,10 @@
-//! A key's plaintext on the host, and its identity checked before anything writes it (review
-//! 2026-11-24 D-5). [`Extracted`] is what [`Token::extract`](crate::Token::extract) hands over,
-//! or what a key file holds; only [`check_identity`] turns one into [`Checked`], which is what
-//! every writer of a key takes: camigrate's key file, its import through the host and
-//! `tpm2_ptool`'s. A source module that hands over another key than the one it was asked for
-//! is caught here, before a file, a slot or a TPM holds it.
+//! A key's plaintext on the host, and the check of its identity before anything writes it
+//! (review 2026-11-24 D-5). An [`Extracted`] holds the plaintext that
+//! [`Token::extract`](crate::Token::extract) returns or that a key file holds. Only
+//! [`check_identity`] turns an [`Extracted`] into a [`Checked`], and every writer of a key takes a
+//! [`Checked`]: camigrate's key file, camigrate's import through the host, and the import through
+//! `tpm2_ptool`. As a result, when a source module returns a key other than the one that it was
+//! asked for, this check catches the key before a file, a slot or a TPM holds it.
 
 use cakeys_core::config::Lock;
 use cakeys_core::id::{self, BlockCipher, Commit, HmacHash, Scheme};
@@ -13,25 +14,27 @@ use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{Check, KmError, Result};
 use zeroize::Zeroizing;
 
-/// A key's plaintext on the host whose identity is not checked yet: a private key's PKCS#8, a
-/// secret key's value. Nothing writes one ([`check_identity`]).
+/// A key's plaintext on the host whose identity is not checked yet: a private key's PKCS#8, or a
+/// secret key's value. No writer accepts this type; [`check_identity`] must first turn it into a
+/// [`Checked`].
 pub struct Extracted(Zeroizing<Vec<u8>>);
 
 impl Extracted {
-    /// What a module handed over (`Token::extract`).
+    /// Wraps the plaintext that a module returned (`Token::extract`).
     pub(crate) fn new(plain: Zeroizing<Vec<u8>>) -> Extracted {
         Extracted(plain)
     }
 
-    /// What a key file holds.
+    /// Wraps the plaintext that a key file holds.
     #[must_use]
     pub fn from_file(plain: Zeroizing<Vec<u8>>) -> Extracted {
         Extracted(plain)
     }
 }
 
-/// To read, never to write: caprobe's `export.host` compares what arrived with the key it made.
-/// Every writer of a key takes [`Checked`].
+/// Gives read access to the plaintext. caprobe's `export.host` uses it to compare the key that
+/// arrived with the key that caprobe made. A writer cannot use this access, because every writer
+/// of a key takes a [`Checked`].
 impl std::ops::Deref for Extracted {
     type Target = [u8];
 
@@ -40,17 +43,18 @@ impl std::ops::Deref for Extracted {
     }
 }
 
-/// Its length only: plaintext is never formatted.
+/// Formats only the length, because plaintext is never formatted.
 impl std::fmt::Debug for Extracted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Extracted({} bytes)", self.0.len())
     }
 }
 
-/// A key's plaintext whose identity is what the lock pins for its object ([`check_identity`]).
+/// A key's plaintext whose identity matches what the lock records for its object, as
+/// [`check_identity`] verified.
 pub struct Checked(Zeroizing<Vec<u8>>);
 
-/// Its length only: plaintext is never formatted.
+/// Formats only the length, because plaintext is never formatted.
 impl std::fmt::Debug for Checked {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Checked({} bytes)", self.0.len())
@@ -58,25 +62,27 @@ impl std::fmt::Debug for Checked {
 }
 
 impl Checked {
-    /// The plaintext, for the writer that takes it.
+    /// Returns the plaintext to the writer that takes it.
     #[must_use]
     pub fn plaintext(&self) -> &[u8] {
         &self.0
     }
 }
 
-/// `key`, once its identity is what the lock pins for `t`'s object: a private key's `rfc7093m4`
-/// (of its PKCS#8's public key); every commitment the lock pins for a secret key, computed here
-/// as the token computes it (`Commit::input` under the object's commitment label). A secret
-/// key the lock pins no commitment for is a first use, which the target's own commitments pin
-/// after it creates the key (docs/FILE.md F3).
+/// Returns `key` as a [`Checked`] once its identity matches what the lock records for the object
+/// of `t`. For a private key, the identity is the `rfc7093m4` ID of the public key in its PKCS#8.
+/// For a secret key, the identity is every commitment that the lock records, computed here as the
+/// token computes it (`Commit::input` with the object's commitment label). A secret key for which
+/// the lock records no commitment is a first use. The lock then records the commitments that the
+/// target token computes after the key is created there (docs/FILE.md F3).
 ///
 /// # Errors
 ///
-/// `HashMismatch` (10) when an identity is not the pinned one, or a private key's lock pins no
-/// `rfc7093m4`; `Unsupported` (15) when the lock pins a secret key only by commitments this
-/// process cannot compute; `Validation` for a class that is not a key, or a PKCS#8 that does
-/// not parse.
+/// - `HashMismatch` (exit 10) when an identity differs from the one that the lock records, or
+///   when the lock records no `rfc7093m4` ID for a private key.
+/// - `Unsupported` (exit 15) when the lock records a secret key only by commitments that this
+///   process cannot compute.
+/// - `Validation` for a class that is not a key, or for a PKCS#8 that does not parse.
 pub fn check_identity(t: &Target, lock: &Lock, key: Extracted) -> Result<Checked> {
     let pinned = |scheme: Scheme| lock.objects.get(t.object_name).and_then(|o| o.ids.get(scheme.name()));
     let mismatch = |scheme: Scheme, got: String| KmError::HashMismatch {
@@ -119,14 +125,14 @@ pub fn check_identity(t: &Target, lock: &Lock, key: Extracted) -> Result<Checked
     Ok(Checked(key.0))
 }
 
-/// Every commitment a secret key of `t`'s type may be pinned by.
+/// Returns every commitment by which the lock may record a secret key of the key type of `t`.
 fn commits_of(t: &Target) -> Vec<Commit> {
     let Some(kt) = t.object.key_type else { return vec![] };
     block_commits(kt).map_or_else(|| HmacHash::for_key_type(kt).map(Commit::Hmac).into_iter().collect(), <[_]>::to_vec)
 }
 
-/// Commitment `c` of the secret key `key` over `input`, as a token computes it; `None` for a
-/// key `c` does not take (its length).
+/// Computes the commitment `c` of the secret key `key` over `input`, as a token computes it.
+/// Returns `None` when `c` cannot take a key of this length.
 fn host_commit(c: Commit, key: &[u8], input: &[u8]) -> Option<Vec<u8>> {
     use aes::cipher::{BlockCipherDecrypt as _, BlockCipherEncrypt as _};
     macro_rules! hmac_of {
@@ -219,11 +225,12 @@ mod tests {
         check_identity(t, lock, Extracted::from_file(Zeroizing::new(key.to_vec())))
     }
 
-    /// A secret key is the one the lock pins only when every commitment it pins is the key's
-    /// (review 2026-11-24 D-5: every secret key passed); with none pinned it is a first use; and
-    /// that a commitment computed here is the one a token computes is
-    /// `every_spelling_of_a_secret_key_imports_as_the_same_key` (camigrate's `from_files`): each
-    /// spelling after the first is checked against what `SoftHSM` pinned.
+    /// A secret key matches the lock only when every commitment that the lock records matches the
+    /// key (review 2026-11-24 D-5 found that every secret key passed this check). When the lock
+    /// records no commitment, the key is a first use. The test
+    /// `every_spelling_of_a_secret_key_imports_as_the_same_key` (camigrate's `from_files`) checks
+    /// that a commitment computed here equals the commitment that a token computes: it checks
+    /// each spelling after the first against the IDs that `SoftHSM` recorded.
     #[test]
     fn a_secret_key_is_its_pinned_commitments() {
         let cfg = config("class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32");
@@ -241,14 +248,15 @@ mod tests {
         let mut unknown = Lock::default();
         unknown.objects.entry("k".into()).or_default().ids.insert("commitment".into(), "sha256-x".into());
         assert!(matches!(checked(&t, &unknown, &key), Err(KmError::Unsupported(_))), "pinned by no AES commitment");
-        // The AES oracle's `kcv-ecb` of this key, by its own label.
+        // The input of `kcv-ecb` for this key is the first 16 bytes of the SHA-256 of the
+        // scheme's own label, as the AES oracle computes it.
         let kcv = Commit::KcvEcb(BlockCipher::Aes);
         let label = "key-management/v1/kcv-ecb/CKK_AES/256";
         let digest = <sha2::Sha256 as sha2::Digest>::digest(label.as_bytes());
         assert_eq!(kcv.input(id::DEFAULT_COMMITMENT_LABEL, t.object.cfg()), digest[..16].to_vec());
     }
 
-    /// HMAC and DES3 commitments, each by its key type.
+    /// HMAC and DES3 keys are each checked by the commitment of their key type.
     #[test]
     fn hmac_and_des3_keys_are_their_commitments() {
         for (object, key, c) in [
