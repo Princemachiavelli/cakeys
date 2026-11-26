@@ -1,12 +1,12 @@
 //! Cross-reference tests: the same material on every reference token has the same identity, and
-//! the same scenario gets the same verdict. The references are `SoftHSM`, kryoptic (twice: raw
-//! and DER Edwards points), `SoftHSM` behind p11-kit forwarding, and tpm2-pkcs11 for the
-//! material `tpm2_ptool` can import.
+//! the same scenario gets the same verdict. The references are `SoftHSM`, kryoptic (twice: with
+//! raw and with DER Edwards points), `SoftHSM` behind p11-kit forwarding, and tpm2-pkcs11 for the
+//! material that `tpm2_ptool` can import.
 //!
 //! A reference takes part when its suite's variables are set (`CAKEYS_TEST_MODULE`,
 //! `CAKEYS_KRYOPTIC_MODULE`, `CAKEYS_P11KIT_CLIENT`, `CAKEYS_TPM_MODULE`, with the environment
-//! those suites' headers describe); a set `*_REQUIRE` makes a missing one a failure. Skipped
-//! with fewer than two references.
+//! that the headers of those suites describe). When a `*_REQUIRE` variable is set, a missing
+//! reference is a failure. The tests are skipped when fewer than two references take part.
 
 mod common;
 
@@ -25,11 +25,13 @@ const HMAC_VALUE: &[u8; 32] = b"cakeys cross-reference hmac key!";
 const DATA_VALUE: &[u8] = b"cakeys cross-reference data object";
 
 impl Env {
-    /// Lock `spec` on every reference into one lock: the first records the identity and each
-    /// other must match it (a different one would be 10). Every scheme two references both
-    /// compute reports the same ID, and each then verifies. The one identity is the host's:
-    /// each `(scheme, ID)` of `oracle` the references computed is that ID, and they computed at
-    /// least one (review references.rs F2: alike everywhere, a shared encoder bug passed).
+    /// Locks `spec` on every reference into one lock. The first reference records the identity,
+    /// and each other reference must match it (a different identity would exit 10). Every scheme
+    /// that two references both compute reports the same ID, and each reference then verifies.
+    /// The identity must also be the one that the host computes: each `(scheme, ID)` of `oracle`
+    /// that the references computed must have that ID, and the references must have computed at
+    /// least one of them (review references.rs F2: when the test only compared the references
+    /// with each other, an encoder bug that they all shared passed).
     fn assert_one_identity(&self, spec: &str, refs: &[&Ref], oracle: &[(&str, String)]) {
         let mut seen: BTreeMap<String, (serde_json::Value, &str)> = BTreeMap::new();
         for r in refs {
@@ -60,15 +62,15 @@ impl Env {
         }
     }
 
-    /// The host's `rfc7093m4` of the public key object under `label`, read from the first
-    /// reference that creates objects ([`oracle_spki`]).
+    /// Returns the `rfc7093m4` that the host computes for the public key object under `label`.
+    /// The object is read from the first reference that creates objects ([`oracle_spki`]).
     fn spki_id(&self, label: &str) -> (&'static str, String) {
         let source = self.refs.iter().find(|r| r.plant == Plant::Create).unwrap();
         let s = open_session(&source.module, source.token_label, "1234");
         ("rfc7093m4", sri(&oracle_spki(&s, label)))
     }
 
-    /// Plant through `C_CreateObject` on every `Create` reference.
+    /// Plants `objects` through `C_CreateObject` on every reference that plants with `Create`.
     fn create(&self, objects: &[Vec<Attribute>]) {
         for r in self.refs(|r| r.plant == Plant::Create) {
             let s = open_session(&r.module, r.token_label, "1234");
@@ -78,7 +80,8 @@ impl Env {
         }
     }
 
-    /// The P-256 fixture key pair under `label`: created, or imported on tpm2.
+    /// Plants the P-256 fixture key pair under `label`. The pair is created through
+    /// `C_CreateObject`, or imported on tpm2.
     fn plant_p256(&self, label: &str) {
         let (params, scalar, point) = ec_fixture(&pem_der(&format!("{FIXTURES}/tpm-import-p256.pem")));
         self.create(&ec_pair(KeyType::EC, &params, &scalar, &point, label));
@@ -99,8 +102,8 @@ fn label_of(template: &[Attribute]) -> String {
         .unwrap_or_default()
 }
 
-/// A private and a public key object over the same EC or Edwards material. The point is given
-/// DER-wrapped (the PKCS#11 2.40 form every module accepts).
+/// Returns a private and a public key object over the same EC or Edwards material. The point is
+/// DER-wrapped, because every module accepts that PKCS#11 2.40 form.
 fn ec_pair(kt: KeyType, params: &[u8], scalar: &[u8], point: &[u8], label: &str) -> [Vec<Attribute>; 2] {
     let common = |class| {
         vec![
@@ -118,8 +121,8 @@ fn ec_pair(kt: KeyType, params: &[u8], scalar: &[u8], point: &[u8], label: &str)
     [private, public]
 }
 
-/// Generate a key pair on `s` with readable material, read it out, and destroy it: material for
-/// the curves without a fixture.
+/// Generates a key pair on `s` with readable material, reads the material out, and destroys the
+/// key pair. This gives material for the curves that have no fixture.
 fn export_ec(s: &Session, kt: KeyType, params: &[u8], label: &str) -> (Vec<u8>, Vec<u8>) {
     let mech = if kt == KeyType::EC { Mechanism::EccKeyPairGen } else { Mechanism::EccEdwardsKeyPairGen };
     let l = Attribute::Label(label.as_bytes().to_vec());
@@ -140,7 +143,7 @@ fn export_ec(s: &Session, kt: KeyType, params: &[u8], label: &str) -> (Vec<u8>, 
     };
     s.destroy_object(private).unwrap();
     s.destroy_object(public).unwrap();
-    // Raw (PKCS#11 3.2) or DER-wrapped: keep the bare point.
+    // The module returns the point raw (PKCS#11 3.2) or DER-wrapped. Keep the bare point.
     let raw = match params {
         ED25519 => Some(32),
         ED448 => Some(57),
@@ -163,10 +166,10 @@ fn secret(kt: KeyType, value: &[u8], label: &str, usage: &[Attribute]) -> Vec<At
     t
 }
 
-/// Every key type the references share: the P-256 and RSA fixtures (also on tpm2), and P-384,
-/// P-521, Ed25519 and Ed448 keys exported from one reference into the others. Each private key
-/// proves possession where the reference can sign with it, and the public key object is
-/// identified on every reference (`publicOnly`).
+/// This test covers every key type that the references share: the P-256 and RSA fixtures (also on
+/// tpm2), and P-384, P-521, Ed25519 and Ed448 keys exported from one reference into the others.
+/// Each private key proves possession where the reference can sign with it, and the public key
+/// object is identified on every reference (`publicOnly`).
 #[test]
 fn asymmetric_material_has_one_identity_on_every_reference() {
     let Some(e) = env("asymmetric") else { return };
@@ -213,7 +216,8 @@ fn asymmetric_material_has_one_identity_on_every_reference() {
         ("ed25519", KeyType::EC_EDWARDS, ED25519, "edwards25519"),
         ("ed448", KeyType::EC_EDWARDS, ED448, "edwards448"),
     ];
-    // Export everything before planting: a module is initialised once per process at a time.
+    // Export all material before planting, because a process can initialise a module only once
+    // at a time.
     let material: Vec<_> =
         exported.iter().map(|(k, kt, params, _)| export_ec(&s, *kt, params, &format!("xref-src-{k}"))).collect();
     drop(s);
@@ -224,7 +228,7 @@ fn asymmetric_material_has_one_identity_on_every_reference() {
     let all = e.refs(|_| true);
     let created = e.refs(|r| r.plant != Plant::Ptool);
     let mut body = String::new();
-    // (spec, the references it is realised on, by name)
+    // Each case is (spec, the names of the references on which the spec is realised).
     let mut cases: Vec<(String, Vec<&str>)> = Vec::new();
     let mut add = |k: &str, object: &str, signers: &[&Ref], publics: &[&Ref], binding: &str| {
         let attrs = "attributes = { CKA_SIGN = true }\n";
@@ -246,7 +250,8 @@ fn asymmetric_material_has_one_identity_on_every_reference() {
     for (k, kt, _, curve) in exported {
         let kt = if kt == KeyType::EC { "CKK_EC" } else { "CKK_EC_EDWARDS" };
         match k {
-            // No Ed448 verifier on the host: possession is the token's word everywhere.
+            // The host has no Ed448 verifier, so no reference proves possession of the Ed448
+            // key, and the binding is `token-asserted` everywhere.
             "ed448" => add(k, &ec(k, kt, curve), &created, &created, ", binding = \"token-asserted\""),
             "ed25519" => add(k, &ec(k, kt, curve), &eddsa, &created, ""),
             _ => add(k, &ec(k, kt, curve), &created, &created, ""),
@@ -260,7 +265,8 @@ fn asymmetric_material_has_one_identity_on_every_reference() {
     }
 }
 
-/// The host's `commitment` of a 256-bit secret of `key_type` (HMAC-SHA256 of its label).
+/// Returns the `commitment` that the host computes for a 256-bit secret of `key_type`: the
+/// HMAC-SHA256, under the secret, of the commitment label for `key_type`.
 fn commitment(key: &[u8], key_type: &str) -> (&'static str, String) {
     use hmac::Mac as _;
     let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::KeyInit>::new_from_slice(key).unwrap();
@@ -268,9 +274,9 @@ fn commitment(key: &[u8], key_type: &str) -> (&'static str, String) {
     ("commitment", sri(&mac.finalize().into_bytes()))
 }
 
-/// Secret keys with known values commit alike: AES (`cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`
-/// where the reference offers each), a generic secret and an HMAC-SHA256 key (also on tpm2) —
-/// the same `commitment` everywhere.
+/// Secret keys with known values give the same commitments on every reference: AES (`cmac`,
+/// `kcv-ecb`, `kcv-ecb-dec`, and `kw` where the reference offers each), a generic secret, and an
+/// HMAC-SHA256 key (also on tpm2), which have the same `commitment` everywhere.
 #[test]
 fn secret_material_commits_alike_on_every_reference() {
     let Some(e) = env("secret") else { return };
@@ -311,7 +317,7 @@ fn secret_material_commits_alike_on_every_reference() {
 }
 
 /// A certificate (`certhash` and its subject key's `rfc7093m4`) and a public data object
-/// (`valuehash`) hash alike.
+/// (`valuehash`) give the same hashes on every reference.
 #[test]
 fn certificates_and_data_objects_hash_alike_on_every_reference() {
     let Some(e) = env("adopted") else { return };
@@ -344,10 +350,10 @@ fn certificates_and_data_objects_hash_alike_on_every_reference() {
     e.assert_one_identity("data", &created, &[("valuehash", sri(DATA_VALUE))]);
 }
 
-/// The same scenario, the same verdict on every reference: nothing under the locator (11), two
-/// objects under it (12), material of another type (13), and a private key swapped under a
-/// recorded locator (13, through the proof of possession or the `CKA_PUBLIC_KEY_INFO`
-/// cross-check, `tests/reference/`).
+/// The same scenario gives the same verdict on every reference: nothing under the locator (11),
+/// two objects under it (12), material of another type (13), and a private key swapped under a
+/// recorded locator (13, through the proof of possession or through the `CKA_PUBLIC_KEY_INFO`
+/// cross-check, as in `tests/reference/`).
 #[test]
 fn the_same_scenario_gets_the_same_verdict_on_every_reference() {
     let Some(e) = env("verdicts") else { return };
@@ -399,15 +405,16 @@ fn the_same_scenario_gets_the_same_verdict_on_every_reference() {
     assert!(swapped.values().all(|v| *v == (13, true)), "swap: want 13 everywhere, got {swapped:?}");
 }
 
-/// `origin` (keys.toml): an object on several tokens is born on the pair that says `create`.
-/// `create` makes it there only, says the `import` pair gets it from camigrate, and refuses that
-/// pair by name (17) before touching it.
+/// `origin` (keys.toml): an object on several tokens is created on the pair whose origin is
+/// `create`. `create` makes the object only there, prints that the `import` pair gets the material
+/// from camigrate, and refuses that pair by name (17) before it touches the pair.
 #[test]
 fn create_happens_where_origin_says_create() {
     let Some(e) = env("create-on") else { return };
     let Some([soft, kry]) = e.needs("create-on", ["softhsm", "kryoptic"]) else {
-        // Skipped only where neither is required: a run that requires them both (the check
-        // phase) fails here instead of passing with nothing created (review references.rs F1).
+        // The test is skipped only when neither reference is required. A run that requires both
+        // (the check phase) fails here instead of passing with nothing created (review
+        // references.rs F1).
         for require in ["CAKEYS_TEST_REQUIRE", "CAKEYS_KRYOPTIC_REQUIRE"] {
             assert!(
                 std::env::var_os(require).is_none(),
