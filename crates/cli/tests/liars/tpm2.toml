@@ -23,14 +23,17 @@
 # Tokens `tpm`, `tpm-b` and `tpm-ek` are the one token, told no store exists: the module certifies.
 
 [objects.ec-sign]
-class = "private" # locked on tpm and on tpm-b: a lock certifies, compares and writes nothing
+token = "tpm"
+class = "private" # locked, also on tpm-b by spec ec-sign-b: a lock compares and writes nothing
 
 [objects.ec-adopt]
+token = "tpm"
 class = "private"
 # not locked: an honest lock pins it, a refused one writes nothing
 honest = 22
 
 [objects.aes]
+token = "tpm"
 class = "secret"
 # the module's certify cannot bind a secret key to its commitment
 honest = 15
@@ -41,15 +44,16 @@ token = "tpm-ek"
 # tpm-ek's ekCertificate, which the module's certify cannot chain the AK to
 honest = 15
 
-# ── Verbs. `lock --spec` locks ec-sign on both its tokens, the one on tpm first: two certifies in
-# one process, so the shim holds the first statement when the second is asked for.
+# ── Verbs. `lock --spec --spec` locks ec-sign on tpm, then spec ec-sign-b of the same object on
+# tpm-b: two certifies of one key in one process, so the shim holds the first statement when the
+# second is asked for.
 
 [verbs.lock]
 args = ["lock", "--spec", "{spec}", "--token", "{token}"]
 rows = true
 
-[verbs."lock --spec"]
-args = ["lock", "--spec", "{spec}"]
+[verbs."lock --spec --spec"]
+args = ["lock", "--spec", "{spec}", "--spec", "{spec}-b"]
 rows = true
 pairs = 2
 
@@ -130,7 +134,7 @@ expect = { exit = 13 }
 # The nonce (the statement's extraData, this run's).
 [[block]]
 lies = ["forge.certify.replay"]
-verbs = ["lock --spec"]
+verbs = ["lock --spec --spec"]
 objects = ["ec-sign"]
 expect = { exit = 13 }
 
@@ -172,12 +176,12 @@ why = "a secret key is refused (15) before the module certifies: other.certify's
 
 [[na]]
 classes = ["FORGE", "OTHER"]
-verbs = ["lock --spec"]
+verbs = ["lock --spec --spec"]
 objects = ["secret"]
-why = "lock --spec is the replay's: a statement of one key twice, on two tokens; a secret key is refused before either"
+why = "lock --spec --spec is the replay's: a statement of one key twice, through two specs; a secret key is refused before either"
 
 [[na]]
 classes = ["OTHER"]
-verbs = ["lock --spec"]
+verbs = ["lock --spec --spec"]
 objects = ["private"]
 why = "another object certified on a pair is other.certify's lock cell: a second pair adds nothing"

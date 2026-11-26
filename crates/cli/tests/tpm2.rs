@@ -1452,9 +1452,10 @@ fn tpm2_vendor_attestation_liars() {
 
 /// `tests/liars/tpm2.toml`'s fixture on the vendor `module`: each object made by `tpm2_ptool`
 /// beside its decoy `<name>-other`; tokens `tpm` and `tpm-b`, the one token behind the shim, told
-/// no store exists (the module certifies), and `tpm-ek` with an `ekCertificate`; `ec-sign` placed
-/// on both `tpm` and `tpm-b` and locked on both, which provisions the Attestation Key. What a
-/// planting run broke of the runner's invariants.
+/// no store exists (the module certifies), and `tpm-ek` with an `ekCertificate`; `ec-sign` also
+/// placed on `tpm-b` by spec `ec-sign-b` (a verb's address is one token: two specs make two pairs),
+/// and both locked, which provisions the Attestation Key. What a planting run broke of the
+/// runner's invariants.
 fn vendor_liars(module: String, table: &liars::Table) -> (liars::Fixture, Vec<String>) {
     use std::fmt::Write as _;
     let w = Workdir::new("tpm2-vendor-liars");
@@ -1484,18 +1485,19 @@ fn vendor_liars(module: String, table: &liars::Table) -> (liars::Fixture, Vec<St
             ),
             class => panic!("the fixture has no {class} object"),
         };
-        let _ = write!(
-            config,
-            "[objects.{name}]\n{kind}\n\n[specs.{name}]\nobject = \"{name}\"\nattributes = {{ {attributes} }}\n"
-        );
-        let tokens = if name == "ec-sign" { vec!["tpm", "tpm-b"] } else { vec![o.token.as_str()] };
-        for t in tokens {
+        let _ = writeln!(config, "[objects.{name}]\n{kind}\n");
+        let specs = if name == "ec-sign" {
+            vec![(name.clone(), "tpm"), (format!("{name}-b"), "tpm-b")]
+        } else {
+            vec![(name.clone(), o.token.as_str())]
+        };
+        for (spec, t) in specs {
             let _ = writeln!(
                 config,
-                "tokens.{t} = {{ locator = {{ CKA_LABEL = \"{name}\" }}, origin = \"adopt\", attestation = true{binding} }}"
+                "[specs.{spec}]\nobject = \"{name}\"\nattributes = {{ {attributes} }}\n\
+                 tokens.{t} = {{ locator = {{ CKA_LABEL = \"{name}\" }}, origin = \"adopt\", attestation = true{binding} }}\n"
             );
         }
-        config.push('\n');
         for label in [name.clone(), format!("{name}-other")] {
             ptool(&["addkey", &format!("--algorithm={algorithm}"), &format!("--key-label={label}")]);
         }
@@ -1504,9 +1506,9 @@ fn vendor_liars(module: String, table: &liars::Table) -> (liars::Fixture, Vec<St
     w.write_config(&config);
     let f = liars::Fixture { w, real: module, planted: Vec::new() };
     let mut wrong = Vec::new();
-    for t in ["tpm", "tpm-b"] {
-        let (out, problems) = f.held(&["lock", "--spec", "ec-sign", "--token", t], None, None);
-        assert_eq!(code(&out), 22, "planting ec-sign on {t}: {}", stderr(&out));
+    for spec in ["ec-sign", "ec-sign-b"] {
+        let (out, problems) = f.held(&["lock", "--spec", spec], None, None);
+        assert_eq!(code(&out), 22, "planting {spec}: {}", stderr(&out));
         wrong.extend(problems);
     }
     let planted = std::fs::read(f.lock()).unwrap();
