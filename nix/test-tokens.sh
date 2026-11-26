@@ -58,7 +58,7 @@ for a in "$@"; do
   prev=$a
 done
 case $suite/$test in
-fault/* | liars/* | provider_contract/k5_a_destroy_the_module_did_not_do_keeps_the_lock | reference/kryoptic_committed_profile_is_what_the_probe_observes | tpm2/tpm2_attestation_says_what_it_lacks | tpm2/tpm2_identity_failure_after_create_leaves_nothing | dry_run/a_failed_reopen_after_ptool_says_what_is_in_the_tpm) untraced=1 ;;
+fault/* | liars/* | provider_contract/k5_a_destroy_the_module_did_not_do_keeps_the_lock | reference/kryoptic_committed_profile_is_what_the_probe_observes | tpm2/tpm2_attestation_says_what_it_lacks | tpm2/tpm2_identity_failure_after_create_leaves_nothing | tpm2/tpm2_vendor_attestation_liars | dry_run/a_failed_reopen_after_ptool_says_what_is_in_the_tpm) untraced=1 ;;
 *) untraced= ;;
 esac
 if [ -n "${CAKEYS_TRACE_DIR:-}" ] && [ -z "$untraced" ]; then

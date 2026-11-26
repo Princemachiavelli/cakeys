@@ -2,7 +2,7 @@
 //! object matrix's tables, the coverage file, the baseline (docs/DEVELOPMENT.md, "Golden
 //! files"). The code under test writes them, so a regeneration that replaces the committed file
 //! moves the expectation with the code (review 2026-11-24 C-8). Every writer goes through
-//! [`write`]: a file that is not there yet is written, but one that is is replaced only when the
+//! [`write`](fn@write): a file that is not there yet is written, but one that is is replaced only when the
 //! regeneration is accepted (`caprobe probe --accept`, or [`ACCEPT`] for a `CAKEYS_UPDATE_*`
 //! run). Otherwise the text goes beside it, as `<file>.new`, for its moved rows to be read
 //! (`nix/golden-rows.py --stub`) and recorded in profiles/LEDGER.toml before it is accepted.
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// The variable that accepts a `CAKEYS_UPDATE_*` run's regeneration: set, it replaces the file.
 pub const ACCEPT: &str = "CAKEYS_ACCEPT";
 
-/// What [`write`] did.
+/// What [`write`](fn@write) did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Written {
     /// The file already held the text: nothing was written.

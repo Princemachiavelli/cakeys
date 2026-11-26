@@ -65,6 +65,9 @@ pub struct Object {
     /// Whether it is put on the token through the module and recorded by `lock`, never
     /// created (a certificate, a data object, a public key).
     pub adopted: bool,
+    /// The exit every honest run on it has, where that is not the verb's own ([`Fixture::honest`]):
+    /// a refusal of its token's options, which no lie changes, or a lock of one not yet locked.
+    pub honest: Option<i32>,
 }
 
 /// A verb: an entry path a cell runs.
@@ -74,6 +77,9 @@ pub struct Verb {
     /// Whether it prints a row per pair (`lock`, `create`, `delete`): the oracle reads the
     /// rule and the device bit there. One that does not (`check`) prints nothing when refused.
     pub rows: bool,
+    /// The pairs it runs (default 1): a refused run's rows end at the refused one, the rows
+    /// before it passing; a passing run prints one per pair.
+    pub pairs: usize,
 }
 
 /// A lie: its class, and its plan, with `{label}`, `{other}` (`{label}-other`) and
@@ -258,8 +264,9 @@ impl Table {
                 let token = t.get("token").and_then(toml::Value::as_str).unwrap_or("ref").to_owned();
                 let made = t.get("made").and_then(toml::Value::as_bool).unwrap_or(true);
                 let adopted = t.get("adopted").and_then(toml::Value::as_bool).unwrap_or(false);
+                let honest = t.get("honest").and_then(toml::Value::as_integer).map(|n| i32::try_from(n).unwrap());
                 let class = string(t, "class", &format!("objects.{name}"));
-                (name, Object { class, token, made, adopted })
+                (name, Object { class, token, made, adopted, honest })
             })
             .collect();
         let verbs = section("verbs")
@@ -268,7 +275,8 @@ impl Table {
                 let t = v.as_table().unwrap_or_else(|| panic!("verbs.{name}"));
                 let args = list(t.get("args"), &format!("verbs.{name}"));
                 let rows = t.get("rows").and_then(toml::Value::as_bool).unwrap_or(false);
-                (name, Verb { args, rows })
+                let pairs = t.get("pairs").and_then(toml::Value::as_integer).map_or(1, |n| usize::try_from(n).unwrap());
+                (name, Verb { args, rows, pairs })
             })
             .collect();
         let lies = section("lies")
@@ -317,6 +325,11 @@ impl Table {
     /// cakeys' own table.
     pub fn cakeys() -> Table {
         Table::load("tests/liars/cakeys.toml")
+    }
+
+    /// The table of tpm2-pkcs11's own attestation (`CKM_TPM2_CERTIFY`), run by `tests/tpm2.rs`.
+    pub fn tpm2() -> Table {
+        Table::load("tests/liars/tpm2.toml")
     }
 
     /// Every cell, in the table's order.
@@ -386,6 +399,9 @@ impl Table {
             let (Some(verb), Some(object)) = (self.verbs.get(&c.verb), self.objects.get(&c.object)) else { continue };
             let e = &c.expect;
             let refused = e.exit.iter().any(|x| !matches!(x, 0 | 22));
+            if verb.pairs == 0 || (verb.pairs > 1 && !verb.rows) {
+                out.push(format!("{id}: {} runs {} pairs, and its rows say which", c.verb, verb.pairs));
+            }
             if !verb.rows && (e.rule.is_some() || e.device || e.outcome.is_some() || e.deferred.is_some()) {
                 out.push(format!("{id}: {} prints no row to name a rule, a device or an outcome", c.verb));
             }
@@ -693,6 +709,11 @@ impl Fixture {
         }
     }
 
+    /// The shim's module, for each run: the process's `P11_FAULT_MODULE` is the liar suite's only.
+    fn module(&self) -> (&'static str, &Path) {
+        ("P11_FAULT_MODULE", Path::new(&self.real))
+    }
+
     /// The lock file.
     pub fn lock(&self) -> PathBuf {
         self.w.dir.join("keys.lock")
@@ -718,7 +739,7 @@ impl Fixture {
     /// changed nothing. Returns the run, and what broke an invariant.
     pub fn held(&self, args: &[&str], plan: Option<(&Path, &Path)>, record: Option<&Path>) -> (Output, Vec<String>) {
         let before = self.state();
-        let mut env: Vec<(&str, &Path)> = Vec::new();
+        let mut env: Vec<(&str, &Path)> = vec![self.module()];
         if let Some((plan, trace)) = plan {
             env.extend([("P11_FAULT_PLAN", plan), ("P11_FAULT_TRACE", trace)]);
         } else if let Some(trace) = record {
@@ -743,11 +764,12 @@ impl Fixture {
         table.verbs[verb].args.iter().map(|a| a.replace("{spec}", object).replace("{token}", token)).collect()
     }
 
-    /// The exit an honest run of `verb` on `object` has: 22 for a verb that writes (a delete, a
-    /// creation of an object not made), else 0.
+    /// The exit an honest run of `verb` on `object` has: the object's own ([`Object::honest`]),
+    /// else 22 for a verb that writes (a delete, a creation of an object not made), else 0.
     fn honest_exit(table: &Table, verb: &str, object: &str) -> i32 {
-        let writes = verb == "delete" || (verb == "create" && !table.objects[object].made);
-        if writes { 22 } else { 0 }
+        let o = &table.objects[object];
+        let writes = verb == "delete" || (verb == "create" && !o.made);
+        o.honest.unwrap_or(if writes { 22 } else { 0 })
     }
 
     /// `verb` on `object` with no plan through the shim: it exits as an honest run does, and
@@ -788,7 +810,7 @@ impl Fixture {
             let probe = self.w.dir.join(format!("cell-{n}-probe.jsonl"));
             std::fs::write(&plan, format!("[[rule]]\nfn = \"{function}\"\nnth = 1\nrv = \"CKR_DEVICE_REMOVED\"\n"))
                 .unwrap();
-            let _ = self.w.km_env(&args, &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &probe)]);
+            let _ = self.w.km_env(&args, &[self.module(), ("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &probe)]);
             let Some(seq) = fired(&probe).first().and_then(|l| l["seq"].as_u64()) else {
                 return vec![format!("{id}: the run never calls {function}")];
             };
@@ -798,7 +820,7 @@ impl Fixture {
         std::fs::write(&plan, &text).unwrap();
         let before = self.state();
         let mut wrong = Vec::new();
-        let out = self.w.km_env(&args, &[("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)]);
+        let out = self.w.km_env(&args, &[self.module(), ("P11_FAULT_PLAN", &plan), ("P11_FAULT_TRACE", &trace)]);
         let after = self.state();
         let said = || {
             format!("{}{}", stdout(&out), stderr(&out).lines().last().map(|l| format!(" / {l}")).unwrap_or_default())
@@ -822,28 +844,33 @@ impl Fixture {
         if verb.rows {
             match serde_json::from_slice::<Vec<Row>>(&out.stdout) {
                 Err(e) => wrong.push(format!("no rows on stdout ({e})")),
-                Ok(rows) => match rows.as_slice() {
-                    [row] if refused => {
+                Ok(rows) => match rows.split_last() {
+                    Some((row, passed)) if refused && rows.len() <= verb.pairs => {
                         let got = (i32::from(row.exit), row.rule.as_deref(), row.device);
                         let want = (exit.unwrap_or(-1), e.rule.as_deref(), e.device);
                         if got != want {
                             wrong.push(format!("the row says (exit, rule, device) {got:?}, not {want:?}"));
                         }
-                    }
-                    [row] => {
-                        if row.exit != 0 || row.rule.is_some() {
-                            wrong.push(format!("a passing run's row is refused: {row:?}"));
-                        }
-                        if let Some(o) = e.outcome.as_deref().filter(|o| *o != row.outcome) {
-                            wrong.push(format!("the row's outcome is {}, not {o}", row.outcome));
-                        }
-                        if let Some(d) = &e.deferred
-                            && !row.deferred.iter().any(|r| &r.rule == d)
-                        {
-                            wrong.push(format!("the dry run defers {:?}, not {d}", row.deferred));
+                        if let Some(row) = passed.iter().find(|r| r.exit != 0 || r.rule.is_some()) {
+                            wrong.push(format!("a row before the refused one is refused: {row:?}"));
                         }
                     }
-                    rows => wrong.push(format!("{} rows, not one", rows.len())),
+                    Some(_) if !refused && rows.len() == verb.pairs => {
+                        for row in &rows {
+                            if row.exit != 0 || row.rule.is_some() {
+                                wrong.push(format!("a passing run's row is refused: {row:?}"));
+                            }
+                            if let Some(o) = e.outcome.as_deref().filter(|o| *o != row.outcome) {
+                                wrong.push(format!("the row's outcome is {}, not {o}", row.outcome));
+                            }
+                            if let Some(d) = &e.deferred
+                                && !row.deferred.iter().any(|r| &r.rule == d)
+                            {
+                                wrong.push(format!("the dry run defers {:?}, not {d}", row.deferred));
+                            }
+                        }
+                    }
+                    _ => wrong.push(format!("{} rows, of {} pairs", rows.len(), verb.pairs)),
                 },
             }
         } else if refused && !out.stdout.is_empty() {
@@ -894,27 +921,7 @@ pub fn run_class(class: &str) {
     assert!(!cells.is_empty(), "no cell of class {class}: its points are na, and its test goes");
     let mut wrong = Vec::new();
     let Some(f) = Fixture::plant(&format!("liars-{}", class.to_lowercase()), &table, None, &mut wrong) else { return };
-    let met: BTreeSet<(&str, &str)> = cells.iter().map(|c| (c.verb.as_str(), c.object.as_str())).collect();
-    let reads: Vec<(&str, &str)> =
-        met.iter().copied().filter(|(v, o)| Fixture::honest_exit(&table, v, o) == 0).collect();
-    for (verb, object) in &reads {
-        wrong.extend(f.honest(&table, verb, object));
-    }
-    for (n, cell) in cells.iter().enumerate() {
-        let judged = f.judge(&table, cell, n);
-        match &cell.expect.red {
-            None => wrong.extend(judged),
-            Some(red) if judged.is_empty() => wrong.push(format!("{}: marked red ({red}), and passes", cell.id())),
-            Some(red) => eprintln!("red as marked ({red}):\n{}", judged.join("\n")),
-        }
-        f.restore(&table);
-    }
-    for (verb, object) in &reads {
-        wrong.extend(f.honest(&table, verb, object));
-    }
-    for (verb, object) in met.iter().filter(|(v, o)| Fixture::honest_exit(&table, v, o) == 22) {
-        wrong.extend(f.honest(&table, verb, object));
-    }
+    wrong.extend(run_cells(&table, &cells, &f));
     assert!(
         wrong.is_empty(),
         "{} wrong in the {} cells of {class} and their runs:\n{}",
@@ -922,4 +929,33 @@ pub fn run_class(class: &str) {
         cells.len(),
         wrong.join("\n")
     );
+}
+
+/// [`run_class`]'s runs of `cells` on the fixture `f` planted of `table`, with no assertion: what
+/// is wrong. A run that writes honestly ends them, so `f` is [`Fixture::restore`]d before another.
+pub fn run_cells(table: &Table, cells: &[Cell], f: &Fixture) -> Vec<String> {
+    let mut wrong = Vec::new();
+    let met: BTreeSet<(&str, &str)> = cells.iter().map(|c| (c.verb.as_str(), c.object.as_str())).collect();
+    // What an honest run leaves as it was: every run but a write, a refusal (15) too.
+    let reads: Vec<(&str, &str)> =
+        met.iter().copied().filter(|(v, o)| Fixture::honest_exit(table, v, o) != 22).collect();
+    for (verb, object) in &reads {
+        wrong.extend(f.honest(table, verb, object));
+    }
+    for (n, cell) in cells.iter().enumerate() {
+        let judged = f.judge(table, cell, n);
+        match &cell.expect.red {
+            None => wrong.extend(judged),
+            Some(red) if judged.is_empty() => wrong.push(format!("{}: marked red ({red}), and passes", cell.id())),
+            Some(red) => eprintln!("red as marked ({red}):\n{}", judged.join("\n")),
+        }
+        f.restore(table);
+    }
+    for (verb, object) in &reads {
+        wrong.extend(f.honest(table, verb, object));
+    }
+    for (verb, object) in met.iter().filter(|(v, o)| Fixture::honest_exit(table, v, o) == 22) {
+        wrong.extend(f.honest(table, verb, object));
+    }
+    wrong
 }
