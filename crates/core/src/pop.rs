@@ -330,7 +330,7 @@ mod tests {
         let k2 = SigningKey::from_slice(&[2u8; 32]).unwrap();
         let spki = k1.verifying_key().to_public_key_der().unwrap();
         let msg = message(spki.as_bytes(), &[0u8; 32]);
-        let digest = HashAlg::Sha256.digest(&msg);
+        let digest = sig::digest(HashAlg::Sha256, &msg);
         let good: Signature = k1.sign_prehash(&digest).unwrap();
         let other: Signature = k2.sign_prehash(&digest).unwrap();
         verify(spki.as_bytes(), &msg, &good.to_bytes(), V15).unwrap();

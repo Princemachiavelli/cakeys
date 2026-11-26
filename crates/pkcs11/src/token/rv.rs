@@ -121,10 +121,11 @@ pub fn refused_unless_device(msg: Msg, refused: impl FnOnce(Msg) -> KmError) -> 
     if msg.rv().is_some_and(device_failed_rv) { KmError::Unavailable(msg) } else { refused(msg) }
 }
 
-/// [`device_failed`]'s return values: those `cakeys_profile::DEVICE_FAILED_RV` names, so a
-/// profile row citing one and the token's own error agree (phase1-design §2.5).
+/// [`device_failed`]'s return values: those the names table names
+/// (`cakeys_names::DEVICE_FAILED_RV`), so a profile row citing one and the token's own error
+/// agree (phase1-design §2.5). This crate only reads cryptoki's error for its name.
 fn device_error(rv: RvError) -> bool {
-    cakeys_profile::DEVICE_FAILED_RV.contains(&rv_error_name(rv).as_str())
+    cakeys_names::is_device_failure(&rv_error_name(rv))
 }
 
 /// An optional attribute read: `None` where the object lacks the attribute or the module
@@ -191,14 +192,14 @@ mod tests {
             RvError::CryptokiNotInitialized,
             RvError::FunctionCanceled,
         ];
-        for name in cakeys_profile::DEVICE_FAILED_RV {
+        for name in cakeys_names::DEVICE_FAILED_RV {
             let v = p11_names::rv(name).unwrap_or_else(|| panic!("{name} is no CKR_*"));
             let Rv::Error(rv) = Rv::from(v) else { panic!("{name}") };
             assert!(pinned.contains(&rv), "{name}");
             assert!(device_failed(&CkError::Pkcs11(rv, Function::Initialize)), "{name}");
             assert!(device_failed_rv(v), "{name}");
         }
-        assert_eq!(pinned.len(), cakeys_profile::DEVICE_FAILED_RV.len());
+        assert_eq!(pinned.len(), cakeys_names::DEVICE_FAILED_RV.len());
         let refused = CkError::Pkcs11(RvError::MechanismInvalid, Function::GenerateKey);
         assert!(!device_failed(&refused));
     }
@@ -217,7 +218,7 @@ mod tests {
             assert_eq!(matches!(e, KmError::Unavailable(_)), device_failed_rv(v), "{}: {e:?}", rv_value_name(v));
             assert_eq!(matches!(e, KmError::Unsupported(_)), !device_failed_rv(v), "{}: {e:?}", rv_value_name(v));
         }
-        for name in cakeys_profile::DEVICE_FAILED_RV {
+        for name in cakeys_names::DEVICE_FAILED_RV {
             assert!(matches!(unsupported(p11_names::rv(name).unwrap()), KmError::Unavailable(_)), "{name}");
         }
         let none = refused_unless_device(Msg::from("no call".to_owned()), KmError::Unsupported);

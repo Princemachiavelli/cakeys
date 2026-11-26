@@ -49,39 +49,18 @@ fn checked<E: std::fmt::Display>(r: Result<(), E>) -> Result<(), Refused> {
     r.map_err(|e| Refused::Signature(e.to_string()))
 }
 
-/// A SHA-2 hash a signature is made over: ECDSA's on each Weierstrass curve, the one matching
-/// its strength (FIPS 186-5, [`HashAlg::for_curve`]), and an RSA PKCS#1 v1.5 or PSS signature's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HashAlg {
-    /// SHA-256: P-256, secp256k1, brainpoolP256r1.
-    Sha256,
-    /// SHA-384: P-384, brainpoolP384r1.
-    Sha384,
-    /// SHA-512: P-521.
-    Sha512,
-}
+/// A SHA-2 hash a signature is made over (`cakeys_names::HashAlg`): ECDSA's on each Weierstrass
+/// curve, the one matching its strength ([`HashAlg::for_curve`], the one table the token's
+/// signature and this module's check both read), and an RSA PKCS#1 v1.5 or PSS signature's.
+pub use cakeys_names::HashAlg;
 
-impl HashAlg {
-    /// The hash for ECDSA on `curve`; `None` for an Edwards curve, which hashes inside the
-    /// signature.
-    #[must_use]
-    pub fn for_curve(curve: Curve) -> Option<HashAlg> {
-        match curve {
-            Curve::P256 | Curve::Secp256k1 | Curve::BrainpoolP256r1 => Some(HashAlg::Sha256),
-            Curve::P384 | Curve::BrainpoolP384r1 => Some(HashAlg::Sha384),
-            Curve::P521 => Some(HashAlg::Sha512),
-            Curve::Ed25519 | Curve::Ed448 => None,
-        }
-    }
-
-    /// `msg` hashed with this hash.
-    #[must_use]
-    pub fn digest(self, msg: &[u8]) -> Vec<u8> {
-        match self {
-            HashAlg::Sha256 => Sha256::digest(msg).to_vec(),
-            HashAlg::Sha384 => Sha384::digest(msg).to_vec(),
-            HashAlg::Sha512 => Sha512::digest(msg).to_vec(),
-        }
+/// `msg` hashed with `hash`.
+#[must_use]
+pub fn digest(hash: HashAlg, msg: &[u8]) -> Vec<u8> {
+    match hash {
+        HashAlg::Sha256 => Sha256::digest(msg).to_vec(),
+        HashAlg::Sha384 => Sha384::digest(msg).to_vec(),
+        HashAlg::Sha512 => Sha512::digest(msg).to_vec(),
     }
 }
 
@@ -99,7 +78,7 @@ pub enum Encoding {
 /// secp256k1's verifier insists on the low one, so it is normalized first.
 #[must_use]
 pub fn ecdsa(spki: &[u8], msg: &[u8], sig: &[u8], encoding: Encoding, hash: Option<HashAlg>) -> Verdict {
-    ecdsa_over(spki, sig, encoding, |own| hash.unwrap_or(own).digest(msg))
+    ecdsa_over(spki, sig, encoding, |own| digest(hash.unwrap_or(own), msg))
 }
 
 /// ECDSA over `digest`, a hash the caller computed of a hash [`HashAlg`] does not name
@@ -110,7 +89,9 @@ pub fn ecdsa_prehash(spki: &[u8], digest: &[u8], sig: &[u8], encoding: Encoding)
     ecdsa_over(spki, sig, encoding, |_| digest.to_vec())
 }
 
-/// [`ecdsa()`] with the digest `digest` computes from the curve's own hash.
+/// [`ecdsa()`] with the digest `digest` computes from the curve's own hash, which
+/// [`HashAlg::for_curve`] names: the hash the token was asked to sign with (review 2026-11-24
+/// A-8). Only the `RustCrypto` type is per curve here.
 fn ecdsa_over(spki: &[u8], sig: &[u8], encoding: Encoding, digest: impl FnOnce(HashAlg) -> Vec<u8>) -> Verdict {
     macro_rules! curve {
         ($curve:ty, $own:expr, $info:expr) => {{
@@ -130,17 +111,18 @@ fn ecdsa_over(spki: &[u8], sig: &[u8], encoding: Encoding, digest: impl FnOnce(H
             Some(checked(ecdsa::VerifyingKey::<$curve>::from(k).verify_prehash(&digest, &sig)))
         }};
     }
-    // The curve the key's OIDs name (ISSUES.md Q20), the SPKI decoded once; any other key is no
-    // ECDSA key.
-    let (alg, info) = KeyAlg::read_spki(spki).ok()?;
-    match alg {
-        KeyAlg::Ec(Curve::P256) => curve!(p256::NistP256, HashAlg::Sha256, info),
-        KeyAlg::Ec(Curve::P384) => curve!(p384::NistP384, HashAlg::Sha384, info),
-        KeyAlg::Ec(Curve::P521) => curve!(p521::NistP521, HashAlg::Sha512, info),
-        KeyAlg::Ec(Curve::Secp256k1) => curve!(k256::Secp256k1, HashAlg::Sha256, info),
-        KeyAlg::Ec(Curve::BrainpoolP256r1) => curve!(bp256::BrainpoolP256r1, HashAlg::Sha256, info),
-        KeyAlg::Ec(Curve::BrainpoolP384r1) => curve!(bp384::BrainpoolP384r1, HashAlg::Sha384, info),
-        KeyAlg::Ec(Curve::Ed25519 | Curve::Ed448) | KeyAlg::Rsa => None,
+    // The curve the key's OIDs name (ISSUES.md Q20), the SPKI decoded once; any other key, an
+    // Edwards one included (no ECDSA hash), is no ECDSA key.
+    let (KeyAlg::Ec(c), info) = KeyAlg::read_spki(spki).ok()? else { return None };
+    let own = HashAlg::for_curve(c)?;
+    match c {
+        Curve::P256 => curve!(p256::NistP256, own, info),
+        Curve::P384 => curve!(p384::NistP384, own, info),
+        Curve::P521 => curve!(p521::NistP521, own, info),
+        Curve::Secp256k1 => curve!(k256::Secp256k1, own, info),
+        Curve::BrainpoolP256r1 => curve!(bp256::BrainpoolP256r1, own, info),
+        Curve::BrainpoolP384r1 => curve!(bp384::BrainpoolP384r1, own, info),
+        Curve::Ed25519 | Curve::Ed448 => None,
     }
 }
 
@@ -192,7 +174,7 @@ mod tests {
         use pkcs8::EncodePublicKey;
         let k = SigningKey::from_slice(&[3u8; 32]).unwrap();
         let spki = k.verifying_key().to_public_key_der().unwrap();
-        let s: Signature = k.sign_prehash(&HashAlg::Sha384.digest(b"m")).unwrap();
+        let s: Signature = k.sign_prehash(&digest(HashAlg::Sha384, b"m")).unwrap();
         assert_eq!(ecdsa(spki.as_bytes(), b"m", &s.to_bytes(), Encoding::Raw, Some(HashAlg::Sha384)), Some(Ok(())));
         assert_eq!(
             ecdsa(spki.as_bytes(), b"m", s.to_der().as_bytes(), Encoding::Der, Some(HashAlg::Sha384)),
@@ -211,6 +193,49 @@ mod tests {
         );
         assert_eq!(rsa_pkcs1v15::<Sha256>(spki.as_bytes(), b"m", &s.to_bytes()), None);
         assert_eq!(ed25519(spki.as_bytes(), b"m", &s.to_bytes()), None);
+    }
+
+    /// On every curve, what the token is asked to sign with ([`HashAlg::for_curve`], as
+    /// `Token::prove_sign` asks it) is what the host verifies with (`ecdsa(.., None)`), and it
+    /// is the hash as long as the curve's field, SHA-512 for P-521's 66 bytes: the curve crate's
+    /// size, not this table (review 2026-11-24 A-8). Each curve signs with its own crate.
+    #[test]
+    fn every_curve_verifies_with_the_hash_it_signs_with() {
+        use elliptic_curve::array::typenum::Unsigned;
+        use pkcs8::EncodePublicKey;
+        macro_rules! signs {
+            ($curve:ty, $c:expr) => {{
+                let field = <<$curve as elliptic_curve::Curve>::FieldBytesSize as Unsigned>::USIZE;
+                let key = ecdsa::SigningKey::<$curve>::from_slice(&vec![1u8; field]).unwrap();
+                let spki = key.verifying_key().to_public_key_der().unwrap();
+                let hash = HashAlg::for_curve($c).unwrap_or_else(|| panic!("{:?}: no ECDSA hash", $c));
+                // RFC 6979's nonce from SHA-256 whatever the curve: the brainpool crates sign only
+                // with a digest feature this build leaves off.
+                let z = digest(hash, b"m");
+                let (signed, _) =
+                    ecdsa::hazmat::sign_prehashed_rfc6979::<$curve, Sha256>(key.as_nonzero_scalar(), &z, &[]);
+                (field, hash, spki, signed.to_bytes().to_vec())
+            }};
+        }
+        let mut seen = Vec::new();
+        for c in Curve::ALL.into_iter().filter(|c| !c.edwards()) {
+            let (field, hash, spki, signed) = match c {
+                Curve::P256 => signs!(p256::NistP256, c),
+                Curve::P384 => signs!(p384::NistP384, c),
+                Curve::P521 => signs!(p521::NistP521, c),
+                Curve::Secp256k1 => signs!(k256::Secp256k1, c),
+                Curve::BrainpoolP256r1 => signs!(bp256::BrainpoolP256r1, c),
+                Curve::BrainpoolP384r1 => signs!(bp384::BrainpoolP384r1, c),
+                Curve::Ed25519 | Curve::Ed448 => unreachable!("filtered"),
+            };
+            assert_eq!(digest(hash, b"").len(), field.min(64), "{c:?}: {hash:?}");
+            assert_eq!(ecdsa(spki.as_bytes(), b"m", &signed, Encoding::Raw, None), Some(Ok(())), "{c:?}");
+            seen.push(c);
+        }
+        assert_eq!(seen.len(), 6, "{seen:?}");
+        // An Edwards key is no ECDSA key, whatever its bytes.
+        let ed = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]).verifying_key().to_public_key_der().unwrap();
+        assert_eq!(ecdsa(ed.as_bytes(), b"m", &[0; 64], Encoding::Raw, None), None);
     }
 
     /// ECDSA over a digest the caller computed, of a hash `HashAlg` does not name: a P-256

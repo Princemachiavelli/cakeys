@@ -29,12 +29,16 @@ cleanup() {
 trap cleanup EXIT
 cd "$work"
 
-declare -A meaning=(
-  [0]="ok" [10]="hash mismatch: prints got:" [11]="not found" [12]="ambiguous"
-  [13]="conflict" [14]="precondition failed" [15]="unsupported" [16]="unavailable"
-  [17]="invalid config, or no lock" [18]="first use: nothing pinned yet, prints got:"
-  [22]="the lock was written: review and commit it, and retry any failed row"
-)
+# What each exit code means: the table every tool's --help ends with (core's EXIT_CODES, as
+# docs/CAKEYS.md lists it), read rather than copied (review 2026-11-24 C-13).
+declare -A meaning=()
+while read -r code means; do
+  meaning[$code]=$means
+done < <(cakeys --help | sed -n '/^Exit codes/,$ s/^ *\([0-9][0-9]*\)  \(.*\)$/\1 \2/p')
+if [ -z "${meaning[0]:-}" ]; then
+  echo "cakeys --help lists no exit codes: the demo cannot say what one means" >&2
+  exit 1
+fi
 
 act() {
   printf '\n%s━━ %s ━━%s\n' "$bold" "$1" "$reset"
@@ -76,10 +80,14 @@ expect() {
     out=$("$@" 2>&1) || code=$?
   fi
   [ -n "$out" ] && indent <<<"$out"
-  if [ "$code" = "$want" ]; then
-    printf '  %s→ exit %s (%s)%s\n' "$green" "$code" "${meaning[$code]:-}" "$reset"
+  if [ -z "${meaning[$want]:-}" ]; then
+    printf '  %s→ expected exit %s, which cakeys --help does not list%s\n' "$red" "$want" "$reset"
+    exit 1
+  elif [ "$code" = "$want" ]; then
+    printf '  %s→ exit %s (%s)%s\n' "$green" "$code" "${meaning[$code]}" "$reset"
   else
-    printf '  %s→ exit %s, expected %s: the demo no longer matches cakeys%s\n' "$red" "$code" "$want" "$reset"
+    printf '  %s→ exit %s (%s), expected %s (%s): the demo no longer matches cakeys%s\n' \
+      "$red" "$code" "${meaning[$code]:-not a code cakeys --help lists}" "$want" "${meaning[$want]}" "$reset"
     exit 1
   fi
   last=$out

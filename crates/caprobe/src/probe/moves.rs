@@ -901,7 +901,7 @@ mod tests {
                 On::Bits(bits) => {
                     let parts = private_from_pkcs8(key.der, Kt::Rsa, None).unwrap();
                     let cakeys_core::plaintext::PrivateParts::Rsa(p) = parts else { panic!("{bits}: not RSA") };
-                    assert_eq!(p.modulus.len() * 8, *bits as usize);
+                    assert_eq!(id::modulus_bits(&p.modulus), u64::from(*bits));
                 }
                 On::Item(curve) => assert_eq!(
                     id::KeyAlg::of_spki(&spki).unwrap().curve().map(cakeys_core::id::Curve::name),
