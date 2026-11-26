@@ -72,7 +72,7 @@ fn liars_loss() {
 
 fn run(class: &str) {
     let table = Table::camigrate();
-    run_table(&table, class, |name, wrong| Moves::plant(name, wrong));
+    run_table(&table, class, Moves::plant);
 }
 
 /// The two tokens of a move, planted.
@@ -94,12 +94,15 @@ const MOVED: [(&str, &str, &str); 7] = [
     ("hmac", HMAC, "CKA_SIGN = true, CKA_EXTRACTABLE = true"),
     ("aes-u", AES, "CKA_ENCRYPT = true, CKA_EXTRACTABLE = true"),
     ("cert", "class = \"CKO_CERTIFICATE\"\ncertificateType = \"CKC_X_509\"", ""),
-    ("data", "class = \"CKO_DATA\"", "CKA_PRIVATE = false"),
+    // No CKA_PRIVATE declared: the lock records what the token says (false), or that it did not
+    // say (flag.hide.CKA_PRIVATE), which a declared flag would refuse.
+    ("data", "class = \"CKO_DATA\"", ""),
 ];
 
-/// The objects born on kryoptic and imported into `softhsm` from a bundle.
-const IMPORTED: [(&str, &str, &str); 2] =
-    [("ec-in", EC, "CKA_SIGN = true, CKA_EXTRACTABLE = true"), ("aes-in", AES, "CKA_ENCRYPT = true, CKA_EXTRACTABLE = true")];
+/// The objects born on kryoptic and imported into `softhsm` from a bundle: a private key alone,
+/// since `SoftHSM` unwraps no secret key with its length (its profile's `move.secret-unwrap`), so
+/// no bundle carries one to it.
+const IMPORTED: [(&str, &str, &str); 1] = [("ec-in", EC, "CKA_SIGN = true, CKA_EXTRACTABLE = true")];
 
 const EC: &str = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
 const RSA: &str = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048";
@@ -162,9 +165,7 @@ impl Moves {
         text += &token(
             "softhsm",
             &fault_shim(),
-            &format!(
-                "soCredentialFile = \"{dir}/so-pin\"\nmigrate = {{ transportWith = \"tk-softhsm\" }}\n"
-            ),
+            &format!("soCredentialFile = \"{dir}/so-pin\"\nmigrate = {{ transportWith = \"tk-softhsm\" }}\n"),
         );
         text += &token("kryoptic", &self.kryoptic.module, "migrate = { transportWith = \"tk-kryoptic\" }\n");
         text += &token(
@@ -287,8 +288,13 @@ impl Moves {
         self.w.dir.join("out")
     }
 
+    /// Both tokens by their objects: kryoptic's too, not its database's bytes, which an object
+    /// made and undone changes (a move refused after the target made the public half).
     fn views(&self) -> [TokenView<'_>; 2] {
-        [TokenView { name: "softhsm", module: &self.real, label: "kmtest", env: &[], db: vec![] }, self.kryoptic.view()]
+        [
+            TokenView { name: "softhsm", module: &self.real, label: "kmtest", env: &[], db: vec![] },
+            TokenView { db: vec![], ..self.kryoptic.view() },
+        ]
     }
 }
 

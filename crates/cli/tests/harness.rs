@@ -272,7 +272,7 @@ fn the_harness_helpers_are_written_once() {
 /// A test that puts its own p11-fault in front of a module runs untraced (nix/test-tokens.sh's
 /// list): that shim's calls to the module would count as the tool's in the coverage trace, rows
 /// cakeys never reaches (`tpm2_identity_failure_after_create_leaves_nothing`, once it used the
-/// shim, put `C_GetSessionInfo` there). Every such test outside the `fault` suites is listed.
+/// shim, put `C_GetSessionInfo` there). Every such test outside the suites untraced whole is listed.
 #[test]
 fn every_test_with_its_own_fault_shim_runs_untraced() {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nix/test-tokens.sh");
@@ -284,9 +284,10 @@ fn every_test_with_its_own_fault_shim_runs_untraced() {
     let (test_attr, shim) = (format!("{}[test]", '#'), format!("{}()", "fault_shim"));
     let mut missing = vec![];
     for (path, text) in workspace_tests() {
-        // A suite is a file directly under tests/; the fault suites are untraced whole.
+        // A suite is a file directly under tests/; one the case names whole (`fault/*`,
+        // `liars/*`) is untraced whole, in every crate.
         let suite = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-        if suite == "fault" || !path.parent().is_some_and(|p| p.ends_with("tests")) {
+        if untraced.contains(format!("{suite}/*").as_str()) || !path.parent().is_some_and(|p| p.ends_with("tests")) {
             continue;
         }
         for test in text.split(test_attr.as_str()).skip(1) {

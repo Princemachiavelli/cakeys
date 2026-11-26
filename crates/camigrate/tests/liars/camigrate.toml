@@ -6,8 +6,8 @@
 #
 # The fixture (tests/liars.rs): SoftHSM behind the shim (`softhsm`), kryoptic beside it
 # (`kryoptic`, and `kryoptic-u`: the same token, its profile a copy of kryoptic's whose sealed
-# rows say `by = "unverified"`). The keys are born on softhsm and move to kryoptic; the `-in`
-# objects are born on kryoptic and imported into softhsm from a bundle exported at planting. Each
+# rows say `by = "unverified"`). The keys are born on softhsm and move to kryoptic; `ec-in` is
+# born on kryoptic and imported into softhsm from a bundle exported at planting. Each
 # object's label is its name; beside each key softhsm holds a decoy, "<name>-other".
 #
 # A cell's `expect`, beyond cakeys' table's (crates/cli/tests/liars/cakeys.toml):
@@ -43,15 +43,11 @@ class = "certificate"
 adopted = true
 
 [objects.data]
-class = "data" # CKA_PRIVATE = false
+class = "data" # CKA_PRIVATE undeclared: the lock records the token's (false)
 adopted = true
 
 [objects.ec-in]
-class = "private" # on kryoptic; its bundle imported into softhsm
-token = "kryoptic"
-
-[objects.aes-in]
-class = "secret"
+class = "private"  # on kryoptic; its bundle imported into softhsm
 token = "kryoptic"
 
 # ── Verbs: `{object}`, `{from}` and `{to}` the object's, `{out}` and `{pass}` the fixture's
@@ -104,15 +100,16 @@ fn = "C_Login"
 rv = "CKR_OK"
 '''
 
+# camigrate sees the session is not logged in (C_GetSessionInfo) and trusts nothing it finds.
 [[block]]
 lies = ["ok.login"]
-verbs = ["migrate", "export --to", "export --to-key-file"]
+verbs = ["migrate", "export --to", "export --to-key-file", "migrate --dry-run", "export --dry-run"]
 objects = ["ec"]
 expect = { exit = 16 }
 
 [[block.override]]
 verbs = ["migrate"]
-expect = { exit = 16, device = true }
+expect = { exit = 16, device = true, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
 
 [[block]]
 lies = ["ok.login"]
@@ -122,13 +119,13 @@ expect = { exit = 16 }
 
 [[block.override]]
 verbs = ["migrate"]
-expect = { exit = 16, device = true }
+expect = { exit = 16, device = true, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
 
 [[block]]
 lies = ["ok.login"]
 verbs = ["import"]
-objects = ["ec-in", "aes-in"]
-expect = { exit = 16, device = true }
+objects = ["ec-in"]
+expect = { exit = 16, device = true, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
 
 # A state, not a lie (no rule): the target's profile says its unwrap of an AES key worked only by
 # its own round trip (`by = "unverified"`). The plan still takes the sealed way, and defers the
@@ -170,11 +167,18 @@ of_label = "{label}"
 wrap_label = "{other}"
 '''
 
+# A secret key's commitments differ (10); a private key's proof of possession fails (13).
 [[block]]
 lies = ["other.wrap"]
 verbs = ["migrate"]
-objects = ["ec", "aes", "hmac"]
+objects = ["aes", "hmac"]
 expect = { exit = 10, rule = "identity" }
+
+[[block]]
+lies = ["other.wrap"]
+verbs = ["migrate"]
+objects = ["ec"]
+expect = { exit = 13, rule = "identity" }
 
 [[block]]
 lies = ["other.wrap"]
@@ -204,14 +208,15 @@ objects = ["ec", "aes", "cert", "data"]
 expect = { exit = 12 }
 
 [[block.override]]
-verbs = ["migrate"]
-expect = { exit = 12, rule = "placement" }
+verbs = ["migrate --dry-run", "export --dry-run"]
+expect = { exit = 12, red = "L4b-3: camigrate's dry runs plan from the lock and never search the source: a second object under the locator plans ready (0), and the run refuses it (12), which no deferred rule foretells" }
 
 # ── FLAG: what an object says of itself, hidden.
 
 # CKA_PRIVATE hidden from `lock` (its identity read first, then the policy): the lock records no
 # CKA_PRIVATE, and the move plans as though it were private (D-7: unrecorded restricts). The
-# lock's own warning says it re-recorded.
+# lock's own warning says it re-recorded. (The data object's spec declares no CKA_PRIVATE: one
+# that did would have `lock` refuse the unreadable flag, 13.)
 [lies."flag.hide.CKA_PRIVATE"]
 class = "FLAG"
 plan = '''
@@ -239,7 +244,7 @@ expect = { exit = 15 }
 
 [[block.override]]
 verbs = ["migrate"]
-expect = { exit = 15, rule = "capability" }
+expect = { exit = 15, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
 
 # CKA_WRAP_WITH_TRUSTED hidden from `lock`: unrecorded, only a trusted transport key may wrap the
 # key, and there is none (D-7): no host path, no sealed one.
@@ -256,7 +261,7 @@ drop = true
 [[block]]
 lies = ["flag.hide.CKA_WRAP_WITH_TRUSTED"]
 verbs = ["migrate --dry-run", "export --dry-run"]
-objects = ["rsa-unwrap", "ec"]
+objects = ["rsa-unwrap", "ec", "aes"]
 before = [["lock", "--spec", "{spec}", "--token", "{from}"]]
 expect = { exit = 15, exposure_not = ["host", "sealed", "file"] }
 
@@ -266,6 +271,17 @@ verbs = ["export --to-key-file"]
 objects = ["ec"]
 before = [["lock", "--spec", "{spec}", "--token", "{from}"]]
 expect = { exit = 15 }
+
+[[block]]
+lies = ["flag.hide.CKA_WRAP_WITH_TRUSTED"]
+verbs = ["migrate", "export --to"]
+objects = ["ec", "aes"]
+before = [["lock", "--spec", "{spec}", "--token", "{from}"]]
+expect = { exit = 15 }
+
+[[block.override]]
+verbs = ["migrate"]
+expect = { exit = 15, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
 
 # A write-protected target: nothing lands.
 [lies."flag.write-protected"]
@@ -279,8 +295,8 @@ set_flags = ["CKF_WRITE_PROTECTED"]
 [[block]]
 lies = ["flag.write-protected"]
 verbs = ["import"]
-objects = ["ec-in", "aes-in"]
-expect = { exit = 15 }
+objects = ["ec-in"]
+expect = { exit = 15, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
 
 # ── FORGE: an output the key did not make.
 
@@ -297,7 +313,7 @@ corrupt = true
 lies = ["forge.wrap"]
 verbs = ["migrate"]
 objects = ["ec", "aes"]
-expect = { exit = [13, 16], rule = "unwraps" }
+expect = { exit = 16, rule = "unwraps", device = true }
 
 # A bundle is sealed to the target's transport key: the source cannot read it back, so a changed
 # blob is written, and the target's import refuses it (forge.sign's import cells take the target).
@@ -305,14 +321,16 @@ expect = { exit = [13, 16], rule = "unwraps" }
 lies = ["forge.wrap"]
 verbs = ["export --to"]
 objects = ["ec", "aes"]
-expect = { exit = 0, changed = ["out"], why = "the blob is sealed to the target's key: only the target's unwrap can tell it is not the key" }
+expect = { exit = 0, changed = [
+  "out",
+], why = "the blob is sealed to the target's key: only the target's unwrap can tell it is not the key" }
 
 # To a key file the host unwraps the blob itself, and refuses what does not unwrap.
 [[block]]
 lies = ["forge.wrap"]
 verbs = ["export --to-key-file"]
 objects = ["ec"]
-expect = { exit = 10 }
+expect = { exit = 13 }
 
 # The target's proof of possession of what it unwrapped, changed.
 [lies."forge.sign"]
@@ -326,7 +344,7 @@ corrupt = true
 [[block]]
 lies = ["forge.sign"]
 verbs = ["import"]
-objects = ["ec-in", "aes-in"]
+objects = ["ec-in"]
 expect = { exit = 13 }
 
 # ── BLOB: a blob the module round-trips that is not what it made (E-3).
@@ -340,25 +358,30 @@ transcode = true
 '''
 
 # Between two tokens the transcoded blob reaches a module that never made it: the target's unwrap
-# refuses it, and the target is left as it was.
+# refuses it, and the target is left as it was. kryoptic says only CKR_GENERAL_ERROR of a blob it
+# cannot unwrap, which camigrate cannot tell from a device failing (sealed.rs UnwrapFailure::Opaque):
+# 16, the deferred rule refused, and the device bit its return value carries.
 [[block]]
 lies = ["blob.transcode"]
 verbs = ["migrate"]
 objects = ["ec", "aes", "hmac"]
-expect = { exit = [13, 16], rule = "unwraps" }
+expect = { exit = 16, rule = "unwraps", device = true }
 
+# The host unwraps what the source wrapped for it, and nothing unwraps (13).
 [[block]]
 lies = ["blob.transcode"]
 verbs = ["export --to-key-file"]
 objects = ["ec"]
-expect = { exit = 10 }
+expect = { exit = 13 }
 
 # The bundle, as forge.wrap's: written, and refused only where it is unwrapped.
 [[block]]
 lies = ["blob.transcode"]
 verbs = ["export --to"]
-objects = ["aes"]
-expect = { exit = 0, changed = ["out"], why = "the blob is sealed to the target's key: only the target's unwrap can tell it is not the key" }
+objects = ["ec", "aes"]
+expect = { exit = 0, changed = [
+  "out",
+], why = "the blob is sealed to the target's key: only the target's unwrap can tell it is not the key" }
 
 # ── DEV: a call failing as a device, and the same call refused by the module.
 
@@ -406,13 +429,13 @@ rv = "CKR_KEY_FUNCTION_NOT_PERMITTED"
 lies = ["dev.wrap"]
 verbs = ["migrate"]
 objects = ["ec", "aes"]
-expect = { exit = 16, device = true }
+expect = { exit = 16, device = true, red = "L4b-2: a device failure in the source's C_WrapKey is said unsupported (15), the row not device: sealed.rs export and Token::extract map it through unsupported_for (L4a-1's class; fixed by d63f2c2 on l4a-fixes)" }
 
 [[block]]
 lies = ["dev.wrap"]
 verbs = ["export --to", "export --to-key-file"]
 objects = ["ec"]
-expect = { exit = 16 }
+expect = { exit = 16, red = "L4b-2: a device failure in the source's C_WrapKey is said unsupported (15), the row not device: sealed.rs export and Token::extract map it through unsupported_for (L4a-1's class; fixed by d63f2c2 on l4a-fixes)" }
 
 [[block]]
 lies = ["refused.wrap"]
@@ -434,18 +457,23 @@ expect = { exit = 16 }
 
 [[block.override]]
 verbs = ["migrate"]
-expect = { exit = 16, device = true }
+expect = { exit = 16, device = true, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
 
+[[block.override]]
+verbs = ["migrate --dry-run", "export --dry-run"]
+expect = { exit = 16, red = "L4b-1: camigrate prints no row (no plan) when a token fails or refuses before its plan: the refusal is on stderr alone, and no row names the object (L4a-2's class in camigrate)" }
+
+# The first unwrap of an import is its transport key's proof of possession.
 [[block]]
 lies = ["dev.unwrap"]
 verbs = ["import"]
-objects = ["ec-in", "aes-in"]
-expect = { exit = 16, rule = "unwraps", device = true }
+objects = ["ec-in"]
+expect = { exit = 16, device = true }
 
 [[block]]
 lies = ["refused.unwrap"]
 verbs = ["import"]
-objects = ["ec-in", "aes-in"]
+objects = ["ec-in"]
 expect = { exit = 15 }
 
 # ── LOSS: the device gone from one call of a run on.
@@ -472,7 +500,7 @@ rv = "CKR_DEVICE_REMOVED"
 lies = ["loss.wrap"]
 verbs = ["migrate"]
 objects = ["ec", "aes"]
-expect = { exit = 16, device = true }
+expect = { exit = 16, device = true, red = "L4b-2: a device failure in the source's C_WrapKey is said unsupported (15), the row not device: sealed.rs export and Token::extract map it through unsupported_for (L4a-1's class; fixed by d63f2c2 on l4a-fixes)" }
 
 [[block]]
 lies = ["loss.wrap"]
@@ -481,15 +509,63 @@ objects = ["ec"]
 expect = { exit = 16 }
 
 [[block]]
+lies = ["loss.wrap"]
+verbs = ["export --to"]
+objects = ["aes"]
+expect = { exit = 16, red = "L4b-2: a device failure in the source's C_WrapKey is said unsupported (15), the row not device: sealed.rs export and Token::extract map it through unsupported_for (L4a-1's class; fixed by d63f2c2 on l4a-fixes)" }
+
+[[block]]
 lies = ["loss.unwrap"]
 verbs = ["import"]
-objects = ["ec-in", "aes-in"]
+objects = ["ec-in"]
 expect = { exit = 16, device = true }
 
 # ── What no cell covers, decided.
 
 [[na]]
+classes = ["CHANGE"]
+verbs = "*"
+objects = "*"
+why = "camigrate decides by the lock's recorded identity, never by a second read of the source: a value that changes within a run is a moved key other than the locked one, other.wrap's cells (10, 13), and between runs other.find's"
+
+[[na]]
 classes = "*"
-verbs = ["migrate", "migrate --dry-run", "export --to", "export --dry-run", "export --to-key-file"]
-objects = ["private", "secret"]
-why = "placeholder"
+verbs = ["export --to-key-file"]
+objects = ["secret", "certificate", "data"]
+why = "a key file holds one private key: the plan refuses any other object (15, plan.rs To::File) before the source is searched or wraps, so only the open's lies reach it, which ec's cells show"
+
+[[na]]
+classes = "*"
+verbs = ["import"]
+objects = ["secret", "certificate", "data"]
+why = "the table's one bundle holds ec-in: SoftHSM unwraps no secret key with its length (its profile's move.secret-unwrap = no), and a public object's import creates it as migrate's does (public.rs), whose cert and data cells these are"
+
+[[na]]
+classes = ["OTHER", "BLOB"]
+verbs = ["import"]
+objects = ["private"]
+why = "import wraps nothing and searches no source: its source is the bundle, whose key another than the locked one is forge.sign's cell (13), and whose blob only the target's unwrap reads, dev.unwrap's and refused.unwrap's cells"
+
+[[na]]
+classes = ["FORGE", "BLOB", "LOSS"]
+verbs = ["migrate --dry-run", "export --dry-run"]
+objects = "*"
+why = "a dry run plans: it wraps, signs and unwraps nothing, so it has no output to forge, no blob, and no call for the token to vanish in (the wrap's)"
+
+[[na]]
+classes = ["OK", "FORGE", "BLOB", "LOSS"]
+verbs = ["migrate", "export --to"]
+objects = ["certificate", "data"]
+why = "a public object's move copies its CKA_VALUE (public.rs): it wraps and signs nothing, so no forged output, blob or lost wrap reaches it, and its tokens open as a key's do (ok.login's cells); its own refusals are other.find's, dev.find's and flag.hide.CKA_PRIVATE's cells"
+
+[[na]]
+classes = ["OK"]
+verbs = ["migrate --dry-run", "export --dry-run"]
+objects = ["secret", "certificate", "data"]
+why = "a dry run opens and logs in as for ec, whose ok.login cells these are; the none cells are aes-u's"
+
+[[na]]
+classes = ["FLAG"]
+verbs = ["migrate", "migrate --dry-run", "export --to", "export --dry-run"]
+objects = ["certificate"]
+why = "a certificate is public by its class: no flag of its decides its move, and flag.write-protected is import's"
