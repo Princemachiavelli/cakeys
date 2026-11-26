@@ -169,9 +169,9 @@ impl Env {
         assert!(got.starts_with("sha256-"), "{got}");
 
         // Record the key. The proof and the attestation ran in the user session, and the lock
-        // records them.
+        // records them. The run wrote the lock, so it exits 22.
         let recorded = self.km(&record);
-        assert_eq!(code(&recorded), 0, "{}: {}", c.name, String::from_utf8_lossy(&recorded.stderr));
+        assert_eq!(code(&recorded), 22, "{}: {}", c.name, String::from_utf8_lossy(&recorded.stderr));
         let lock = self.lock();
         let real = &lock["realisations"][spec.as_str()]["yubikey"];
         assert_eq!(real["binding"].as_str(), Some(c.binding), "{}: possession proven, not asserted", c.name);

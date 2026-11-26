@@ -77,8 +77,9 @@ fn keys_generate_and_prove_possession_each_way() {
     }
     e.config(&body);
     for (n, _, _, binding) in cases {
+        // `create` records the new key in the lock, so it exits 22.
         let o = e.km(&["create", "--spec", n, "--token", "ftpm"]);
-        assert_eq!(code(&o), 0, "{n}: {}", stderr(&o));
+        assert_eq!(code(&o), 22, "{n}: {}", stderr(&o));
         assert_eq!(e.lock()["realisations"][n]["ftpm"]["binding"].as_str(), Some(binding), "{n}");
         let profile = e.observation(n, "ftpm")["profile"].clone();
         assert_eq!(profile.as_str(), Some(pair.as_str()), "the token resolves its own pair profile");
@@ -192,8 +193,9 @@ fn keys_attest_to_the_manufacturer_on_the_real_tpm() {
     );
     assert_ne!(with_ek, toml, "the token section names its label");
     std::fs::write(e.dir.join("keys.toml"), with_ek).unwrap();
+    // `create` records the new key in the lock, so it exits 22.
     let o = e.km(&["create", "--spec", "p256", "--token", "ftpm"]);
-    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
     // The anchor is one of the built-in AMD fTPM roots (crates/tpm2-pkcs11/roots), not the AK.
     let att = &e.lock()["realisations"]["p256"]["ftpm"]["attestation"];
     let amd =
