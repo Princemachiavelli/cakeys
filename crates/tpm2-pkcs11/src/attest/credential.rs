@@ -205,8 +205,8 @@ mod tests {
     }
 
     /// CFB from a zero IV: the first block is the plaintext XOR E(0), and each later block is
-    /// XORed with the encryption of the ciphertext block before it (with the key and data of
-    /// FIPS SP 800-38A F.3.13).
+    /// the plaintext XOR the encryption of the ciphertext block before it (with the key and
+    /// data of FIPS SP 800-38A F.3.13).
     #[test]
     fn cfb_is_the_sp800_38a_vector() {
         use aes::cipher::{BlockCipherEncrypt as _, KeyInit as _};
