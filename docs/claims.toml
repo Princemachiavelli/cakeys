@@ -12,7 +12,7 @@
 #   and optionally the entry `paths` they cover; or
 # - kind = "descriptive": `why` it is no guarantee a test can hold.
 
-max-unregistered = 100
+max-unregistered = 98
 
 # CAMIGRATE.md D5: a bundle's transport key is the target's own (review 2026-11-24 D-8).
 
@@ -23,13 +23,25 @@ kind = "enforced"
 tests = ["bundles_are_bound_to_the_targets_transport_key", "a_bundle_binds_only_to_its_targets_transport_key"]
 paths = ["import --in", "import --in --dry-run"]
 
-# DESIGN.md §8.1, "Enforced (with tests)": the bullets whose tests exist.
+# DESIGN.md §8.1, "Enforced (with tests)": each bullet names its tests (claims.py's ENFORCED),
+# and its universal lines are registered with them.
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = """Every check recomputes it from the token and compares it with the
+  lock: the identity is the host's on every reference token"""
+kind = "enforced"
+tests = [
+  "asymmetric_material_has_one_identity_on_every_reference",
+  "observed_and_provenance_never_change_a_verdict",
+  "liars_other",
+]
 
 [[claim]]
 doc = "docs/DESIGN.md"
 says = "Locators never create over occupied slots"
 kind = "enforced"
-tests = ["never_create_over_an_occupied_locator", "a_second_private_key_under_the_same_id_is_ambiguous"]
+tests = ["never_create_over_an_occupied_locator", "a_second_private_key_under_the_same_id_is_ambiguous", "liars_other"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
@@ -41,19 +53,30 @@ tests = ["binding_downgrade_is_refused"]
 doc = "docs/DESIGN.md"
 says = "Attestation commitments are verified evidence, never a standalone identity"
 kind = "enforced"
-tests = ["attestation_is_per_realisation_and_never_alone"]
+tests = [
+  "attestation_is_per_realisation_and_never_alone",
+  "tpm2_attested_material_travels_to_a_second_hsm",
+  "a_slot_certificate_signed_by_another_key_is_refused",
+  "a_statement_by_another_signer_is_refused",
+]
 
 [[claim]]
 doc = "docs/DESIGN.md"
 says = "Identity modes never weaken."
 kind = "enforced"
-tests = ["downgrade_is_an_error"]
+tests = ["downgrade_is_an_error", "the_same_or_more_passes_and_less_is_a_downgrade"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
-says = "Material is linked only through a shared scheme."
+says = "Material is linked only through a shared scheme"
 kind = "enforced"
 tests = ["material_links_only_through_a_shared_scheme", "disjoint_schemes_never_link_material"]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "The lock never holds token outputs, only their hashes"
+kind = "enforced"
+tests = ["a_lock_holds_no_token_output"]
 
 [[claim]]
 doc = "docs/DESIGN.md"
@@ -66,11 +89,18 @@ doc = "docs/DESIGN.md"
 says = "Refused operations leave nothing behind:"
 kind = "enforced"
 tests = [
+  "create_checks_the_profiles_before_it_makes_anything",
   "a_creation_that_cannot_be_identified_is_undone_or_reported",
   "a_creation_that_fails_after_the_write_is_undone",
   "a_move_the_module_fails_is_refused_and_undone",
   "tpm2_identity_failure_after_create_leaves_nothing",
 ]
+
+[[claim]]
+doc = "docs/DESIGN.md"
+says = "every refusal cell of the liar matrix asserts the lock and the token as they were"
+kind = "descriptive"
+why = "says what the liar runner asserts (crates/cli/tests/common/liars.rs), not what the tools do"
 
 # Phase 1 P1 (review 2026-11-24 B-4, B-13, C-1, and the login lie): each claim it added is held
 # by the tests that were run red before its fix.

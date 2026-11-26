@@ -655,48 +655,85 @@ module and what real builds may reach.
 
 ### 8.1 Enforced (with tests)
 
-- **Identity is the CA-ID.** Every check recomputes it from the token and compares it with the lock.
+Each bullet names the tests that hold it (`checks.claims` fails on one that names none). The
+liar matrix (`liars_<class>`, `crates/cli/tests/liars.rs`) tells each lie to each verb about
+each kind of object.
+
+- **Identity is the CA-ID.** Every check recomputes it from the token and compares it with the
+  lock: the identity is the host's on every reference token
+  (`asymmetric_material_has_one_identity_on_every_reference`), a lock pinning another ID is a
+  mismatch (`observed_and_provenance_never_change_a_verdict`), and so is another object found
+  in its place (`liars_other`).
 - **Locators never create over occupied slots** (If-None-Match), and never match more than one
-  object.
-- **Type and policy of the live object** must match the spec.
+  object (`never_create_over_an_occupied_locator`,
+  `a_second_private_key_under_the_same_id_is_ambiguous`; a second object under the locator in
+  `liars_other`).
+- **Type and policy of the live object** must match the spec
+  (`the_live_object_must_be_what_the_spec_says`, `policy_drift_and_replaced_objects_are_refused`;
+  a flipped flag in `liars_flag`).
 - **Private keys prove possession** of the key their identity names, unless opted out per token;
-  the binding is recorded and cannot weaken (§3.6).
+  the binding is recorded and cannot weaken (§3.6; `derive_and_decrypt_only_keys_prove_possession`,
+  `h1_a_private_key_beside_an_unbound_public_object_is_a_conflict`,
+  `binding_downgrade_is_refused`; another key answering, for each binding, in `liars_other`).
 - **Attestation commitments are verified evidence, never a standalone identity** (§3.7): the
   chain or signature is checked on the host against the pinned anchor, the attested key must be
   the material the object's portable scheme names, and the attestation is pinned per
   realisation beside a portable scheme — so the same material on another token verifies there
-  through the portable scheme, attested by that token or not.
-- **Identity modes never weaken.** A downgrade fails (§3.4).
-- **Material is linked only through a shared scheme.**
-- **The lock never holds token outputs, only their hashes.** Private data objects are not hashed.
+  through the portable scheme, attested by that token or not
+  (`attestation_is_per_realisation_and_never_alone`,
+  `tpm2_attested_material_travels_to_a_second_hsm`,
+  `a_slot_certificate_signed_by_another_key_is_refused`, `a_statement_by_another_signer_is_refused`,
+  `the_material_is_the_attested_blobs_not_read_publics`).
+- **Identity modes never weaken.** A downgrade fails (§3.4; `downgrade_is_an_error`,
+  `the_same_or_more_passes_and_less_is_a_downgrade`).
+- **Material is linked only through a shared scheme** (`material_links_only_through_a_shared_scheme`,
+  `disjoint_schemes_never_link_material`).
+- **The lock never holds token outputs, only their hashes** (`a_lock_holds_no_token_output`). A
+  private data object is hashed only when its spec declares `CKA_PRIVATE = true` (§8.2;
+  `private_data_objects_are_identified_when_declared`).
 - **Lock updates are serialized** by the advisory `<lock>.lck` sidecar; readers get consistent
   snapshots through the atomic rename — `update_lock_waits_for_the_sidecar_lock`.
 - **Refused operations leave nothing behind:** checks before creating, and cleanup after a failed
   identity — except a key on a module that cannot delete keys (ykcs11), which stays and is
-  reported.
+  reported (`create_checks_the_profiles_before_it_makes_anything`,
+  `a_creation_that_cannot_be_identified_is_undone_or_reported`,
+  `a_creation_that_fails_after_the_write_is_undone`,
+  `tpm2_identity_failure_after_create_leaves_nothing`, `a_move_the_module_fails_is_refused_and_undone`;
+  every refusal cell of the liar matrix asserts the lock and the token as they were).
 - **A provider's operation runs after core's rules, never instead of them** (review 2026-11-24
   B-2). `Token::create` and `Token::destroy` ask `placement` or `deletion` and enter the SO
   session `manages_as_so` asks for, then call the provider's `create` or `destroy` with a
   `Checked` request no other crate can build, so an override cannot skip either; the gate, the
-  live checks and the capability check ask the same named rules (`ops::Rule`).
+  live checks and the capability check ask the same named rules (`ops::Rule`;
+  `k1_placement_comes_before_create_on_every_path`, `placement_holds_on_every_path`,
+  `a_provider_override_runs_as_so_where_the_module_needs_it`).
 - **A destroy is verified, never taken on the module's word** (review 2026-11-24 B-13). A
   provider or a module profile that says the module keeps what it is asked to remove
   (`Provider::deletion`, `delete.<class> = no`) refuses the delete before anything is
   destroyed, a dry run too (`delete-refused`, 15); after every destroy cakeys looks under the
   locator again, and an object still there is `delete-kept` (16), the lock keeping the
-  realisation.
+  realisation (`a_delete_the_module_did_not_do_keeps_the_lock`,
+  `a_profile_row_that_says_the_module_keeps_keys_refuses_the_delete`,
+  `k5_a_destroy_the_module_did_not_do_keeps_the_lock`,
+  `k6_a_profile_no_refuses_the_delete_before_any_destroy`).
 - **A provider adjusts templates and repairs reads only where it may** (review 2026-11-24
   B-3). A template comes back from `Provider::template` with its security attributes as cakeys
   built them or tightened (a restriction set true, a permission false); any other change to
   `CKA_TOKEN`, `CKA_PRIVATE`, `CKA_SENSITIVE`, `CKA_EXTRACTABLE`, `CKA_WRAP_WITH_TRUSTED`,
   `CKA_TRUSTED`, `CKA_ID`, `CKA_LABEL`, `CKA_MODIFIABLE`, `CKA_COPYABLE` or `CKA_DESTROYABLE`
-  is refused (17) before anything is made. A policy flag is repaired only for the
-  (attribute, private key type) pairs the provider declares (`Provider::repairs`; ykcs11:
-  `CKA_DERIVE` of EC and X25519 keys). A session key's template is a type,
-  `templates::SessionTemplate`, built only by `templates::session` and `rebind_copy` and asked of
-  the provider as the key it was built for (`adjusted_session`); each key's `CKA_TOKEN`,
-  `CKA_SENSITIVE` and `CKA_EXTRACTABLE` are pinned by a test (review 2026-11-24 B-8).
-- **Token paths reach only builds that require the token's feature.**
+  is refused (17) before anything is made (`a_provider_changes_no_security_attribute_but_to_tighten_it`,
+  `a_provider_cannot_loosen_a_session_key`, `k2_templates_keep_their_security_attributes`). A
+  policy flag is repaired only for the (attribute, private key type) pairs the provider
+  declares (`Provider::repairs`; ykcs11: `CKA_DERIVE` of EC and X25519 keys;
+  `a_repair_applies_only_where_it_is_declared`, `k3_repairs_are_declared_and_idempotent`). A
+  session key's template is a type, `templates::SessionTemplate`, built only by
+  `templates::session` and `rebind_copy` and asked of the provider as the key it was built for
+  (`adjusted_session`); each key's `CKA_TOKEN`, `CKA_SENSITIVE` and `CKA_EXTRACTABLE` are pinned
+  (review 2026-11-24 B-8; `each_session_key_is_sealed_as_its_purpose_says`,
+  `k2_session_keys_read_back_as_built`).
+- **Token paths reach only builds that require the token's feature** (`checks.module`, its
+  subtest "the hook grants token paths only to builds requiring the token's feature"; a NixOS
+  test, tier T1).
 
 ### 8.2 Not enforced / known gaps
 

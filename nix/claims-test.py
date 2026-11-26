@@ -22,7 +22,7 @@ SEEDED_MAX = 101
 FILES = {
     "Cargo.toml": '[workspace]\nmembers = ["crates/a"]\n',
     "crates/a/Cargo.toml": '[package]\nname = "a"\n',
-    "crates/a/src/lib.rs": "#[test]\nfn holds_the_claim() {}\n",
+    "crates/a/src/lib.rs": "#[test]\nfn holds_the_claim() {}\n\nfn helper() {}\n",
     "docs/DESIGN.md": """
         # Design
 
@@ -34,6 +34,10 @@ FILES = {
         ```text
         never a lock
         ```
+
+        ### 8.1 Enforced (with tests)
+
+        - **Held** (`holds_the_claim`).
         """,
     "docs/CAKEYS.md": "# cakeys\n",
     "docs/CAMIGRATE.md": "# camigrate\n",
@@ -152,6 +156,55 @@ class Entries(Case):
         rc, _, err = self.run_with(2, HOLDS | {"says": "Every lock"}, HOLDS | {"says": "is checked"})
         self.assertEqual(rc, 1)
         self.assertIn("docs/DESIGN.md:4 is registered already", err)
+
+
+class Enforced(Case):
+    """DESIGN.md §8.1 is held to its heading: each bullet names a test that holds it."""
+
+    def section(self, text):
+        design = (self.root / "docs/DESIGN.md").read_text().split("### 8.1")[0]
+        write(self.root, {"docs/DESIGN.md": design + text})
+        return self.run_with(3)
+
+    def test_each_bullet_names_a_test(self):
+        rc, _, err = self.section(
+            """### 8.1 Enforced (with tests)
+
+            - **Held** (`holds_the_claim()`).
+            - **Named only a helper** (`helper`).
+            - **Named nothing.**
+            - **Held on its second line**, as
+              `holds_the_claim` says.
+
+            ### 8.2 Not enforced
+
+            - **A gap** names nothing.
+            """.replace("\n            ", "\n")
+        )
+        self.assertEqual(rc, 1)
+        unheld = [line.split(": a bullet")[0] for line in err.splitlines() if "names no test" in line]
+        self.assertEqual(unheld, ["claims: docs/DESIGN.md:16", "claims: docs/DESIGN.md:17"], err)
+
+    def test_a_bullet_may_name_a_check_of_the_flake(self):
+        write(self.root, {"checks.nix": "{ }:\n{\n  module = import ./t.nix;\n  inherit (x) clippy doc;\n}\n"})
+        for name in ["module", "doc"]:
+            with self.subTest(name=name):
+                rc, _, err = self.section(f"### 8.1 Enforced (with tests)\n\n- **Held** (`checks.{name}`).\n")
+                self.assertEqual(rc, 0, err)
+        rc, _, err = self.section("### 8.1 Enforced (with tests)\n\n- **Held** (`checks.gone`).\n")
+        self.assertEqual(rc, 1)
+        self.assertIn("names no test in backticks", err)
+
+    def test_every_bullet_held_passes(self):
+        rc, _, err = self.section("### 8.1 Enforced (with tests)\n\n- **Held** (`holds_the_claim`).\n")
+        self.assertEqual(rc, 0, err)
+
+    def test_the_section_must_be_there(self):
+        for text in ["### 8.1 Enforced\n\n- **Held** (`holds_the_claim`).\n", "### 8.1 Enforced (with tests)\n\nNo bullets.\n"]:
+            with self.subTest(text=text):
+                rc, _, err = self.section(text)
+                self.assertEqual(rc, 1)
+                self.assertIn("has no bullets under '### 8.1 Enforced (with tests)': claims.py's ENFORCED names it", err)
 
 
 class Register(unittest.TestCase):
