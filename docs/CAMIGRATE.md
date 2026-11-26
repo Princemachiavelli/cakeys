@@ -1,14 +1,16 @@
 # camigrate: moving keys between tokens
 
-`camigrate` moves key material from one token to another: token-to-token key wrapping where
-both modules support it, the host or a passphrase-protected file where they do not, and a
-`--dry-run` that says per object what can move and how. It is the only tool that handles key
-material; a `cakeys` build carries no migration code. `cakeys` *verifies* a copy (`lock` on the
-second token against the locked IDs); `camigrate` *makes* it, then records it through the same
-lock code path.
+`camigrate` moves key material from one token to another. It wraps the key from token to token
+where both modules support key wrapping. Where they do not, it moves the material through the
+host or through a passphrase-protected file. Its `--dry-run` says, for each object, whether the
+object can move and how. camigrate is the only tool that handles key material, and a `cakeys`
+build contains no migration code. `cakeys` *verifies* a copy: `lock` on the second token compares
+the material with the locked IDs. `camigrate` *makes* the copy, and then records it through the
+same lock code path.
 
-Evidence tags on backend claims: **[run]** verified by running it, **[src]** read in the
-module's source, **[todo]** still to verify.
+The claims about backends carry tags that say where they come from: **[run]** means that it was
+verified by running it, **[src]** means that it was read in the module's source code, and
+**[todo]** means that it is not verified yet.
 
 ## Command line
 
@@ -27,213 +29,250 @@ $ camigrate migrate [<object> ...] --from <a> --to <b> [--spec <s> ...] [--trans
     [--dry-run] [--allow-host-plaintext]
 ```
 
-Every verb takes cakeys' global options: `-c`, `-l`, `--module`, `--new-lock` (a lock that is not
-there is refused, 17, without it) and `--json`, which prints the `--dry-run` plans of `export` and
-`migrate` as JSON. `import`, `migrate` and the deletions print one JSON result per object, as an
-array, whatever `--json` says; a run that wrote the lock exits 22 (CAKEYS.md, "Exit codes").
+Every verb takes cakeys' global options: `-c`, `-l`, `--module`, `--new-lock` (without it, a lock
+that does not exist is refused with 17) and `--json`, which prints the `--dry-run` plans of
+`export` and `migrate` as JSON. `import`, `migrate` and the deletions print one JSON result per
+object, as an array, whatever `--json` says. A run that wrote the lock exits 22 (CAKEYS.md, "Exit
+codes").
 
-- `migrate` is export then import in one process, the bundle in memory, when both tokens are
-  reachable from this host. It moves one object, or without one plans every object the source
-  holds a realisation of.
-- `--dry-run` prints the plan (a table, or JSON) and changes nothing. The real run executes the
-  same plan (D9), and exits as the dry run did: an `export` without names takes what can move,
-  so its dry run is 15 only when nothing can (nothing at all included), and an export to a key
-  file with nothing to put in it is 17. On `import` it checks the bundle, or the key file,
-  against the lock and the token, and imports nothing. The dry run of an `import` or a `migrate`
-  opens the token it would write read-only, and refuses a write-protected one
-  (`CKF_WRITE_PROTECTED`, 15) as the run does.
-- `--spec` names the spec to realise an object under where its object has several on the
-  target. One that selects nothing (an unknown spec, or one of an object that is not moving
-  there) is refused (17).
-- `transport` names its key as cakeys' verbs name an object (CAKEYS.md): the object, narrowed
-  by `--spec`; left out, the token's `migrate.transportWith`. A name keys.toml lacks, or a token
-  naming no transport key, is 17.
-- A bundle of public objects alone needs no transport key and names none.
-- `--to-transport-file` is the transport file of `--to`, a token this host cannot reach: a file
-  of another token is refused (17). A bundle names the token it is for (`target`), as the
-  export's `wrote` line does, and `import` refuses it on another token (14).
-- A key file holds one key, and a PKCS#12 the certificate the lock pairs with it on the source:
-  a plan of several keys for a file, or of a PKCS#12 with no paired certificate, is blocked.
-- A refused move says why for each blocked object, as its `--dry-run` would.
-- A transport key has at least 2048 bits (keys.toml, a transport file and a key found on a
-  token are each held to it).
-- Every writing verb is refused inside a Nix build (D8). The lock is written under `cakeys`'
-  rules (the `.lck` sidecar lock, written whole or not at all).
+- `migrate` runs an export and then an import in one process, with the bundle in memory. It
+  needs both tokens to be reachable from this host. It moves the objects that it names. When no
+  object is named, it plans every object of which the source holds a realisation.
+- `--dry-run` prints the plan, as a table or as JSON, and changes nothing. The real run executes
+  the same plan (D9) and exits with the same code as the dry run. An `export` without names
+  takes the objects that can move, so its dry run exits 15 only when no object can move,
+  including when there is no object at all. An export to a key file with nothing to put in it
+  exits 17. On `import`, `--dry-run` checks the bundle or the key file against the lock and the
+  token, and it imports nothing. The dry run of an `import` or a `migrate` opens the token that
+  it would write in read-only mode, and it refuses a write-protected token
+  (`CKF_WRITE_PROTECTED`, 15) in the same way as the run does.
+- `--spec` names the spec under which to realise an object, when the object has several specs on
+  the target. A `--spec` that selects nothing (an unknown spec, or a spec of an object that is not
+  moving there) is refused (17).
+- `transport` names its key in the same way as cakeys' verbs name an object (CAKEYS.md): by the
+  object, narrowed by `--spec`. When the object is left out, `transport` uses the token's
+  `migrate.transportWith`. A name that keys.toml does not contain, or a token that names no
+  transport key, is refused with 17.
+- A bundle that holds only public objects needs no transport key and names none.
+- `--to-transport-file` is the transport file of `--to`, for a token that this host cannot reach.
+  A transport file of another token is refused (17). A bundle names the token that it is for
+  (`target`), as the export's `wrote` line does, and `import` refuses the bundle on any other
+  token (14).
+- A key file holds one key. A PKCS#12 file also holds the certificate that the lock pairs with
+  the key on the source. A plan that puts several keys into one file, or a plan for a PKCS#12
+  file without a paired certificate, is blocked.
+- A refused move says, for each blocked object, why it is blocked, as its `--dry-run` would.
+- A transport key has at least 2048 bits. This rule applies to keys.toml, to a transport file and
+  to a key found on a token.
+- Every verb that writes is refused inside a Nix build (D8). The lock is written under `cakeys`'
+  rules: camigrate holds the `.lck` sidecar lock, and it writes the lock file whole or not at all.
 
-Exit codes (the table: [CAKEYS.md](CAKEYS.md#exit-codes)): 0 done; 10 the material's identity
-differs from the lock; 11 a token, object or key not found; 12 an ambiguous name; 13 the
-target refused (a bundle whose blobs it finds invalid, tampered or wrapped to another key; a
-failed proof of possession; an occupied locator or PIV slot); 14 the lock pins no IDs for the
-object, or a bundle is for another target or sealed to another key than the target's transport
-key; 15 an object cannot move as invoked, or the target lacks a capability (an unwrap
-mechanism or template it refuses included); 16 the module or device failed (an unwrap failed so is
-said as what may be a damaged bundle: kryoptic reports a tampered blob as `CKR_DEVICE_ERROR`); 17 invalid input (keys.toml,
-a transport file, a bundle, another key's IDs, a key file that does not open under the
-passphrase given: 10 is kept for material that differs from the lock); 21 a lock a writing run
-cannot write; 1 anything else (IO).
+The exit codes are the shared ones (see the table in [CAKEYS.md](CAKEYS.md#exit-codes)):
 
-`import`, `migrate` and `import` from files print one row per object on stdout, a JSON array,
-whatever happens to each: cakeys' row (its `exit`, the `rule` that refused it, whether the
-`device` failed, the `error`), with the `method` it moved by. A key file's refusals are rows
-too. An object that reached its token but could not be recorded (the lock could not be saved)
-is a row with 21 and the rule `lock-writable`, and says how to record it; nothing after it
-moves. The run exits with the first failure. A dry run's plans (`--json`) and rows name the
-rules only the run decides (`deferred`): a sealed move's are `unwraps` (the blob is intact:
-13, or 16 where the module says only that it failed) and `identity` (what unwrapped is the key
-the lock pins: 10, or 13 where its proof of possession fails); a host or file move's is
-`identity` (what the source handed over is the locked key: 10). The run ends as its dry run
-did, or by one of these, or by the device.
+- 0: done.
+- 10: the identity of the material differs from the lock.
+- 11: a token, an object or a key was not found.
+- 12: a name is ambiguous.
+- 13: the target refused. It found a bundle's blobs invalid, tampered with or wrapped to another
+  key; a proof of possession failed; or the locator or the PIV slot is occupied.
+- 14: the lock pins no IDs for the object, or a bundle is for another target or is sealed to a
+  key other than the target's transport key.
+- 15: an object cannot move as invoked, or the target lacks a capability. This includes an
+  unwrap mechanism or an unwrap template that the target refuses.
+- 16: the module or the device failed. A failed unwrap is reported in this way, as a bundle that
+  may be damaged, because kryoptic reports a tampered blob as `CKR_DEVICE_ERROR`.
+- 17: invalid input: keys.toml, a transport file, a bundle, another key's IDs, or a key file that
+  does not open with the given passphrase. Exit code 10 is kept for material that differs from
+  the lock.
+- 21: a writing run cannot write the lock.
+- 1: anything else (IO errors).
+
+`import`, `migrate` and `import` from files print one row per object on stdout, as a JSON array,
+whatever happens to each object. Each row is cakeys' row (its `exit`, the `rule` that refused it,
+whether the `device` failed, and the `error`), together with the `method` by which the object
+moved. A key file's refusals are rows too. When an object reached its token but could not be
+recorded because the lock could not be saved, its row has the exit code 21 and the rule
+`lock-writable`, and it says how to record the object. No object after it moves. The run exits
+with the code of the first failure.
+
+A dry run's plans (`--json`) and rows name the rules that only the run decides (`deferred`). For a
+sealed move, these rules are `unwraps` and `identity`. `unwraps` checks that the blob is intact:
+it fails with 13, or with 16 when the module says only that the unwrap failed. `identity` checks
+that what was unwrapped is the key that the lock pins: it fails with 10, or with 13 when the
+key's proof of possession fails. For a host move or a file move, the deferred rule is `identity`,
+which checks that what the source handed over is the locked key (10). The run therefore ends with
+the same code as its dry run, with the code of one of these deferred rules, or with a device
+failure.
 
 ## Decisions
 
 **D1. Exportability is decided when a key is created.** A key with `CKA_EXTRACTABLE = false`
-never moves, and `CKA_NEVER_EXTRACTABLE` is an immutable in the lock: once true, a key that
-later claims otherwise was replaced. A key meant to migrate is declared extractable from the
-start, on its one creation pair (`origin = "create"`); `--dry-run` says this first, per
-object. A move lands only on a pair that says `origin = "import"` (17 otherwise), or, from a
-file, on one that says `origin = "file"` ([FILE.md](FILE.md)).
+never moves, and the lock treats `CKA_NEVER_EXTRACTABLE` as immutable: once it is true, a key that
+later reports otherwise has been replaced. A key that is meant to migrate is declared extractable
+from the start, on its one creation pair (`origin = "create"`). `--dry-run` reports this first,
+for each object. A move lands only on a pair that says `origin = "import"` (17 otherwise), or,
+when the move comes from a file, on a pair that says `origin = "file"` ([FILE.md](FILE.md)).
 
-**D2. Exposure is named honestly, per object, strongest first.** The names are frozen.
+**D2. Exposure is named accurately, for each object, from the strongest level to the
+weakest.** The names are frozen.
 
 | Exposure | What it means |
 |---|---|
-| `public` | Certificates, public keys, public data objects. Nothing secret moves: a private data object has no method between tokens (15, [OPEN.md](OPEN.md)), and one the source's lock does not record as `CKA_PRIVATE = false` counts as private; from its own file, one whose spec does not declare it public is `raw`, exposure `file`. |
-| `enforced` | `sealed`, and the source token allows no other wrapping: the key carries `CKA_WRAP_WITH_TRUSTED`, and the only wrapping key the source trusts is the target's transport key (D3). |
-| `sealed` | The material leaves the source only wrapped under a key that lives on the target, and is unwrapped there. The host never sees it. The default. |
-| `host` | Plaintext in camigrate's memory, held in buffers wiped when dropped (`Zeroizing`, `cakeys_core::plaintext`) and handed to the target's import alone (`C_CreateObject`, which crosses p11-kit's socket to a forwarded module, or `tpm2_ptool` through an in-memory file, row 4 below). Wherever the target imports only plaintext (a YubiKey, `tpm2_ptool`). Only with `--allow-host-plaintext`, and only within `migrate`. |
-| `file` | A passphrase-protected file (PKCS#8 or PKCS#12) for a target camigrate cannot reach, or the file an object is born in, plain or encrypted ([FILE.md](FILE.md)). Plaintext-equivalent at rest. Only with `--allow-host-plaintext`; a passphrase only for an encrypted file. |
-| `impossible` | Not extractable, a source that never exports, a type or proof the target lacks. The plan gives the reasons. |
+| `public` | Certificates, public keys and public data objects. Nothing secret moves. A private data object has no method between tokens (15, [OPEN.md](OPEN.md)), and a data object that the source's lock does not record as `CKA_PRIVATE = false` counts as private. A data object that comes from its own file, and whose spec does not declare it public, moves by `raw` with the exposure `file`. |
+| `enforced` | `sealed`, and in addition the source token allows no other wrapping: the key carries `CKA_WRAP_WITH_TRUSTED`, and the only wrapping key that the source trusts is the target's transport key (D3). |
+| `sealed` | The material leaves the source only in wrapped form, under a key that is stored on the target, and the target unwraps it. The host never sees the material. This is the default. |
+| `host` | The plaintext is in camigrate's memory, in buffers that are wiped when they are dropped (`Zeroizing`, `cakeys_core::plaintext`). camigrate hands it only to the target's import: `C_CreateObject`, which crosses p11-kit's socket when the module is forwarded, or `tpm2_ptool` through an in-memory file (phase 4 in Results, below). This level is used wherever the target imports only plaintext (a YubiKey, `tpm2_ptool`). It is allowed only with `--allow-host-plaintext`, and only within `migrate`. |
+| `file` | A passphrase-protected file (PKCS#8 or PKCS#12) for a target that camigrate cannot reach, or the file in which an object is born, plain or encrypted ([FILE.md](FILE.md)). At rest, such a file is equivalent to plaintext. It is allowed only with `--allow-host-plaintext`, and a passphrase is used only for an encrypted file. |
+| `impossible` | The key is not extractable, the source never exports, or the target lacks a type or a proof that the move needs. The plan gives the reasons. |
 
-`enforced` is its own level because a key with only `CKA_EXTRACTABLE = true` can be wrapped by
-any logged-in session under a key that session made: `sealed` describes what camigrate does,
-not what someone holding the PIN could do. `CKA_WRAP_WITH_TRUSTED` is the restriction the token
-itself enforces; a key whose lock does not record it as `false` is planned as one that carries
-it, as a key whose `CKA_EXTRACTABLE` is not recorded is planned as one that stays: what the
-lock does not record restricts. It needs the source's SO once per transport key (`transport --trust-on`, with
-the admin credential `soCredentialFile`/`soCredentialEnv`, read only by SO steps).
+`enforced` is a separate level because any logged-in session can wrap a key that has only
+`CKA_EXTRACTABLE = true` under a key that the session made. `sealed` describes what camigrate
+does, not what someone who holds the PIN could do. `CKA_WRAP_WITH_TRUSTED` is the restriction that
+the token itself enforces. A key whose lock does not record this attribute as `false` is planned
+as a key that carries it, in the same way as a key whose `CKA_EXTRACTABLE` is not recorded is
+planned as a key that stays on its token. In both cases, an attribute that the lock does not
+record counts as the restriction. `enforced` needs the source's SO once per transport key
+(`transport --trust-on`, with the admin credential `soCredentialFile`/`soCredentialEnv`, which
+only SO steps read).
 
 **D3. The transport key is an ordinary locked object.** The target holds an RSA key pair
-(`CKA_UNWRAP = true`, non-extractable) declared in keys.toml like any other key and named by the
-target token's `migrate.transportWith`. Nothing is picked by what a key can do; `--transport-spec`
-overrides it per run. Its `rfc7093m4` is in the reviewed lock, and the source wraps only to a
-public key that hashes to it: the lock is the authenticated channel. A transport file is held to
-the same. It must be the file of the token `--to` names (17 otherwise): another target's genuine
-file binds its own token's key just as well (`transport_files_are_bound_to_the_target_named`).
-Its object must be the transport key `transportWith` (or `--transport-spec`) names for that
-token, realised there, not merely some key the lock pins, which whoever swapped the file may hold
-(`a_transport_file_of_another_pinned_key_is_refused`). An import holds a bundle's transport key to
-the same key (14 otherwise; `bundles_are_bound_to_the_targets_transport_key`), and `transport
---trust-on` holds the lock's key to the same rule, its size included
-(`locked_transport_keys_are_held_to_one_rule`). The lock must record the key as allowed to unwrap
-and as not extractable: a realisation that records no `CKA_EXTRACTABLE` is no transport key (14,
-or a blocked plan).
+(`CKA_UNWRAP = true`, not extractable) that keys.toml declares like any other key, and that the
+target token's `migrate.transportWith` names. camigrate does not choose a key by what the key can
+do, and `--transport-spec` overrides the choice for one run. The key's `rfc7093m4` is in the
+reviewed lock, and the source wraps only to a public key whose hash equals it. In this way the
+reviewed lock authenticates the public key. A transport file must pass the same check. It must be
+the file of the token that `--to` names (17 otherwise), because the genuine file of another target
+binds its own token's key just as well (`transport_files_are_bound_to_the_target_named`). Its
+object must be the transport key that `transportWith` (or `--transport-spec`) names for that
+token, realised there. It is not enough that the lock pins the key, because whoever swapped the
+file may hold that key (`a_transport_file_of_another_pinned_key_is_refused`). An import requires a
+bundle's transport key to be the same key (14 otherwise;
+`bundles_are_bound_to_the_targets_transport_key`), and `transport --trust-on` applies the same rule
+to the lock's key, including its size (`locked_transport_keys_are_held_to_one_rule`). The lock
+must record the key as allowed to unwrap and as not extractable. A realisation that records no
+`CKA_EXTRACTABLE` does not count as a transport key (14, or a blocked plan).
 
-- **The lock records its public key** (`objects.<name>.publicKey`, base64 SPKI) when it is
-  realised as a `migrate.transportWith` key, held to its `rfc7093m4` on load. Any host can then plan and
-  export to that token from the lock alone. A target with no recorded public key is planned as
-  blocked.
+- **The lock records its public key** (`objects.<name>.publicKey`, a base64 SPKI) when the key is
+  realised as a `migrate.transportWith` key, and the lock checks it against the key's `rfc7093m4`
+  when it loads. Any host can then plan and export to that token from the lock alone. A target
+  without a recorded public key is planned as blocked.
 - **It proves possession by unwrapping** (`binding = "pop-unwrap"`), so it needs no
-  `CKA_DECRYPT`. SoftHSM and kryoptic do it [run]; tpm2-pkcs11 and ykcs11 never unwrap, so it is
-  refused there (15) before anything is generated [run]. A transport key that also decrypts, or
-  whose `CKA_DECRYPT` the lock does not record, is warned about: the target's PIN holder could `C_Decrypt` a bundle's key-encryption key. (That
-  PIN holder can extract an extractable moved key anyway; sealed protects the material on the
+  `CKA_DECRYPT`. SoftHSM and kryoptic can do this [run]. tpm2-pkcs11 and ykcs11 never unwrap, so
+  a transport key on them is refused (15) before anything is generated [run]. camigrate warns about
+  a transport key that also decrypts, or whose `CKA_DECRYPT` the lock does not record, because the
+  holder of the target's PIN could then `C_Decrypt` a bundle's key-encryption key. (That PIN
+  holder can extract an extractable moved key anyway. A sealed move protects the material on its
   way, not from the target.)
-- A transport file (`transport --out`) is used only when the source's lock pins its key; one that
-  is merely self-consistent is refused (17). Whether a source *trusts* the key is looked up on
-  the source, never claimed by the file.
-- **[todo] `CKA_UNWRAP_TEMPLATE`.** A template forcing non-extractable on what the transport key
-  unwraps would keep even the PIN holder from reading the key-encryption key. cryptoki 0.12 can
-  neither read nor set array attributes, and a strict template would break the direct-OAEP path
-  (OPEN.md).
+- A transport file (`transport --out`) is used only when the source's lock pins its key. A file
+  that is only consistent with itself is refused (17). Whether a source *trusts* the key is looked
+  up on the source; the file never states it.
+- **[todo] `CKA_UNWRAP_TEMPLATE`.** A template that makes each key that the transport key unwraps
+  non-extractable would keep even the PIN holder from reading the key-encryption key. cryptoki
+  0.12 can neither read nor set array attributes, and a strict template would break the
+  direct-OAEP path (OPEN.md).
 
-**D4. Methods have frozen names, like schemes.** The method is the source's export capabilities
-intersected with the target's import capabilities: the target's live mechanisms, else the lock's
-observed mechanisms for it, else a transport file. The OAEP hash is the strongest both support
-(SHA-256 between kryoptic tokens, SHA-1 with SoftHSM). A probed row (`import.*`, `create.*`,
-`export.*`, `unwrap.*`) decides for the type it covers; one the probe could not decide (a no
-citing a device failure, an `[untested]` entry of the device's or cakeys') is unknown: the plan
-refuses it (15) and names the re-probe owed, as an unsupported capability.
+**D4. Methods have frozen names, like schemes.** camigrate chooses the method from the
+intersection of the source's export capabilities and the target's import capabilities. It takes
+the target's capabilities from the target's live mechanisms. When those are not available, it
+takes them from the mechanisms that the lock observed for the target, and otherwise from a
+transport file. The OAEP hash is the strongest hash that both sides support (SHA-256 between
+kryoptic tokens, SHA-1 with SoftHSM). A probed row (`import.*`, `create.*`, `export.*`,
+`unwrap.*`) decides for the type that it covers. A row that the probe could not decide (a no whose
+evidence is a device failure, or an `[untested]` entry with the reason `device` or `cakeys`) is
+unknown. The plan refuses such a row (15) as an unsupported capability, and it names the re-probe
+that is needed.
 
 | Method | Material | How |
 |---|---|---|
-| `public` | certificates, public keys, data | the bytes, then `C_CreateObject` |
-| `rsa-oaep-sha1+aes-kwp`, `rsa-oaep-sha256+aes-kwp` | private and secret keys | a fresh AES-256 KEK on the source, wrapped to the transport key with RSA-OAEP; the key wrapped under it with RFC 5649 (`AES_KEY_WRAP_PAD` or `_KWP`, whichever each side names). `CKM_RSA_AES_KEY_WRAP` does both for `enforced`, and on a side with no AES key wrap of its own (AWS CloudHSM's profile subtracts both): the same bytes, the KEK blob then the key blob [run] |
-| `rsa-oaep-sha1`, `rsa-oaep-sha256` | small secret keys | the key wrapped to the transport key directly: the path through p11-kit, whose RPC drops AES key wrap |
-| `host-pkcs8`, `host-raw` | private, secret keys | extracted through the host (a session KEK camigrate made), then `C_CreateObject`: `host` |
-| `tpm2-ptool` | EC (not P-521), RSA, HMAC | the host path, then `tpm2_ptool import` |
-| `piv-import` | RSA, EC P-256/384, Ed25519 | the host path, then ykcs11 `C_CreateObject` as SO into the slot the locator names |
-| `pkcs8-pbes2` | private keys | the host path, written as an EncryptedPrivateKeyInfo: `file` |
-| `pkcs12` | a private key and its certificate | the host path, written as PKCS#12: `file` |
-| `pkcs8`, `pkcs1`, `sec1` | private keys | read from the file the object is born in, PEM or DER, normalised to PKCS#8, then the host path: `file` ([FILE.md](FILE.md)) |
-| `raw` | secret keys, private data objects | the file's bytes as they are, then `C_CreateObject`: `file` |
-| `tpm-duplicate` | keys for a TPM target | not built: a duplication blob built on the host to the target parent's public key |
-| `vendor:<provider>/<name>` | as the provider declares | a provider crate's own path (D10) |
+| `public` | certificates, public keys, data | The bytes are copied, and the target creates the object with `C_CreateObject`. |
+| `rsa-oaep-sha1+aes-kwp`, `rsa-oaep-sha256+aes-kwp` | private and secret keys | The source makes a fresh AES-256 KEK and wraps it to the transport key with RSA-OAEP. It wraps the key under the KEK with RFC 5649 (`AES_KEY_WRAP_PAD` or `_KWP`, whichever name each side uses). For `enforced`, and on a side that has no AES key wrap of its own (AWS CloudHSM's profile subtracts both), `CKM_RSA_AES_KEY_WRAP` does both steps and produces the same bytes: the KEK blob, then the key blob [run]. |
+| `rsa-oaep-sha1`, `rsa-oaep-sha256` | small secret keys | The key is wrapped to the transport key directly. This is the path through p11-kit, whose RPC protocol drops AES key wrap. |
+| `host-pkcs8`, `host-raw` | private, secret keys | The source wraps the key under a session KEK that camigrate made, camigrate unwraps it in memory on the host, and the target creates it with `C_CreateObject`. The exposure is `host`. |
+| `tpm2-ptool` | EC (not P-521), RSA, HMAC | The host path, followed by `tpm2_ptool import`. |
+| `piv-import` | RSA, EC P-256/384, Ed25519 | The host path, followed by ykcs11's `C_CreateObject` as the SO, into the slot that the locator names. |
+| `pkcs8-pbes2` | private keys | The host path, and then the key is written as an EncryptedPrivateKeyInfo. The exposure is `file`. |
+| `pkcs12` | a private key and its certificate | The host path, and then the key is written as PKCS#12. The exposure is `file`. |
+| `pkcs8`, `pkcs1`, `sec1` | private keys | The key is read from the file in which the object is born (PEM or DER), normalized to PKCS#8, and then moved by the host path. The exposure is `file` ([FILE.md](FILE.md)). |
+| `raw` | secret keys, private data objects | The file's bytes are used as they are, and the target creates the object with `C_CreateObject`. The exposure is `file`. |
+| `tpm-duplicate` | keys for a TPM target | Not built. A duplication blob would be built on the host for the public key of the target's parent key. |
+| `vendor:<provider>/<name>` | as the provider declares | A provider crate's own path (D10). |
 
-**D5. The bundle is a versioned file, one per export** (a source and a target), never
-plaintext. RFC 5649 authenticates the key bytes, not who wrapped them: the transport key is
-public, so anyone can seal a key of their own to it. Import recomputes every identity on the
-target and proves the binding, so a tampered or swapped blob fails, and the bundle may cross
-untrusted channels — except where nothing proves the key: an EC or Edwards private key under
-`binding = "token-asserted"` would take its identity from the public half the bundle's own
-`publicKey` creates (a target such as SoftHSM keeps no point with it), so `import --in` refuses
-it (14). `migrate`, whose bundle never leaves the process, moves it. A wrapped private key is the PKCS#8 `C_WrapKey` emits; PKCS#12 or a CMS key package
-would need the plaintext on the host, which sealed avoids. Named objects export all or nothing;
-without names, export takes what can move and warns about the rest (a spec's `migrate.noExport = true`
-keeps its object home and silences the warning, and a token's transport key is kept home so by
-default). Import takes each entry on its own, reports
-every failure, and exits with the first.
-The bundle names the token it is for (`target`, version 2), and `import` refuses it on another
-(14). Its keys unwrap only under the target's transport key (its `transportWith`, or
-`--transport-spec` as the export named it), never under whichever key the bundle names (14). A version-1 bundle names no target: it is still read, held to the
-target's transport key alone, with a warning.
+**D5. The bundle is a versioned file, one per export** (for one source and one target), and it
+never contains plaintext. RFC 5649 authenticates the key bytes, but not who wrapped them: the
+transport key is public, so anyone can seal a key of their own to it.
+Import recomputes every identity on the target and proves the binding, so a tampered or swapped
+blob fails, and the bundle may cross untrusted channels. The exception is a key that nothing
+proves. For an EC or Edwards private key under `binding = "token-asserted"`, the identity would
+come from the public half that the bundle's own `publicKey` creates (a target such as SoftHSM
+keeps no point with the private key), so `import --in` refuses such a key (14). `migrate`,
+whose bundle never leaves the process, moves it. A wrapped private key is the PKCS#8 that
+`C_WrapKey` produces. PKCS#12 or a CMS key package would need the plaintext on the host, which a
+sealed move avoids. Named objects export all or nothing. Without names, export takes the objects
+that can move and warns about the rest. A spec's `migrate.noExport = true` keeps its object on
+its token and silences the warning, and by default a token's transport key also stays on its
+token in this way. Import handles each entry on its own, reports every failure, and exits with
+the code of the first failure. The bundle names the token that it is for (`target`, version 2),
+and `import` refuses the bundle on another token (14). Its keys unwrap only under the target's
+transport key (its `transportWith`, or the `--transport-spec` that the export named),
+never under whichever key the bundle names (14). A version-1 bundle names no target. camigrate
+still reads it, checks it only against the target's transport key, and prints a warning.
 
-**D6. Import is a `lock` that creates from a bundle.**
+**D6. Import is a `lock` that creates the objects from a bundle.**
 
-- If-None-Match per class: never over an object of its class under the locator. A key, its
-  public key and its certificate share one `CKA_ID` by PKCS#11 convention, so they move into one
-  locator in any order; a public key object already holding the key's public key is reused,
-  never duplicated. `cakeys create` still refuses over anything under the locator.
-- It is the sanctioned exception to "`create` is refused when the lock already pins the
-  material": generated material could not match, imported material must.
-- After creating, it realises and compares with the bundle's and the lock's IDs; a mismatch
-  removes exactly what it created. Wherever a key is plaintext on the host (a `host` move, a
-  key file written by `export --to-key-file` or read by `import`), its identity is checked on
-  the host first, 10 before anything is written: a private key's `rfc7093m4`, and every
-  commitment the lock pins for a secret key, computed here (`ops::check_identity`). ykcs11
-  cannot erase a key, so for a YubiKey that check is the only safety net; for a key file it is
-  the only check there is, since whoever imports the file does not compare it with the lock.
-- The target spec's attributes are the unwrap template, explicit and complete (kryoptic sets no
-  usage otherwise), less the attributes whose `unwrap.template.*` row answers no (SoftHSM: `CKA_VALUE_LEN`).
+- Import applies If-None-Match per object class: it never creates an object over an object of the
+  same class under the locator. By PKCS#11 convention, a key, its public key and its certificate
+  share one `CKA_ID`, so they move into one locator in any order. A public key object that
+  already holds the key's public key is reused and never duplicated. `cakeys create` still refuses
+  to create over anything under the locator.
+- Import is the permitted exception to the rule that "`create` is refused when the lock already
+  pins the material". Generated material could not match the lock, but imported material must
+  match it.
+- After it creates the objects, import realises them and compares the result with the bundle's
+  IDs and the lock's IDs. A mismatch removes exactly what it created. Wherever a key is plaintext
+  on the host (a `host` move, or a key file that `export --to-key-file` writes or that `import`
+  reads), camigrate first checks the key's identity on the host, and it exits with 10 before
+  anything is written.
+  It computes a private key's `rfc7093m4` and every commitment that the lock pins for a secret key
+  (`ops::check_identity`). ykcs11 cannot erase a key, so for a YubiKey this check is the only
+  protection against importing a wrong key. For a key file, it is the only check at all, because
+  whoever imports the file does not compare it with the lock.
+- The unwrap template consists of the target spec's attributes, stated explicitly and completely,
+  because kryoptic sets no usage attributes otherwise. The template leaves out each attribute
+  whose `unwrap.template.*` row answers no (SoftHSM: `CKA_VALUE_LEN`).
 
 **D7. The lock changes only on the target.** The target realisation gains
-`provenance.origin = { from, method, exposure }` (`declared = true` for a vendor method):
-provenance, never a verdict. The source's entry is unchanged: the lock records state, not
-events.
+`provenance.origin = { from, method, exposure }` (with `declared = true` for a vendor method).
+This record is provenance and never changes a verdict. The lock records state, not events, so
+the source's entry does not change.
 
-**D8. Export and import are admin operations.** Refused inside the Nix build sandbox, like a
-lock write, unless the build says its keys are throwaway (`CAKEYS_ALLOW_NIX_STORE_KEYS=1`,
-docs/FILE.md). A YubiKey import needs the admin credential and can never carry an attestation, so
-`attestation = true` on that target is refused at planning. A TPM import attests residence, not
-generation (`CKA_LOCAL` is false).
+**D8. Export and import are admin operations.** They are refused inside the Nix build sandbox, as
+a lock write is, unless the build declares that its keys are disposable
+(`CAKEYS_ALLOW_NIX_STORE_KEYS=1`, docs/FILE.md). A YubiKey import needs the admin
+credential and can never carry an attestation, so `attestation = true` on that target is refused
+when the plan is made. A TPM import attests that the key resides in the TPM, not that the TPM
+generated it (`CKA_LOCAL` is false).
 
-**D9. `--dry-run` is the real planner.** One code path turns (objects, source, target) into a
-per-object plan: method, exposure, and the reasons for everything impossible. The plan also
-blocks what the target could not prove afterwards (its spec's binding needs a mechanism the
-target lacks, e.g. Ed25519 through p11-kit). It asks the rules each import asks before its
-write, with the same functions, on the target `--to` names, whether the export reaches it or
-only its transport file: where the module can place the key (a PIV slot by `CKA_ID`, not f9:
-17), the attestation the spec opts into (15); and, on a target a `migrate` reaches, the
-import's own checks and an empty locator (13). A blocked plan exits as the refusal that
-blocked it, so the dry run exits as the run would; a rule it cannot decide (a provider this
-build lacks) is said as deferred. The main test is a property: for every source, target and
-class in the reference matrix, the dry-run verdict is the outcome.
+**D9. `--dry-run` is the real planner.** One code path turns (objects, source, target) into a plan
+for each object: the method, the exposure, and the reasons for everything that is impossible. The
+plan also blocks a move whose result the target could not prove afterwards, because the spec's
+binding needs a mechanism that the target lacks (for example, Ed25519 through p11-kit). The
+planner asks the rules that each import asks before its write, with the same functions, on the
+target that `--to` names, whether the export reaches that target or only its transport file.
+These rules decide where the module can place the key (a PIV slot by `CKA_ID`, not f9: 17) and
+the attestation that the spec opts into (15). On a target that a `migrate` reaches, the planner
+also runs the import's own checks and checks that the locator is empty (13). A blocked plan exits
+with the code of the refusal that blocked it, so the dry run exits as the run would. A rule that
+the planner cannot decide (for example, because the provider is not in this build) is reported as
+deferred. The main test is a property: for every source, target and class in the reference
+matrix, the dry-run verdict equals the outcome.
 
 **D10. Provider crates add their own methods, under a declared exposure.** A vendor provider
-(Luna, CloudHSM, nShield, a vendor tool) contributes methods named `vendor:<provider>/<name>`,
-frozen like the built-ins, each declaring its exposure, the types it moves and what it needs.
-The planner prefers the strongest exposure; `--dry-run` marks a vendor level as declared, and
-the lock records it as declared, since camigrate cannot check it. The identity is never the
-vendor's: after any import camigrate realises the object as for a key that never moved.
+(Luna, CloudHSM, nShield, a vendor tool) contributes methods named `vendor:<provider>/<name>`.
+Their names are frozen like those of the built-in methods, and each method declares its exposure,
+the types that it moves and what it needs. The planner prefers the strongest exposure.
+`--dry-run` marks a vendor's level as declared, and the lock records it as declared, because
+camigrate cannot check it. The identity never comes from the vendor: after any import, camigrate
+realises the object in the same way as a key that never moved.
 
 ## Frozen names and formats
 
@@ -290,12 +329,13 @@ certificateType = "CKC_X_509"
 rfc7093m4 = "sha256-..."
 ```
 
-Key files: `pkcs8-pbes2` is a PEM `ENCRYPTED PRIVATE KEY` (PBES2, PBKDF2-HMAC-SHA256 with 600 000
-iterations, AES-256-CBC). `pkcs12` holds the same encrypted key in a shrouded key bag beside the
-certificate the lock pairs with the object, both tagged with one `localKeyId`, under an
-HMAC-SHA256 MAC (PKCS#12 KDF, 600 000 iterations, as many as for the key). One key per file, mode 0600. An imported file
-names no object: the key's `rfc7093m4` finds the locked private key. A file asking for more than
-10 000 000 KDF iterations is refused.
+Key files: a `pkcs8-pbes2` file is a PEM `ENCRYPTED PRIVATE KEY` (PBES2, PBKDF2-HMAC-SHA256 with
+600 000 iterations, AES-256-CBC). A `pkcs12` file holds the same encrypted key in a shrouded key
+bag, beside the certificate that the lock pairs with the object. Both are tagged with one
+`localKeyId`, under an HMAC-SHA256 MAC (PKCS#12 KDF with 600 000 iterations, as many as for the
+key). Each file holds one key and has mode 0600. An imported file names no object: camigrate finds
+the locked private key by the key's `rfc7093m4`. A file that asks for more than 10 000 000 KDF
+iterations is refused.
 
 The lock's target realisation (D7):
 
@@ -311,45 +351,47 @@ declared = true                         # only for a vendor method: its level as
 
 | Backend | Export (source) | Import (target) |
 |---|---|---|
-| SoftHSM 2.7 | `C_WrapKey`: AES-KW, AES-KW-PAD (RFC 5649), RSA-OAEP SHA-1 only [run]; `CKM_RSA_AES_KEY_WRAP`, and the SO can create a trusted RSA public key [run] | `C_UnwrapKey` [run], but an unwrapped secret key's `CKA_VALUE_LEN` reads 0 and is refused in the template [src], so sealed secret keys into SoftHSM are blocked (`move.secret-unwrap` no); `C_CreateObject` [run] |
-| kryoptic 1.5.4 | `C_WrapKey`: AES-KW, AES-KWP, AES-GCM, RSA-OAEP SHA-1 and SHA-256 [run]; cannot make an RSA public key trusted, so never an `enforced` source (`move.trusted-wrap` no) [run] | `C_UnwrapKey` (sets no usage unless the template asks) [run]; `C_CreateObject` [run] |
-| p11-kit | what the module behind offers, minus what the RPC drops: AES-KW, AES-KW-PAD, `CKM_RSA_AES_KEY_WRAP`, `CKM_EDDSA` [run] | the same limits; the module behind is unknown until keys.toml names its `provider` (the plan warns) |
-| AWS CloudHSM 5.18 (hsm2m, FIPS and non-FIPS) | lists `CKM_AES_KEY_WRAP` and `_PAD` with `CKF_WRAP \| CKF_UNWRAP` but refuses both (`CKR_MECHANISM_INVALID`) and names no `_KWP` [run] (the client log asks a mapping for the first, `configure-pkcs11 --aes-key-wrap-mapping` [doc], untried): the probe subtracts them, and the composed method takes `CKM_RSA_AES_KEY_WRAP` (OAEP SHA-1 or SHA-256, RFC 5649 inside) [run]. Its vendor `0x8000216F` ("zero pad") is RFC 5649 too, `0x8000210A` RFC 3394 over PKCS#5 padding [run], unused | `C_UnwrapKey` by `CKM_RSA_AES_KEY_WRAP` [run]; public halves only private (`CKA_PRIVATE = false` refused) [run]; never Ed25519, which it holds as `CKK_EC` (a `CKK_EC_EDWARDS` public half is refused: `migration.refuses`), though it exports one [run] |
-| tpm2-pkcs11 1.10 | never: no `C_WrapKey`/`C_UnwrapKey` [src] | `tpm2_ptool import` of EC (not P-521), RSA and HMAC keys [run]; data objects only private [src] |
-| YubiKey PIV (ykcs11 2.7) | never [src] | `C_CreateObject` as SO of RSA 1024–4096, EC P-256/384, Ed25519 and certificates [src, run]; no public key objects; imported keys are never attested |
-| Vendor HSMs | vendor mechanisms and tools [todo] | likewise [todo] |
+| SoftHSM 2.7 | `C_WrapKey` with AES-KW, AES-KW-PAD (RFC 5649), and RSA-OAEP with SHA-1 only [run]. Offers `CKM_RSA_AES_KEY_WRAP`, and the SO can create a trusted RSA public key [run] | `C_UnwrapKey` [run], but the `CKA_VALUE_LEN` of an unwrapped secret key reads 0, and the attribute is refused in the template [src]. Therefore sealed moves of secret keys into SoftHSM are blocked (`move.secret-unwrap` is no). `C_CreateObject` [run] |
+| kryoptic 1.5.4 | `C_WrapKey` with AES-KW, AES-KWP, AES-GCM, and RSA-OAEP with SHA-1 and SHA-256 [run]. It cannot make an RSA public key trusted, so it is never an `enforced` source (`move.trusted-wrap` is no) [run] | `C_UnwrapKey`, which sets no usage attributes unless the template asks for them [run]. `C_CreateObject` [run] |
+| p11-kit | What the module behind it offers, minus what the RPC protocol drops: AES-KW, AES-KW-PAD, `CKM_RSA_AES_KEY_WRAP` and `CKM_EDDSA` [run] | The same limits. The module behind it is unknown until keys.toml names its `provider`, and the plan warns until then |
+| AWS CloudHSM 5.18 (hsm2m, FIPS and non-FIPS) | Lists `CKM_AES_KEY_WRAP` and `_PAD` with `CKF_WRAP \| CKF_UNWRAP`, but refuses both (`CKR_MECHANISM_INVALID`), and names no `_KWP` [run]. The client log asks for a mapping for the first one, `configure-pkcs11 --aes-key-wrap-mapping` [doc], which has not been tried. The probe subtracts them, and the composed method uses `CKM_RSA_AES_KEY_WRAP` (OAEP with SHA-1 or SHA-256, with RFC 5649 inside) [run]. Its vendor mechanism `0x8000216F` ("zero pad") is also RFC 5649, and `0x8000210A` is RFC 3394 over PKCS#5 padding [run]; camigrate uses neither | `C_UnwrapKey` with `CKM_RSA_AES_KEY_WRAP` [run]. Public halves only as private objects (`CKA_PRIVATE = false` is refused) [run]. It never imports Ed25519, which it holds as `CKK_EC` (a `CKK_EC_EDWARDS` public half is refused: `migration.refuses`), although it exports Ed25519 keys [run] |
+| tpm2-pkcs11 1.10 | Never: it has no `C_WrapKey` or `C_UnwrapKey` [src] | `tpm2_ptool import` of EC (not P-521), RSA and HMAC keys [run]. Data objects only as private objects [src] |
+| YubiKey PIV (ykcs11 2.7) | Never [src] | `C_CreateObject` as the SO, for RSA 1024–4096, EC P-256/384, Ed25519 and certificates [src, run]. No public key objects. Imported keys are never attested |
+| Vendor HSMs | Vendor mechanisms and tools [todo] | The same [todo] |
 
 ## Results
 
-All phases ran on 2026-11-12 (0, 1) and 2026-11-14 (2–5); the test names are in
+Phases 0 and 1 ran on 2026-11-12, and phases 2 to 5 ran on 2026-11-14. The test names are in
 `crates/camigrate/tests/`.
 
 | Phase | Built | Found or decided |
 |---|---|---|
-| 0 | The spike (pkcs11-tool, SoftHSM ↔ kryoptic) and the cryptoki KWP patch (`nix/patches/cryptoki-aes-key-wrap-kwp.patch`, upstream draft `upstream/rust-cryptoki/PR-KWP.md`) | SoftHSM's AES-KW-PAD and kryoptic's AES-KWP are one format (RFC 5649) under two IDs; EC and RSA keys wrapped either way still sign for their fixtures; the composed method works both ways [run] |
-| 1 | The planner and `--dry-run`; the capability hook vendor crates used (D10; since folded into the profiles, `Side::pkcs11`); the transport file | — |
-| 2 | `public` moves (`public.rs`), recorded through `ops::lock_import` | tpm2-pkcs11 creates data objects only private, so its profiles no longer accept public `CKO_DATA` |
-| 3 | `sealed` (`sealed.rs`): bundles, `export --out`, `import`, `migrate`; one creation pair per object (`origin = "create"`), targets `origin = "import"`; `migrate.transportWith` and `pop-unwrap` | SoftHSM's unwrapped `CKA_VALUE_LEN` (`move.secret-unwrap` no); p11-kit needs its `provider` named (the layer's `requires-provider`) |
-| 3b | `enforced`: `transport --trust-on`, `CKM_RSA_AES_KEY_WRAP` (third cryptoki patch, `nix/patches/cryptoki-rsa-aes-key-wrap.patch`), the bundle's per-entry `kek` | both modules refuse a wrap-with-trusted key under an untrusted key; `CKA_TRUSTED` is set only at creation and only by the SO; kryoptic cannot trust an RSA public key [run: one-off PyKCS11 and Rust test programs, not kept, recorded in the profiles' `[manual."trusted-wrap"]`] |
-| 4 | `host` (`host.rs`): `Token::extract`, `cakeys_core::plaintext`, `tpm2-ptool` through an in-memory file (`/proc/<pid>/fd/N`, since `tpm2_import` inherits no descriptor) | the key enters `tpm2_ptool`'s Python process, and its user PIN is on that process's command line (no other option [src]): both stated as plan notes. The planner blocks moves the target could not prove (Ed25519 into p11-kit) |
-| 4b | `file` (`file.rs`): `pkcs8-pbes2` and `pkcs12` export and import; `pkcs5`, `pkcs12` 0.2 and `cms` 0.3 (release candidates, same RustCrypto line as `der` 0.8) | a wrong passphrase is 17 and leaves nothing |
-| 5 | `piv-import`, as SO, the identity checked on the host first | YubiKey 5C NFC FIPS 5.7.4, ykcs11 2.7.3 (`tests/yubikey.rs`, opt-in): a P-256 key from SoftHSM moved into retired slot 95 and proved possession; a second import into the occupied slot was refused (13) before anything was written. The slot was emptied by hand beforehand (no delete in ykcs11) |
+| 0 | The spike (pkcs11-tool, SoftHSM ↔ kryoptic), and the cryptoki KWP patch (`nix/patches/cryptoki-aes-key-wrap-kwp.patch`, upstream draft `upstream/rust-cryptoki/PR-KWP.md`) | SoftHSM's AES-KW-PAD and kryoptic's AES-KWP are one format (RFC 5649) under two IDs. EC and RSA keys that were wrapped either way still sign correctly for their fixtures. The composed method works in both directions [run] |
+| 1 | The planner and `--dry-run`; the capability hook that vendor crates used (D10; it has since been folded into the profiles, `Side::pkcs11`); the transport file | — |
+| 2 | `public` moves (`public.rs`), recorded through `ops::lock_import` | tpm2-pkcs11 creates data objects only as private objects, so its profiles no longer accept public `CKO_DATA` |
+| 3 | `sealed` (`sealed.rs`): bundles, `export --out`, `import`, `migrate`; one creation pair per object (`origin = "create"`), and targets with `origin = "import"`; `migrate.transportWith` and `pop-unwrap` | SoftHSM's `CKA_VALUE_LEN` after an unwrap (`move.secret-unwrap` is no); p11-kit needs its `provider` to be named (the layer's `requires-provider`) |
+| 3b | `enforced`: `transport --trust-on`, `CKM_RSA_AES_KEY_WRAP` (the third cryptoki patch, `nix/patches/cryptoki-rsa-aes-key-wrap.patch`), and the bundle's per-entry `kek` | Both modules refuse to wrap a wrap-with-trusted key under an untrusted key. `CKA_TRUSTED` is set only at creation and only by the SO. kryoptic cannot trust an RSA public key [run: one-off PyKCS11 and Rust test programs, which were not kept; the results are recorded in the profiles' `[manual."trusted-wrap"]`] |
+| 4 | `host` (`host.rs`): `Token::extract`, `cakeys_core::plaintext`, and `tpm2-ptool` through an in-memory file (`/proc/<pid>/fd/N`, because `tpm2_import` inherits no file descriptor) | The key enters `tpm2_ptool`'s Python process, and the user PIN is on that process's command line (there is no other option [src]). The plan states both facts as notes. The planner blocks moves whose result the target could not prove (Ed25519 into p11-kit) |
+| 4b | `file` (`file.rs`): `pkcs8-pbes2` and `pkcs12` export and import; the crates `pkcs5`, `pkcs12` 0.2 and `cms` 0.3 (release candidates from the same RustCrypto line as `der` 0.8) | A wrong passphrase exits 17 and leaves nothing behind |
+| 5 | `piv-import`, as the SO, with the identity checked on the host first | YubiKey 5C NFC FIPS 5.7.4, ykcs11 2.7.3 (`tests/yubikey.rs`, opt-in): a P-256 key from SoftHSM moved into retired slot 95 and proved possession. A second import into the occupied slot was refused (13) before anything was written. The slot was emptied by hand beforehand, because ykcs11 has no delete |
 
-Not built: phase 6, native `tpm-duplicate` (a host-built duplication blob, `TPM2_Import` through
-tss-esapi), and phase 7, vendor methods, which wait for hardware. Both are in [OPEN.md](OPEN.md).
+Two phases are not built: phase 6, the native `tpm-duplicate` (a duplication blob built on the
+host, and `TPM2_Import` through tss-esapi), and phase 7, the vendor methods, which wait for
+hardware. Both are in [OPEN.md](OPEN.md).
 
 ## Tests
 
-- **The dry-run property** (D9), over the reference matrix: SoftHSM, kryoptic, p11-kit and
-  swtpm/tpm2-pkcs11 as sources and targets, every class and the key types each takes. A ready
-  move exits 22 (the lock written), records its `origin`, and `cakeys check` accepts it on the
-  target with its proof of possession; a blocked one exits as the refusal that blocked it (15,
-  or the rule's own: 17 for a PIV slot, 13 for an occupied locator) with nothing changed.
+- **The dry-run property** (D9) runs over the reference matrix: SoftHSM, kryoptic, p11-kit and
+  swtpm/tpm2-pkcs11 as sources and as targets, every class, and the key types that each token
+  takes. A move that is ready exits 22 (the lock was written) and records its `origin`, and
+  `cakeys check` accepts it on the target with its proof of possession. A blocked move exits with
+  the code of the refusal that blocked it (15, or the rule's own code: 17 for a PIV slot, 13 for
+  an occupied locator), and nothing changes.
 - **Refusals**, each with its pinned exit code: non-extractable keys, a source that never
-  exports, a target missing a curve or mechanism, host paths without the flag, an occupied
-  locator, a transport key the lock does not pin, a transport file or bundle of another target,
-  tampered or swapped blobs, another key's IDs,
-  `attestation = true` on a YubiKey import, a wrong passphrase.
+  exports, a target that lacks a curve or a mechanism, host paths without the flag, an occupied
+  locator, a transport key that the lock does not pin, a transport file or a bundle of another
+  target, tampered or swapped blobs, another key's IDs, `attestation = true` on a YubiKey import,
+  and a wrong passphrase.
 - **Cleanup**: a failed import leaves nothing behind.
-- **Formats**: unit, property and fuzz tests for the bundle parser; round trips of both key file
-  formats.
+- **Formats**: unit, property and fuzz tests for the bundle parser, and round trips of both key
+  file formats.

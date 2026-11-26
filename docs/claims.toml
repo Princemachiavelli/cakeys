@@ -277,13 +277,13 @@ why = "lists the options the parser gives every verb: a usage description, not a
 # Paths: the four refused_in_a_nix_build runs; any other verb that writes the lock is refused by read_lock's sandbox check
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "- Every writing verb is refused inside a"
+says = "- Every verb that writes is refused inside a Nix build"
 kind = "enforced"
 tests = ["refusals_around_the_plans_and_the_offline_export", "a_missing_lock_is_refused_unless_a_new_one_is_asked_for"]
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "never moves, and `CKA_NEVER_EXTRACTABLE` is an immutable in"
+says = "never moves, and the lock treats `CKA_NEVER_EXTRACTABLE` as immutable"
 kind = "enforced"
 tests = [
   "exportability_is_fixed_at_creation",
@@ -304,7 +304,7 @@ tests = [
 # The export KEK is sensitive and leaves only wrapped to the transport key; the moved keys are sensitive, so a sealed move that read them would fail
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "The host never sees it. The default. |"
+says = "The host never sees the material. This is the default. |"
 kind = "enforced"
 tests = [
   "each_session_key_is_sealed_as_its_purpose_says",
@@ -314,14 +314,14 @@ tests = [
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "source that never exports, a type or proof"
+says = "the source never exports, or the target lacks a type or a proof"
 kind = "descriptive"
 why = "names a kind of source (one whose profile says it exports nothing), a row of the plan's vocabulary"
 
 # The host path is no export's, a private data object never moves, and the bundle's fields are pinned
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "per export** (a source and a target), never"
+says = "per export** (for one source and one target), and it never contains plaintext"
 kind = "enforced"
 tests = [
   "export_plans_follow_each_sides_capabilities",
@@ -331,7 +331,7 @@ tests = [
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "to it. Import recomputes every identity on the"
+says = "Import recomputes every identity on the target and proves the binding"
 kind = "enforced"
 tests = ["bundles_are_checked_against_the_lock", "a_bundle_files_unproven_ec_key_is_refused"]
 
@@ -343,13 +343,13 @@ why = "migrate's bundle is a value inside its one process (no file or socket on 
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "never duplicated. `cakeys create` still refuses over anything"
+says = "is reused and never duplicated. `cakeys create` still refuses"
 kind = "enforced"
 tests = ["objects_sharing_a_locator_move_in_any_order", "never_create_over_an_occupied_locator"]
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "is written: a private key's `rfc7093m4`, and every"
+says = "It computes a private key's `rfc7093m4` and every commitment that the lock pins for a secret key"
 kind = "enforced"
 tests = [
   "a_source_that_hands_over_another_key_writes_nothing",
@@ -359,7 +359,7 @@ tests = [
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "provenance, never a verdict. The source's entry is"
+says = "This record is provenance and never changes a verdict."
 kind = "enforced"
 tests = ["observed_and_provenance_never_change_a_verdict", "provenance_changes_only_warn"]
 
@@ -376,7 +376,7 @@ tests = [
 # No vendor method exists in this tree; each built-in one realises after it lands
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "cannot check it. The identity is never the"
+says = "The identity never comes from the vendor"
 kind = "enforced"
 tests = [
   "bundles_are_checked_against_the_lock",
@@ -387,25 +387,25 @@ tests = [
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "refused) [run]; never Ed25519, which it holds as"
+says = "It never imports Ed25519, which it holds as"
 kind = "descriptive"
 why = "a measurement of the module ([run], [src], [doc]), recorded in its profile and the ledger, not a behaviour of camigrate"
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "1.10 | never: no `C_WrapKey`/`C_UnwrapKey` [src] | `tpm2_ptool"
+says = "1.10 | Never: it has no `C_WrapKey` or `C_UnwrapKey` [src] |"
 kind = "descriptive"
 why = "a measurement of the module ([run], [src], [doc]), recorded in its profile and the ledger, not a behaviour of camigrate"
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "2.7) | never [src] | `C_CreateObject` as SO"
+says = "2.7) | Never [src] | `C_CreateObject` as the SO"
 kind = "descriptive"
 why = "a measurement of the module ([run], [src], [doc]), recorded in its profile and the ledger, not a behaviour of camigrate"
 
 [[claim]]
 doc = "docs/CAMIGRATE.md"
-says = "command line (no other option [src]): both stated"
+says = "(there is no other option [src]). The plan states both"
 kind = "descriptive"
 why = "a fact of tpm2_ptool ([src]: its PIN is an argument), which the plan states as a note"
 
