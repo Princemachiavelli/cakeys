@@ -431,13 +431,13 @@ tests = ["the_committed_profiles_name_only_known_rows", "a_newer_cakeys_names_lo
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "TOML is what everything queries. Write probes are"
+says = "the committed TOML is what every tool queries"
 kind = "descriptive"
 why = "a design decision (D5): the committed profiles are what the tools read"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "possession by every binding of its kind, a"
+says = "possession by every binding of its kind, and it writes a `prove.*` row for each binding. Every secret key type"
 kind = "enforced"
 tests = [
   "softhsm_committed_profile_is_what_the_probe_observes",
@@ -447,7 +447,7 @@ tests = [
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "a failed one active [run]) is undetermined, never"
+says = "A failure never becomes a row when an earlier operation leaves"
 kind = "enforced"
 tests = ["the_probe_records_what_a_misbehaving_module_does"]
 
@@ -459,25 +459,25 @@ tests = ["a_probe_an_error_ends_destroys_what_it_made", "the_probe_clears_what_a
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "one for every key it generates, a real"
+says = "ykcs11 writes one for every key it generates, including a real key"
 kind = "descriptive"
 why = "a fact of ykcs11 (it writes a placeholder certificate for each key it generates), which the scratch guard allows for"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "reason) and every probed capability row (answer and"
+says = "and every probed capability row (its answer and"
 kind = "enforced"
 tests = ["every_differing_row_is_a_named_line", "rows_only_one_side_has_are_named"]
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "is `CKR_ARGUMENTS_BAD`); every baseline curve generates; RSA 512–16384"
+says = "`CKR_ARGUMENTS_BAD`). Generates every baseline curve."
 kind = "descriptive"
 why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "probed). Generates every secret key type it lists,"
+says = "Generates every secret key type that it lists, including the five hash-bound HMAC types"
 kind = "descriptive"
 why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
 
@@ -489,31 +489,31 @@ why = "a measurement of the module recorded in its committed profile, which the 
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "no HMAC; every key reports `CKA_DERIVE = false`"
+says = "Every key reports `CKA_DERIVE = false`"
 kind = "descriptive"
 why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "RSA-1024, brainpool, every Edwards and Montgomery curve. OAEP"
+says = "Refuses RSA-1024, brainpool, and every Edwards and Montgomery curve."
 kind = "descriptive"
 why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "[run]. It never imports one (`[migration] refuses`: a"
+says = "The module never imports an Ed25519 key (`[migration] refuses`"
 kind = "descriptive"
 why = "a measurement of the module recorded in its committed profile, which the profile tests and the ledger hold, not a behaviour of caprobe"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "profiles a build re-probes (`verified-by`), so every module"
+says = "so every module profile has an entry"
 kind = "enforced"
 tests = ["checks.ledger"]
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "on its path then), every hand edit since"
+says = "The entry also records every hand edit since then"
 kind = "enforced"
 tests = ["checks.ledger"]
 
@@ -525,7 +525,7 @@ why = "says what LEDGER.toml's `[groups]` list, a description of that file"
 
 [[claim]]
 doc = "docs/CAPROBE.md"
-says = "On 2026-11-25 every hardware and cloud profile and"
+says = "On 2026-11-25, every hardware and cloud profile and the lock are stale"
 kind = "descriptive"
 why = "the ledger's state on one date, which `checks.ledger` prints"
 
