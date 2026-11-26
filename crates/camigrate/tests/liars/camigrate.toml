@@ -211,6 +211,11 @@ expect = { exit = 12 }
 verbs = ["migrate --dry-run", "export --dry-run"]
 expect = { exit = 12, red = "L4b-3: camigrate's dry runs plan from the lock and never search the source: a second object under the locator plans ready (0), and the run refuses it (12), which no deferred rule foretells" }
 
+[[block.override]]
+verbs = ["migrate"]
+objects = ["aes", "cert", "data", "ec"]
+expect = { exit = 12, rule = "locator.unique" }
+
 # ── FLAG: what an object says of itself, hidden.
 
 # CKA_PRIVATE hidden from `lock` (its identity read first, then the policy): the lock records no
@@ -345,7 +350,7 @@ corrupt = true
 lies = ["forge.sign"]
 verbs = ["import"]
 objects = ["ec-in"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "pop.unwrap" }
 
 # ── BLOB: a blob the module round-trips that is not what it made (E-3).
 

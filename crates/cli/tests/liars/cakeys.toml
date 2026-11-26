@@ -6,7 +6,9 @@
 #
 # A cell's `expect`:
 #   exit      the run's exit, or a list it is one of;
-#   rule      the rule its refused row names (cakeys_pkcs11::ops::Rule); absent, it names none;
+#   rule      the rule its refused row names (cakeys_core::Rule), or the check where no rule
+#             refused (cakeys_core::Check; docs/CAKEYS.md, "Rules and checks"); absent, it
+#             names neither;
 #   device    whether that row says the device failed (default false);
 #   outcome   a passing row's outcome; deferred: a rule a passing dry run's row defers;
 #   fired     whether the lie fires (default true): one that does not proves the verb never
@@ -307,11 +309,16 @@ verbs = ["check", "delete"]
 objects = ["ec-sign", "aes", "cert", "data", "pub"]
 expect = { exit = 12 }
 
+[[block.override]]
+verbs = ["delete"]
+objects = ["aes", "cert", "data", "ec-sign", "pub"]
+expect = { exit = 12, rule = "locator.unique" }
+
 [[block]]
 lies = ["other.find"]
 verbs = ["lock", "lock --dry-run", "create"]
 objects = ["ec-sign"]
-expect = { exit = 12 }
+expect = { exit = 12, rule = "locator.unique" }
 
 [[block]]
 lies = ["other.find"]
@@ -377,11 +384,16 @@ verbs = ["check", "lock --dry-run"]
 objects = ["aes", "hmac"]
 expect = { exit = 10 }
 
+[[block.override]]
+verbs = ["lock --dry-run"]
+objects = ["aes", "hmac"]
+expect = { exit = 10, rule = "identity.material" }
+
 [[block]]
 lies = ["other.key.sign"]
 verbs = ["create"]
 objects = ["ec-sign", "new"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "pop.sign" }
 
 [[block]]
 lies = ["other.key.derive"]
@@ -433,7 +445,7 @@ expect = { exit = 13 }
 lies = ["other.point"]
 verbs = ["lock"]
 objects = ["ec-sign"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "pop.sign" }
 
 [[block]]
 lies = ["other.point"]
@@ -445,7 +457,7 @@ expect = { exit = 10 }
 lies = ["other.point"]
 verbs = ["create"]
 objects = ["new"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "pop.sign" }
 
 [[block]]
 lies = ["other.spki"]
@@ -676,7 +688,7 @@ expect = { exit = 13 }
 lies = ["flag.sign-false"]
 verbs = ["create"]
 objects = ["ec-sign"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "policy.attribute" }
 
 # A secret key that says it can leave the token.
 [[block]]
@@ -691,6 +703,11 @@ lies = ["flag.private-false"]
 verbs = ["check", "lock --dry-run"]
 objects = ["data"]
 expect = { exit = 13 }
+
+[[block.override]]
+verbs = ["lock --dry-run"]
+objects = ["data"]
+expect = { exit = 13, rule = "policy.attribute" }
 
 # A data object the token says is private is hashed only where the spec declares it so.
 [[block]]
@@ -762,11 +779,16 @@ verbs = ["check", "lock", "lock --dry-run", "create"]
 objects = ["ec-sign"]
 expect = { exit = 13 }
 
+[[block.override]]
+verbs = ["create", "lock --dry-run", "lock"]
+objects = ["ec-sign"]
+expect = { exit = 13, rule = "public.same-key" }
+
 [[block]]
 lies = ["change.point"]
 verbs = ["create"]
 objects = ["new"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "public.same-key" }
 
 [[block]]
 lies = ["change.final-try"]
@@ -833,13 +855,13 @@ expect = { exit = 13 }
 lies = ["forge.sign"]
 verbs = ["lock", "lock --dry-run", "create"]
 objects = ["ec-sign"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "pop.sign" }
 
 [[block]]
 lies = ["forge.sign"]
 verbs = ["create"]
 objects = ["new"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "pop.sign" }
 
 # A commitment that is not the lock's.
 [[block]]
@@ -848,11 +870,16 @@ verbs = ["check", "lock", "create"]
 objects = ["aes", "hmac"]
 expect = { exit = 10 }
 
+[[block.override]]
+verbs = ["create", "lock"]
+objects = ["aes", "hmac"]
+expect = { exit = 10, rule = "identity.material" }
+
 [[block]]
 lies = ["forge.sign"]
 verbs = ["delete", "delete --dry-run"]
 objects = ["ec-sign"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "pop.sign" }
 
 [[block]]
 lies = ["forge.sign"]
@@ -878,11 +905,16 @@ verbs = ["check", "delete"]
 objects = ["ec-sign", "pub"]
 expect = { exit = 13 }
 
+[[block.override]]
+verbs = ["delete"]
+objects = ["ec-sign", "pub"]
+expect = { exit = 13, rule = "public.key-type" }
+
 [[block]]
 lies = ["forge.point"]
 verbs = ["lock"]
 objects = ["ec-sign"]
-expect = { exit = 13 }
+expect = { exit = 13, rule = "public.key-type" }
 
 # A certificate cut short is no certificate; a data object's value cut short another value.
 [[block]]
@@ -890,6 +922,11 @@ lies = ["forge.value"]
 verbs = ["check", "delete"]
 objects = ["cert"]
 expect = { exit = 13 }
+
+[[block.override]]
+verbs = ["delete"]
+objects = ["cert"]
+expect = { exit = 13, rule = "certificate.decodes" }
 
 [[block]]
 lies = ["forge.value"]
@@ -926,6 +963,11 @@ lies = ["blob.transcode"]
 verbs = ["check", "lock", "lock --dry-run", "create"]
 objects = ["aes-wrap"]
 expect = { exit = 10 }
+
+[[block.override]]
+verbs = ["create", "lock --dry-run", "lock"]
+objects = ["aes-wrap"]
+expect = { exit = 10, rule = "identity.material" }
 
 [[block]]
 lies = ["blob.transcode"]
