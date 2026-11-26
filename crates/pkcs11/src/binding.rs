@@ -1,17 +1,19 @@
-//! The cryptoki binding layer (docs/CAPROBE.md D3): the one layer between cakeys and every
-//! module, named `cryptoki/0.12` and applied automatically. What it subtracts is decided at
-//! run time — a binding with the key-type fix (the Nix patches, or the upstream PRs merged
-//! and released) subtracts nothing, so the layer records the fix as soon as the implementation
-//! carries it, and heals itself when upstream ships it.
+//! The cryptoki binding layer (docs/CAPROBE.md D3). It is the one layer that sits between cakeys
+//! and every module, it is named `cryptoki/0.12`, and it is applied automatically. What it
+//! subtracts is decided at run time. A binding with the key-type fix (from the Nix patches, or
+//! from the upstream PRs once they are merged and released) subtracts only the mechanisms that no
+//! build of the binding names. So the layer records the fix as soon as the implementation has it,
+//! and it needs no change when upstream releases the fix.
 
 use cakeys_profile::Profile;
 use cryptoki::object::KeyType;
 use std::os::raw::c_ulong;
 
-/// The binding layer's profile name: the one layer in every stack.
+/// The profile name of the binding layer, which is the one layer in every stack.
 pub const NAME: &str = "cryptoki/0.12";
 
-/// The layer a patched binding resolves to: it subtracts nothing, and its note says why.
+/// The layer for a patched binding. It subtracts only the two mechanisms that no build of the
+/// pinned cryptoki names (`CKM_AES_CFB128` and `CKM_XEDDSA`), and its notes say why.
 const PATCHED: &str = r#"
 profile = "cryptoki/0.12"
 mode = "delta"
@@ -26,12 +28,12 @@ CKM_AES_CFB128 = "the pinned cryptoki has no constant or parameter type for it; 
 CKM_XEDDSA = "the pinned cryptoki has no constant or parameter type for it; a module that lists it is recorded advertised and untested (docs/archive/CAPROBE_PROFILE_COVERAGE.md, Part 0)"
 "#;
 
-/// Whether this build's cryptoki maps the SHA-2 HMAC key types correctly. cryptoki 0.12.1
-/// gives `SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC`, so such keys can be neither
-/// created nor told apart (`token::key_type_of` refuses them in such a build); the Nix patch
-/// fixes it. The same signal covers the KWP patch, which the Nix build applies with it: an
-/// unpatched cryptoki has no `CKM_AES_KEY_WRAP_KWP` constant to probe, and the two upstream
-/// PRs ship together.
+/// Returns whether this build's cryptoki maps the SHA-2 HMAC key types correctly. cryptoki
+/// 0.12.1 gives `SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC`, so such keys can be neither
+/// created nor told apart (`token::key_type_of` refuses them in such a build). The Nix patch
+/// fixes this. The same check also covers the KWP patch, which the Nix build applies together
+/// with it, because an unpatched cryptoki has no `CKM_AES_KEY_WRAP_KWP` constant to check, and
+/// the two upstream PRs are released together.
 #[must_use]
 pub fn patched() -> bool {
     c_ulong::from(KeyType::SHA224_HMAC) == 0x2e
@@ -39,13 +41,14 @@ pub fn patched() -> bool {
         && c_ulong::from(KeyType::SHA512_HMAC) == 0x2d
 }
 
-/// The cryptoki binding layer: the committed subtractions for an unpatched binding
-/// (profiles/layers/cryptoki.toml), or an empty one when [`patched`] says the fix is in.
+/// Returns the cryptoki binding layer. For an unpatched binding, this is the committed list of
+/// subtractions (profiles/layers/cryptoki.toml). When [`patched`] says that the fix is present,
+/// it is the `PATCHED` layer, which subtracts only the mechanisms that no build names.
 ///
 /// # Errors
 ///
-/// [`cakeys_profile::Set::embedded`]'s parse error for the committed rows: an embedded profile
-/// that no longer parses is a commit-time bug, not a runtime condition.
+/// The parse error of [`cakeys_profile::Set::embedded`] for the committed rows. An embedded
+/// profile that no longer parses is a bug in the commit, and not a condition at run time.
 pub fn layer() -> Result<Profile, String> {
     if patched() {
         return Profile::from_toml(PATCHED);
@@ -57,14 +60,15 @@ pub fn layer() -> Result<Profile, String> {
 mod tests {
     use super::*;
 
-    /// The layer matches the binding it runs against: empty when patched (the Nix build's
-    /// tests), the committed subtractions when not (a plain cargo build).
+    /// The layer matches the binding against which it runs. With a patched binding (the tests
+    /// of the Nix build), it subtracts only the two mechanisms that no build names. With an
+    /// unpatched binding (a plain cargo build), it is the committed list of subtractions.
     #[test]
     fn layer_records_the_binding_it_runs_on() {
         cakeys_profile::Set::activate_embedded().unwrap();
         let layer = layer().unwrap();
         assert_eq!(layer.profile, "cryptoki/0.12");
-        // What no build of the binding names is subtracted either way.
+        // The mechanisms that no build of the binding names are subtracted in both cases.
         for m in ["CKM_AES_CFB128", "CKM_XEDDSA"] {
             assert!(layer.subtract.mechanisms.iter().any(|x| x == m), "{m}");
         }
