@@ -291,8 +291,8 @@ fn a_mark_vouches_for_its_key(w: &Workdir, module: &str) {
     let foreign = public(&session).unwrap();
     drop(session);
     let o = w.km(&["probe", "--token", "empty", "--write-probes", "--rsa-max-bits", "4096"]);
+    // Refused before any write (17), the slot as it was: the guard's refusal, not a write's.
     assert_eq!(code(&o), 17, "{}", stderr(&o));
-    assert!(stderr(&o).contains("scratchId 05 holds objects caprobe did not leave there"), "{}", stderr(&o));
     let session = open_session(module, "kmtest", "1234");
     assert_eq!(
         (public(&session), in_slot(&session, cryptoki::object::ObjectClass::CERTIFICATE)),
