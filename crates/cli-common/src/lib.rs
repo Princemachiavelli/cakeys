@@ -331,6 +331,7 @@ pub fn print<T: serde::Serialize>(v: &T) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cakeys_core::{Reason, Rule};
 
     fn cfg(tokens: &[&str]) -> Config {
         let text = tokens.iter().map(|t| format!("[tokens.{t}]\ntokenLabel = \"{t}\"\n")).collect::<Vec<_>>().concat();
@@ -379,7 +380,7 @@ mod tests {
     fn a_run_exits_22_exactly_when_it_wrote_the_lock() {
         let path = Path::new("keys.lock");
         let failure = |code: u8| match code {
-            13 => Some(anyhow::Error::from(KmError::Conflict("pair 2".into()))),
+            13 => Some(anyhow::Error::from(KmError::Conflict(Reason::rule(Rule::LocatorFree, "pair 2")))),
             21 => Some(KmError::LockUnwritable("pair 2".into()).into()),
             1 => Some(anyhow::anyhow!("pair 2: no KmError")),
             _ => None,

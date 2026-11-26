@@ -8,7 +8,7 @@
 //! integration tests pin it against the real module.
 
 use cakeys_core::types::ObjectClass;
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use rusqlite::{Connection, OpenFlags};
 use serde_norway::Value;
 use std::collections::BTreeMap;
@@ -143,15 +143,15 @@ impl Store {
                 ));
             }
             Err(tokens) => {
-                return Err(KmError::Ambiguous(
+                return Err(KmError::Ambiguous(Reason::check(
+                    Check::TokenUnique,
                     format!(
                         "{} tokens are labelled '{token_label}' in the tpm2-pkcs11 store {}, which records no serial to \
                          tell them apart: relabel all but one",
                         tokens.len(),
                         path.display()
-                    )
-                    .into(),
-                ));
+                    ),
+                )));
             }
         };
         let parent = parse_parent(&config, &objauth)?;
@@ -232,9 +232,10 @@ impl Store {
                 )
                 .into(),
             )),
-            (n, _) => {
-                Err(KmError::Ambiguous(format!("{n} rows of the store {store} match the key's CKA_ID {}", id()).into()))
-            }
+            (n, _) => Err(KmError::Ambiguous(Reason::check(
+                Check::CkaIdUnique,
+                format!("{n} rows of the store {store} match the key's CKA_ID {}", id()),
+            ))),
         }
     }
 }

@@ -8,9 +8,14 @@ use std::path::{Path, PathBuf};
 /// does not parse there is no answer to any check. A security check marked malformed would name
 /// no check in its row, and the liar lint could not hold it, so the list is short and each entry
 /// is used.
-const PARSERS: [&str; 1] = [
+const PARSERS: [&str; 3] = [
     // X.509 certificates of an attestation chain: DER, the signed part, the extensions.
     "core/src/chain.rs",
+    // TPM structures: the store's blobs and wrapped auth values, a public area, the AK's
+    // signature components (tss-esapi unmarshalling).
+    "tpm2-pkcs11/src/attest/esys.rs",
+    // The output of CKM_TPM2_CERTIFY: a TPM2B_ATTEST and a TPMT_SIGNATURE.
+    "tpm2-pkcs11/src/attest/vendor.rs",
 ];
 
 /// Every `.rs` file under `dir`.

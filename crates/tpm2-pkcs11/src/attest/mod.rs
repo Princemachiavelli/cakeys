@@ -49,7 +49,7 @@ pub(crate) mod fuzzing {
 
 use cakeys_core::config::{Options, parse_options};
 use cakeys_core::id::Scheme;
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cakeys_pkcs11::provider::{AttestCtx, Attested};
 use cakeys_pkcs11::token::read_attribute;
 use cryptoki::object::{Attribute, AttributeType};
@@ -333,14 +333,14 @@ pub(crate) fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
     // reports as CKA_LOCAL/CKA_EXTRACTABLE must be what the TPM certified (13, never a pass).
     let (local, extractable) = module_reports(ctx)?;
     if local != certified.local || extractable != certified.extractable {
-        return Err(KmError::Conflict(
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmImmutables,
             format!(
                 "the module reports CKA_LOCAL {} / CKA_EXTRACTABLE {}, but the TPM certified \
              {} / {}: the module does not report what the TPM holds",
                 local, extractable, certified.local, certified.extractable
-            )
-            .into(),
-        ));
+            ),
+        )));
     }
     let (root, warning) = match ek {
         // The AK was proven to reside in the certified TPM: the manufacturer's root anchors it.

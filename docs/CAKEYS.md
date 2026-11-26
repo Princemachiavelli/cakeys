@@ -113,9 +113,11 @@ field: the rule's name where a rule refused, and otherwise the check's name. Cod
 check is a comparison that a run makes of what a token, the lock, an attestation or a file
 says. A first use (18) names no check, because nothing was compared. A refusal whose input does
 not parse as the structure it should be (a certificate that is not DER, a TPM structure that
-does not unmarshal, a damaged store row) names neither, and its row has no `rule`. Scripts may
-match on these names: they are stable, and `check_names_are_stable_and_disjoint_from_rules`
-holds the two tables below to the code, in order. The exit code is the refusing error's own; the tables give the usual one.
+does not unmarshal, a damaged store row) names neither, and its row has no `rule`.
+Every other refusal of 10, 12, 13 or 14 names a rule or a check (`malformed_only_in_parsers`).
+Scripts may match on these names: they are stable, and
+`check_names_are_stable_and_disjoint_from_rules` holds the two tables below to the code, in
+order. The exit code is the refusing error's own; the tables give the usual one.
 
 | Rule | Exit | What the plan asks before a write |
 |---|---|---|
@@ -176,6 +178,16 @@ holds the two tables below to the code, in order. The exit code is the refusing 
 | `attest.piv.slot-by-device` | 13 | The PIV slot's attestation certificate was issued by the device's attestation certificate. |
 | `attest.piv.slot-key` | 13 | The PIV slot's attestation certificate names the object's public key. |
 | `attest.piv.unique` | 12 | One certificate on the PIV token is the slot's, or the device's, attestation certificate. |
+| `attest.tpm.ak` | 13 | The TPM's Attestation Key is a cakeys Attestation Key: one key of its label, a restricted P-256 ECDSA-SHA256 signing key fixed to the TPM and its parent, with a public key. |
+| `attest.tpm.statement` | 13 | The TPM's statement is a certify statement. |
+| `attest.tpm.nonce` | 13 | The certify statement names this run's nonce as its qualifying data. |
+| `attest.tpm.name` | 13 | The Name that the statement attests is the Name of the object's public area, as the module or the store reports it and as the TPM loaded it. |
+| `attest.tpm.signature` | 13 | The statement's signature verifies against the Attestation Key. |
+| `attest.tpm.signer` | 13 | The statement's qualified signer is the Attestation Key. |
+| `attest.tpm.material` | 13 | The key in the attested public area is the object's key, of the same kind, and a certified secret key computes the object's commitment. |
+| `attest.tpm.immutables` | 13 | What the module reports as `CKA_LOCAL` and `CKA_EXTRACTABLE` is what the TPM certified. |
+| `attest.tpm.ek-certificate` | 13 | The EK certificate names the purpose `tcg-kp-EKCertificate` and this TPM's endorsement key. |
+| `attest.tpm.credential` | 13 | The TPM activates a credential made for the Attestation Key and the endorsement key to its secret, so the two keys are in one TPM. |
 | `host.unwraps` | 13 | The key that the source wrapped for the host unwraps under the host's key. |
 | `host.key-type` | 13 | The plaintext key that the host holds is a key of the object's declared type. |
 | `import.unwraps` | 13, 16 | A sealed bundle's wrapped key unwraps on the target, so the bundle is intact and was wrapped to the target's transport key (16 where the module says only that the unwrap failed). A dry run defers it. |

@@ -161,27 +161,6 @@ impl PartialEq<&str> for Reason {
     }
 }
 
-// TRANSITION (L2): these three conversions let the crates whose refusal sites are not classified
-// yet still build. The last commit of L2 removes them, and the compiler then finds every site
-// that names no check.
-impl From<String> for Reason {
-    fn from(text: String) -> Self {
-        Reason(text.into())
-    }
-}
-
-impl From<&str> for Reason {
-    fn from(text: &str) -> Self {
-        Reason(text.into())
-    }
-}
-
-impl From<Msg> for Reason {
-    fn from(m: Msg) -> Self {
-        Reason(m)
-    }
-}
-
 /// Every failure cakeys reports, each with a stable exit code (docs/CAKEYS.md, "Exit codes").
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum KmError {

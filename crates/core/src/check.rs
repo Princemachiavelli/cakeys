@@ -202,6 +202,33 @@ names! {
         /// One certificate on the PIV token is the slot's, or the device's, attestation
         /// certificate: 12.
         AttestPivUnique = "attest.piv.unique",
+        /// The TPM's Attestation Key is a cakeys Attestation Key: one key of its label, a
+        /// restricted P-256 ECDSA-SHA256 signing key fixed to the TPM and its parent, with a
+        /// public key: 13.
+        AttestTpmAk = "attest.tpm.ak",
+        /// The TPM's statement is a certify statement: 13.
+        AttestTpmStatement = "attest.tpm.statement",
+        /// The certify statement names this run's nonce as its qualifying data: 13.
+        AttestTpmNonce = "attest.tpm.nonce",
+        /// The Name that the statement attests is the Name of the object's public area, as the
+        /// module or the store reports it and as the TPM loaded it: 13.
+        AttestTpmName = "attest.tpm.name",
+        /// The statement's signature verifies against the Attestation Key: 13.
+        AttestTpmSignature = "attest.tpm.signature",
+        /// The statement's qualified signer is the Attestation Key: 13.
+        AttestTpmSigner = "attest.tpm.signer",
+        /// The key in the attested public area is the object's key, of the same kind, and a
+        /// certified secret key computes the object's commitment: 13.
+        AttestTpmMaterial = "attest.tpm.material",
+        /// What the module reports as `CKA_LOCAL` and `CKA_EXTRACTABLE` is what the TPM
+        /// certified: 13.
+        AttestTpmImmutables = "attest.tpm.immutables",
+        /// The EK certificate names the purpose `tcg-kp-EKCertificate` and this TPM's
+        /// endorsement key: 13.
+        AttestTpmEkCertificate = "attest.tpm.ek-certificate",
+        /// The TPM activates a credential made for the Attestation Key and the endorsement key
+        /// to its secret, so the two keys are in one TPM: 13.
+        AttestTpmCredential = "attest.tpm.credential",
 
         // The host path (camigrate's `host` and `file` moves).
         /// The key that the source wrapped for the host unwraps under the host's key: 13.

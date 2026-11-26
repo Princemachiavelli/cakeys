@@ -62,7 +62,7 @@ fn every_unit_row_names_a_test_that_fires_its_rule() {
             let by_check = Check::named(&u.rule).is_some();
             let bodies: Vec<&str> = texts.iter().filter_map(|text| body(text, &u.test)).collect();
             let named =
-                |b: &&str| forms.iter().any(|f| b.contains(f.as_str())) && (!by_check || b.contains("assert_forms("));
+                |b: &&str| forms.iter().any(|f| b.contains(f.as_str())) && (!by_check || b.contains("assert_fires("));
             if bodies.is_empty() {
                 wrong.push(format!("unit {}: no fn {} in crates/", u.rule, u.test));
             } else if !bodies.iter().any(named) {

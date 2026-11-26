@@ -143,6 +143,17 @@ says = "`every_pair_has_a_row_of_one_shape`)"
 kind = "enforced"
 tests = ["every_pair_has_a_row_of_one_shape", "a_failure_row_says_its_code_rule_and_device"]
 
+# CAKEYS.md "Rules and checks" (L2): an error of 12, 13 or 14 takes a Reason, which only
+# Reason::check, Reason::rule and Reason::malformed make, and a HashMismatch (10) has a check;
+# malformed_only_in_parsers fails when Reason::malformed is used outside the parser modules, and
+# a_refusal_row_names_its_check when a row does not print the check's name.
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "Every other refusal of 10, 12, 13 or 14 names a rule or a check"
+kind = "enforced"
+tests = ["malformed_only_in_parsers", "a_refusal_row_names_its_check"]
+
 # The verb `resolve` never writes the lock or the token. The test
 # lock_is_written_by_default_and_refused_where_it_cannot_be runs `resolve` on a key that the lock
 # does not record, with no lock file present, and fails if a lock file appears or the token's
