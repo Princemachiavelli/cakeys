@@ -206,9 +206,12 @@ below `wrap-rebind`, and report an assurance that says that the token is not che
   cli-common; review 2026-11-24 C-1). The row holds the pair's outcome, its exit code, the rule
   that refused it, and whether the device failed. A caller, and the dry-run twin of the test
   harness, can therefore read what happened to each pair from the rows alone. The run's exit code
-  follows from the rows: 0 (22 when the lock was written), the code of the one failure, or 20
-  when the plan was refused more than once. camigrate's `import` and `migrate` print the same rows
-  (with the `method`), and they exit with the code of the first failure (review 2026-11-24 D-9).
+  follows from the rows. It is 22 when the lock was written, even if a pair failed after the
+  write. The failed pair's row then shows the failure's code, and a note on stderr says why the
+  run exits 22 (review 2026-11-24 L5). Otherwise, the exit code is 0, the code of the one
+  failure, or 20 when the plan was refused more than once. camigrate's `import` and `migrate`
+  print the same rows (with the `method`). They exit with the code of the first failure, or
+  with 22 when they recorded a move (review 2026-11-24 D-9).
 - **A test checks each dry run against its run** (review 2026-11-24 §1.4, C-4). The test
   harness's twin runs camigrate's moves and cakeys' `create`, `delete`, `lock` and `gc` first as
   a dry run, which must leave the lock and the tokens unchanged, and then for real. The real run

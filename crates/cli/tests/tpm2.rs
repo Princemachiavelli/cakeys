@@ -1452,10 +1452,11 @@ fn tpm2_vendor_attestation_liars() {
 
 /// `tests/liars/tpm2.toml`'s fixture on the vendor `module`: each object made by `tpm2_ptool`
 /// beside its decoy `<name>-other`; tokens `tpm` and `tpm-b`, the one token behind the shim, told
-/// no store exists (the module certifies), and `tpm-ek` with an `ekCertificate`; `ec-sign` also
-/// placed on `tpm-b` by spec `ec-sign-b` (a verb's address is one token: two specs make two pairs),
-/// and both locked, which provisions the Attestation Key. What a planting run broke of the
-/// runner's invariants.
+/// no store exists (the module certifies), and `tpm-ek` with an `ekCertificate`. The objects
+/// `ec-sign` and `ec-adopt` are also placed on `tpm-b` by the specs `ec-sign-b` and `ec-adopt-b`,
+/// because an address names one token, so a run with two specs has two pairs. Both pairs of
+/// `ec-sign` are locked, which provisions the Attestation Key. Also returns what a setup run
+/// broke of the runner's invariants.
 fn vendor_liars(module: String, table: &liars::Table) -> (liars::Fixture, Vec<String>) {
     use std::fmt::Write as _;
     let w = Workdir::new("tpm2-vendor-liars");
@@ -1486,7 +1487,7 @@ fn vendor_liars(module: String, table: &liars::Table) -> (liars::Fixture, Vec<St
             class => panic!("the fixture has no {class} object"),
         };
         let _ = writeln!(config, "[objects.{name}]\n{kind}\n");
-        let specs = if name == "ec-sign" {
+        let specs = if ["ec-sign", "ec-adopt"].contains(&name.as_str()) {
             vec![(name.clone(), "tpm"), (format!("{name}-b"), "tpm-b")]
         } else {
             vec![(name.clone(), o.token.as_str())]

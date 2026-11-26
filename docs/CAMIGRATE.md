@@ -31,9 +31,9 @@ $ camigrate migrate [<object> ...] --from <a> --to <b> [--spec <s> ...] [--trans
 
 Every verb takes cakeys' global options: `-c`, `-l`, `--module`, `--new-lock` (without it, a lock
 that does not exist is refused with 17) and `--json`, which prints the `--dry-run` plans of
-`export` and `migrate` as JSON. `import`, `migrate` and the deletions print one JSON result per
-object, as an array, whatever `--json` says. A run that wrote the lock exits 22 (CAKEYS.md, "Exit
-codes").
+`export` and `migrate` as JSON. `import` and `migrate` print one JSON result per object, as an
+array, whatever `--json` says. A run that wrote the lock exits 22, even when an object failed
+after the write (CAKEYS.md, "Exit codes").
 
 - `migrate` runs an export and then an import in one process, with the bundle in memory. It
   needs both tokens to be reachable from this host. It moves the objects that it names. When no
@@ -93,7 +93,9 @@ whether the `device` failed, and the `error`), together with the `method` by whi
 moved. A key file's refusals are rows too. When an object reached its token but could not be
 recorded because the lock could not be saved, its row has the exit code 21 and the rule
 `lock-writable`, and it says how to record the object. No object after it moves. The run exits
-with the code of the first failure.
+with the code of the first failure, or with 22 if it recorded any object. In that case, the row
+of each failed object shows that object's code, and a note on stderr says why the run exits 22.
+In this way, a written lock is never hidden.
 
 A dry run's plans (`--json`) and rows name the rules that only the run decides (`deferred`). For a
 sealed move, these rules are `unwraps` and `identity`. `unwraps` checks that the blob is intact:
@@ -211,7 +213,7 @@ sealed move avoids. Named objects export all or nothing. Without names, export t
 that can move and warns about the rest. A spec's `migrate.noExport = true` keeps its object on
 its token and silences the warning, and by default a token's transport key also stays on its
 token in this way. Import handles each entry on its own, reports every failure, and exits with
-the code of the first failure. The bundle names the token that it is for (`target`, version 2),
+the code of the first failure, or with 22 if it recorded any object. The bundle names the token that it is for (`target`, version 2),
 and `import` refuses the bundle on another token (14). Its keys unwrap only under the target's
 transport key (its `transportWith`, or the `--transport-spec` that the export named),
 never under whichever key the bundle names (14). A version-1 bundle names no target. camigrate
