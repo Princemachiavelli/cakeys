@@ -1251,13 +1251,13 @@ mod tests {
         };
         verify(&ak, ak_qn.value()).unwrap();
         for qualified in [ak_qn.value(), other_qn.as_slice()] {
-            let e = verify(&other, qualified);
+            let e = verify(&other, qualified).err();
             assert!(
-                matches!(&e, Err(KmError::Conflict(m)) if m.contains("does not verify against the pinned AK")),
+                matches!(&e, Some(KmError::Conflict(m)) if m.contains("does not verify against the pinned AK")),
                 "{e:?}"
             );
         }
-        let e = verify(&ak, &other_qn);
-        assert!(matches!(&e, Err(KmError::Conflict(m)) if m.contains("signed by another key than the AK")), "{e:?}");
+        let e = verify(&ak, &other_qn).err();
+        assert!(matches!(&e, Some(KmError::Conflict(m)) if m.contains("signed by another key than the AK")), "{e:?}");
     }
 }
