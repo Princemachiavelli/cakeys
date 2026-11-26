@@ -678,6 +678,37 @@ impl Tally {
     }
 }
 
+/// Print the rows of a run that ends with `e` before its first object: one row for each of
+/// `objects` on `token`, failed with the exit code, the rule or check, and the reason of `e`
+/// (review 2026-11-24 L4b-1: the refusal was on stderr alone, and no row named the objects).
+/// Then return `e`, which the run exits with.
+fn unmoved(objects: &[impl AsRef<str>], token: &str, e: anyhow::Error) -> anyhow::Result<()> {
+    let rows: Vec<cakeys_cli_common::Outcome> =
+        objects.iter().map(|object| cakeys_cli_common::Outcome::failed(object.as_ref(), "", token, &e)).collect();
+    print(&rows)?;
+    Err(e)
+}
+
+/// Print the rows of a `migrate` whose plans the verdict refused with `e` (`Moves::verdict`),
+/// before anything moved: a blocked plan's object failed with its own refusal
+/// ([`plan::Plan::refusal`]), and a ready plan's object `ready`, not moved, because named objects
+/// move all or none. Then return `e`, which the run exits with (review 2026-11-24 L4b-1).
+fn refused_plans(moves: &tokens::Moves, token: &str, e: KmError) -> anyhow::Result<()> {
+    let mut tally = Tally::default();
+    for p in &moves.plans {
+        let of = Of::object(&p.object, token);
+        if p.ready {
+            tally.done(of, "ready", p.method.as_ref().map(Method::name).as_deref());
+        } else {
+            let refusal = p.refusal(format!("{}: {}", p.object, p.reasons.join("; ")));
+            let row = of.row("failed").refused_by(Some(&refusal));
+            tally.results.push(cakeys_cli_common::Outcome { error: Some(refusal.to_string()), ..row });
+        }
+    }
+    print(&tally.results)?;
+    Err(e.into())
+}
+
 impl Run<'_> {
     /// `--dry-run`: plan each object's move from `from` to `dest` and print it (docs/CAMIGRATE.md
     /// D9), and end with the real run's own verdict ([`tokens::Moves::verdict`]): an export
@@ -801,14 +832,27 @@ impl Run<'_> {
     ) -> anyhow::Result<()> {
         let text = std::fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
-        // Made for `token`, from a source keys.toml names, sealed to `token`'s transport key as
-        // the lock binds it: never to whichever key the file names (review 2026-11-24 D-8).
-        let bound = BoundBundle::from_file(Bundle::parse(&text, input)?, cfg, &self.lock, token, transport_spec, notes)
-            .map_err(|e| e.prefixed(input.display()))?;
+        let parsed = Bundle::parse(&text, input)?;
+        // An import that ends before its first key still prints a row for each key of the
+        // bundle, with the exit code and the reason (review 2026-11-24 L4b-1: the refusal was on
+        // stderr alone). The rows name the objects that the file names, which are not verified
+        // yet: they are only names.
+        let objects: Vec<String> = parsed.unverified().keys.iter().map(|e| e.object.clone()).collect();
+        let ready = (|| -> anyhow::Result<_> {
+            // Made for `token`, from a source keys.toml names, sealed to `token`'s transport key
+            // as the lock binds it: never to whichever key the file names (review 2026-11-24
+            // D-8).
+            let bound = BoundBundle::from_file(parsed, cfg, &self.lock, token, transport_spec, notes)
+                .map_err(|e| e.prefixed(input.display()))?;
+            specs_select(cfg, specs, bound.bundle().keys.iter().map(|e| e.object.as_str()), token, MOVE)?;
+            let access = if dry_run { Access::DryWrite } else { Access::Write };
+            Ok((bound, opener.open(token, access, notes)?))
+        })();
+        let (bound, target) = match ready {
+            Ok(ready) => ready,
+            Err(e) => return unmoved(&objects, token, e),
+        };
         let bundle = bound.bundle();
-        specs_select(cfg, specs, bundle.keys.iter().map(|e| e.object.as_str()), token, MOVE)?;
-        let access = if dry_run { Access::DryWrite } else { Access::Write };
-        let target = opener.open(token, access, notes)?;
         let mut tally = Tally::default();
         // Keys first: a public key object then finds the public half its key's import made.
         let public = Method::Public.name();
@@ -888,23 +932,42 @@ impl Run<'_> {
         how: &MoveArgs,
         notes: &mut Notes,
     ) -> anyhow::Result<()> {
-        // Before the plan, as the dry run does: both refuse a named target that is no import pair.
-        specs_import(&self.opener.cfg, specs, to, MOVE)?;
-        // Each side is opened once, for the plan and the moves: the target read-write, as the
-        // moves write there (review lib.rs F5).
-        let source = self.opener.open(from, Access::Scratch, notes);
         let dest = tokens::Dest::Token(to);
         let ctx = MoveCtx { objects, from, dest: &dest, specs, how };
-        let (moves, source, planned) = self.plan(&ctx, Show::Notes, source, Access::Write, notes)?;
-        // The plan blocked a method not built yet, and checked every --spec (`plan`).
-        moves.verdict(ctx.take(), from)?;
-        let source = self.source(from, source, notes)?;
-        let (cfg, opener) = (&self.opener.cfg, &self.opener);
-        // The one the plan opened; else opened now, which says why it does not open.
-        let mut target = Some(match planned {
-            Some(t) => t,
-            None => opener.open(to, Access::Write, notes)?,
+        // A run that ends before its first move still prints a row for each object, with the exit
+        // code and the reason (review 2026-11-24 L4b-1: the refusal was on stderr alone).
+        let planned = specs_import(&self.opener.cfg, specs, to, MOVE).map_err(anyhow::Error::from).and_then(|()| {
+            // Before the plan, as the dry run does: both refuse a named target that is no import
+            // pair. Each side is opened once, for the plan and the moves: the target read-write,
+            // as the moves write there (review lib.rs F5).
+            let source = self.opener.open(from, Access::Scratch, notes);
+            self.plan(&ctx, Show::Notes, source, Access::Write, notes)
         });
+        let (moves, source, planned) = match planned {
+            Ok(planned) => planned,
+            Err(e) => return unmoved(&self.named_or_locked(objects, from), to, e),
+        };
+        // The plan blocked a method not built yet, and checked every --spec (`plan`).
+        if let Err(e) = moves.verdict(ctx.take(), from) {
+            return refused_plans(&moves, to, e);
+        }
+        let (cfg, opener) = (&self.opener.cfg, &self.opener);
+        // The ones the plan opened; else opened now, which says why one does not open.
+        let sides = self.source(from, source, notes).and_then(|source| {
+            let target = match planned {
+                Some(t) => t,
+                None => opener.open(to, Access::Write, notes)?,
+            };
+            Ok((source, target))
+        });
+        let (source, target) = match sides {
+            Ok(sides) => sides,
+            Err(e) => {
+                let objects: Vec<String> = moves.plans.iter().map(|p| p.object.clone()).collect();
+                return unmoved(&objects, to, e.into());
+            }
+        };
+        let mut target = Some(target);
         // tpm2-pkcs11 sees what `tpm2_ptool` imported only once opened again: the old one first.
         let reopen = |t: &mut Option<cakeys_pkcs11::Token>, notes: &mut Notes| -> cakeys_core::Result<()> {
             *t = None;
@@ -1004,11 +1067,57 @@ impl Run<'_> {
     /// the plans where `show` says (an export that writes the bundle to stdout shows none: stdout
     /// is the bundle). A target token is opened with `target` access and handed back, when it
     /// opened, beside the source: a `migrate` that writes there opens it once, read-write
-    /// (review lib.rs F5: read-only for the plan, then again for the run).
+    /// (review lib.rs F5: read-only for the plan, then again for the run). A dry run also reads
+    /// each ready plan's object on the source as the run reads it ([`landing::search`]). When the
+    /// planning fails before the plans exist, each object's plan is shown blocked, with the
+    /// failure as its reason, and the failure is returned (review 2026-11-24 L4b-1: such a dry
+    /// run printed no plan).
     fn plan(
         &self,
         ctx: &MoveCtx,
         show: Show,
+        source: cakeys_core::Result<Token>,
+        target: Access,
+        notes: &mut Notes,
+    ) -> anyhow::Result<(tokens::Moves, Option<Token>, Option<Token>)> {
+        let (mut moves, source, target) = match self.plans(ctx, source, target, notes) {
+            Ok(planned) => planned,
+            Err(e) => {
+                let why = format!("{e:#}");
+                let plans: Vec<plan::Plan> = self
+                    .named_or_locked(ctx.objects, ctx.from)
+                    .iter()
+                    .map(|object| plan::Plan::unplanned(object, why.clone()))
+                    .collect();
+                let unknown = tokens::KnownFrom::Nowhere;
+                let to = ctx.dest.name();
+                let shown = Shown { from: ctx.from, to: &to, sides: [unknown, unknown], plans: &plans };
+                shown.show(show, ctx.how.json, notes)?;
+                return Err(e);
+            }
+        };
+        // What the run refuses for a --spec is asked of the plans as they were before the search.
+        let all_ready = moves.plans.iter().all(|p| p.ready);
+        let searched = match (&source, ctx.how.dry_run) {
+            (Some(tok), true) => landing::search(self, ctx, &mut moves, tok, notes),
+            _ => Ok(()),
+        };
+        Shown::of(ctx.from, &moves).show(show, ctx.how.json, notes)?;
+        // Every --spec selects an object moving to the token, checked where the run checked it:
+        // once nothing is blocked (15 first). Here, so the dry run exits as the run does (D9;
+        // review 2026-11-23 C-2: it said ready for a --spec the run refused).
+        if let (false, Some(to), true) = (ctx.dest.bundle(), ctx.dest.to(), all_ready) {
+            specs_select(&self.opener.cfg, ctx.specs, moves.plans.iter().map(|p| p.object.as_str()), to, MOVE)?;
+        }
+        searched?;
+        Ok((moves, source, target))
+    }
+
+    /// [`Self::plan`]'s plans, before they are shown: each object's move planned
+    /// ([`tokens::plan_moves`]), and what the run would refuse blocked ([`landing::block`]).
+    fn plans(
+        &self,
+        ctx: &MoveCtx,
         source: cakeys_core::Result<Token>,
         target: Access,
         notes: &mut Notes,
@@ -1031,24 +1140,19 @@ impl Run<'_> {
         };
         let (mut moves, source, target) = tokens::plan_moves(&self.lock, opener.registry, &req, source, &open, notes)?;
         landing::block(self, ctx, &mut moves, target.as_ref());
-        match show {
-            Show::No => {}
-            Show::Stdout => show_plans(ctx.from, &moves, ctx.how.json)?,
-            Show::Notes => {
-                for line in plan_lines(ctx.from, &moves) {
-                    notes.say(line);
-                }
-            }
-        }
-        // Every --spec selects an object moving to the token, checked where the run checked it:
-        // once nothing is blocked (15 first). Here, so the dry run exits as the run does (D9;
-        // review 2026-11-23 C-2: it said ready for a --spec the run refused).
-        if let (false, Some(to)) = (ctx.dest.bundle(), ctx.dest.to())
-            && moves.plans.iter().all(|p| p.ready)
-        {
-            specs_select(cfg, ctx.specs, moves.plans.iter().map(|p| p.object.as_str()), to, MOVE)?;
-        }
         Ok((moves, source, target))
+    }
+
+    /// The objects that a run names, or else every object that the lock realises on `from`: the
+    /// objects that a run which fails before its plans exist shows a plan or a row for (review
+    /// 2026-11-24 L4b-1). The list is empty when the lock realises nothing on `from`.
+    fn named_or_locked(&self, objects: &[&str], from: &str) -> Vec<String> {
+        if !objects.is_empty() {
+            return objects.iter().map(|o| (*o).to_owned()).collect();
+        }
+        tokens::materials(&self.lock, from, &[])
+            .map(|found| found.iter().map(|m| m.object.to_owned()).collect())
+            .unwrap_or_default()
     }
 
     /// The source token `from` a real run planned with ([`Self::plan`]): the one opened for the
@@ -1067,38 +1171,66 @@ enum Show {
     Notes,
 }
 
-/// Print the plans of one invocation, as a table or as JSON.
-fn show_plans(from: &str, moves: &tokens::Moves, json: bool) -> anyhow::Result<()> {
-    if json {
-        return print(&serde_json::json!({
-            "from": from,
-            "to": moves.to,
-            "capabilities": { "from": moves.source_from.name(), "to": moves.target_from.name() },
-            "plans": moves.plans,
-        }));
-    }
-    for line in plan_lines(from, moves) {
-        println!("{line}");
-    }
-    Ok(())
+/// The plans of one invocation as they are shown: the source token, the destination, where the
+/// capabilities of each side came from, and the plans.
+struct Shown<'a> {
+    from: &'a str,
+    to: &'a str,
+    sides: [tokens::KnownFrom; 2],
+    plans: &'a [plan::Plan],
 }
 
-/// The plans of one invocation as a table, line by line.
-fn plan_lines(from: &str, moves: &tokens::Moves) -> Vec<String> {
-    let (to_name, plans) = (&moves.to, &moves.plans);
-    let (source_from, target_from) = (moves.source_from.name(), moves.target_from.name());
-    let mut lines = vec![format!(
-        "{from} -> {to_name} (capabilities: {from} from the {source_from}, {to_name} from the {target_from})"
-    )];
-    for p in plans {
-        let method = p.method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
-        let exposure = p.exposure.map_or("-", Exposure::name);
-        let status = if p.ready { "ready" } else { "blocked" };
-        lines.push(format!("  {:<24} {method:<26} {exposure:<9} {status}", p.object));
-        lines.extend(p.reasons.iter().map(|r| format!("      - {r}")));
-        lines.extend(p.notes.iter().map(|n| format!("      note: {n}")));
+impl<'a> Shown<'a> {
+    /// The plans of `moves`, from the token `from`.
+    fn of(from: &'a str, moves: &'a tokens::Moves) -> Shown<'a> {
+        Shown { from, to: &moves.to, sides: [moves.source_from, moves.target_from], plans: &moves.plans }
     }
-    lines
+
+    /// Show the plans where `show` says: as a table or as JSON (`json`) on stdout, or as a table
+    /// with the notes.
+    fn show(&self, show: Show, json: bool, notes: &mut Notes) -> anyhow::Result<()> {
+        match show {
+            Show::No => {}
+            Show::Stdout if json => {
+                let [source, target] = self.sides;
+                print(&serde_json::json!({
+                    "from": self.from,
+                    "to": self.to,
+                    "capabilities": { "from": source.name(), "to": target.name() },
+                    "plans": self.plans,
+                }))?;
+            }
+            Show::Stdout => {
+                for line in self.lines() {
+                    println!("{line}");
+                }
+            }
+            Show::Notes => {
+                for line in self.lines() {
+                    notes.say(line);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The plans as a table, line by line.
+    fn lines(&self) -> Vec<String> {
+        let (from, to_name) = (self.from, self.to);
+        let [source_from, target_from] = self.sides.map(tokens::KnownFrom::name);
+        let mut lines = vec![format!(
+            "{from} -> {to_name} (capabilities: {from} from the {source_from}, {to_name} from the {target_from})"
+        )];
+        for p in self.plans {
+            let method = p.method.as_ref().map_or_else(|| "-".to_owned(), Method::name);
+            let exposure = p.exposure.map_or("-", Exposure::name);
+            let status = if p.ready { "ready" } else { "blocked" };
+            lines.push(format!("  {:<24} {method:<26} {exposure:<9} {status}", p.object));
+            lines.extend(p.reasons.iter().map(|r| format!("      - {r}")));
+            lines.extend(p.notes.iter().map(|n| format!("      note: {n}")));
+        }
+        lines
+    }
 }
 
 impl Run<'_> {

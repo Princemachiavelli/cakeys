@@ -11,6 +11,8 @@
 - A relative Markdown link in a document resolves to a file.
 - A script (nix/, scripts/) keeps no exit-code table of its own (`[17]="…"`): every tool's
   `--help` ends with core's `EXIT_CODES`, which a script reads, as nix/demo.sh does.
+- A script does not compare an exit status with 22, the code that says the lock was written. It
+  reads that code from the tool's `--help` table, as scripts/xversion.sh does.
 
 The index is a regex reading of the Rust sources' code (comments and strings left out), not a
 parser. It holds what the code defines: an item (`fn`, `struct`, `enum`, `trait`, `type`,
@@ -91,6 +93,11 @@ LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)]*)?\)")
 # A shell array entry keyed by a failure's exit code: a copy of the exit-code table, which drifted
 # from the tools' when the codes grew (review 2026-11-24 C-13).
 EXIT_TABLE = re.compile(r"\[(?:1\d|2[0-2])\]=")
+# A comparison of a value with 22, the exit code that says the lock was written. A script that
+# accepts that code reads it from the `--help` table of the build it runs, because a copy of the
+# code in the script does not follow the build (review 2026-11-24 F3: scripts/xversion.sh compared
+# with 0 and 22).
+LOCK_WRITTEN_COMPARED = re.compile(r"(?:=|-eq|-ne)\s*[\"']?22\b")
 # A Rust source: `crates/core/src/config/mod.rs`, `core/src/config/lock.rs` (under crates/),
 # `fuzz/fuzz_targets/lock.rs`. A split or a rename that leaves the citation behind fails here.
 SOURCE_PATH = re.compile(r"(?<![\w/.-])((?:crates/)?[a-z0-9_-]+/(?:src|tests|fuzz_targets)/[A-Za-z0-9_./-]*?\.rs)\b")
@@ -281,6 +288,11 @@ def check(root, foreign_names=FOREIGN_NAMES, gone_names=GONE_NAMES, known_stale=
                     misses.append(f"{rel}:{n}: cites {cited}, which does not exist")
             if p.suffix == ".sh" and EXIT_TABLE.search(line):
                 misses.append(f"{rel}:{n}: an exit code's meaning copied by hand: read `cakeys --help`'s table, as nix/demo.sh does")
+            if p.suffix == ".sh" and LOCK_WRITTEN_COMPARED.search(line):
+                misses.append(
+                    f"{rel}:{n}: an exit status compared with 22, the lock-written code, copied by hand: read it from the tool's "
+                    "`--help` table, as scripts/xversion.sh does"
+                )
 
     for listed, what in [(foreign_names, "FOREIGN_NAMES"), (gone_names, "GONE_NAMES"), (foreign_paths, "FOREIGN_PATHS")]:
         misses += [f"doc-references.py: {what} lists {key}, which no citation needs" for key in sorted(listed) if key not in needed]

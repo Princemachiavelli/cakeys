@@ -1,10 +1,13 @@
-//! The rules a pair is held to before anything is written, each with a name ([`Rule`]): a rule
-//! that refuses says which it is ([`Refusal`]), and one that only the write can decide says so
-//! ([`Deferred`]), never nothing. [`static_rules`] are the ones decided without a token, asked by
-//! every entry path through this one function: the static gate (`validate`, `create`'s plan,
-//! [`crate::gate::check`]) and the live checks before a write ([`check_capabilities`],
-//! [`check_import`], and `Token::create` for placement), so no path can skip one (review
-//! 2026-11-24 B-1, B-2; docs/archive/REVIEW-2026-11-24/phase1-design.md §1.3).
+//! The rules that a pair must pass before anything is written. Each rule has a name ([`Rule`]).
+//! A rule that refuses a pair returns a [`Refusal`] that names the rule. A rule that only the
+//! write can decide returns a [`Deferred`] that names the rule, so that a rule is never passed
+//! without a decision.
+//!
+//! [`static_rules`] holds the rules that are decided without a token. Every entry path calls this
+//! one function: the static gate (`validate`, the plan of `create`, and [`crate::gate::check`])
+//! and the live checks before a write ([`check_capabilities`], [`check_import`], and
+//! `Token::create` for placement). As a result, no path can skip a rule (review 2026-11-24 B-1,
+//! B-2; docs/archive/REVIEW-2026-11-24/phase1-design.md §1.3).
 
 #[allow(
     clippy::wildcard_imports,
@@ -15,22 +18,23 @@ use crate::resolution::Resolved as Profiles;
 use cakeys_core::config::ObjectCfg;
 use cakeys_profile::{Capability, Effective, On, Set, Verdict};
 
-/// The rules, each with the one name refusals, deferrals and the JSON rows carry. The enum lives
-/// in `cakeys_core` beside [`cakeys_core::Check`], so that a refusal's `Reason` can name its rule.
+/// The rules. Each rule has one name, and refusals, deferrals and the JSON rows all use that
+/// name. The enum is defined in `cakeys_core` next to [`cakeys_core::Check`], so that the `Reason`
+/// of a refusal can name its rule.
 pub use cakeys_core::Rule;
 
-/// A rule's refusal of a pair: the error the run ends with, carrying the rule's name
-/// ([`KmError::rule`]); the exit code is the error's.
+/// A rule's refusal of a pair. It holds the error that the run ends with, and that error carries
+/// the rule's name ([`KmError::rule`]). The exit code of the run is the exit code of the error.
 #[derive(Debug)]
 pub struct Refusal {
     /// The rule that refused.
     pub rule: Rule,
-    /// Why, as the run reports it.
+    /// The reason for the refusal, as the run reports it.
     pub error: KmError,
 }
 
 impl Refusal {
-    /// `rule`'s refusal with `error`, which then names it.
+    /// Returns the refusal of `rule` with `error`, and adds the name of `rule` to `error`.
     #[must_use]
     pub fn new(rule: Rule, error: KmError) -> Refusal {
         Refusal { rule, error: error.with_rule(rule) }
@@ -49,13 +53,15 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-/// A rule a plan could not decide, and why: only the write can (the provider is known only when
-/// the token opens, the profiles do not say). Never a pass: the run asks it.
+/// A rule that a plan could not decide, and the reason. Only the write can decide such a rule,
+/// for example because the provider is known only when the token is opened, or because the
+/// profiles give no answer. A deferred rule is never treated as passed, because the run checks it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deferred {
     /// The rule.
     pub rule: Rule,
-    /// Why it is not decided here, led by the pair it is about.
+    /// The reason why the rule is not decided here. The text starts with the pair that it is
+    /// about.
     pub why: String,
 }
 
@@ -65,8 +71,9 @@ impl std::fmt::Display for Deferred {
     }
 }
 
-/// `deferred` as lines, one per pair and reason: `<why> (deferred: <rule>, <rule>)`, the rules
-/// in the order they were deferred.
+/// Formats `deferred` as lines, with one line for each distinct reason (and each reason starts
+/// with its pair): `<why> (deferred: <rule>, <rule>)`. The rules on a line are in the order in
+/// which they were deferred.
 #[must_use]
 pub fn deferred_lines(deferred: &[Deferred]) -> Vec<String> {
     let mut lines: Vec<(&str, Vec<&str>)> = Vec::new();
@@ -79,31 +86,34 @@ pub fn deferred_lines(deferred: &[Deferred]) -> Vec<String> {
     lines.into_iter().map(|(why, rules)| format!("{why} (deferred: {})", rules.join(", "))).collect()
 }
 
-/// The provider a plan asks: the one that will run the write, or why it is not known yet. An
-/// unresolved seat defers every provider rule that applies, never skips it.
+/// The provider that a plan checks against: either the provider that will run the write, or the
+/// reason why that provider is not known yet. When the provider is not known, the plan defers
+/// every provider rule that applies, and it never skips one.
 pub enum Seat<'a> {
-    /// The provider the write runs with.
+    /// The provider that the write runs with.
     Resolved(&'a dyn Provider),
-    /// Not known until the token opens (no `provider` and nothing recorded in the lock, or one
-    /// this build lacks): why.
+    /// The provider is not known until the token is opened, because the token entry names no
+    /// `provider` and the lock records none, or because it names a provider that this build does
+    /// not include. The string is the reason.
     Unresolved(String),
 }
 
-/// The write a plan is for, which decides the rules that apply.
+/// The write that a plan is for. The verb decides which rules apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
     /// `create` generates the object.
     Create,
-    /// An import puts its material there (camigrate).
+    /// An import (camigrate) puts the material on the token.
     Import,
-    /// It is there: `lock` records it, `create` verifies it.
+    /// The object is already on the token: `lock` records it, and `create` verifies it.
     Lock,
 }
 
 impl Verb {
-    /// What `t`'s pair asks of a run with `lock`: `create` generates it where its origin is
-    /// `create` and the lock does not pin it ([`creates`]), camigrate imports it where its origin
-    /// is `import` or `file`, and anything else is found there.
+    /// Returns the verb that the pair of `t` needs, given `lock`. The verb is `Create` when the
+    /// origin is `create` and the lock does not record the object ([`creates`]). It is `Import`
+    /// when the origin is `import` or `file`, because camigrate imports the object. In every other
+    /// case, it is `Lock`, because the object is expected to be on the token already.
     #[must_use]
     pub fn of(t: &Target, lock: &Lock) -> Verb {
         match t.on_token.key_origin() {
@@ -114,15 +124,16 @@ impl Verb {
     }
 }
 
-/// What [`static_rules`] found for a pair.
+/// The result of [`static_rules`] for a pair.
 #[derive(Debug, Default)]
 pub struct Verdicts {
-    /// Why the pair cannot be realised, each with its rule.
+    /// The reasons why the pair cannot be realised, each with its rule.
     pub refusals: Vec<Refusal>,
-    /// What only the write can decide.
+    /// The rules that only the write can decide.
     pub deferred: Vec<Deferred>,
-    /// Whether a created key is generated from the module's own template, where that was asked
-    /// ([`own_generation`]).
+    /// Whether a created key is generated from the module's own template ([`own_generation`]).
+    /// It is `None` when the plan did not decide it, because the verb is not `Create` or the
+    /// provider is not known.
     pub(crate) own: Option<bool>,
 }
 
@@ -136,11 +147,11 @@ impl Verdicts {
         self.deferred.push(Deferred { rule, why });
     }
 
-    /// The first refusal, as the error a run ends with.
+    /// Returns the verdicts unchanged when there is no refusal.
     ///
     /// # Errors
     ///
-    /// That refusal.
+    /// The first refusal, as the error that a run ends with.
     pub fn first(self) -> Result<Verdicts> {
         let Verdicts { mut refusals, deferred, own } = self;
         if refusals.is_empty() {
@@ -150,23 +161,31 @@ impl Verdicts {
     }
 }
 
-/// The rules of `t` that ask its open token, in the order the write meets them: asked at plan
-/// time (`create --dry-run`, on the token opened read-only, [`plan_on_tokens`]) and again by the
-/// write just before it writes ([`create`]: the same function, so a race between them is caught
-/// the same way). A creation's, `verb` [`Verb::Create`]: a key under the locator the lock does
-/// not pin (`unpinned-exists`, 19; one it pins is verified instead, which no rule decides); what
-/// the open token lists (`check_capabilities`, each refusal with its rule); a session without
-/// login where the object needs one (`needs-login`, 16); material the lock pins and the token
-/// lost, which a generation could never match (`pinned-lost`, 14, D1); any session without
-/// login, which cannot see a private object of another class under the locator (16); anything
-/// under it (`locator-free`, 13). The first refusal ends them, as it ends the write. An import's
-/// and a lock's stay their verbs' own (camigrate's `free_locator`, `lock`'s compare), and give
-/// none here (review 2026-11-24 C-4).
+/// Checks the rules of `t` that need the open token, in the order in which the write checks them.
+/// The plan checks them (`create --dry-run`, on the token opened read-only, [`plan_on_tokens`]),
+/// and the write checks them again just before it writes ([`create`]). Both use this function,
+/// so a change on the token between the plan and the write is caught in the same way.
+///
+/// For a creation (`verb` is [`Verb::Create`]), the rules are, in this order:
+///
+/// - a key under the locator that the lock does not record (`unpinned-exists`, exit 19). A key
+///   that the lock records is verified instead, and no rule decides that case;
+/// - what the open token lists (`check_capabilities`, each refusal with its rule);
+/// - a session without login when the object needs a login to be seen (`needs-login`, exit 16);
+/// - material that the lock records and the token lost, which a new generation could never match
+///   (`pinned-lost`, exit 14, D1);
+/// - any session without login, because it cannot see a private object of another class under
+///   the locator (exit 16);
+/// - any object under the locator (`locator-free`, exit 13).
+///
+/// The first refusal ends the checks, as it ends the write. An import and a lock check their own
+/// rules (camigrate's `free_locator`, and the compare of `lock`), so this function returns no
+/// refusal for them (review 2026-11-24 C-4).
 ///
 /// # Errors
 ///
-/// A failure that is no rule's: the module's (16), several keys under the locator (12), or an
-/// error a check raised without naming its rule.
+/// A failure that belongs to no rule: a failure of the module (exit 16), several keys under the
+/// locator (exit 12), or an error that a check raised without naming its rule.
 pub fn token_rules(t: &Target, tok: &Token, lock: &Lock, verb: Verb) -> Result<Vec<Refusal>> {
     if verb != Verb::Create {
         return Ok(Vec::new());
@@ -182,7 +201,8 @@ pub fn token_rules(t: &Target, tok: &Token, lock: &Lock, verb: Verb) -> Result<V
         );
         return Ok(vec![Refusal::new(Rule::UnpinnedExists, e)]);
     }
-    // A check's own error, as the refusal of the rule it names; one naming none is no rule's.
+    // A check's error becomes the refusal of the rule that the error names. An error that names
+    // no rule is returned as an error, not as a refusal.
     let refused = |r: Result<()>| match r {
         Ok(()) => Ok(None),
         Err(e) => match e.rule() {
@@ -193,16 +213,17 @@ pub fn token_rules(t: &Target, tok: &Token, lock: &Lock, verb: Verb) -> Result<V
     if let Some(r) = refused(check_capabilities(t, tok, plan_mode(t)?, Verb::Create))? {
         return Ok(vec![r]);
     }
-    // If-None-Match: never create over anything else under the locator. On a PIV token,
-    // generating into an occupied slot would silently replace its key. A session without login
-    // sees no private object, so it cannot tell the locator is free — nor that a private or
-    // secret key the lock pins is gone, which D1 below would say.
+    // If-None-Match: never create over any other object under the locator. On a PIV token, a
+    // generation into an occupied slot would silently replace the slot's key. A session without
+    // login sees no private object, so it cannot tell whether the locator is free. It also cannot
+    // tell whether a private or secret key that the lock records is gone, which the D1 check
+    // below would report.
     let free = "the locator is free";
     if let Some(r) = refused(needs_login(t, tok, lock, free))? {
         return Ok(vec![r]);
     }
-    // D1: the lock already pins this object's material, so a fresh generation can only end in a
-    // mismatch. (Had this token held the same material, it would have been found above.)
+    // D1: the lock already records this object's material, so a new generation can only end in
+    // a mismatch. If this token held the same material, `find_key` would have found it above.
     if let Some(ids) = lock.objects.get(t.object_name).map(|o| &o.ids).filter(|ids| !ids.is_empty()) {
         let e = KmError::PreconditionFailed(Reason::rule(
             Rule::PinnedLost,
@@ -216,7 +237,8 @@ pub fn token_rules(t: &Target, tok: &Token, lock: &Lock, verb: Verb) -> Result<V
         ));
         return Ok(vec![Refusal::new(Rule::PinnedLost, e)]);
     }
-    // Whatever the object is, another class under the locator may be private.
+    // Whatever the object's class is, an object of another class under the locator may be
+    // private, and a session without login cannot see it.
     if !tok.logged_in {
         let e = KmError::Unavailable(
             format!(
@@ -228,8 +250,9 @@ pub fn token_rules(t: &Target, tok: &Token, lock: &Lock, verb: Verb) -> Result<V
         );
         return Ok(vec![Refusal::new(Rule::NeedsLogin, e)]);
     }
-    // Any class, unlike an import (`Token::occupied`): a certificate already there certifies
-    // some other key, never one generated now.
+    // Objects of every class count here, unlike for an import (`Token::occupied`). A certificate
+    // that is already under the locator certifies some other key, and never the key that is
+    // generated now.
     let present = tok.find_any(loc)?;
     if !present.is_empty() {
         let e = KmError::Conflict(Reason::rule(
@@ -244,13 +267,14 @@ pub fn token_rules(t: &Target, tok: &Token, lock: &Lock, verb: Verb) -> Result<V
     Ok(Vec::new())
 }
 
-/// Refuse (16) where `t`'s object was not found and a session without login could not have seen
-/// it ([`Target::needs_login`]): such a session never reports it absent, nor a locator free
-/// (review 2026-11-24 B-4). `cannot` says what it cannot tell.
+/// Refuses with exit 16 when the session has no login and the object of `t` needs a login to be
+/// seen ([`Target::needs_login`]). Callers call this function when the object was not found,
+/// because such a session must never report the object as absent or the locator as free (review
+/// 2026-11-24 B-4). `cannot` names what the session cannot tell, for the message.
 ///
 /// # Errors
 ///
-/// `Unavailable` (16), naming the rule, on a session without login.
+/// `Unavailable` (exit 16), which names the `needs-login` rule, for a session without login.
 pub(crate) fn needs_login(t: &Target, tok: &Token, lock: &Lock, cannot: &str) -> Result<()> {
     if tok.logged_in || !t.needs_login(lock) {
         return Ok(());
@@ -266,13 +290,14 @@ pub(crate) fn needs_login(t: &Target, tok: &Token, lock: &Lock, cannot: &str) ->
     Err(Refusal::new(Rule::NeedsLogin, e).into())
 }
 
-/// Whether a key may be made under `loc` on `provider`'s module ([`Provider::placement`]): the
-/// one place it is asked, for a pair's key ([`static_rules`]) and for every creation
-/// (`Token::create`).
+/// Checks whether a key may be created under `loc` on the module of `provider`
+/// ([`Provider::placement`]). This is the only place where that check is made, both for a pair's
+/// key ([`static_rules`]) and for every creation (`Token::create`). An object that is not a key
+/// always passes.
 ///
 /// # Errors
 ///
-/// The provider's refusal (17), naming the rule.
+/// The provider's refusal (exit 17), which names the `placement` rule.
 pub(crate) fn placement(provider: &dyn Provider, class: Class, loc: &cakeys_core::config::Locator) -> Result<()> {
     if !class.is_key() {
         return Ok(());
@@ -280,27 +305,29 @@ pub(crate) fn placement(provider: &dyn Provider, class: Class, loc: &cakeys_core
     provider.placement(loc).map_err(|e| Refusal::new(Rule::Placement, e).into())
 }
 
-/// Whether `provider`'s module removes an object of `class` under `loc` ([`Provider::deletion`]):
-/// the one place it is asked, for `delete`'s plan and every destroy (`Token::destroy_handles`).
+/// Checks whether the module of `provider` removes an object of `class` under `loc`
+/// ([`Provider::deletion`]). This is the only place where that check is made, both for the plan
+/// of `delete` and for every destroy (`Token::destroy_handles`).
 ///
 /// # Errors
 ///
-/// The provider's refusal (15), naming the rule.
+/// The provider's refusal (exit 15), which names the `delete-refused` rule.
 pub(crate) fn deletion(provider: &dyn Provider, class: Class, loc: &cakeys_core::config::Locator) -> Result<()> {
     provider.deletion(class, loc).map_err(|e| Refusal::new(Rule::DeleteRefused, e).into())
 }
 
-/// Whether `tok` removes `t`'s object when asked, decided before anything is looked at again or
-/// destroyed, so `delete --dry-run` says what `delete` would (review 2026-11-24 B-13): the
-/// module profile's `delete.<class>` row answering no, measured by caprobe as objects
-/// `C_DestroyObject` left behind, refuses; so does the provider ([`Provider::deletion`]). A row
-/// that is not there decides nothing: the delete is tried, and the look after it
-/// (`Token::destroy_handles`) says what stayed.
+/// Checks whether `tok` removes the object of `t` when asked. The check runs before anything is
+/// looked up again or destroyed, so that `delete --dry-run` reports what `delete` would do
+/// (review 2026-11-24 B-13). The function refuses when the module profile's `delete.<class>` row
+/// answers no, which means that caprobe measured that `C_DestroyObject` left objects of that class
+/// behind. It also refuses when the provider refuses ([`Provider::deletion`]). A missing row
+/// decides nothing: the delete is tried, and the lookup after it (`Token::destroy_handles`)
+/// reports what is still there.
 ///
 /// # Errors
 ///
-/// `Unsupported` (15, `delete-refused`) naming the row and its evidence, or the provider's
-/// refusal.
+/// `Unsupported` (exit 15, `delete-refused`), which names the profile row and its evidence, or
+/// the provider's refusal.
 pub(crate) fn delete_refused(t: &Target, tok: &crate::Token) -> Result<()> {
     let class = t.object.class;
     let row = cakeys_profile::Capability::Delete(class.to_string());
@@ -319,27 +346,29 @@ pub(crate) fn delete_refused(t: &Target, tok: &crate::Token) -> Result<()> {
         .map_err(|e| e.prefixed(format_args!("{t}: deleting {class} on '{}'", t.token_name)))
 }
 
-/// The rules of `t` in `mode` decided without a token, for the write `verb`, by the provider in
-/// `seat` and, with `profiles` (the token's profile stack, as the static gate resolves it), by
-/// the capability profiles:
+/// Checks the rules of `t` in `mode` that can be decided without a token, for the write `verb`.
+/// The provider in `seat` decides the provider rules. When `profiles` is given (the token's
+/// profile stack, as the static gate resolves it), the capability profiles decide the capability
+/// rules. The rules are:
 ///
-/// - placement, for a key the write puts on the token (`create` generates it, or it is
-///   imported); `lock` writes none;
-/// - attestation cover, where the spec opts into an attestation;
-/// - imported attestation, where the key is imported;
-/// - own generation, where `create` generates the key;
-/// - with `profiles`: the templates the write sends, the mechanisms, the proof, the generation
-///   and a secret key's commitments, a profile's *no* refusing and its *unknown* deferred to the
-///   open token.
+/// - placement, for a key that the write puts on the token (`create` generates the key, or an
+///   import puts it there). `lock` puts no key on the token;
+/// - attestation cover, when the spec opts into an attestation;
+/// - imported attestation, when the key is imported;
+/// - own generation, when `create` generates the key;
+/// - with `profiles`: the templates that the write sends, the mechanisms, the proof, the
+///   generation, and a secret key's commitments. A *no* in a profile refuses the pair, and an
+///   *unknown* is deferred to the open token.
 ///
-/// A refusal that makes the rest meaningless (placement, own generation, a key type cakeys does
-/// not manage) is the only one. With an unresolved seat each provider rule that applies is
-/// deferred, and without `profiles` what the token can do as well. Without `profiles` and with
-/// the provider, the open token decides what they would right after (the live check).
+/// A refusal that makes the other rules meaningless (placement, own generation, or a key type
+/// that cakeys does not manage) is returned as the only refusal. When the provider is not known
+/// (`Seat::Unresolved`), each provider rule that applies is deferred, and when `profiles` is also
+/// missing, the capability rule is deferred too. When `profiles` is missing but the provider is
+/// known, the open token decides the capability rules right after the plan (the live check).
 ///
 /// # Errors
 ///
-/// `Validation` (17) when no profile set is active.
+/// `Validation` (exit 17) when no profile set is active.
 pub fn static_rules(t: &Target, mode: Mode, seat: Seat, verb: Verb, profiles: Option<&Profiles>) -> Result<Verdicts> {
     let mut out = Verdicts::default();
     let (creating, imported) = (verb == Verb::Create, verb == Verb::Import);
@@ -347,7 +376,8 @@ pub fn static_rules(t: &Target, mode: Mode, seat: Seat, verb: Verb, profiles: Op
     let provider = match seat {
         Seat::Resolved(p) => Some(p),
         Seat::Unresolved(why) => {
-            // Without profiles too, what the token can do is known only when it opens.
+            // When `profiles` is also missing, what the token can do is known only when the token
+            // is opened, so the capability rule is deferred too.
             let rules = [
                 (placed, Rule::Placement),
                 (t.on_token.attestation, Rule::AttestationCover),
@@ -380,8 +410,9 @@ pub fn static_rules(t: &Target, mode: Mode, seat: Seat, verb: Verb, profiles: Op
         }
     }
     let Some(profiles) = profiles else { return Ok(out) };
-    // Generated from cakeys' templates: the provider generates from its own, or is not known
-    // (then neither is how it generates, and the generation's templates are deferred above).
+    // `out.own` is set only when the provider is known. When the provider is not known, a
+    // creation is treated as generated from cakeys' templates (`Some(false)`), because how the
+    // provider generates is not known either, and the templates rule was deferred above.
     let own = out.own.or_else(|| creating.then_some(false));
     let needs = match needs(t, mode, own) {
         Ok(n) => n,
@@ -391,8 +422,9 @@ pub fn static_rules(t: &Target, mode: Mode, seat: Seat, verb: Verb, profiles: Op
     Ok(out)
 }
 
-/// The capability profiles' half of [`static_rules`]: the proof, the templates (asked of
-/// `provider` when known), each mechanism group of `needs`, the generation and the commitments.
+/// The part of [`static_rules`] that the capability profiles decide: the proof, the templates
+/// (checked with `provider` when the provider is known), each mechanism group of `needs`, the
+/// generation and the commitments.
 fn profile_rules(
     t: &Target,
     mode: Mode,
@@ -404,8 +436,9 @@ fn profile_rules(
 ) -> Result<()> {
     let token = t.token_name;
     let unsupported = |m: String| KmError::Unsupported(m.into());
-    // The proof the spec's key will be bound by: a profile's or this token's recorded no
-    // refuses (a key made could not then be identified); unknown means try.
+    // The proof of possession that will bind the spec's key. A recorded *no* (from a profile or
+    // from this token's recorded answers) refuses the pair, because a key made there could not be
+    // identified. An *unknown* answer means that the run tries the proof.
     if let Some(cap) = proof(t)
         && let Some(m) = profiles.module.as_ref()
         && m.answer(&cap) == Some(false)
@@ -418,8 +451,9 @@ fn profile_rules(
     let baseline = set.baseline().map_err(|e| KmError::Validation(e.into()))?;
     let layers: Vec<&cakeys_profile::Profile> = profiles.layers.iter().collect();
     let eff = Effective::new(baseline, profiles.module.as_ref(), &layers);
-    // The templates the verb will send, as the provider adjusts them: what it refuses, the run
-    // refuses before anything is created (`plan_templates`). Unknown means not asked.
+    // The templates that the verb will send, after the provider adjusts them. When the provider
+    // refuses a template, the run refuses the pair before anything is created (`plan_templates`).
+    // For a mechanism whose verdict is unknown, `has` returns `None`.
     if let Some(p) = provider {
         let has = |m: MechanismType| match eff.mechanism(&m.to_string()) {
             Verdict::Yes { .. } => Some(true),
@@ -451,10 +485,11 @@ fn profile_rules(
             out.defer(Rule::Capability, format!("{t}: the profiles do not decide ({})", lines.join("; ")));
         }
     }
-    // The generation's type, curve and size; then a secret key's commitments: refused only when
-    // the profile measured every one the spec declares and the module cannot compute any (an
-    // unmeasured one is the advertised list's); deferred when none is a yes and some are
-    // undecided, as for a generation.
+    // Check the generation's key type, curve and size, and then a secret key's commitments. The
+    // commitments are refused only when the profile measured every commitment that the spec
+    // declares and the module can compute none of them. The module's advertised mechanism list
+    // decides a commitment that the profile did not measure. The commitments are deferred when
+    // none of them is a yes and some are undecided, as for a generation.
     let generated = needs.generation.and_then(|_| generating(t, &eff, token));
     for said in generated.into_iter().chain(commitments(t, &eff, token)) {
         match said {
@@ -465,13 +500,14 @@ fn profile_rules(
     Ok(())
 }
 
-/// The capability of proving `t`'s private key the way its spec binds it
-/// (`plan::expected_binding`), when that is a proof.
+/// Returns the capability of proving possession of the private key of `t` in the way that its
+/// spec binds the key (`plan::expected_binding`). Returns `None` when that binding is not a proof.
 fn proof(t: &Target) -> Option<Capability> {
     proof_capability(&t.object, cakeys_core::plan::expected_binding(t)?)
 }
 
-/// What a capability row of `object` is on: its curve, or its modulus size.
+/// Returns what a capability row of `object` is about: the object's curve, or else its modulus
+/// size.
 fn on(object: &ObjectCfg) -> Option<On> {
     match (&object.curve, object.modulus_bits) {
         (Some(c), _) => Some(On::Item(c.clone())),
@@ -480,9 +516,9 @@ fn on(object: &ObjectCfg) -> Option<On> {
     }
 }
 
-/// The capability a proof of possession of `object`'s private key by `binding` is
-/// (`prove.<proof>.<key type>.<curve or size>`); `None` for `token-asserted`, or a key with
-/// neither a curve nor a size.
+/// Returns the capability row for a proof of possession of the private key of `object` by
+/// `binding` (`prove.<proof>.<key type>.<curve or size>`). Returns `None` for `token-asserted`,
+/// which is not a proof, and for a key that has no key type or has neither a curve nor a size.
 pub(crate) fn proof_capability(object: &ObjectCfg, binding: cakeys_core::config::Binding) -> Option<Capability> {
     Some(Capability::Prove {
         binding: binding.proof_name()?.into(),
@@ -491,20 +527,23 @@ pub(crate) fn proof_capability(object: &ObjectCfg, binding: cakeys_core::config:
     })
 }
 
-/// The capability generating `object` is (`generate.<key type>.<curve or size>`).
+/// Returns the capability row for the generation of `object`
+/// (`generate.<key type>.<curve or size>`).
 pub(crate) fn generate_capability(object: &ObjectCfg) -> Option<Capability> {
     Some(Capability::Generate { key_type: object.key_type?.name().into(), on: on(object)? })
 }
 
-/// What the profiles say of generating `t`'s key, its type, curve and size: `Ok`, the refusal;
-/// `Err`, why it is deferred, when undecided; `None` when it is a yes or `t` names no key type.
+/// Returns what the profiles say about the generation of the key of `t` with its type, curve and
+/// size. `Some(Ok)` holds the refusal. `Some(Err)` holds the reason for a deferral when the
+/// profiles do not decide. `None` means that the answer is yes or that `t` names no key type.
 fn generating(t: &Target, eff: &Effective, token: &str) -> Option<std::result::Result<String, String>> {
     let kt = t.object.key_type?;
     let verdict = if kt.is_asymmetric() {
         let bits = t.object.modulus_bits.and_then(|b| u32::try_from(b).ok());
         eff.generate(kt.name(), t.object.curve.as_deref(), bits)
     } else {
-        // A secret key's length: keys.toml's `valueLen`, or what its type fixes.
+        // A secret key's length is `valueLen` from keys.toml, or else the length that its key
+        // type fixes.
         let bytes = t.object.value_len.or_else(|| kt.fixed_value_len());
         eff.generate_secret(kt.name(), bytes.and_then(|b| u32::try_from(b).ok()))
     };
@@ -515,11 +554,13 @@ fn generating(t: &Target, eff: &Effective, token: &str) -> Option<std::result::R
     }
 }
 
-/// What the profiles say of `t`'s declared commitments when it is a secret key: `Ok`, the
-/// refusal, when the profile measured every one as one the module cannot compute; `Err`, why it
-/// is deferred, when none is a yes and one the profile measured is not decided at this length
-/// (review 2026-11-23 A-1); `None` when one is a yes, there are none, or the undecided ones were
-/// never measured (the advertised list's).
+/// Returns what the profiles say about the declared commitments of `t` when `t` is a secret key.
+/// `Some(Ok)` holds the refusal, when the profile measured every commitment as one that the
+/// module cannot compute. `Some(Err)` holds the reason for a deferral, when no commitment is a yes
+/// and a commitment that the profile measured is not decided at this key length (review
+/// 2026-11-23 A-1). `None` means that a commitment is a yes, that there are no commitments, or
+/// that the undecided commitments were never measured, so that the advertised mechanism list
+/// decides them.
 fn commitments(t: &Target, eff: &Effective, token: &str) -> Option<std::result::Result<String, String>> {
     let kt = t.object.key_type.filter(|_| t.object.class == Class::SecretKey)?;
     let bytes = t.object.value_len.or_else(|| kt.fixed_value_len()).and_then(|b| u32::try_from(b).ok());
@@ -541,4 +582,55 @@ fn commitments(t: &Target, eff: &Effective, token: &str) -> Option<std::result::
         .iter()
         .any(|(k, v)| matches!(v, Verdict::Unknown { .. }) && eff.measured_commit(k, kt.name()))
         .then(|| Err(format!("{t}: commitments not decided ({})", lines.join("; "))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The gate refuses a secret key for its commitments only when the module profile measured
+    /// every commitment that the spec declares as *no* (docs/CAPROBE.md, "Secret keys"). The spec
+    /// of a 32-byte AES key declares CMAC and KW, and the profile measured CMAC as *no* at 32
+    /// bytes. The verdict then follows the KW rows: *no* at 32 bytes refuses (15, the rule
+    /// `capability`); a KW row at 16 bytes alone leaves 32 bytes unknown, and the capability is
+    /// deferred to the open token instead of refused; with no KW row, or *yes* at 32 bytes, the
+    /// commitments neither refuse nor defer. The four profiles differ only in the KW rows, so a
+    /// refusal or a deferral that one of them has and the others lack comes from the commitments.
+    /// The gate asks the same of the commitments' mechanisms: a profile that advertises the KW
+    /// mechanisms and not `CKM_AES_CMAC` does not refuse, and one that advertises only
+    /// `CKM_AES_ECB`, which computes neither commitment, refuses (15).
+    #[test]
+    fn the_gate_refuses_commitments_only_when_every_one_is_no() {
+        cakeys_profile::Set::activate_embedded().unwrap();
+        let cfg: cakeys_core::config::Config = toml::from_str(
+            "[tokens.t]\ntokenLabel = \"t\"\n\n\
+             [objects.k]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
+             [specs.s]\nobject = \"k\"\nattributes = { CKA_SIGN = true, CKA_WRAP = true }\n\
+             tokens.t = { locator = { CKA_LABEL = \"k\" }, origin = \"adopt\" }\n",
+        )
+        .unwrap();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let kw_mechanisms = "\"CKM_AES_KEY_WRAP\", \"CKM_AES_KEY_WRAP_PAD\"";
+        let advertised = |advertise: &str, kw: &str| {
+            let module = cakeys_profile::Profile::from_toml(&format!(
+                "profile = \"m/1\"\nmode = \"observed\"\nadvertise = [{advertise}]\n\
+                 [capabilities]\n\"commit.cmac.CKK_AES.32\" = {{ answer = \"no\" }}\n{kw}"
+            ))
+            .unwrap();
+            let profiles = Profiles { module: Some(module), ..Profiles::default() };
+            let seat = Seat::Unresolved("the test names no provider".into());
+            let v = static_rules(&t, Mode::Commitment, seat, Verb::Lock, Some(&profiles)).unwrap();
+            let refused: Vec<(Rule, u8)> = v.refusals.iter().map(|r| (r.rule, r.error.exit_code())).collect();
+            let deferred = v.deferred.iter().any(|d| d.rule == Rule::Capability);
+            (refused, deferred)
+        };
+        let gate = |kw: &str| advertised(&format!("\"CKM_AES_CMAC\", {kw_mechanisms}"), kw);
+        let row = |bytes: u32, answer: &str| format!("\"commit.kw.CKK_AES.{bytes}\" = {{ answer = \"{answer}\" }}\n");
+        assert_eq!(gate(&row(32, "no")), (vec![(Rule::Capability, 15)], false), "both no");
+        assert_eq!(gate(&row(16, "yes")), (vec![], true), "CMAC no, KW unknown at 32 bytes");
+        assert_eq!(gate(""), (vec![], false), "CMAC no, KW never measured");
+        assert_eq!(gate(&row(32, "yes")), (vec![], false), "CMAC no, KW yes");
+        assert_eq!(advertised(kw_mechanisms, ""), (vec![], false), "the KW mechanisms alone");
+        assert_eq!(advertised("\"CKM_AES_ECB\"", ""), (vec![(Rule::Capability, 15)], false), "neither mechanism");
+    }
 }

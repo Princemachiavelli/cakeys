@@ -317,8 +317,10 @@ A consumer derivation requires the token's feature and runs `check` before it us
 - **`sandbox.pcscd.enable`:** enables pcscd, a polkit rule for nixbld or for the auto-allocated
   UID range, and `PrivateUsers=false` with auto UIDs. The grant applies to the whole host:
   pcscd serves every reader, so a build that is granted the pcscd socket reaches every card that
-  is plugged in, not only its own token's card. Several tokens with `pcscd = true` give a
-  warning.
+  is plugged in, not only its own token's card. A token with `pcscd = true` is granted pcscd's
+  socket, `/run/pcscd`, in addition to its `sandboxPaths`. The module refuses that option unless
+  `sandbox.pcscd.enable` is also set, and it warns when several tokens set it
+  (`checks.module-assertions`).
 - **`sandbox.tpm2.enable`:** a udev ACL on `/dev/tpmrm*` for every build GID: the nixbld GID,
   or, with `auto-allocate-uids`, the first UID of each 65 536-ID slot, which is also its GID. The
   device is the whole TPM: a build that is granted it reaches every object that its

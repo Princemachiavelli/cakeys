@@ -1,5 +1,6 @@
-//! Which provider a token gets: the one keys.toml names, else the one that detects its module,
-//! else the generic one (review 2026-11-23 B-5: the registry is not a provider).
+//! The choice of the provider that a token gets. That is the provider that keys.toml names, or
+//! otherwise the provider that detects the token's module, or otherwise the generic provider
+//! (review 2026-11-23 B-5: the registry is not a provider).
 
 use crate::provider::{Data, Generic, Provider};
 use cakeys_core::config::ModuleInfo;
@@ -7,50 +8,54 @@ use cakeys_core::{KmError, Result};
 use cakeys_profile::Set;
 use std::sync::Arc;
 
-/// The module families whose provider is code (the provider crates' names): never stood in
-/// for by their profiles' [`Data`] alone, whatever this build links (review 2026-11-24 B-7,
-/// B-10, phase1-design §3.2.4).
+/// The module families whose provider is code (the names of the provider crates). Their
+/// profiles' [`Data`] alone never replaces that code, whatever this build links (review
+/// 2026-11-24 B-7, B-10, phase1-design §3.2.4).
 pub const CODE_FAMILIES: [&str; 4] = ["ykcs11", "tpm2-pkcs11", "kmsp11", "aws-cloudhsm"];
 
-/// Registered providers. The CLI builds one from the provider crates it links; a downstream
-/// binary adds its own with [`Registry::with`] (see the `custom-provider` example). A module
-/// profile's family is a provider too ([`Data`]), with no code: the registry falls back to the
-/// profiles when no code provider is named or claims a module.
+/// The registered providers. The CLI builds a registry from the provider crates that it links,
+/// and a downstream binary adds its own providers with [`Registry::with`] (see the
+/// `custom-provider` example). A module profile's family is also a provider ([`Data`]), with no
+/// code. The registry falls back to the profiles when no code provider is named or claims a
+/// module.
 #[derive(Clone, Default)]
 pub struct Registry {
     providers: Vec<Arc<dyn Provider>>,
 }
 
 impl Registry {
-    /// An empty registry: no provider beyond [`Generic`] and the profiles' [`Data`] ones.
+    /// Returns an empty registry, which has no provider except [`Generic`] and the [`Data`]
+    /// providers of the profiles.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Extend the registry with another provider, builder-style: the registry it returns is
-    /// the one to use (the `#[must_use]` is load-bearing — the input is consumed).
+    /// Extends the registry with another provider, in the builder style. The caller must use the
+    /// registry that this function returns, because the input is consumed, and `#[must_use]`
+    /// enforces that.
     #[must_use]
     pub fn with(mut self, p: impl Provider + 'static) -> Self {
         self.providers.push(Arc::new(p));
         self
     }
 
-    /// The names of the code providers registered, in registration order.
+    /// Returns the names of the registered code providers, in the order of registration.
     #[must_use]
     pub fn names(&self) -> Vec<&'static str> {
         self.providers.iter().map(|p| p.name()).collect()
     }
 
-    /// The provider registered as `name` (or [`Generic`]), else the module profile family of
-    /// that name ([`Data`]), without loading any module. A family of [`CODE_FAMILIES`] is its
-    /// code's only.
+    /// Returns the provider that is registered as `name` (or [`Generic`]), or otherwise the module
+    /// profile family of that name ([`Data`]), without loading any module. A family in
+    /// [`CODE_FAMILIES`] resolves only to its code provider. Returns `None` when no provider or
+    /// family has the name.
     ///
     /// # Errors
     ///
-    /// `Validation` (17) when no profile set is active: never taken for "no such provider"
-    /// (ISSUES.md Q24); and when `name` is a family of [`CODE_FAMILIES`] this registry has no
-    /// code for.
+    /// `Validation` (exit 17) when no profile set is active, which is never treated as "no such
+    /// provider" (ISSUES.md Q24). `Validation` also when `name` is a family in [`CODE_FAMILIES`]
+    /// for which this registry has no code.
     pub fn named(&self, name: &str) -> Result<Option<Arc<dyn Provider>>> {
         let set = Set::active().map_err(|e| KmError::Validation(e.into()))?;
         self.named_in(set, name)
@@ -70,14 +75,16 @@ impl Registry {
         Ok(Some(Arc::new(Data(family))))
     }
 
-    /// The explicitly configured provider; else the first registered one that recognises the
-    /// module; else the module profile family whose `[match] manufacturer` it reports
-    /// ([`Data`]); else [`Generic`].
+    /// Returns the explicitly configured provider. Otherwise, it returns the first registered
+    /// provider that recognizes the module. Otherwise, it returns the module profile family whose
+    /// `[match] manufacturer` the module reports ([`Data`]). Otherwise, it returns [`Generic`].
     ///
     /// # Errors
     ///
-    /// `Validation` when `explicit` names neither a provider nor a profile family, or when the
-    /// module's manufacturer is claimed by the profiles of several families and none is named.
+    /// `Validation` when no profile set is active, when `explicit` names neither a provider nor a
+    /// profile family, when the module's manufacturer belongs to a family in [`CODE_FAMILIES`]
+    /// whose code this registry lacks, or when the profiles of several families claim the
+    /// module's manufacturer and none is named.
     pub fn select(&self, explicit: Option<&str>, module: &ModuleInfo) -> Result<Arc<dyn Provider>> {
         self.select_in(Set::active().map_err(|e| KmError::Validation(e.into()))?, explicit, module)
     }
@@ -100,8 +107,9 @@ impl Registry {
         }
         let manufacturer = module.manufacturer.as_str();
         let mut families = set.module_families(manufacturer);
-        // A code family is its code's: absent, refused; present and declining the module, the
-        // module is not that family's, whatever its manufacturer (B-10).
+        // A code family resolves only to its code. When the code is absent, the selection is
+        // refused. When the code is present but declines the module, the module does not belong
+        // to that family, whatever its manufacturer (B-10).
         if let Some(family) = families.iter().find(|f| CODE_FAMILIES.contains(f) && !self.names().contains(f)) {
             return Err(unlinked(family));
         }
@@ -121,7 +129,7 @@ impl Registry {
     }
 }
 
-/// A family of [`CODE_FAMILIES`] whose code this registry lacks.
+/// Returns the error for a family in [`CODE_FAMILIES`] whose code this registry lacks.
 fn unlinked(family: &str) -> KmError {
     KmError::Validation(
         format!(
@@ -146,7 +154,7 @@ mod tests {
         }
     }
 
-    /// A code provider for a manufacturer the profiles also name (`SoftHSM`'s).
+    /// A code provider for a manufacturer that the profiles also name (`SoftHSM`).
     struct Mine;
     impl Provider for Mine {
         fn name(&self) -> &'static str {
@@ -168,8 +176,8 @@ mod tests {
         }
     }
 
-    /// A code family's own provider declining (`matches` false): the registry's ykcs11 when the
-    /// module is a `YubiHSM`, which Yubico also makes.
+    /// A code family's own provider that declines the module (`matches` returns false), as the
+    /// registry's ykcs11 provider does when the module is a `YubiHSM`, which Yubico also makes.
     struct Declines(&'static str);
     impl Provider for Declines {
         fn name(&self) -> &'static str {
@@ -181,9 +189,10 @@ mod tests {
     }
 
     /// A family whose provider is code never resolves to its profiles' data alone (review
-    /// 2026-11-24 B-7, B-10): named or detected, a build without that code refuses (17) rather
-    /// than run its tokens with none of the code's rules; and once the family's code declined a
-    /// module, the module is not that family's by manufacturer (a `YubiHSM` is no `YubiKey`).
+    /// 2026-11-24 B-7, B-10). Whether the family is named or detected, a build without that code
+    /// refuses (exit 17) instead of running its tokens without the code's rules. When the
+    /// family's code has declined a module, the module does not belong to that family by its
+    /// manufacturer (a `YubiHSM` is not a `YubiKey`).
     #[test]
     fn a_code_family_never_resolves_to_its_data() {
         let set: &'static Set = Box::leak(Box::new(Set::embedded().unwrap()));
@@ -203,7 +212,7 @@ mod tests {
             assert_eq!(declined.select_in(set, None, &module(&maker(family))).unwrap().name(), "generic", "{family}");
             assert_eq!(declined.select_in(set, Some(family), &module("x")).unwrap().name(), family);
         }
-        // A family no code claims still resolves to its data.
+        // A family that no code claims still resolves to its data.
         assert_eq!(bare.select_in(set, None, &module("SoftHSM")).unwrap().name(), "softhsm");
     }
 
@@ -221,28 +230,30 @@ mod tests {
         assert!(r.named("nope").unwrap().is_none());
     }
 
-    /// A module no code claims is named by its profiles' family; code providers come first, a
-    /// family is selectable by name, and two families claiming one manufacturer are refused.
+    /// A module that no code claims gets its profiles' family. Code providers come first, a
+    /// family can be selected by name, and two families that claim one manufacturer are
+    /// refused.
     #[test]
     fn profiles_name_the_modules_code_does_not_claim() {
         let set: &'static Set = Box::leak(Box::new(Set::embedded().unwrap()));
         let r = Registry::new().with(Acme);
         assert_eq!(r.select_in(set, None, &module("SoftHSM")).unwrap().name(), "softhsm");
         assert_eq!(r.select_in(set, None, &module("Kryoptic")).unwrap().name(), "kryoptic");
-        // A code family's manufacturer, without its code: refused (B-7).
+        // The manufacturer of a code family, without the family's code, is refused (B-7).
         assert!(r.select_in(set, None, &module("CloudHSM")).is_err());
-        // A layer's manufacturer (p11-kit's) names no module.
+        // The manufacturer of a layer (p11-kit) names no module.
         assert_eq!(r.select_in(set, None, &module("PKCS#11 Kit")).unwrap().name(), "generic");
         assert_eq!(r.select_in(set, Some("softhsm"), &module("PKCS#11 Kit")).unwrap().name(), "softhsm");
         assert!(r.select_in(set, Some("aws-cloudhsm"), &module("Other")).is_err());
-        // A provider is a family: one module profile's name is none (keys.toml's moduleProfile).
+        // A provider is a family, so the name of one module profile is not a provider name
+        // (keys.toml has `moduleProfile` for that).
         let pair = Some("aws-cloudhsm/5.18+hsm2m-non-fips");
         assert!(r.select_in(set, pair, &module("CloudHSM")).is_err());
         let e = r.select_in(set, Some("nope"), &module("x")).err().unwrap();
         assert!(e.to_string().contains("profile families: aws-cloudhsm"), "{e}");
-        // The same, with no code family in the way.
+        // The same selection by name works for a family that is not a code family.
         assert_eq!(r.select_in(set, Some("kryoptic"), &module("Other")).unwrap().name(), "kryoptic");
-        // Code before data: a provider claiming SoftHSM's manufacturer wins.
+        // Code comes before data: a provider that claims SoftHSM's manufacturer is chosen.
         assert_eq!(Registry::new().with(Mine).select_in(set, None, &module("SoftHSM")).unwrap().name(), "mine");
         let dir = std::env::temp_dir().join(format!("cakeys-provider-twins-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

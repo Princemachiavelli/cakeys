@@ -1,4 +1,6 @@
-//! The object's type and policy: what the spec declares, checked against what the token reports; the observed policy vector and immutables; and the mapping of boolean attributes to `cryptoki`.
+//! The object's type and policy. This file checks what the spec declares against what the token
+//! reports, reads the observed policy vector and the immutable attributes, and maps the boolean
+//! attributes to `cryptoki`.
 
 #[allow(
     clippy::wildcard_imports,
@@ -7,13 +9,15 @@
 use super::*;
 
 impl Token {
-    /// Check the intrinsic type and every policy attribute of the spec against the live object.
+    /// Checks the intrinsic type and every policy attribute of the spec against the live object.
     ///
     /// # Errors
     ///
-    /// `Conflict` whenever the token's object is not the declared type (missing
-    /// `CKA_KEY_TYPE`, another curve, modulus or length) or violates a declared policy
-    /// attribute; `Unsupported` for an object class cakeys does not manage.
+    /// `Conflict` when the token's object is not of the declared type (no `CKA_KEY_TYPE`, or
+    /// another curve, modulus size or length), or when it violates a declared policy attribute.
+    /// `Unsupported` for an object class that cakeys does not manage, for a private data object
+    /// whose spec does not declare `CKA_PRIVATE = true`, and for a key whose `CKA_VALUE_LEN` the
+    /// token does not report.
     pub fn check(&self, h: ObjectHandle, object: Object<'_>, spec: &SpecCfg) -> Result<()> {
         let class = class_of(&object);
         if class == ObjectClass::CERTIFICATE {
@@ -26,10 +30,11 @@ impl Token {
             };
         }
         if class == ObjectClass::DATA {
-            // Its identity is a hash of the value: for a guessable private value (a password, a
-            // PIN) that hash in the lock is an offline guessing oracle. So a private data object
-            // is identified only when its spec declares CKA_PRIVATE = true: the spec's author
-            // says, in review, that nobody can guess the value.
+            // A data object's identity is a hash of its value. For a private value that can be
+            // guessed (a password, a PIN), that hash in the lock lets anyone who reads the lock
+            // test guesses offline. So a private data object is identified only when its spec
+            // declares `CKA_PRIVATE = true`, which is the spec author's statement, visible in
+            // review, that nobody can guess the value.
             return match (self.attr(h, AttributeType::Private)?, spec.flag("CKA_PRIVATE")) {
                 (Some(Attribute::Private(false)), _) | (Some(Attribute::Private(true)), Some(true)) => {
                     self.check_policy(h, spec)
@@ -54,7 +59,7 @@ impl Token {
                 format!("CKA_KEY_TYPE is {kt}, spec object type says {}", object.key_type.map_or("", Kt::name)),
             )));
         }
-        // The key type matched: an EC or Edwards object has its curve.
+        // The key type matched. For an EC or Edwards object, the curve must also match.
         if let Some(want) = object.curve() {
             match self.attr(h, AttributeType::EcParams)? {
                 Some(Attribute::EcParams(p)) if Curve::from_params(&p) == Some(want) => {}
@@ -67,8 +72,8 @@ impl Token {
             }
         }
         if let Some(bits) = object.modulus_bits {
-            // Its significant bits: a 2047-bit key is no 2048-bit one, whatever its bytes
-            // (review 2026-11-24 B-5).
+            // Compare the number of significant bits, because a 2047-bit key is not a 2048-bit
+            // key, even when both take the same number of bytes (review 2026-11-24 B-5).
             let size = id::modulus_bits;
             match self.attr(h, AttributeType::Modulus)? {
                 Some(Attribute::Modulus(m)) if size(&m) == bits => {}
@@ -84,7 +89,8 @@ impl Token {
                 }
             }
         }
-        // A DES3 key's length is its key type's (no CKA_VALUE_LEN): checked as CKA_KEY_TYPE above.
+        // A DES3 key has no `CKA_VALUE_LEN`, because its key type fixes its length, so the check
+        // of `CKA_KEY_TYPE` above covers it.
         if let Some(len) = object.value_len.filter(|_| object.key_type.and_then(Kt::fixed_value_len).is_none()) {
             match self.attr(h, AttributeType::ValueLen)? {
                 Some(Attribute::ValueLen(v)) if *v == len => {}
@@ -94,8 +100,10 @@ impl Token {
                         format!("CKA_VALUE_LEN is {}, spec says {len}", u64::from(v)),
                     )));
                 }
-                // PKCS#11 requires it of the key; a module that stores an imported key without it
-                // (tpm2-pkcs11's C_CreateObject) leaves the type unverifiable, not different.
+                // PKCS#11 requires the attribute on the key. A module that stores an imported key
+                // without it (tpm2-pkcs11's `C_CreateObject`) makes the length impossible to
+                // verify, but it does not show a different length, so the result is `Unsupported`
+                // and not `Conflict`.
                 _ => {
                     return Err(KmError::Unsupported(
                         format!(
@@ -111,15 +119,15 @@ impl Token {
         self.check_policy(h, spec)
     }
 
-    /// The observed policy vector: every boolean attribute of `h`'s class (PKCS#11 3.2 §4,
-    /// `cakeys_core::attrs::observed`) the token reports, declared in the spec or not, plus
-    /// `CKA_ALLOWED_MECHANISMS` on key objects when readable. Those the object lacks or the module
-    /// refuses are left out (`if_readable`).
+    /// Returns the observed policy vector: every boolean attribute of the class of `h` (PKCS#11
+    /// 3.2 §4, `cakeys_core::attrs::observed`) that the token reports, whether or not the spec
+    /// declares it, and `CKA_ALLOWED_MECHANISMS` on key objects when it can be read. Attributes
+    /// that the object lacks, or that the module refuses to read, are left out (`if_readable`).
     ///
     /// # Errors
     ///
-    /// `Conflict` when the object exposes no `CKA_CLASS`; `Unsupported` for a class cakeys
-    /// does not manage; `Unavailable` when the device, token or session fails a read.
+    /// `Conflict` when the object has no `CKA_CLASS`. `Unsupported` for a class that cakeys does
+    /// not manage. `Unavailable` when the device, the token or the session fails a read.
     pub fn policy(&self, h: ObjectHandle) -> Result<BTreeMap<String, AttrValue>> {
         let class = match self.attr(h, AttributeType::Class)? {
             Some(Attribute::Class(c)) => {
@@ -130,13 +138,15 @@ impl Token {
         let mut policy = BTreeMap::new();
         for name in attrs::observed(class) {
             let Some(t) = bool_attr(name, false).map(|a| a.attribute_type()) else { continue };
-            // Unsupported or refused on this token: not part of what it can show.
+            // An attribute that this token does not support, or refuses to read, is not part of
+            // the vector.
             if let Some(b) = self.flag_if_readable(h, t)? {
                 policy.insert(name.to_owned(), AttrValue::Bool(b));
             }
         }
         if attrs::has_allowed_mechanisms(class) {
-            // An empty list is not reported: it is indistinguishable from absent and means none.
+            // An empty list is not reported, because it cannot be told apart from an absent list,
+            // and both mean that the key is not restricted.
             if let Some(m) = self.allowed_if_readable(h)? {
                 policy.insert(
                     "CKA_ALLOWED_MECHANISMS".to_owned(),
@@ -147,14 +157,15 @@ impl Token {
         Ok(policy)
     }
 
-    /// `h`'s `CKA_ALLOWED_MECHANISMS`, `None` where the object has none or an empty one: modules
-    /// report an unrestricted key both ways (`SoftHSM` empty), and neither restricts it.
+    /// Returns the `CKA_ALLOWED_MECHANISMS` of `h`, or `None` when the object has no list or an
+    /// empty list. Modules report an unrestricted key in both ways (`SoftHSM` reports an empty
+    /// list), and neither form restricts the key.
     ///
     /// # Errors
     ///
-    /// `Unsupported` where the list names a mechanism this build's cryptoki cannot read back
-    /// (one without the `cryptoki-allowed-mechanisms-unnamed` patch, docs/OPEN.md), else the
-    /// module's error.
+    /// `Unsupported` when the list names a mechanism that this build's cryptoki cannot read back
+    /// (a build without the `cryptoki-allowed-mechanisms-unnamed` patch, docs/OPEN.md).
+    /// Otherwise, the module's error.
     pub(crate) fn allowed_mechanisms(&self, h: ObjectHandle) -> Result<Option<Vec<MechanismType>>> {
         match self.read_allowed(h) {
             Ok(m) => Ok(m),
@@ -170,8 +181,9 @@ impl Token {
         }
     }
 
-    /// [`Self::allowed_mechanisms`] where it can be read ([`if_readable`]): `None` too where this
-    /// build's cryptoki cannot name a mechanism in it.
+    /// Works as [`Self::allowed_mechanisms`], but returns `None` when the attribute cannot be read
+    /// ([`if_readable`]). It also returns `None` when this build's cryptoki cannot name a
+    /// mechanism in the list.
     pub(crate) fn allowed_if_readable(&self, h: ObjectHandle) -> Result<Option<Vec<MechanismType>>> {
         if_readable(self.read_allowed(h))
     }
@@ -183,12 +195,13 @@ impl Token {
         }))
     }
 
-    /// `CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`, `CKA_ALWAYS_SENSITIVE` and `CKA_KEY_GEN_MECHANISM` of a
-    /// key (empty for other classes). Those the object lacks or the module refuses are left out.
+    /// Returns `CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`, `CKA_ALWAYS_SENSITIVE` and
+    /// `CKA_KEY_GEN_MECHANISM` of a key (all empty for other classes). Attributes that the object
+    /// lacks, or that the module refuses to read, are left out.
     ///
     /// # Errors
     ///
-    /// `Unavailable` when the device, token or session fails a read (`if_readable`).
+    /// `Unavailable` when the device, the token or the session fails a read (`if_readable`).
     pub fn immutables(&self, h: ObjectHandle) -> Result<Immutables> {
         let flag = |t| Ok::<_, KmError>(self.attr_if_readable(h, t)?.as_ref().and_then(attr_bool));
         Ok(Immutables {
@@ -196,13 +209,14 @@ impl Token {
             never_extractable: flag(AttributeType::NeverExtractable)?,
             always_sensitive: flag(AttributeType::AlwaysSensitive)?,
             key_gen_mechanism: match self.attr_if_readable(h, AttributeType::KeyGenMechanism)? {
-                // CK_UNAVAILABLE_INFORMATION: no generation mechanism (imported).
+                // `CK_UNAVAILABLE_INFORMATION` means that there is no generation mechanism,
+                // because the key was imported.
                 Some(Attribute::KeyGenMechanism(m)) if *m != CK_UNAVAILABLE_INFORMATION => Some(m.to_string()),
                 _ => None,
             },
         })
     }
-    /// Every declared policy attribute of the spec must match the live object.
+    /// Checks that every declared policy attribute of the spec matches the live object.
     fn check_policy(&self, h: ObjectHandle, spec: &SpecCfg) -> Result<()> {
         self.check_attrs(h, &spec.attributes, "")
     }
@@ -224,7 +238,7 @@ impl Token {
         Ok(())
     }
 
-    /// A policy attribute as the spec writes it.
+    /// Reads a policy attribute of `h` in the form in which the spec writes it.
     fn attr_value(&self, h: ObjectHandle, name: &str) -> Result<Option<AttrValue>> {
         if name == "CKA_ALLOWED_MECHANISMS" {
             return Ok(self
@@ -235,21 +249,24 @@ impl Token {
         Ok(self.flag(h, t)?.map(AttrValue::Bool))
     }
 
-    /// A boolean policy attribute as the module reports it, repaired by the provider where the
-    /// module misreports it (`Provider::policy_flag`).
+    /// Reads a boolean policy attribute as the module reports it, corrected by the provider when
+    /// the module reports it wrongly (`Provider::policy_flag`).
     fn flag(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<bool>> {
         self.repaired(h, t, self.attr(h, t)?.as_ref())
     }
 
-    /// [`Self::flag`] where it can be read ([`if_readable`]).
+    /// Works as [`Self::flag`], but returns `None` when the module refuses to read the attribute
+    /// ([`if_readable`]).
     fn flag_if_readable(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<bool>> {
         self.repaired(h, t, self.attr_if_readable(h, t)?.as_ref())
     }
 
-    /// `read` as the provider repairs it: only where it declares a repair of `t` for the
-    /// private key type `h` has (`Provider::repairs`), so no repair widens a permission it does
-    /// not declare (review 2026-11-24 B-3). The key's type is read only for an attribute some
-    /// repair names, and a failed device, token or session is the read's error, not "no type".
+    /// Returns `read` as the provider corrects it. The provider corrects the value only when it
+    /// declares a repair of `t` for the key type of the private key `h` (`Provider::repairs`), so
+    /// that no repair widens a permission that the provider does not declare (review 2026-11-24
+    /// B-3). The key's type is read only for an attribute that some repair names. A failure of
+    /// the device, the token or the session during that read is returned as an error, and it is
+    /// not treated as a missing key type.
     fn repaired(&self, h: ObjectHandle, t: AttributeType, read: Option<&Attribute>) -> Result<Option<bool>> {
         let Some(reported) = read.and_then(attr_bool) else { return Ok(None) };
         let repairs = self.provider.repairs();
@@ -266,15 +283,15 @@ impl Token {
         }))
     }
 
-    /// `publicAttributes`, checked on the public key object of the pair: `h` itself when adopting
-    /// publicOnly, else the single public key object under the locator, which must hold the
-    /// same public key as `h`.
+    /// Checks `publicAttributes` on the public key object of the pair. That object is `h` itself
+    /// for an object adopted with `publicOnly`. Otherwise, it is the single public key object
+    /// under the locator, which must hold the same public key as `h`.
     ///
     /// # Errors
     ///
-    /// `NotFound` when the pair's public half is absent under the locator, `Ambiguous` when
-    /// several share it, `Conflict` when it holds another key, and whatever `check_attrs`
-    /// rejects on the public object itself.
+    /// `NotFound` when the pair's public half is not under the locator. `Ambiguous` when several
+    /// public key objects share the locator. `Conflict` when the public key object holds another
+    /// key or cannot be read. Every rejection of `check_attrs` on the public key object itself.
     pub fn check_public_half(&self, h: ObjectHandle, spec: &SpecCfg, loc: &Locator, public_only: bool) -> Result<()> {
         if spec.public_attributes.is_empty() {
             return Ok(());
@@ -302,15 +319,17 @@ impl Token {
         self.check_attrs(p, &spec.public_attributes, "public key object: ")
     }
 
-    /// Template attributes for declared policy values (a spec's `attributes`), as creation and
-    /// import put them on the object. Mechanism names must be ones the token offers.
+    /// Returns the template attributes for declared policy values (a spec's `attributes`), as a
+    /// creation or an import puts them on the object. Each mechanism name must be a mechanism
+    /// that the token offers.
     ///
     /// # Errors
     ///
-    /// `Validation` for an attribute cakeys cannot set; `Unsupported` for a mechanism the token
-    /// does not offer.
+    /// `Validation` for an attribute that cakeys cannot set. `Unsupported` for a mechanism that the
+    /// token does not offer.
     pub fn policy_template(&self, attrs: &BTreeMap<String, AttrValue>) -> Result<Vec<Attribute>> {
-        // Named once per template, not once per declared name (policy.rs F3).
+        // The token's mechanisms are named once per template, and not once per declared name
+        // (policy.rs F3).
         let named = || {
             let name = mechanism_namer();
             self.mechanisms.iter().map(|m| (name(*m), *m)).collect::<BTreeMap<String, MechanismType>>()
@@ -324,14 +343,16 @@ impl Token {
     }
 }
 
-/// [`Token::check_public_half`]'s "same key": the public key object's public key (`held`) must be
-/// readable, and the private key's own material (`own`), where it has any, must be it. A private
-/// key without its point (`SoftHSM`'s EC keys) takes its SPKI from that very public key object
-/// ([`Token::spki`], which cross-checks it), so there it is the same by construction.
+/// The "same key" check of [`Token::check_public_half`]. The public key of the public key object
+/// (`held`) must be readable, and the private key's own material (`own`), when the private key
+/// has any, must equal it. A private key without its point (`SoftHSM`'s EC keys) takes its SPKI
+/// from that same public key object ([`Token::spki`], which cross-checks it), so in that case the
+/// two are the same by construction.
 ///
 /// # Errors
 ///
-/// `Conflict` for an unreadable public key object (never a match: policy.rs F2) or another key.
+/// `Conflict` for a public key object that cannot be read (it never counts as a match: policy.rs
+/// F2), or for a public key object that holds another key.
 fn same_public_key(held: Option<&[u8]>, own: Option<&[u8]>) -> Result<()> {
     match (held, own) {
         (None, _) => Err(KmError::Conflict(Reason::check(
@@ -347,11 +368,13 @@ fn same_public_key(held: Option<&[u8]>, own: Option<&[u8]>) -> Result<()> {
     }
 }
 
-/// What names mechanisms by their `CKM_` name: cryptoki's where it has one, else the spec
-/// baseline's for its value (cryptoki names about 350 of the 3.2 mechanisms), else cryptoki's
-/// `unknown …` (a vendor's). The one spelling keys.toml, the lock and the token's lists are
-/// compared in. The baseline is indexed by value once, when the first mechanism cryptoki does
-/// not name needs it, never scanned per mechanism (policy.rs F3).
+/// Returns a function that names a mechanism by its `CKM_` name. It uses cryptoki's name when
+/// cryptoki has one. Otherwise, it uses the name that the specification baseline gives for the
+/// mechanism's value (cryptoki names about 350 of the mechanisms of PKCS#11 3.2). Otherwise, it
+/// uses cryptoki's `unknown …` text, which is the case for a vendor's mechanism. keys.toml, the
+/// lock and the token's lists are all compared in this one spelling. The baseline is indexed by
+/// value once, when the first mechanism that cryptoki does not name needs it, and it is never
+/// scanned for each mechanism (policy.rs F3).
 pub(crate) fn mechanism_namer() -> impl Fn(MechanismType) -> String {
     let by_value = std::cell::OnceCell::new();
     move |m| {
@@ -370,11 +393,13 @@ pub(crate) fn mechanism_namer() -> impl Fn(MechanismType) -> String {
     }
 }
 
-/// Every boolean attribute cakeys reads or sets, by its PKCS#11 name: which class carries which
-/// is `cakeys_core::attrs`; this is only the mapping to `cryptoki`.
+/// Every boolean attribute that cakeys reads or sets, by its PKCS#11 name. `cakeys_core::attrs`
+/// says which class carries which attribute, and this macro defines only the mapping to
+/// `cryptoki`.
 macro_rules! bool_attrs {
     ($($name:literal => $variant:ident),* $(,)?) => {
-        /// The boolean attribute `name` with value `v`; `None` for any other name.
+        /// Returns the boolean attribute `name` with the value `v`, or `None` for a name that is
+        /// not a boolean attribute.
         pub fn bool_attr(name: &str, v: bool) -> Option<Attribute> {
             match name {
                 $($name => Some(Attribute::$variant(v)),)*
@@ -382,7 +407,8 @@ macro_rules! bool_attrs {
             }
         }
 
-        /// The value of a boolean attribute; `None` for any other attribute.
+        /// Returns the value of a boolean attribute, or `None` for an attribute that is not
+        /// boolean.
         pub(super) fn attr_bool(a: &Attribute) -> Option<bool> {
             match a {
                 $(Attribute::$variant(b))|* => Some(*b),
@@ -421,14 +447,15 @@ fn unsupported_attr(name: &str) -> KmError {
     KmError::Validation(format!("unsupported policy attribute {name}").into())
 }
 
-/// `CK_UNAVAILABLE_INFORMATION`: the value a token reports for an attribute it cannot give.
+/// `CK_UNAVAILABLE_INFORMATION`: the value that a token reports for an attribute that it cannot
+/// give.
 const CK_UNAVAILABLE_INFORMATION: std::os::raw::c_ulong = !0;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Every boolean the core table names maps to a `cryptoki` attribute, and back.
+    /// Every boolean attribute that the core table names maps to a `cryptoki` attribute, and back.
     #[test]
     fn every_tabled_boolean_maps_to_cryptoki() {
         for &class in Class::ALL {
@@ -445,8 +472,8 @@ mod tests {
     }
 
     /// The public half of a pair is the same key only when its public key can be read and the
-    /// private key's own material, where it has any, is that key (policy.rs F2): an unreadable
-    /// public key object is no match, never a pass.
+    /// private key's own material, when it has any, equals that key (policy.rs F2). A public key
+    /// object that cannot be read is not a match, and it never passes.
     #[test]
     fn an_unreadable_public_half_is_no_match() {
         let (a, b) = (&b"spki a"[..], &b"spki b"[..]);
@@ -460,7 +487,8 @@ mod tests {
         assert!(matches!(&e, KmError::Conflict(m) if m.contains("holds another key")), "{e}");
     }
 
-    /// A mechanism is named by its `CKM_` constant, the one spelling of keys.toml and the lock.
+    /// A mechanism is named by its `CKM_` constant, which is the only spelling that keys.toml and
+    /// the lock use.
     #[test]
     fn mechanisms_are_named_by_their_constants() {
         cakeys_profile::Set::activate_embedded().unwrap();

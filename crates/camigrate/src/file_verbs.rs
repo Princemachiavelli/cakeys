@@ -119,9 +119,20 @@ impl Run<'_> {
             })?;
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let pairs = self.lock.objects.get(&object).map(|o| o.pairs.clone()).unwrap_or_default();
-        let objects = std::iter::once(object.as_str()).chain(pairs.iter().map(String::as_str));
-        specs_select(cfg, specs, objects, token, KEY_FILE)?;
         let spec_for = |o: &str| spec_for(cfg, specs, o);
+        // The certificate a PKCS#12 carries for its key goes where the lock pairs one with the key
+        // on this token.
+        let cert_target = pairs.iter().find_map(|o| import_target(cfg, o, token, spec_for(o), KEY_FILE).ok());
+        let certificate = keyfile::key_certificate(&certificates, &spki);
+        // A refusal before the first object still prints a row for the key, and for the
+        // certificate that goes with it (review 2026-11-24 L4b-1).
+        let rows_of: Vec<String> = std::iter::once(object.clone())
+            .chain(cert_target.as_ref().filter(|_| certificate.is_some()).map(|t| t.object_name.to_owned()))
+            .collect();
+        let objects = std::iter::once(object.as_str()).chain(pairs.iter().map(String::as_str));
+        if let Err(e) = specs_select(cfg, specs, objects, token, KEY_FILE) {
+            return unmoved(&rows_of, token, e.into());
+        }
         // Each refusal from here on is a row, as a bundle's entries are (review 2026-11-24 D-9:
         // a key file's returned before any row was printed).
         let mut tally = Tally::default();
@@ -132,18 +143,17 @@ impl Run<'_> {
                 return tally.finish(self, notes);
             }
         };
-        // The certificate a PKCS#12 carries for its key goes where the lock pairs one with the key
-        // on this token.
-        let cert_target = pairs.iter().find_map(|o| import_target(cfg, o, token, spec_for(o), KEY_FILE).ok());
-        let certificate = keyfile::key_certificate(&certificates, &spki);
         let method_name = method.name();
+        let access = if dry_run { Access::DryWrite } else { Access::Write };
+        let target = match opener.open(token, access, notes) {
+            Ok(target) => target,
+            Err(e) => return unmoved(&rows_of, token, e.into()),
+        };
         if dry_run {
-            let target = opener.open(token, Access::DryWrite, notes)?;
             let paired = certificate.as_deref().map(|c| (c, cert_target.as_ref()));
             self.plan_key_file(&target, &dst, (&spki, &method), paired, input, &mut tally, notes);
             return tally.finish(self, notes);
         }
-        let target = opener.open(token, Access::Write, notes)?;
         let origin = cakeys_core::config::Origin {
             from: "file".into(),
             method: method_name.clone(),
@@ -294,9 +304,15 @@ impl Run<'_> {
         }
         // Keys first: a public key object then finds the public half its key's import made.
         wanted.sort_by_key(|o| !cfg.objects[*o].class.is_key() || cfg.objects[*o].class == Class::PublicKey);
-        specs_select(cfg, specs, wanted.iter().copied(), token, FROM_FILE)?;
+        // A refusal before the first object still prints a row for each object (review
+        // 2026-11-24 L4b-1).
         let access = if how.dry_run { Access::DryWrite } else { Access::Write };
-        let target = self.opener.open(token, access, notes)?;
+        let target = specs_select(cfg, specs, wanted.iter().copied(), token, FROM_FILE)
+            .and_then(|()| self.opener.open(token, access, notes));
+        let target = match target {
+            Ok(target) => target,
+            Err(e) => return unmoved(&wanted, token, e.into()),
+        };
         let mut tally = Tally::default();
         for object in wanted {
             let dst = match import_target(cfg, object, token, spec_for(cfg, specs, object), FROM_FILE) {

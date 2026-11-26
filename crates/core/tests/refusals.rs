@@ -343,6 +343,44 @@ fn locks_that_contradict_themselves_are_invalid() {
     assert_eq!(e.exit_code(), 1, "{e}");
 }
 
+/// A realisation of a private key records its `binding`, and a realisation of any other class
+/// has none (docs/DESIGN.md §4.2). The test edits a valid lock of each class: the binding added to a
+/// realisation of an AES key, a public key, a certificate or a data object is refused when the
+/// lock loads (17), and so is a private key's realisation without its binding. Every verb loads
+/// the lock this way, and `save_lock` runs the same check before it writes.
+#[test]
+fn a_binding_is_recorded_for_private_keys_and_no_other_class() {
+    let sri = cakeys_core::id::sri(b"x");
+    let lock = |ty: &str, scheme: &str, binding: &str| {
+        let label = if scheme == "cmac" { "commitmentLabel = \"key-management/v1\"\n" } else { "" };
+        format!(
+            "version = 1\n[objects.k]\n{label}type = {ty}\nids = {{ {scheme} = \"{sri}\" }}\n\
+             [realisations.s.t]\nobject = \"k\"\nlocator = {{ CKA_LABEL = \"k\" }}\nspecDigest = \"{sri}\"\n\
+             mode = \"direct\"\nschemes = [\"{scheme}\"]\npolicy = {{}}\n{binding}"
+        )
+    };
+    let classes = [
+        ("{ class = \"CKO_PRIVATE_KEY\", keyType = \"CKK_EC\", curve = \"secp256r1\" }", "rfc7093m4"),
+        ("{ class = \"CKO_SECRET_KEY\", keyType = \"CKK_AES\", valueLen = 32 }", "cmac"),
+        ("{ class = \"CKO_PUBLIC_KEY\", keyType = \"CKK_EC\", curve = \"secp256r1\" }", "rfc7093m4"),
+        ("{ class = \"CKO_CERTIFICATE\", certificateType = \"CKC_X_509\" }", "certhash"),
+        ("{ class = \"CKO_DATA\" }", "valuehash"),
+    ];
+    for (ty, scheme) in classes {
+        let private = ty.contains("CKO_PRIVATE_KEY");
+        for (bound, binding) in [(false, ""), (true, "binding = \"pop-sign\"\n")] {
+            let text = lock(ty, scheme, binding);
+            let loaded = parse_lock(&text, Path::new("keys.lock"));
+            if private == bound {
+                loaded.unwrap_or_else(|e| panic!("{e}:\n{text}"));
+            } else {
+                let e = loaded.expect_err(&text);
+                assert_eq!(e.exit_code(), 17, "{e}:\n{text}");
+            }
+        }
+    }
+}
+
 /// A key on every curve that cakeys names parses from its own PKCS#8 into its private scalar and
 /// its public key. A key of a different type than the requested type, or of a type that cakeys
 /// does not read, is refused.

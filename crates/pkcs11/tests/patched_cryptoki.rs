@@ -1,6 +1,7 @@
-//! Each tool's `patched-cryptoki` feature names every part the patched binding makes possible
-//! (review D3). The tests that link the patched binding see the workspace's unified features, so
-//! one manifest missing a part would pass them and leave that tool, built alone, without it.
+//! Each tool's `patched-cryptoki` feature must name every part that the patched binding makes
+//! possible (review D3). The tests that link the patched binding see the workspace's unified
+//! features. So if one manifest lacked a part, those tests would still pass, and that tool, when
+//! built alone, would lack the part.
 
 use std::path::Path;
 
