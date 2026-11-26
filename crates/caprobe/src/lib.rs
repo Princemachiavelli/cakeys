@@ -1,9 +1,9 @@
-//! The `caprobe` command line (README.md, "Three tools"): it measures PKCS#11 modules. It
-//! probes a token into a capability profile and compares it with a committed one, answers what
-//! the profiles say a module supports, and prints what a token offers. It is the only tool that
-//! creates and destroys scratch objects (`probe --write-probes`), and it never reads keys.lock. A
-//! library, so a downstream binary can link extra provider crates:
-//! `caprobe::main(&caprobe::default_registry().with(MyProvider))`.
+//! The `caprobe` command line (README.md, "Three tools") measures PKCS#11 modules. It probes a
+//! token into a capability profile and compares that profile with a committed one, answers what
+//! the profiles say that a module supports, and prints what a token offers. It is the only tool
+//! that creates and destroys scratch objects (`probe --write-probes`), and it never reads
+//! keys.lock. The command line is a library, so that a downstream binary can link extra provider
+//! crates: `caprobe::main(&caprobe::default_registry().with(MyProvider))`.
 
 #[cfg(test)]
 mod baseline;
@@ -28,22 +28,24 @@ use std::process::ExitCode;
 
 pub use cakeys_cli_common::default_registry;
 
-/// Entry points for the fuzz targets (`fuzz/fuzz_targets/profile.rs`): the profile emitter on
-/// whatever the profile parser reads.
+/// Entry points for the fuzz targets (`fuzz/fuzz_targets/profile.rs`), which run the profile
+/// emitter on whatever the profile parser reads.
 #[cfg(any(test, feature = "fuzzing", kani))]
 pub mod fuzzing {
-    /// `text` as a profile: one the parser reads is emitted, and the emitted text reads back as
-    /// the same profile and emits to the same text, the round trip a regenerated profile takes.
+    /// Checks the round trip of `text` as a profile. When the parser reads `text`, the function
+    /// emits the profile, and the emitted text must read back as the same profile and must emit
+    /// to the same text. This is the round trip that a regenerated profile takes.
     ///
-    /// Before that, every quoted string in `text` that reads as a row key is the key its
-    /// capability writes back. The round trip compares parsed profiles, so it cannot see a key
-    /// parse that takes two spellings to one row (review profile.rs F1: `generate.CKK_RSA.02048`
-    /// read as `…2048`); this does, on the input's own keys. A string that is no row key is
-    /// passed over, so the check holds whatever the TOML around it is.
+    /// Before the round trip, every quoted string in `text` that parses as a row key must be
+    /// written back by its capability as the same key. The round trip compares parsed profiles,
+    /// so it cannot detect a key parser that maps two spellings to one row (review profile.rs
+    /// F1: `generate.CKK_RSA.02048` was read as `…2048`). This check detects that on the input's
+    /// own keys. A string that is not a row key is skipped, so the check holds whatever the
+    /// surrounding TOML is.
     ///
     /// # Panics
     ///
-    /// When it does not: what the fuzz target looks for.
+    /// Panics when either check fails, which is what the fuzz target looks for.
     pub fn profile_round_trip(text: &str) {
         for key in text.split(['"', '\'']) {
             if let Ok(c) = cakeys_profile::Capability::parse(key) {
@@ -60,12 +62,14 @@ pub mod fuzzing {
 
     #[cfg(test)]
     mod tests {
-        /// Every committed profile passes, and so does each with its sizes respelt (`02048`,
-        /// `+2048`): the parser refuses those keys rather than reading them as another's row.
-        /// Were it to read one, the key check above fails here, not only under the fuzzer.
+        /// Every committed profile passes, and so does each profile with its sizes spelled
+        /// differently (`02048`, `+2048`). The parser refuses those keys instead of reading them
+        /// as the row of another key. If the parser read one, the key check above would fail
+        /// here, and not only under the fuzzer.
         #[test]
         fn the_committed_profiles_pass_with_their_sizes_respelt() {
-            // The quoted row keys ending in `.<digits>`, with `prefix` before the digits.
+            // Rewrites each quoted row key that ends in `.<digits>`, with `prefix` placed before
+            // the digits.
             let respell = |text: &str, prefix: &str| {
                 let mut parts: Vec<String> = text.split('"').map(str::to_owned).collect();
                 for part in parts.iter_mut().skip(1).step_by(2) {
@@ -97,7 +101,8 @@ pub mod fuzzing {
 }
 
 /// Measure PKCS#11 modules: capability profiles, and what a token offers (docs/CAPROBE.md).
-/// `supports` answers yes 0, no 15 and unknown 16; `probe --diff` exits 15 on drift.
+/// `supports` exits 0 for yes, 15 for no and 16 for unknown, and `probe --diff` exits 15 on
+/// drift.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -108,12 +113,13 @@ struct Cli {
     /// Override a token's PKCS#11 module: `<token>=<path>` (repeatable).
     #[arg(long = "module", value_name = "TOKEN=PATH")]
     modules: Vec<String>,
-    /// A directory of extra or replacement profile files, read recursively, over the built-in
-    /// ones and keys.toml's `profileDirs`. `probe` still probes the token unprofiled: the
-    /// directory is for its --diff.
+    /// A directory of extra or replacement profile files, read recursively, which are loaded
+    /// over the built-in profiles and the `profileDirs` of keys.toml. `probe` still probes the
+    /// token without a profile, and uses the directory only for its --diff.
     #[arg(long = "profiles", value_name = "DIR", global = true)]
     profiles_dir: Option<PathBuf>,
-    /// Print `supports`' verdicts as JSON (`caps` always is; `probe` prints a profile).
+    /// Print the verdicts of `supports` as JSON. `caps` always prints JSON, and `probe` prints a
+    /// profile.
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
@@ -128,24 +134,26 @@ enum Cmd {
         #[arg(long)]
         token: String,
     },
-    /// Ask the capability profiles what a module version supports (docs/CAPROBE.md):
-    /// pure data, no token touched. NAME is a mechanism (`CKM_*`), key type (`CKK_*`),
-    /// parameter set (`CKP_*`) or curve; `--bits` asks for an RSA size; `--class` lists a
-    /// baseline class; `--oaep` lists the wrap hashes. Exit 0 yes, 15 no, 16 unknown.
+    /// Ask the capability profiles what a module version supports (docs/CAPROBE.md). The
+    /// query reads only data and touches no token. NAME is a mechanism (`CKM_*`), a key type
+    /// (`CKK_*`), a parameter set (`CKP_*`) or a curve. `--bits` asks about an RSA size,
+    /// `--class` lists a baseline class, and `--oaep` lists the wrap hashes. The exit code is 0
+    /// for yes, 15 for no and 16 for unknown.
     Supports(SupportsArgs),
-    /// Generate the token's capability profile by probing it (docs/CAPROBE.md):
-    /// read-only probes always; with --write-probes, the probes that generate, wrap, unwrap and
-    /// delete — only on a token keys.toml marks scratch (`[tokens.<t>] probe = { scratch =
-    /// true }`, or `probe.scratchId` for the one slot of a token, such as a `YubiKey`, whose
-    /// real keys sit beside it), refused (17) on any other. With
-    /// --diff, the result is compared against a committed profile: any difference is
-    /// printed and the exit is 15.
+    /// Generate the token's capability profile by probing it (docs/CAPROBE.md). The read-only
+    /// probes always run. With --write-probes, the probes that generate, wrap, unwrap and
+    /// delete also run, but only on a token that keys.toml marks as scratch
+    /// (`[tokens.<t>] probe = { scratch = true }`, or `probe.scratchId` for the one slot of a
+    /// token, such as a `YubiKey`, that also holds real keys). On any other token, the write
+    /// probes are refused with exit code 17. With --diff, the result is compared with a
+    /// committed profile, each difference is printed, and the exit code is 15.
     Probe(ProbeArgs),
-    /// Regenerate a committed module profile: `probe` with the write probes, RSA up to 4096
-    /// bits, the profile's name, a diff against it when the profile set has it, and the file
-    /// written as `probe --out` writes it (beside a file it differs from, as `<file>.new`,
-    /// unless --accept). The one command every regeneration runs (profiles/LEDGER.toml,
-    /// `[regen]`): the flags are this verb's, not each script's. Exit 15 on drift.
+    /// Regenerate a committed module profile. This runs `probe` with the write probes, RSA up
+    /// to 4096 bits, and the profile's name, with a diff against the profile when the profile
+    /// set has it. It writes the file as `probe --out` writes it: beside a file that differs, as
+    /// `<file>.new`, unless --accept is given. Every regeneration runs this one command
+    /// (profiles/LEDGER.toml, `[regen]`), so the flags belong to this command and not to each
+    /// script. The exit code is 15 on drift.
     Regenerate(RegenerateArgs),
 }
 
@@ -155,15 +163,16 @@ struct SupportsArgs {
     /// What to ask about: `CKM_*`, `CKK_*`, `CKP_*` or a curve name.
     #[arg(required_unless_present_any = ["class", "oaep"], conflicts_with_all = ["class", "oaep"])]
     name: Option<String>,
-    /// The module profile, e.g. softhsm/2.7 (or its family, when only one is loaded).
+    /// The module profile, for example softhsm/2.7 (or its family, when only one profile of the
+    /// family is loaded).
     #[arg(long, conflicts_with = "token")]
     profile: Option<String>,
     /// The token in keys.toml whose `provider` names the profile family.
     #[arg(long)]
     token: Option<String>,
-    /// A delta layer on top, repeatable: p11-kit/0.26, swtpm, or one from --profiles. The
-    /// cryptoki binding layer is always applied, as this build decides it (`--layer
-    /// cryptoki/0.12` adds nothing).
+    /// A delta layer to put on top (repeatable): p11-kit/0.26, swtpm, or a layer from
+    /// --profiles. The cryptoki binding layer is always applied as this build decides it, so
+    /// `--layer cryptoki/0.12` adds nothing.
     #[arg(long = "layer")]
     layers: Vec<String>,
     /// List the members of a baseline class (pq, hmac, key-wrap, oaep) with verdicts.
@@ -183,51 +192,54 @@ struct ProbeArgs {
     /// The token in keys.toml to probe.
     #[arg(long)]
     token: String,
-    /// Also run the probes that create and delete objects, against a scratch token only:
-    /// `[tokens.<t>] probe = { scratch = true }`, or `probe.scratchId` naming one slot (a
-    /// `YubiKey`'s).
+    /// Also run the probes that create and delete objects. They run only on a scratch token:
+    /// `[tokens.<t>] probe = { scratch = true }`, or `probe.scratchId`, which names one slot (of
+    /// a `YubiKey`, for example).
     #[arg(long)]
     write_probes: bool,
-    /// Write the generated profile here; default: stdout. A file already there that differs is
-    /// replaced only with --accept: else the profile goes beside it, as `<file>.new`, to be
-    /// reviewed first (docs/DEVELOPMENT.md, "Golden files").
+    /// Write the generated profile to this file instead of stdout. An existing file that differs
+    /// is replaced only with --accept. Otherwise, the profile is written beside it as
+    /// `<file>.new`, to be reviewed first (docs/DEVELOPMENT.md, "Golden files").
     #[arg(long)]
     out: Option<PathBuf>,
     /// Replace the --out file with the regenerated profile, rather than writing `<file>.new`.
     #[arg(long, requires = "out")]
     accept: bool,
-    /// Name the generated profile, e.g. `tpm2-pkcs11/1.10+swtpm` for a module on one kind of
-    /// hardware; default: the claimed profile's name with --diff, else `<provider>/<version>`.
+    /// Name the generated profile, for example `tpm2-pkcs11/1.10+swtpm` for a module on one
+    /// kind of hardware. The default is the claimed profile's name with --diff, and otherwise
+    /// `<provider>/<version>`.
     #[arg(long)]
     name: Option<String>,
     /// Diff against this profile (name or family), from the embedded set or --profiles.
     #[arg(long)]
     diff: Option<String>,
-    /// The largest RSA key the write probes generate, in bits: every size up to 16384 by
-    /// default, whatever the module reports. A smaller one probes faster (the test suites pass
-    /// 4096: 16384 bits take a software token over a minute).
+    /// The largest RSA key that the write probes generate, in bits. By default, the probes try
+    /// every size up to 16384, whatever the module reports. A smaller limit probes faster: the
+    /// test suites pass 4096, because a software token takes over a minute for 16384 bits.
     #[arg(long, requires = "write_probes", default_value_t = probe::RSA_SIZES[probe::RSA_SIZES.len() - 1])]
     rsa_max_bits: u32,
 }
 
-/// The largest RSA key a regeneration generates, in bits (profiles/LEDGER.toml, `[regen]`, which
-/// `checks.ledger` holds to this): every path that regenerates a committed profile probes the
-/// same sizes because they are this verb's (review 2026-11-24 E-8). 16384 bits take a software
-/// token over a minute per size.
+/// The largest RSA key that a regeneration generates, in bits (profiles/LEDGER.toml, `[regen]`;
+/// `checks.ledger` checks that the ledger matches this value). Every path that regenerates a
+/// committed profile probes the same sizes, because the sizes belong to the `regenerate` command
+/// (review 2026-11-24 E-8). A software token takes over a minute for each 16384-bit key.
 pub const REGENERATE_RSA_MAX_BITS: u32 = 4096;
 
 /// What `regenerate` regenerates: one committed module profile, from one token, into one file.
 #[derive(clap::Args)]
 struct RegenerateArgs {
-    /// The profile, by its full name (`softhsm/2.7`, `tpm2-pkcs11/1.10+swtpm`): the name the
-    /// file gets, and the profile it is diffed against when the profile set has it.
+    /// The profile, by its full name (`softhsm/2.7`, `tpm2-pkcs11/1.10+swtpm`). The file gets
+    /// this name, and the result is compared with this profile when the profile set has it.
     profile: String,
-    /// The token in keys.toml to probe: a scratch token (`probe.scratch`, `probe.scratchId`).
+    /// The token in keys.toml to probe, which must be a scratch token (`probe.scratch` or
+    /// `probe.scratchId`).
     #[arg(long)]
     token: String,
-    /// The profile's file, written whether or not it drifts, its `[migration]` and `[manual]`
-    /// sections kept: as `<file>.new` beside a file it differs from, unless --accept
-    /// (`cakeys_profile::regenerate::write`, docs/DEVELOPMENT.md, "Golden files").
+    /// The profile's file. It is written whether or not the profile drifts, and its
+    /// `[migration]` and `[manual]` sections are kept. Beside a file that differs, it is written
+    /// as `<file>.new` unless --accept is given (`cakeys_profile::regenerate::write`;
+    /// docs/DEVELOPMENT.md, "Golden files").
     #[arg(long)]
     out: PathBuf,
     /// Replace the --out file with the regenerated profile, rather than writing `<file>.new`.
@@ -236,11 +248,13 @@ struct RegenerateArgs {
 }
 
 impl RegenerateArgs {
-    /// The `probe` this regeneration is: the flags every regeneration shares.
+    /// Returns the `probe` arguments that this regeneration runs, with the flags that every
+    /// regeneration shares.
     ///
     /// # Errors
     ///
-    /// 17 for a family or a name that is no profile's (`<family>/<version>`).
+    /// Returns `Validation` (17) for a family name, or for any name that is not a full profile
+    /// name (`<family>/<version>`).
     fn probe(&self, set: &cakeys_profile::Set) -> Result<ProbeArgs, KmError> {
         if !self.profile.contains('/') {
             return Err(KmError::Validation(
@@ -253,7 +267,8 @@ impl RegenerateArgs {
             write_probes: true,
             out: Some(self.out.clone()),
             name: Some(self.profile.clone()),
-            // A full name finds that profile only (`Set::find`): a first probe has none.
+            // A full name finds only that profile (`Set::find`), and the first probe of a
+            // profile has none to compare with.
             diff: set.find(&self.profile).is_ok().then(|| self.profile.clone()),
             rsa_max_bits: REGENERATE_RSA_MAX_BITS,
             accept: self.accept,
@@ -261,25 +276,26 @@ impl RegenerateArgs {
     }
 }
 
-/// The command line's definition: its verbs and flags, with the exit codes after its help, for
-/// parsing and for the test that every flag is used by an integration test
-/// (`tests/common/surface.rs`).
+/// Returns the definition of the command line: its verbs and flags, with the exit codes after
+/// its help. The definition is used for parsing and by the test that checks that an
+/// integration test uses every flag (`tests/common/surface.rs`).
 #[must_use]
 pub fn command() -> clap::Command {
     cakeys_cli_common::with_exit_codes(<Cli as clap::CommandFactory>::command())
 }
 
-/// Run the command line with the given providers; maps errors to the documented exit codes.
+/// Runs the command line with the given providers, and maps errors to the documented exit
+/// codes.
 #[must_use]
 pub fn main(registry: &Registry) -> ExitCode {
     main_from(registry, std::env::args_os())
 }
 
-/// [`main`] on `args`, the program name first, instead of the process's: caprobe run in-process
-/// by a binary or a test. It never exits the process: `--help` and `--version` print and return
-/// 0, a usage error prints and returns clap's 2. The profile set is built once per process
-/// (`activate`): a later call reuses it when it names the same profile directories, and is
-/// refused (17) when it names others.
+/// Runs [`main`] on `args` (with the program name first) instead of the process's arguments,
+/// so that a binary or a test can run caprobe in its own process. It never exits the process:
+/// `--help` and `--version` print and return 0, and a usage error prints and returns clap's 2.
+/// The profile set is built once per process (`activate`). A later call reuses the set when it
+/// names the same profile directories, and is refused with 17 when it names other ones.
 #[must_use]
 pub fn main_from<I, T>(registry: &Registry, args: I) -> ExitCode
 where
@@ -290,7 +306,8 @@ where
     let cli = match parsed.and_then(Cli::with_config) {
         Ok(cli) => cli,
         Err(e) => {
-            // Help and version on stdout, a usage error on stderr, as clap's own exit does.
+            // Help and version go to stdout, and a usage error goes to stderr, as clap's own
+            // exit does.
             let _ = e.print();
             return ExitCode::from(u8::try_from(e.exit_code()).unwrap_or(2));
         }
@@ -299,8 +316,9 @@ where
 }
 
 impl Cli {
-    /// `self`, when it has the keys.toml its verb needs: every verb but `supports --profile`
-    /// (pure data over the profiles, docs/CAPROBE.md) reads one.
+    /// Returns `self` when it has the keys.toml that its verb needs. Every verb except
+    /// `supports --profile` reads a keys.toml; `supports --profile` reads only the profiles
+    /// (docs/CAPROBE.md).
     fn with_config(self) -> Result<Cli, clap::Error> {
         if self.config.is_some() || matches!(&self.cmd, Cmd::Supports(a) if a.token.is_none()) {
             return Ok(self);
@@ -312,18 +330,18 @@ impl Cli {
     }
 }
 
-/// The profile directories this process's set was built from (keys.toml's `profileDirs`, then
-/// `--profiles`), once [`activate`] has built it.
+/// The profile directories from which this process's set was built (the `profileDirs` of
+/// keys.toml, and then `--profiles`), after [`activate`] has built the set.
 static ACTIVATED: std::sync::Mutex<Option<(Vec<PathBuf>, Option<PathBuf>)>> = std::sync::Mutex::new(None);
 
-/// Activate the profile set from `cfg`'s `profileDirs` and `replacing` (`--profiles`), once per
-/// process: `Set::activate` builds it once, so a second in-process run ([`main_from`]) reuses it
-/// when it names the same directories.
+/// Activates the profile set from the `profileDirs` of `cfg` and from `replacing`
+/// (`--profiles`), once per process. `Set::activate` builds the set only once, so a second run
+/// in the same process ([`main_from`]) reuses the set when it names the same directories.
 ///
 /// # Errors
 ///
-/// What [`cakeys_cli_common::activate_profiles`] refuses; `Validation` (17) for a run that
-/// names other directories than the set was built from.
+/// Returns what [`cakeys_cli_common::activate_profiles`] refuses, and `Validation` (17) for a
+/// run that names other directories than the ones the set was built from.
 fn activate(cfg: &Config, replacing: Option<&Path>, notes: &mut Notes) -> Result<(), KmError> {
     let wanted = (cfg.profile_dirs.clone(), replacing.map(Path::to_path_buf));
     let mut activated = ACTIVATED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -345,14 +363,16 @@ fn activate(cfg: &Config, replacing: Option<&Path>, notes: &mut Notes) -> Result
     }
 }
 
-/// Load keys.toml, and run the verb.
+/// Loads keys.toml and runs the verb.
 fn dispatch(registry: &Registry, cli: &Cli, notes: &mut Notes) -> anyhow::Result<()> {
     let cfg = match &cli.config {
         Some(path) => load_config(path)?,
-        // `supports --profile` ([`Cli::with_config`]): nothing in keys.toml to read.
+        // This is `supports --profile` ([`Cli::with_config`]), which reads nothing from
+        // keys.toml.
         None => Config::default(),
     };
-    // One profile set, as the verbs activate it, with `--profiles` loaded over it.
+    // There is one profile set, activated as the verbs activate it, with `--profiles` loaded
+    // over it.
     activate(&cfg, cli.profiles_dir.as_deref(), notes)?;
     let modules = module_overrides(&cli.modules, &cfg)?;
     match &cli.cmd {
@@ -377,16 +397,18 @@ fn dispatch(registry: &Registry, cli: &Cli, notes: &mut Notes) -> anyhow::Result
     }
 }
 
-/// The active profile set: the embedded profiles, keys.toml's `profileDirs` and any
-/// `--profiles` (D11), activated once in `dispatch` as every verb activates it (review D4).
+/// Returns the active profile set: the embedded profiles, the `profileDirs` of keys.toml, and
+/// any `--profiles` (D11). `dispatch` activates the set once, as every verb activates it (review
+/// D4).
 fn profile_set() -> anyhow::Result<&'static cakeys_profile::Set> {
     Ok(cakeys_profile::Set::active().map_err(|e| KmError::Validation(e.into()))?)
 }
 
-/// The `supports` verb: answers from the capability profiles alone (docs/CAPROBE.md), so it
-/// runs with an empty `cfg` when there is no keys.toml and no `--token` to look up.
+/// Runs the `supports` verb. It answers from the capability profiles alone (docs/CAPROBE.md),
+/// so it runs with an empty `cfg` when there is no keys.toml and no `--token` to look up.
 fn run_supports(cfg: &Config, a: &SupportsArgs, json: bool, notes: &mut Notes) -> anyhow::Result<()> {
-    // A size is an RSA key's: asked of anything else, it would be dropped without a word.
+    // A size applies only to an RSA key. A size given with any other name would be dropped
+    // without a message, so it is refused.
     if let (Some(bits), Some(name)) = (a.bits, a.name.as_deref())
         && name != "CKK_RSA"
     {
@@ -426,8 +448,8 @@ fn run_supports(cfg: &Config, a: &SupportsArgs, json: bool, notes: &mut Notes) -
     Ok(s.outcome()?)
 }
 
-/// `probe`: generate the token's capability profile, print or write it, and diff it against
-/// a committed one.
+/// Runs `probe`: generates the token's capability profile, prints or writes it, and compares it
+/// with a committed profile.
 fn run_probe(
     cfg: &Config,
     modules: &BTreeMap<String, String>,
@@ -440,7 +462,8 @@ fn run_probe(
     let claimed =
         a.diff.as_deref().map(|name| set.find(name).map_err(|e| KmError::Validation(e.into()))).transpose()?;
     let access = if a.write_probes { Access::Write } else { Access::Read };
-    // Unprofiled: what the probe measures must not be what the committed profile says.
+    // The token is opened without a profile, so that the committed profile cannot affect what
+    // the probe measures.
     let tok = open_token(cfg, modules, registry, &a.token, access, ChainTime::Unchecked, notes)?.unprofiled()?;
     let req = probe::Request {
         write: a.write_probes,
@@ -461,7 +484,7 @@ fn run_probe(
         notes.say(format!("{}: the profile conforms to {name}", tok.name));
         return Ok(());
     }
-    // stderr: stdout may be carrying the generated profile.
+    // The lines go to stderr, because stdout may carry the generated profile.
     for line in &lines {
         eprintln!("{line}");
     }
@@ -477,13 +500,14 @@ fn run_probe(
     .into())
 }
 
-/// Write a generated profile to `path`, keeping the one section the probe does not generate:
-/// the file's `[migration]` claims (docs/CAMIGRATE.md evidence, never probe-observable). Refused onto
-/// an existing file that does not parse (regenerating it would silently drop those claims),
-/// onto any existing file from a read-only probe (it would drop every write-probe row), and onto
-/// another profile's file (`probe::keep_claims`; `renamed`: `--name` was given). Written as every
-/// golden file is (`cakeys_profile::regenerate`): over a file that differs only when `accept`ed,
-/// else beside it as `<file>.new` (review 2026-11-24 C-8).
+/// Writes a generated profile to `path`, and keeps the two sections of the existing file that
+/// the probe does not generate: the `[migration]` claims (the docs/CAMIGRATE.md evidence, which
+/// no probe can observe) and the `[manual]` findings. The write is refused onto an existing file
+/// that does not parse (regenerating it would silently drop those sections), onto any existing
+/// file from a read-only probe (the result would drop every write-probe row), and onto another
+/// profile's file (`probe::keep_claims`; `renamed` is true when `--name` was given). The file is
+/// written as every golden file is (`cakeys_profile::regenerate`): over a file that differs only
+/// when `accept` is true, and otherwise beside it as `<file>.new` (review 2026-11-24 C-8).
 fn write_profile(
     path: &Path,
     profile: &mut cakeys_profile::Profile,
@@ -492,7 +516,8 @@ fn write_profile(
     accept: bool,
     notes: &mut Notes,
 ) -> anyhow::Result<()> {
-    // Only a file that is not there has nothing to keep: one that cannot be read may hold claims.
+    // Only a file that does not exist has nothing to keep. A file that cannot be read may hold
+    // claims, so a read error other than "not found" is an error.
     match std::fs::read_to_string(path) {
         Ok(text) => probe::keep_claims(profile, &text, &path.display().to_string(), write, renamed)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -513,9 +538,10 @@ mod tests {
         main_from(&default_registry(), std::iter::once("caprobe").chain(args.iter().copied()))
     }
 
-    /// `main_from` returns what clap would exit with, never exiting the process the test runs
-    /// in, and runs again in one process: the same profile directories reuse the set, others
-    /// are refused (17) (review lib F2). One test: the set is the process's.
+    /// `main_from` returns the code that clap would exit with, and never exits the process that
+    /// the test runs in. It also runs again in the same process: the same profile directories
+    /// reuse the set, and other directories are refused with 17 (review lib F2). This is one
+    /// test, because the set belongs to the process.
     #[test]
     fn main_from_returns_and_runs_again_in_one_process() {
         assert_eq!(run(&["--help"]), ExitCode::SUCCESS);
@@ -535,13 +561,13 @@ mod tests {
         assert_eq!(other, ExitCode::from(17), "other directories than the set was built from");
     }
 
-    /// `regenerate` is `probe` with the flags every regeneration shares: the write probes, RSA
-    /// to the ledger's size, the profile's name, and a diff only against that very profile (a
-    /// first probe has none to diff against); a family is refused, never resolved to one of
-    /// its versions.
+    /// `regenerate` is `probe` with the flags that every regeneration shares: the write probes,
+    /// RSA up to the ledger's size, the profile's name, and a diff only against that same
+    /// profile (the first probe of a profile has nothing to compare with). A family name is
+    /// refused and is never resolved to one of its versions.
     #[test]
     fn regenerating_is_the_one_probe_every_regeneration_runs() {
-        // The process's set, activated as `main_from` does.
+        // The test activates the process's set as `main_from` does.
         activate(&Config::default(), None, &mut Notes::default()).unwrap();
         let set = profile_set().unwrap();
         let regen = |profile: &str, accept| RegenerateArgs {
@@ -553,7 +579,8 @@ mod tests {
         for (profile, diff, accept) in [("softhsm/2.7", Some("softhsm/2.7"), false), ("softhsm/9.9", None, true)] {
             let p = regen(profile, accept).probe(set).unwrap();
             assert!(p.write_probes && p.token == "t" && p.out.as_deref() == Some(Path::new("p.toml")), "{profile}");
-            // Written through `regenerate::write`, as `probe --out` is: `.new` unless accepted.
+            // The file is written through `regenerate::write`, as `probe --out` writes it: as
+            // `.new` unless the change is accepted.
             assert_eq!(p.accept, accept, "{profile}");
             assert_eq!((p.name.as_deref(), p.diff.as_deref()), (Some(profile), diff));
             assert_eq!(p.rsa_max_bits, REGENERATE_RSA_MAX_BITS, "the ledger's [regen] size, checks.ledger holds it");
