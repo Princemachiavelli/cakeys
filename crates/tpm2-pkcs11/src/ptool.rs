@@ -4,10 +4,10 @@
 //!
 //! Every plan that uses this path states its costs. First, the key reaches the Python process of
 //! `tpm2_ptool`, which cakeys cannot zeroize. The key travels through an in-memory file
-//! (`memfd`), never through a file on disk. The tool opens the file by cakeys' own
-//! `/proc/<pid>/fd/N` path, which the tool's `tpm2_import` child can also open, because the
-//! child does not inherit the descriptor. Second, `tpm2_ptool` takes the user PIN only on its
-//! command line (`--userpin`), where other local users can read it while the tool runs.
+//! (`memfd`), never through a file on disk. The tool opens the file through cakeys' own
+//! `/proc/<pid>/fd/N` path. The tool's `tpm2_import` child does not inherit the descriptor, but
+//! it can open the same path. Second, `tpm2_ptool` takes the user PIN only on its command line
+//! (`--userpin`), where other local users can read it while the tool runs.
 
 use crate::attest::{Tpm2Options, store_dir_of};
 use cakeys_core::types::{KeyType, ObjectClass};
