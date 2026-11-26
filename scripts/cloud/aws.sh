@@ -323,10 +323,9 @@ probe() {
   name=${1:-$(profile_name "$p11")}
   out=$repo/profiles/modules/$name.toml
   opensc=$(nix build --no-link --print-out-paths --inputs-from "$repo" nixpkgs#opensc)
-  # Only the Nix-built caprobe may write a profile (docs/CAPROBE.md); its check phase is skipped
-  # as scripts/regen-profiles.sh does.
-  bin=${CAPROBE:-$(nix build --no-link --print-out-paths --impure --expr \
-    "((builtins.getFlake \"git+file://$repo\").packages.x86_64-linux.cakeys.overrideAttrs { doCheck = false; }).caprobe")/bin/caprobe}
+  # Only the Nix-built caprobe may write a profile (docs/CAPROBE.md): packages.cakeys, which has
+  # no check phase, as scripts/regen-profiles.sh builds it.
+  bin=${CAPROBE:-$(nix build --no-link --print-out-paths "$repo#packages.x86_64-linux.cakeys^caprobe")/bin/caprobe}
   wait_runner
   copy "$p11" "$opensc" "$(dirname "$(dirname "$(realpath "$bin")")")"
   label=$(runner "$opensc/bin/pkcs11-tool" --module "$p11/lib/libcloudhsm_pkcs11.so" -L |
@@ -347,17 +346,17 @@ EOF
   # one even before the binary embeds it.
   runner rm -rf /run/caprobe/profiles
   tar -C "$repo" -c profiles | runner tar -C /run/caprobe -x
-  local -a diff=()
-  [[ -f $out ]] && diff=(--diff "$name")
   # caprobe keeps the [migration] and [manual] sections of the file it overwrites: the
   # committed one, in place for it.
   runner rm -f /run/caprobe/profile.toml
   if [[ -f $out ]]; then
     runner install -D -m 644 /dev/stdin /run/caprobe/profile.toml <"$out"
   fi
-  # RSA up to 4096 bits, as every regeneration probes (profiles/LEDGER.toml, [regen]).
-  runner "$(realpath "$bin")" --config /run/caprobe/keys.toml probe --profiles /run/caprobe/profiles \
-    --token cloudhsm --write-probes --rsa-max-bits 4096 --name "$name" "${diff[@]}" --out /run/caprobe/profile.toml --accept || rc=$?
+  # The flags every regeneration shares are the verb's (profiles/LEDGER.toml, [regen]); it diffs
+  # against the committed profile when there is one. The module profiles alone: profiles/ also
+  # holds LEDGER.toml, which is no profile (17).
+  runner "$(realpath "$bin")" --config /run/caprobe/keys.toml regenerate "$name" --profiles /run/caprobe/profiles/modules \
+    --token cloudhsm --out /run/caprobe/profile.toml --accept || rc=$?
   runner rm -f /run/caprobe/pin
   # 15 is drift against the committed profile: written anyway, for review.
   [[ $rc == 0 || $rc == 15 ]] || exit "$rc"

@@ -17,9 +17,11 @@ since, and the file as it is now. This fails when:
   that is the run's again;
 - a module profile under profiles/modules/ has no entry, or a path or glob names no file, or a
   table has a key this script does not read;
-- a regeneration probes other RSA sizes than the rest (review 2026-11-24 E-8): each file in
-  `[regen] sources` must pass `--rsa-max-bits` with `[regen] rsa-max-bits` and no other value,
-  and an artifact's `regen` may name no other value and no file that is not there.
+- a regeneration is not the one verb (review 2026-11-24 E-8): `caprobe regenerate` holds the
+  flags every regeneration shares, and the RSA size it states (`[regen] verb`) must be
+  `[regen] rsa-max-bits`; each file in `[regen] sources` must call it and pass none of its
+  flags (`--write-probes`, `--rsa-max-bits`) itself, and an artifact's `regen` may name neither
+  and no file that is not there.
 
 It also holds the golden files, which a build regenerates and compares with (`GOLDEN`, and
 every `verified-by` profile; review 2026-11-24 C-8: the code under test writes them, so a
@@ -60,8 +62,14 @@ import sys
 import tomllib
 
 LEDGER = "profiles/LEDGER.toml"
-# The size flag with its value, as a shell line or a Rust argument list writes it.
-RSA_FLAG = re.compile(r"--rsa-max-bits[\"',\s]*(\d+)")
+# The RSA size `caprobe regenerate` states, in the file `[regen] verb` names.
+VERB_BITS = re.compile(r"\bREGENERATE_RSA_MAX_BITS: u32 = (\d+);")
+# A call of the verb, as a shell line (`regenerate "$name"`) or a Rust argument list writes it.
+REGEN_CALL = re.compile(r'"regenerate"|\bregenerate\s+"\$')
+# The flags the verb holds: a regeneration that passes one runs its own probe.
+OWN_FLAGS = re.compile(r"--(?:rsa-max-bits|write-probes)\b")
+# A line of a shell script or a Rust source that is a comment.
+COMMENT = re.compile(r"^\s*(?:#|//)")
 # A repository path in a `regen` command.
 REPO_PATH = re.compile(r"\b(?:crates|examples|nix|profiles|scripts)/[\w.+/-]*\w")
 # A lock entry in `code`: a lock file and the name of the entry in it.
@@ -88,7 +96,7 @@ UNWRITTEN = re.compile(r"\s*(TODO\b.*)?", re.I | re.S)
 # The keys each table may have: a near miss (`acknowledgement`) fails rather than being ignored.
 KEYS = {
     "ledger": {"regen", "groups", "artifact", "golden"},
-    "regen": {"rsa-max-bits", "sources"},
+    "regen": {"rsa-max-bits", "verb", "sources"},
     "artifact": {"path", "from", "regen", "verified-by", "code", "hash", "probed", "hand-edits", "acknowledged"},
     "probed": {"by", "date", "hash", "code-hash"},
     "hand-edits": {"by", "what"},
@@ -190,20 +198,27 @@ def code_hash(root, files, entries):
 
 
 def check_regen(root, regen, misses):
-    """Every regeneration path probes RSA up to the one size."""
+    """Every regeneration path is the one verb, which probes RSA up to the one size."""
     unknown(regen, "regen", f"{LEDGER}: [regen]", misses)
     bits = str(regen.get("rsa-max-bits"))
+    verb = regen.get("verb", "")
+    where = f"{LEDGER}: [regen] verb {verb}"
+    if not verb or not (root / verb).is_file():
+        misses.append(f"{where}: no such file")
+    else:
+        held = sorted(set(VERB_BITS.findall((root / verb).read_text())))
+        if held != [bits]:
+            misses.append(f"{where}: `caprobe regenerate` probes RSA up to {', '.join(held) or 'no size it states'}, not {bits}")
     for src in regen.get("sources", []):
         where = f"{LEDGER}: [regen] {src}"
         if not (root / src).is_file():
             misses.append(f"{where}: no such file")
             continue
-        found = set(RSA_FLAG.findall((root / src).read_text()))
-        if not found:
-            misses.append(f"{where}: passes no --rsa-max-bits, so it probes to caprobe's default, not {bits}")
-        for other in sorted(found - {bits}):
-            misses.append(f"{where}: probes RSA up to {other}, not {bits}")
-    return bits
+        code = "\n".join(line for line in (root / src).read_text().splitlines() if not COMMENT.match(line))
+        if not REGEN_CALL.search(code):
+            misses.append(f"{where}: calls no `caprobe regenerate`, so the flags it probes with are its own")
+        for flag in sorted(set(OWN_FLAGS.findall(code))):
+            misses.append(f"{where}: passes {flag} itself, which `caprobe regenerate` holds")
 
 
 def unknown(table, kind, where, misses):
@@ -335,7 +350,7 @@ def check(root):
     unknown(ledger, "ledger", LEDGER, misses)
     if "regen" not in ledger:
         misses.append(f"{LEDGER}: no [regen]")
-    bits = check_regen(root, ledger.get("regen", {}), misses)
+    check_regen(root, ledger.get("regen", {}), misses)
     groups = ledger.get("groups", {})
     for name in groups:
         if name.startswith("@") or not isinstance(groups[name], list):
@@ -351,8 +366,8 @@ def check(root):
         for k in ("path", "from", "regen"):
             if not a.get(k):
                 misses.append(f"{where}: no `{k}`")
-        for other in sorted(set(RSA_FLAG.findall(a.get("regen", ""))) - {bits}):
-            misses.append(f"{where}: its regen probes RSA up to {other}, not {bits}")
+        for flag in sorted(set(OWN_FLAGS.findall(a.get("regen", "")))):
+            misses.append(f"{where}: its regen passes {flag}, which `caprobe regenerate` holds: name the verb")
         for named in REPO_PATH.findall(a.get("regen", "")):
             if not (root / named).exists():
                 misses.append(f"{where}: its regen names {named}, which does not exist")

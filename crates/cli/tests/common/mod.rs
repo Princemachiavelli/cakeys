@@ -565,8 +565,8 @@ pub fn committed_profile(path: &str) -> std::path::PathBuf {
 /// first left behind on modules that cannot destroy everything they make (tpm2-pkcs11's sealed
 /// derived secrets: profiles/modules/tpm2-pkcs11/1.10+amd-ftpm.toml, `derive.destroy`).
 ///
-/// RSA up to 4096 bits, as every regeneration (profiles/LEDGER.toml, `[regen]`): the probe's
-/// default runs to 16384, which takes a software token over a minute per size.
+/// `caprobe regenerate`, the command every regeneration runs (profiles/LEDGER.toml, `[regen]`):
+/// the flags are the verb's, so the test regenerates as the scripts do.
 pub fn assert_profile_conforms(
     km: impl Fn(&[&str]) -> Output,
     token: &str,
@@ -579,8 +579,7 @@ pub fn assert_profile_conforms(
     let out = scratch.to_str().unwrap();
     // Accepted: the scratch copy is replaced, so the bytes below compare what the probe made
     // (without it a drifted profile would wait beside the copy, which would then compare equal).
-    let args = ["probe", "--token", token, "--write-probes", "--rsa-max-bits", "4096", "--diff", name];
-    let probe = km(&[&args[..], &["--out", out, "--accept"]].concat());
+    let probe = km(&["regenerate", name, "--token", token, "--out", out, "--accept"]);
     assert_eq!(code(&probe), 0, "a fresh probe drifts from {name}: {}", String::from_utf8_lossy(&probe.stderr));
     assert!(
         std::fs::read(scratch).unwrap() == committed,

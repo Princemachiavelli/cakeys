@@ -59,6 +59,8 @@ class GoldenRows(unittest.TestCase):
         self.env.pop("GITHUB_STEP_SUMMARY", None)
         self.git("init", "-q")
         self.write("gen/a.rs", "fn a() {}\n")
+        # The regeneration verb's size, which checks.ledger holds to [regen] (review 2026-11-24 E-8).
+        self.write("verb.rs", "pub const REGENERATE_RSA_MAX_BITS: u32 = 4096;\n")
         self.write(GOLDEN, BEFORE)
         self.write("profiles/LEDGER.toml", self.ledger())
         self.git("add", "-A")
@@ -92,7 +94,7 @@ class GoldenRows(unittest.TestCase):
             f'[[golden."{GOLDEN}".regenerated]]\nby = "seed"\nhash = "{sha(BEFORE)}"\ncode-hash = "sha256:first"\n'
             'why = "the first record"\nrows = {}\n\n'
         )
-        return '[regen]\nrsa-max-bits = 4096\nsources = []\n\n[golden."' + GOLDEN + '"]\ngenerator = ["gen/*.rs"]\n\n' + first + "".join(records)
+        return '[regen]\nrsa-max-bits = 4096\nverb = "verb.rs"\nsources = []\n\n[golden."' + GOLDEN + '"]\ngenerator = ["gen/*.rs"]\n\n' + first + "".join(records)
 
     @staticmethod
     def record(rows, text=AFTER, by="f00d123"):

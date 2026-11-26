@@ -141,6 +141,12 @@ enum Cmd {
     /// --diff, the result is compared against a committed profile: any difference is
     /// printed and the exit is 15.
     Probe(ProbeArgs),
+    /// Regenerate a committed module profile: `probe` with the write probes, RSA up to 4096
+    /// bits, the profile's name, a diff against it when the profile set has it, and the file
+    /// written as `probe --out` writes it (beside a file it differs from, as `<file>.new`,
+    /// unless --accept). The one command every regeneration runs (profiles/LEDGER.toml,
+    /// `[regen]`): the flags are this verb's, not each script's. Exit 15 on drift.
+    Regenerate(RegenerateArgs),
 }
 
 /// The `supports` query.
@@ -202,6 +208,57 @@ struct ProbeArgs {
     /// 4096: 16384 bits take a software token over a minute).
     #[arg(long, requires = "write_probes", default_value_t = probe::RSA_SIZES[probe::RSA_SIZES.len() - 1])]
     rsa_max_bits: u32,
+}
+
+/// The largest RSA key a regeneration generates, in bits (profiles/LEDGER.toml, `[regen]`, which
+/// `checks.ledger` holds to this): every path that regenerates a committed profile probes the
+/// same sizes because they are this verb's (review 2026-11-24 E-8). 16384 bits take a software
+/// token over a minute per size.
+pub const REGENERATE_RSA_MAX_BITS: u32 = 4096;
+
+/// What `regenerate` regenerates: one committed module profile, from one token, into one file.
+#[derive(clap::Args)]
+struct RegenerateArgs {
+    /// The profile, by its full name (`softhsm/2.7`, `tpm2-pkcs11/1.10+swtpm`): the name the
+    /// file gets, and the profile it is diffed against when the profile set has it.
+    profile: String,
+    /// The token in keys.toml to probe: a scratch token (`probe.scratch`, `probe.scratchId`).
+    #[arg(long)]
+    token: String,
+    /// The profile's file, written whether or not it drifts, its `[migration]` and `[manual]`
+    /// sections kept: as `<file>.new` beside a file it differs from, unless --accept
+    /// (`cakeys_profile::regenerate::write`, docs/DEVELOPMENT.md, "Golden files").
+    #[arg(long)]
+    out: PathBuf,
+    /// Replace the --out file with the regenerated profile, rather than writing `<file>.new`.
+    #[arg(long)]
+    accept: bool,
+}
+
+impl RegenerateArgs {
+    /// The `probe` this regeneration is: the flags every regeneration shares.
+    ///
+    /// # Errors
+    ///
+    /// 17 for a family or a name that is no profile's (`<family>/<version>`).
+    fn probe(&self, set: &cakeys_profile::Set) -> Result<ProbeArgs, KmError> {
+        if !self.profile.contains('/') {
+            return Err(KmError::Validation(
+                format!("regenerate names a profile in full, <family>/<version> (softhsm/2.7), not '{}'", self.profile)
+                    .into(),
+            ));
+        }
+        Ok(ProbeArgs {
+            token: self.token.clone(),
+            write_probes: true,
+            out: Some(self.out.clone()),
+            name: Some(self.profile.clone()),
+            // A full name finds that profile only (`Set::find`): a first probe has none.
+            diff: set.find(&self.profile).is_ok().then(|| self.profile.clone()),
+            rsa_max_bits: REGENERATE_RSA_MAX_BITS,
+            accept: self.accept,
+        })
+    }
 }
 
 /// The command line's definition: its verbs and flags, with the exit codes after its help, for
@@ -312,10 +369,11 @@ fn dispatch(registry: &Registry, cli: &Cli, notes: &mut Notes) -> anyhow::Result
             }))
         }
         Cmd::Supports(a) => run_supports(&cfg, a, cli.json, notes),
-        Cmd::Probe(_) if cli.json => {
+        Cmd::Probe(_) | Cmd::Regenerate(_) if cli.json => {
             Err(KmError::Validation("--json: `probe` prints a profile, which is TOML".into()).into())
         }
         Cmd::Probe(a) => run_probe(&cfg, &modules, registry, a, notes),
+        Cmd::Regenerate(a) => run_probe(&cfg, &modules, registry, &a.probe(profile_set()?)?, notes),
     }
 }
 
@@ -475,5 +533,31 @@ mod tests {
             run(&["supports", "--profiles", dir.to_str().unwrap(), "--profile", "softhsm/2.7", "CKM_AES_KEY_WRAP"]);
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(other, ExitCode::from(17), "other directories than the set was built from");
+    }
+
+    /// `regenerate` is `probe` with the flags every regeneration shares: the write probes, RSA
+    /// to the ledger's size, the profile's name, and a diff only against that very profile (a
+    /// first probe has none to diff against); a family is refused, never resolved to one of
+    /// its versions.
+    #[test]
+    fn regenerating_is_the_one_probe_every_regeneration_runs() {
+        // The process's set, activated as `main_from` does.
+        activate(&Config::default(), None, &mut Notes::default()).unwrap();
+        let set = profile_set().unwrap();
+        let regen = |profile: &str, accept| RegenerateArgs {
+            profile: profile.into(),
+            token: "t".into(),
+            out: "p.toml".into(),
+            accept,
+        };
+        for (profile, diff, accept) in [("softhsm/2.7", Some("softhsm/2.7"), false), ("softhsm/9.9", None, true)] {
+            let p = regen(profile, accept).probe(set).unwrap();
+            assert!(p.write_probes && p.token == "t" && p.out.as_deref() == Some(Path::new("p.toml")), "{profile}");
+            // Written through `regenerate::write`, as `probe --out` is: `.new` unless accepted.
+            assert_eq!(p.accept, accept, "{profile}");
+            assert_eq!((p.name.as_deref(), p.diff.as_deref()), (Some(profile), diff));
+            assert_eq!(p.rsa_max_bits, REGENERATE_RSA_MAX_BITS, "the ledger's [regen] size, checks.ledger holds it");
+        }
+        assert_eq!(regen("softhsm", false).probe(set).err().map(|e| e.exit_code()), Some(17));
     }
 }

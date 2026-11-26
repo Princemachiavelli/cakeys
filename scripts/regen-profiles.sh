@@ -73,9 +73,10 @@ for t in softhsm:softhsm/2.7:softhsm/2.7.toml kryoptic:kryoptic/1.5:kryoptic/1.5
   echo "== $name"
   # 15 is drift, the rows named: the file is written anyway, the diff is for review.
   rc=0
-  # The module profiles alone: profiles/ also holds LEDGER.toml, which is no profile.
-  "$bin" --config "$dir/keys.toml" probe --profiles "$repo/profiles/modules" --token "$token" --write-probes --rsa-max-bits 4096 \
-    --diff "$name" --out "$repo/profiles/modules/$file" ${CAKEYS_ACCEPT:+--accept} || rc=$?
+  # The module profiles alone: profiles/ also holds LEDGER.toml, which is no profile. The flags
+  # every regeneration shares are the verb's (profiles/LEDGER.toml, [regen]).
+  "$bin" --config "$dir/keys.toml" regenerate "$name" --profiles "$repo/profiles/modules" --token "$token" \
+    --out "$repo/profiles/modules/$file" ${CAKEYS_ACCEPT:+--accept} || rc=$?
   [ "$rc" = 0 ] || [ "$rc" = 15 ] || status=$rc
 done
 exit "$status"
