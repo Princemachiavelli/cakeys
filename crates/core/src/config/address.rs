@@ -1,4 +1,4 @@
-//! A verb's address (`[<object>] [--spec] [--token]`, docs/CAKEYS.md) resolved against
+//! The resolution of a verb's address (`[<object>] [--spec] [--token]`, docs/CAKEYS.md) against
 //! keys.toml (review 2026-11-23 A-7).
 
 use super::Config;
@@ -6,13 +6,14 @@ use crate::Check;
 use crate::error::{KmError, Reason, Result};
 
 impl Config {
-    /// The (spec, token) pairs a verb's address selects (`[<object>] [--spec] [--token]`,
-    /// docs/CAKEYS.md): each part left out selects every one; an empty result is no error.
+    /// Returns the (spec, token) pairs that a verb's address selects (`[<object>] [--spec]
+    /// [--token]`, docs/CAKEYS.md). A part that is left out selects every value of that part. An
+    /// empty result is not an error.
     ///
     /// # Errors
     ///
-    /// `Validation` (17) when a part names nothing keys.toml has, or `--spec` realises
-    /// another object than the one named.
+    /// Returns `Validation` (17) when a part names something that keys.toml does not have, or
+    /// when `--spec` realises a different object than the named object.
     pub fn select(&self, object: Option<&str>, spec: Option<&str>, token: Option<&str>) -> Result<Vec<(&str, &str)>> {
         if let Some(o) = object
             && !self.objects.contains_key(o)
@@ -41,14 +42,15 @@ impl Config {
             .collect())
     }
 
-    /// The one (spec, token) pair a verb's address names: an object or `--spec`, narrowed by
-    /// the others when the object is realised more than once.
+    /// Returns the one (spec, token) pair that a verb's address names. The address names an
+    /// object or a `--spec`, and the other parts narrow the selection when the object is realised
+    /// more than once.
     ///
     /// # Errors
     ///
-    /// `Validation` (17) when neither an object nor `--spec` is given, or as [`Self::select`],
-    /// or when no pair matches; `Ambiguous` (12) when several do and `--spec`/`--token` has to
-    /// narrow it.
+    /// Returns `Validation` (17) when neither an object nor `--spec` is given, in the cases of
+    /// [`Self::select`], or when no pair matches. Returns `Ambiguous` (12) when several pairs
+    /// match, so that `--spec` or `--token` must narrow the selection.
     pub fn address(&self, object: Option<&str>, spec: Option<&str>, token: Option<&str>) -> Result<(String, String)> {
         if object.is_none() && spec.is_none() {
             return Err(KmError::Validation("name an object, or a spec with --spec".into()));
