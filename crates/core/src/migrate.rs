@@ -1,12 +1,14 @@
-//! The vocabulary of moving keys (docs/CAMIGRATE.md): the method names and exposure levels a lock's
-//! `provenance.origin` records (frozen, pinned below). A token's capabilities for moving keys
-//! and the planner that decides between them are camigrate's (README.md, "Three tools"), so a
-//! `cakeys` build carries none of it (review 2026-11-23 A-6).
+//! The vocabulary for moving keys (docs/CAMIGRATE.md): the method names and exposure levels that
+//! a lock's `provenance.origin` records. These names are frozen, and the tests below pin them. A
+//! token's capabilities for moving keys and the planner that chooses between them belong to
+//! camigrate (README.md, "Three tools"), so a `cakeys` build contains none of that code (review
+//! 2026-11-23 A-6).
 
 use serde::{Deserialize, Serialize};
 
-/// The RSA-OAEP hash, with MGF1 of the same hash: a transport wrap's and an OAEP proof's. Here,
-/// beside the frozen method names it is part of (`rsa-oaep-sha256`), not in the proof module.
+/// The RSA-OAEP hash, with MGF1 of the same hash, as a transport wrap and an OAEP proof use it. It
+/// is defined here, next to the frozen method names that contain it (`rsa-oaep-sha256`), and not
+/// in the proof module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OaepHash {
     /// SHA-1, with MGF1-SHA-1.
@@ -15,7 +17,8 @@ pub enum OaepHash {
     Sha256,
 }
 
-/// How much of the material is exposed on the way (docs/CAMIGRATE.md D2), strongest first.
+/// How much of the material is exposed during a move (docs/CAMIGRATE.md D2), with the strongest
+/// protection first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Exposure {
@@ -23,16 +26,17 @@ pub enum Exposure {
     Public,
     /// Sealed, and the source token accepts no other wrapping key (`CKA_WRAP_WITH_TRUSTED`).
     Enforced,
-    /// Leaves the source only wrapped under a key on the target.
+    /// The material leaves the source only when it is wrapped under a key on the target.
     Sealed,
-    /// In plaintext in cakeys' memory, zeroized after; never on disk.
+    /// The material is in plaintext in the memory of cakeys and is zeroized afterwards. It is
+    /// never written to disk.
     Host,
     /// A passphrase-protected file.
     File,
 }
 
 impl Exposure {
-    /// The name a bundle and the lock write.
+    /// Returns the name that a bundle and the lock write.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -51,15 +55,17 @@ impl std::fmt::Display for Exposure {
     }
 }
 
-/// How an object moves. The names are frozen like scheme names (docs/CAMIGRATE.md, "Frozen names and
-/// formats"): a bundle or a lock's `provenance.origin` written with one must keep meaning it.
+/// How an object moves. The names are frozen like scheme names (docs/CAMIGRATE.md, "Frozen names
+/// and formats"), because a bundle or a lock's `provenance.origin` that was written with a name
+/// must keep its meaning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Method {
-    /// Public material only: nothing secret moves.
+    /// Only public material moves, and nothing secret.
     Public,
-    /// A fresh AES KEK under RSA-OAEP to the transport key, the key under the KEK (RFC 5649).
+    /// A new AES KEK is wrapped with RSA-OAEP to the transport key, and the key is wrapped under
+    /// the KEK (RFC 5649).
     RsaOaepAesKwp(OaepHash),
-    /// The key under RSA-OAEP to the transport key directly (small secret keys).
+    /// The key is wrapped with RSA-OAEP directly to the transport key (for small secret keys).
     RsaOaep(OaepHash),
     /// Through the host, into a PKCS#11 target with `C_CreateObject`.
     HostPkcs8,
@@ -75,17 +81,18 @@ pub enum Method {
     Pkcs8Pbes2,
     /// Through the host, written as PKCS#12 beside the key's certificate.
     Pkcs12,
-    /// From a file holding a plain PKCS#8 `PrivateKeyInfo`, PEM or DER (docs/FILE.md).
+    /// From a file that holds an unencrypted PKCS#8 `PrivateKeyInfo`, as PEM or DER
+    /// (docs/FILE.md).
     Pkcs8,
-    /// From a file holding a PKCS#1 `RSAPrivateKey`, PEM or DER.
+    /// From a file that holds a PKCS#1 `RSAPrivateKey`, as PEM or DER.
     Pkcs1,
-    /// From a file holding a SEC1 `ECPrivateKey`, PEM or DER.
+    /// From a file that holds a SEC1 `ECPrivateKey`, as PEM or DER.
     Sec1,
-    /// From a file holding the raw value: a secret key's, or a private data object's.
+    /// From a file that holds the raw value of a secret key or of a private data object.
     Raw,
     /// A provider's own method (docs/CAMIGRATE.md D10).
     Vendor {
-        /// The provider that declares it.
+        /// The provider that declares the method.
         provider: String,
         /// The method's name within that provider.
         name: String,
@@ -93,7 +100,7 @@ pub enum Method {
 }
 
 impl Method {
-    /// The frozen name, as a bundle and the lock write it.
+    /// Returns the frozen name, as a bundle and the lock write it.
     #[must_use]
     pub fn name(&self) -> String {
         match self {
@@ -102,7 +109,8 @@ impl Method {
         }
     }
 
-    /// The frozen name of a built-in method, all in one table; `None` for a vendor's.
+    /// Returns the frozen name of a built-in method, from one table for all of them. Returns
+    /// `None` for a vendor method.
     fn builtin_name(&self) -> Option<&'static str> {
         Some(match self {
             Method::Public => "public",
@@ -125,9 +133,10 @@ impl Method {
         })
     }
 
-    /// The method a frozen name denotes; `None` for a name this cakeys does not know. A vendor
-    /// method is `vendor:<provider>/<name>`, each part a name as keys.toml's are
-    /// (`[A-Za-z0-9][A-Za-z0-9_-]*`): the name is frozen into locks, so it stays one word.
+    /// Returns the method that a frozen name denotes, or `None` for a name that this version of
+    /// cakeys does not know. A vendor method is `vendor:<provider>/<name>`, and each part is a name
+    /// with the same grammar as the names in keys.toml (`[A-Za-z0-9][A-Za-z0-9_-]*`). The name is
+    /// frozen into locks, so it must stay one word.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Method> {
         if let Some(rest) = name.strip_prefix("vendor:") {
@@ -138,7 +147,7 @@ impl Method {
         Method::BUILTIN.iter().find(|m| m.builtin_name() == Some(name)).cloned()
     }
 
-    /// Every built-in method, for name lookups and the pinning test.
+    /// Every built-in method, for the name lookups and for the test that pins the names.
     pub const BUILTIN: [Method; 16] = [
         Method::Public,
         Method::RsaOaepAesKwp(OaepHash::Sha256),
@@ -207,12 +216,14 @@ mod tests {
         assert_eq!(levels, ["public", "enforced", "sealed", "host", "file"]);
     }
 
-    /// A vendor method needs both its parts, and methods and exposures print as their names.
+    /// A vendor method needs both of its parts, and methods and exposure levels print as their
+    /// names.
     #[test]
     fn names_print_and_half_named_vendor_methods_are_unknown() {
         assert_eq!(Method::from_name("vendor:/clone"), None);
         assert_eq!(Method::from_name("vendor:luna/"), None);
-        // Each part is one name, as keys.toml's are: no second `/`, space or dot.
+        // Each part is one name, with the grammar of the names in keys.toml: no second `/`, no
+        // space and no dot.
         for name in ["vendor:luna/a/b", "vendor:luna/a b", "vendor:lu.na/clone", "vendor:luna/-clone"] {
             assert_eq!(Method::from_name(name), None, "{name}");
         }

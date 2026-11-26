@@ -1,11 +1,13 @@
-//! The lock rules against their Quint model, crates/core/spec/lock.qnt (docs/DEVELOPMENT.md,
-//! "Verification beyond tests"). quint-connect has `quint run` simulate the model and replays
-//! each trace here: every `realise` step becomes a `Target` and a `Resolved` and runs the real
-//! `reconcile`, and after every step the lock it left, projected onto the model's, and its
-//! verdict must be the model's. Each lock must also load (`parse_lock`'s invariants).
+//! This test checks the lock rules against their Quint model, crates/core/spec/lock.qnt
+//! (docs/DEVELOPMENT.md, "Verification beyond tests"). quint-connect runs `quint run` to simulate
+//! the model and replays each trace here. Each `realise` step of a trace becomes a `Target` and a
+//! `Resolved`, and the step runs the real `reconcile`. After each step, the lock that `reconcile`
+//! left, projected onto the model's lock, and the result must equal the model's lock and result.
+//! Each lock must also load, which checks the invariants of `parse_lock`.
 //!
-//! The model fixes the keys.toml below and keeps to what it names: a lock entry outside it (a
-//! pair, a public key, a provenance, `publicOnly`, another label) fails the projection.
+//! The model fixes the keys.toml below and uses only what that file names. A lock entry outside
+//! that file (a pair, a public key, a provenance, `publicOnly`, or a different label) fails the
+//! projection.
 
 mod common;
 
@@ -24,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::rc::Rc;
 
-/// The model's keys.toml, `CURVE` being k's curve.
+/// The model's keys.toml. The test replaces `CURVE` with the curve of the object `k`.
 const CONFIG: &str = r#"
 [tokens.t1]
 tokenLabel = "t1"
@@ -65,12 +67,13 @@ tokens.t1 = { locator = { CKA_LABEL = "aes" }, origin = "adopt" }
 tokens.t2 = { locator = { CKA_LABEL = "aes" }, origin = "adopt" }
 "#;
 
-/// The curves k takes in the model.
+/// The curves that the object `k` can have in the model.
 const CURVES: [&str; 2] = ["secp256r1", "secp384r1"];
-/// The model's materials, spec digests, attestation anchors and attestation IDs: 1 and 2.
+/// The numbers with which the model names its materials, spec digests, attestation anchors and
+/// attestation IDs: 1 and 2.
 const NUMBERS: [i64; 2] = [1, 2];
 
-// The model's values, as quint-connect reads them from a trace (ITF).
+// The model's values, as quint-connect reads them from a trace in the ITF format.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(tag = "tag")]
@@ -132,7 +135,7 @@ struct MPolicy {
     decrypt: Flag,
 }
 
-/// The policy attributes the model reports, by their place in `MPolicy`.
+/// The policy attributes that the model reports, in the order of their positions in `MPolicy`.
 const POLICY: [&str; 2] = ["CKA_SIGN", "CKA_DECRYPT"];
 
 impl MPolicy {
@@ -167,9 +170,10 @@ struct MLock {
     realisations: BTreeMap<String, BTreeMap<String, MRealisation>>,
 }
 
-/// What is compared after each step: the lock, the verdict, and the rule that decided it (the
-/// model's `rule` ghost). Twelve rules end in 14, so the exit code alone would let one stand in
-/// for another (review `lock_mbt` F2).
+/// The values that the test compares after each step: the lock, the result, and the rule that
+/// decided the result (the model's `rule` ghost variable). Twelve rules exit with 14, so a
+/// comparison of the exit code alone would not detect that a different rule refused the step
+/// (review `lock_mbt` F2).
 #[derive(Debug, PartialEq, Eq, Deserialize)]
 struct Compared {
     lock: MLock,
@@ -177,10 +181,10 @@ struct Compared {
     rule: String,
 }
 
-/// The Rust's lock checks that the model does not have, each with the reason it leaves it out.
-/// A replayed step that one of them refuses fails, because the model never refuses by it.
-/// `every_lock_rule_is_modelled_or_left_out` requires every lock check to be either a rule of
-/// the model or listed here.
+/// The lock checks of the Rust code that the model does not have, each with the reason why the
+/// model leaves it out. A replayed step that one of these checks refuses fails, because the model
+/// never refuses with that check. `every_lock_rule_is_modelled_or_left_out` requires every lock
+/// check to be either a rule of the model or listed here.
 const LEFT_OUT: [(Check, &str); 2] = [
     (Check::LockImportIds, "the model leaves out imports: its runs have no `facts.origin`"),
     (
@@ -190,13 +194,14 @@ const LEFT_OUT: [(Check, &str); 2] = [
     ),
 ];
 
-/// The model's rule for the refusal `e` of `reconcile`, read from the check that the error names:
-/// a lock check's name without its `lock.` prefix, `mismatch` for `identity.material`, and
-/// `first-use` for a `FirstUse` error, which names no check. A refusal by a check that the model
-/// leaves out, by a check that is not a lock check, or by no check is an error, so a refusal that
-/// the model does not have fails the step instead of passing for one of the model's rules (review
-/// 2026-11-24 A-6: the message markers that this replaced read a message with a suffix as the
-/// rule of its first part).
+/// Returns the model's rule for the refusal `e` of `reconcile`, derived from the check that the
+/// error names. The rule is the lock check's name without its `lock.` prefix, `mismatch` for
+/// `identity.material`, and `first-use` for a `FirstUse` error, which names no check. A refusal by
+/// a check that the model leaves out, by a check that is not a lock check, or by no check returns
+/// an error. So a refusal that the model does not have fails the step, instead of being counted
+/// as one of the model's rules (review 2026-11-24 A-6). The message markers that this function
+/// replaced matched the first part of a message and ignored a suffix, so they reported a
+/// different rule for a message that extended another rule's message.
 fn model_rule(e: &KmError) -> quint_connect::Result<&'static str> {
     if let KmError::FirstUse { .. } = e {
         return Ok("first-use");
@@ -211,8 +216,8 @@ fn model_rule(e: &KmError) -> quint_connect::Result<&'static str> {
     }
 }
 
-/// The rules that decide a run of the model: the names its `decidedBy` witnesses compare `rule`
-/// with.
+/// Returns the rules that can decide a run of the model: the names with which the model's
+/// `decidedBy` witnesses compare `rule`.
 fn model_rules() -> BTreeSet<String> {
     let spec = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/spec/lock.qnt")).unwrap();
     spec.lines()
@@ -221,7 +226,7 @@ fn model_rules() -> BTreeSet<String> {
         .collect()
 }
 
-// The model's numbers as the Rust's digests, and back.
+// These functions convert the model's numbers to the digests that the Rust code uses, and back.
 
 fn material_id(material: i64, scheme: &str) -> String {
     id::sri(format!("material {material}/{scheme}").as_bytes())
@@ -239,7 +244,7 @@ fn attestation_id(n: i64) -> String {
     id::sri(format!("attestation {n}").as_bytes())
 }
 
-/// The model number whose digest `digest` is.
+/// Returns the model number whose digest is `digest`.
 fn number(digest: &str, of: impl Fn(i64) -> String, what: &str) -> quint_connect::Result<i64> {
     NUMBERS.into_iter().find(|n| of(*n) == digest).ok_or_else(|| anyhow::anyhow!("{what} {digest} is no model value"))
 }
@@ -260,10 +265,12 @@ fn unflag(f: Flag) -> Option<bool> {
     }
 }
 
-/// A realisation as the lock writes it: `LockRealisation`'s fields as serialised, since the
-/// projection reads what a keys.lock holds. Every field is named, the ones the model leaves out
-/// too (lock.qnt's header: the locator, observations), so a field added to the lock fails here
-/// until the model or this projection decides about it, never dropped (review `lock_mbt` F1).
+/// A realisation as the lock writes it: the serialized fields of `LockRealisation`, because the
+/// projection reads what a keys.lock file holds. Every field is named here, including the fields
+/// that the model leaves out (the header of lock.qnt lists them: the locator and the
+/// observations). So a field that is added to the lock fails here until the model or this
+/// projection handles it, and the field is never ignored without a decision (review `lock_mbt`
+/// F1).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[expect(dead_code, reason = "the fields the model leaves out are named only to be refused when new")]
@@ -283,7 +290,7 @@ struct Written {
     immutables: Immutables,
     #[serde(default)]
     provenance: Option<serde_json::Value>,
-    // Outside the model.
+    // These fields are outside the model.
     locator: serde_json::Value,
     #[serde(default)]
     observation: Option<String>,
@@ -291,8 +298,9 @@ struct Written {
     observed: Option<serde_json::Value>,
 }
 
-/// The fields of a lock or a lock object the projection reads, or leaves out with the model
-/// (`observations`): any other is one it has not decided about.
+/// Fails when a lock or a lock object has a field that is not in `named`. `named` lists the
+/// fields that the projection reads or that it leaves out with the model (`observations`). Any
+/// other field is one for which no decision has been made.
 fn only_named(what: &str, value: &impl serde::Serialize, named: &[&str]) -> quint_connect::Result {
     let value = serde_json::to_value(value)?;
     let unknown: Vec<&String> = value
@@ -306,14 +314,14 @@ fn only_named(what: &str, value: &impl serde::Serialize, named: &[&str]) -> quin
 }
 
 struct Mbt {
-    /// keys.toml, by k's curve.
+    /// The parsed keys.toml, keyed by the curve of the object `k`.
     configs: BTreeMap<&'static str, Config>,
-    /// Every object type the model names, by its name there.
+    /// Every object type that the model names, with the name that the model uses for it.
     types: Vec<(String, ObjectCfg)>,
     lock: Lock,
     verdict: Verdict,
     rule: String,
-    /// Every rule a replayed step was decided by, for the test to hold to the model's.
+    /// Every rule that decided a replayed step. The test compares this set with the model's rules.
     seen: Rc<RefCell<BTreeSet<String>>>,
 }
 
@@ -337,7 +345,7 @@ impl Default for Mbt {
     }
 }
 
-/// One `realise` step's picks.
+/// The values that the model chose for one `realise` step.
 struct Input {
     target: (String, String),
     write: MWrite,
@@ -437,7 +445,7 @@ impl Mbt {
                 always_sensitive: unflag(i.immutables.always_sensitive),
                 key_gen_mechanism: None,
             },
-            // The label the commitments are computed with, as `ops` takes it.
+            // The label with which the commitments are computed, as `ops` receives it.
             commitment_label: (t.object_name == "aes").then(|| commitment_label(&t, &self.lock)),
             attestation,
             public_key: None,
@@ -460,13 +468,14 @@ impl Mbt {
         };
         rule.clone_into(&mut self.rule);
         self.seen.borrow_mut().insert(self.rule.clone());
-        // Whatever the run left must load: the lock's invariants hold after every write.
+        // The lock that the run left must load, so that the lock's invariants hold after every
+        // write.
         parse_lock(&toml::to_string(&self.lock)?, Path::new("keys.lock"))
             .map_err(|e| anyhow::anyhow!("the lock no longer loads: {e}"))?;
         Ok(())
     }
 
-    /// The model's name for an object type.
+    /// Returns the model's name for an object type.
     fn type_name(&self, t: &ObjectCfg) -> quint_connect::Result<String> {
         self.types
             .iter()
@@ -554,12 +563,13 @@ impl State<Mbt> for Compared {
     }
 }
 
-/// Simulated traces of the model, replayed against `reconcile`: a fixed seed, so the check
-/// phase replays the same traces every build. The replay must reach every rule the model's
-/// witnesses name (review `lock_mbt` F3): `checks.quint` counts them on its own, larger sample,
-/// which says nothing of these 500. `#[quint_run]` expands to this call of quint-connect's
-/// `runner` (doc-hidden; 0.1.2, pinned by Cargo.lock), written out so that what the driver saw
-/// outlives the run.
+/// Replays simulated traces of the model against `reconcile`. The seed is fixed, so the check
+/// phase replays the same traces in every build. The replay must reach every rule that the
+/// model's witnesses name (review `lock_mbt` F3). `checks.quint` counts the rules on its own,
+/// larger sample, and that count says nothing about these 500 traces. The `#[quint_run]`
+/// attribute expands to this call of quint-connect's `runner` (which is doc-hidden; version 0.1.2,
+/// pinned by Cargo.lock). The call is written out here so that the test can read what the driver
+/// saw after the run ends.
 #[test]
 fn reconcile_refines_the_lock_model() {
     let seen = Rc::default();
@@ -586,14 +596,15 @@ fn reconcile_refines_the_lock_model() {
     assert!(missed.is_empty(), "rules no replayed trace reaches: {missed:?}");
 }
 
-/// Every lock check of the Rust (a `Check` named `lock.…`) is either a rule of the model or
-/// listed in `LEFT_OUT` with its reason, never both, and every rule by which the model refuses
-/// is a lock check, `identity.material` or `FirstUse`. Every check that `reconcile.rs` names is a
-/// lock check or `identity.material`, so each refusal of `reconcile` maps to the model by its
-/// check. A refusal that the model leaves out fails the replay, never passes for a modelled rule:
-/// a second spec of one token object recorded weaker than the first (review 2026-11-23 A-2)
-/// refuses by `lock.same-object`, although its message ends with the message of the rule it
-/// extends (review 2026-11-24 A-6).
+/// Every lock check of the Rust code (a `Check` whose name starts with `lock.`) is either a rule
+/// of the model or listed in `LEFT_OUT` with its reason, and never both. Every rule with which the
+/// model refuses is a lock check, `identity.material` or `FirstUse`. Every check that
+/// `reconcile.rs` names is a lock check or `identity.material`, so each refusal of `reconcile`
+/// maps to the model through its check. A refusal that the model leaves out fails the replay and
+/// is never counted as a modelled rule. For example, when a second spec of one token object
+/// records the object with less than the first spec established (review 2026-11-23 A-2), the
+/// refusal names `lock.same-object`, although its message ends with the message of the rule that
+/// it extends (review 2026-11-24 A-6).
 #[test]
 fn every_lock_rule_is_modelled_or_left_out() {
     let modelled = model_rules();
@@ -630,9 +641,9 @@ fn every_lock_rule_is_modelled_or_left_out() {
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 
-    // The A-2 refusal: spec s3 is s's token object under the same locator, and the lock records
-    // s with an attestation, so s3 without one is refused by lock.same-object, which the model
-    // leaves out, and the replay fails.
+    // The A-2 refusal: the spec s3 realises the same token object as the spec s, under the same
+    // locator, and the lock records s with an attestation. So s3 without an attestation is
+    // refused by `lock.same-object`, which the model leaves out, and the replay fails.
     let mut mbt = Mbt::default();
     for (curve, cfg) in &mut mbt.configs {
         let text = CONFIG.replace("CURVE", curve)

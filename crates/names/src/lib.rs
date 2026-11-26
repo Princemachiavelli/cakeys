@@ -1,13 +1,15 @@
-//! The tables more than one cakeys crate needs, each with one owner here (review 2026-11-24 item
-//! 8, phase1-design §4): the named curves and the ECDSA hash of each, the proofs of possession,
-//! the commitments and the mechanism each runs, an RSA modulus's size, and the return values that
-//! say the device failed. Every other crate uses these or tests against them; none restates one.
+//! The tables that more than one cakeys crate needs, each defined only here (review 2026-11-24
+//! item 8, phase1-design §4): the named curves and the ECDSA hash of each curve, the proofs of
+//! possession, the commitments and the mechanism that each one runs, the size of an RSA modulus,
+//! and the return values that mean that the device failed. Every other crate uses these tables or
+//! tests against them, and no other crate defines them again.
 //!
-//! No dependencies, so the profile crate reads the tables without cakeys-core and core without
-//! the profiles (docs/ARCHITECTURE.md). Mechanism names have their own source, `p11-names`, and
-//! key types stay where they are kept as read (`cakeys_profile::KeyKind`).
+//! This crate has no dependencies, so the profile crate can read the tables without cakeys-core,
+//! and cakeys-core can read them without the profiles (docs/ARCHITECTURE.md). The mechanism names
+//! have their own source, `p11-names`, and the key types stay in the crate that keeps them as they
+//! were read (`cakeys_profile::KeyKind`).
 
-/// The kind of curve, which names its PKCS#11 key type.
+/// The kind of curve, which determines its PKCS#11 key type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
     /// `CKK_EC`: a short Weierstrass curve, for ECDSA and ECDH.
@@ -18,9 +20,9 @@ pub enum Family {
     Montgomery,
 }
 
-/// A named curve: the Weierstrass and Edwards curves cakeys has a key type for, and the
-/// Montgomery curves the probe measures and the profiles name, which keys.toml does not take yet
-/// ([`Curve::in_core`]).
+/// A named curve: the Weierstrass and Edwards curves for which cakeys has a key type, and the
+/// Montgomery curves that the probe measures and the profiles name, which keys.toml does not
+/// accept yet ([`Curve::in_core`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Curve {
     /// NIST P-256 (`secp256r1`).
@@ -46,7 +48,8 @@ pub enum Curve {
 }
 
 impl Curve {
-    /// Every named curve: Weierstrass, then Edwards, then Montgomery.
+    /// Every named curve: the Weierstrass curves, then the Edwards curves, then the Montgomery
+    /// curves.
     pub const ALL: [Curve; 10] = [
         Curve::P256,
         Curve::P384,
@@ -60,8 +63,8 @@ impl Curve {
         Curve::X448,
     ];
 
-    /// Every curve's [`Curve::name`], in [`Curve::ALL`]'s order: the curve names a profile row
-    /// or a query may use.
+    /// The [`Curve::name`] of every curve, in the order of [`Curve::ALL`]. These are the curve
+    /// names that a profile row or a query may use.
     pub const NAMES: [&'static str; 10] = {
         let mut names = [""; 10];
         let mut i = 0;
@@ -72,7 +75,7 @@ impl Curve {
         names
     };
 
-    /// The canonical name: keys.toml's `curve`, the lock's, and a profile row's.
+    /// Returns the canonical name, which keys.toml's `curve`, the lock and a profile row use.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -89,7 +92,8 @@ impl Curve {
         }
     }
 
-    /// The name a message gives it: `P-256`, `Ed25519`. keys.toml takes it as well.
+    /// Returns the name that a message uses for the curve, such as `P-256` or `Ed25519`. keys.toml
+    /// also accepts this name.
     #[must_use]
     pub const fn display(self) -> &'static str {
         match self {
@@ -106,7 +110,7 @@ impl Curve {
         }
     }
 
-    /// Its family, and so its key type.
+    /// Returns the curve's family, which determines its key type.
     #[must_use]
     pub const fn family(self) -> Family {
         match self {
@@ -121,14 +125,16 @@ impl Curve {
         }
     }
 
-    /// Whether cakeys-core has a key type for it, so keys.toml takes it (`cakeys_core::id::Curve`
-    /// is these curves): every curve but the Montgomery ones, which only the probe generates.
+    /// Returns whether cakeys-core has a key type for the curve, so that keys.toml accepts it
+    /// (`cakeys_core::id::Curve` has exactly these curves). This is every curve except the
+    /// Montgomery curves, which only the probe generates.
     #[must_use]
     pub const fn in_core(self) -> bool {
         !matches!(self.family(), Family::Montgomery)
     }
 
-    /// `CKA_EC_PARAMS` as the curve's DER OID (RFC 5480, RFC 8410): what a key is generated with.
+    /// Returns `CKA_EC_PARAMS` as the curve's DER OID (RFC 5480, RFC 8410), with which a key is
+    /// generated.
     #[must_use]
     pub const fn params(self) -> &'static [u8] {
         match self {
@@ -145,8 +151,8 @@ impl Curve {
         }
     }
 
-    /// `CKA_EC_PARAMS` as a `PrintableString` of the name, which PKCS#11 3.0 allows for the
-    /// Edwards and Montgomery curves; `None` for a Weierstrass curve.
+    /// Returns `CKA_EC_PARAMS` as a `PrintableString` of the name, which PKCS#11 3.0 allows for
+    /// the Edwards and Montgomery curves. Returns `None` for a Weierstrass curve.
     #[must_use]
     pub const fn params_by_name(self) -> Option<&'static [u8]> {
         match self {
@@ -163,15 +169,16 @@ impl Curve {
         }
     }
 
-    /// The curve of this canonical [`Curve::name`].
+    /// Returns the curve with this canonical [`Curve::name`].
     #[must_use]
     pub fn from_name(name: &str) -> Option<Curve> {
         Curve::ALL.into_iter().find(|c| c.name() == name)
     }
 }
 
-/// A SHA-2 hash a signature is made over, which cakeys-core computes: ECDSA's on each
-/// Weierstrass curve ([`HashAlg::for_curve`]), and an RSA PKCS#1 v1.5 or PSS signature's.
+/// A SHA-2 hash over which a signature is made, and which cakeys-core computes: the hash of ECDSA
+/// on each Weierstrass curve ([`HashAlg::for_curve`]), and the hash of an RSA PKCS#1 v1.5 or PSS
+/// signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashAlg {
     /// SHA-256.
@@ -183,10 +190,10 @@ pub enum HashAlg {
 }
 
 impl HashAlg {
-    /// The hash of ECDSA on `curve`, the one matching its strength (FIPS 186-5): what the token
-    /// is asked to sign with and what the host verifies with, one table for both (review
-    /// 2026-11-24 A-8). `None` for an Edwards curve, which hashes inside the signature, and a
-    /// Montgomery one, which does not sign.
+    /// Returns the hash of ECDSA on `curve`, which is the hash that matches the curve's strength
+    /// (FIPS 186-5). The token is asked to sign with this hash, and the host verifies with it, so
+    /// one table serves both (review 2026-11-24 A-8). Returns `None` for an Edwards curve, which
+    /// hashes inside the signature, and for a Montgomery curve, which does not sign.
     #[must_use]
     pub fn for_curve(curve: impl Into<Curve>) -> Option<HashAlg> {
         match curve.into() {
@@ -198,19 +205,22 @@ impl HashAlg {
     }
 }
 
-/// A proof of possession, by its name: the `binding` keys.toml and the lock write for it
-/// (`cakeys_core::config::Binding`), and the `prove.<proof>` a capability row is keyed by.
+/// A proof of possession, identified by its name. The name is the `binding` that keys.toml and
+/// the lock write for the proof (`cakeys_core::config::Binding`), and the `<proof>` in the
+/// `prove.<proof>` key of a capability row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Proof {
-    /// `pop-sign`: the key signs a fresh challenge.
+    /// `pop-sign`: the key signs a new challenge.
     PopSign,
-    /// `pop-sign-pin`: `pop-sign` with the per-use PIN a `CKA_ALWAYS_AUTHENTICATE` key demands.
+    /// `pop-sign-pin`: `pop-sign` with the PIN for each use that a `CKA_ALWAYS_AUTHENTICATE` key
+    /// demands.
     PopSignPin,
-    /// `pop-ecdh`: an ECDH secret `MACs` the challenge.
+    /// `pop-ecdh`: a MAC with an ECDH secret is computed over the challenge.
     PopEcdh,
-    /// `pop-decrypt`: the key decrypts a host challenge.
+    /// `pop-decrypt`: the key decrypts a challenge from the host.
     PopDecrypt,
-    /// `pop-unwrap`: the key unwraps a host secret that `MACs` the challenge.
+    /// `pop-unwrap`: the key unwraps a secret from the host, and a MAC with that secret is
+    /// computed over the challenge.
     PopUnwrap,
 }
 
@@ -219,7 +229,7 @@ impl Proof {
     pub const ALL: [Proof; 5] =
         [Proof::PopSign, Proof::PopSignPin, Proof::PopEcdh, Proof::PopDecrypt, Proof::PopUnwrap];
 
-    /// Every proof's [`Proof::name`], in [`Proof::ALL`]'s order.
+    /// The [`Proof::name`] of every proof, in the order of [`Proof::ALL`].
     pub const NAMES: [&'static str; 5] = {
         let mut names = [""; 5];
         let mut i = 0;
@@ -230,7 +240,7 @@ impl Proof {
         names
     };
 
-    /// Its name.
+    /// Returns the proof's name.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -242,16 +252,16 @@ impl Proof {
         }
     }
 
-    /// The proof of this [`Proof::name`].
+    /// Returns the proof with this [`Proof::name`].
     #[must_use]
     pub fn from_name(name: &str) -> Option<Proof> {
         Proof::ALL.into_iter().find(|p| p.name() == name)
     }
 }
 
-/// A secret key's commitment, by the kind a `commit.<kind>.<key type>.<bytes>` row names it
-/// (`cakeys_core::id::Commit::kind`): the scheme's name, an HMAC's hash beside it. A check
-/// value's cipher is the key type's.
+/// A secret key's commitment, identified by the kind that a `commit.<kind>.<key type>.<bytes>` row
+/// names (`cakeys_core::id::Commit::kind`): the scheme's name, with the hash next to it for an
+/// HMAC. The cipher of a check value is the cipher of the key type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitKind {
     /// HMAC-SHA-1 over the label.
@@ -266,9 +276,9 @@ pub enum CommitKind {
     HmacSha512,
     /// AES-CMAC over the label.
     Cmac,
-    /// One block encrypted in ECB: a key check value.
+    /// One block encrypted in ECB mode, which is a key check value.
     KcvEcb,
-    /// One block decrypted in ECB, for decrypt-only keys.
+    /// One block decrypted in ECB mode, for keys that may only decrypt.
     KcvEcbDec,
     /// AES key wrap (RFC 3394) of a fixed key.
     Kw,
@@ -288,7 +298,7 @@ impl CommitKind {
         CommitKind::Kw,
     ];
 
-    /// Its name in a `commit.*` row.
+    /// Returns the kind's name in a `commit.*` row.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -304,15 +314,16 @@ impl CommitKind {
         }
     }
 
-    /// The kind of this [`CommitKind::name`].
+    /// Returns the kind with this [`CommitKind::name`].
     #[must_use]
     pub fn from_name(name: &str) -> Option<CommitKind> {
         CommitKind::ALL.into_iter().find(|k| k.name() == name)
     }
 
-    /// The `CKM_*` the commitment runs on a key of `key_type` (`CKK_*`), which only a check
-    /// value's cipher depends on: what a declared `CKA_ALLOWED_MECHANISMS` must hold for it, what
-    /// the token is asked to run, and what a profile's `commit.*` row is measured with.
+    /// Returns the `CKM_*` mechanism that the commitment runs on a key of `key_type` (`CKK_*`).
+    /// Only the cipher of a check value depends on the key type. The mechanism is what a declared
+    /// `CKA_ALLOWED_MECHANISMS` must contain for the commitment, what the token is asked to run,
+    /// and what a profile's `commit.*` row is measured with.
     #[must_use]
     pub fn mechanism(self, key_type: &str) -> &'static str {
         match self {
@@ -329,20 +340,21 @@ impl CommitKind {
     }
 }
 
-/// The size in bits of the unsigned big-endian integer `n`: an RSA modulus as `CKA_MODULUS` or
-/// an SPKI holds it. Leading zero bytes count nothing and the first byte only its significant
-/// bits, so a 2047-bit modulus is 2047, never its 256 bytes times eight (review 2026-11-24 B-5,
-/// 2026-11-23 C-20). Every size cakeys checks or records goes through it.
+/// Returns the size in bits of the unsigned big-endian integer `n`, which is an RSA modulus as
+/// `CKA_MODULUS` or an SPKI holds it. Leading zero bytes count as nothing, and the first nonzero
+/// byte counts only its significant bits, so a 2047-bit modulus is 2047 bits, never its 256 bytes
+/// times eight (review 2026-11-24 B-5, 2026-11-23 C-20). Every size that cakeys checks or records
+/// goes through this function.
 #[must_use]
 pub fn modulus_bits(n: &[u8]) -> u64 {
     let n = &n[n.iter().take_while(|b| **b == 0).count()..];
     n.first().map_or(0, |top| n.len() as u64 * 8 - u64::from(top.leading_zeros()))
 }
 
-/// The `CKR_*` return values that say the device, the token or the session failed, rather than
-/// anything of the operation asked (review 2026-11-24 E-2, phase1-design §2.5): a refusal citing
-/// one is no answer of the module's. The probe's rows, the profile loader and the token crate's
-/// `device_failed` all decide by these names.
+/// The `CKR_*` return values that mean that the device, the token or the session failed, and not
+/// that something in the requested operation failed (review 2026-11-24 E-2, phase1-design §2.5).
+/// A refusal that cites one of them is not an answer from the module. The probe's rows, the
+/// profile loader and the token crate's `device_failed` all decide by these names.
 pub const DEVICE_FAILED_RV: [&str; 11] = [
     "CKR_DEVICE_ERROR",
     "CKR_DEVICE_MEMORY",
@@ -357,14 +369,15 @@ pub const DEVICE_FAILED_RV: [&str; 11] = [
     "CKR_FUNCTION_CANCELED",
 ];
 
-/// Whether the return value named `name` (`CKR_DEVICE_ERROR`) is one of [`DEVICE_FAILED_RV`].
+/// Returns whether the return value named `name` (`CKR_DEVICE_ERROR`) is one of
+/// [`DEVICE_FAILED_RV`].
 #[must_use]
 pub fn is_device_failure(name: &str) -> bool {
     DEVICE_FAILED_RV.contains(&name)
 }
 
-/// The first of [`DEVICE_FAILED_RV`] that `text` names, as a whole name
-/// (`CKR_DEVICE_ERROR`, never a prefix of a longer `CKR_*`).
+/// Returns the first of [`DEVICE_FAILED_RV`] that `text` names as a whole name
+/// (`CKR_DEVICE_ERROR`, never as a part of a longer `CKR_*`).
 #[must_use]
 pub fn names_device_failure(text: &str) -> Option<&'static str> {
     let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
@@ -377,10 +390,10 @@ pub fn names_device_failure(text: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    /// A modulus's size is its significant bits, against an independent count: the same bytes
-    /// as a `u128`'s, for every length up to 16 bytes and every first byte, with leading zero
-    /// bytes before it (review 2026-11-24 B-5: whole bytes times eight said 2048 of a 2047-bit
-    /// modulus).
+    /// A modulus's size is the number of its significant bits. The test compares it with an
+    /// independent count, the bits of the same bytes as a `u128`, for every length up to 16 bytes
+    /// and every first byte, with leading zero bytes before it (review 2026-11-24 B-5: a count of
+    /// whole bytes times eight gave 2048 for a 2047-bit modulus).
     #[test]
     fn a_modulus_counts_its_significant_bits() {
         for len in 0..=16usize {
@@ -395,15 +408,16 @@ mod tests {
                 }
             }
         }
-        // The RSA sizes as a module reports them: 256 bytes whose first is 0x7f is 2047 bits.
+        // The RSA sizes as a module reports them: 256 bytes whose first byte is 0x7f are 2047
+        // bits.
         let modulus = |top: u8| [&[top][..], &[0xff; 255]].concat();
         assert_eq!(modulus_bits(&modulus(0x80)), 2048);
         assert_eq!(modulus_bits(&modulus(0x7f)), 2047);
         assert_eq!(modulus_bits(&modulus(0x01)), 2041);
     }
 
-    /// Each table reads back by its names, and the names are each a table's own: no two curves,
-    /// proofs or kinds share one.
+    /// Each table reads its entries back by their names, and each name belongs to one entry: no
+    /// two curves, proofs or kinds share a name.
     #[test]
     fn every_name_reads_back_as_itself() {
         fn unique<T: Ord>(items: &[T]) -> bool {
@@ -425,9 +439,10 @@ mod tests {
         assert!(unique(&CommitKind::ALL.map(CommitKind::name)) && unique(&DEVICE_FAILED_RV));
     }
 
-    /// A curve is named by a `PrintableString` exactly where PKCS#11 3.0 allows it (not on a
-    /// Weierstrass curve), and that string is its name; ECDSA has a hash on the Weierstrass
-    /// curves only, and core has a key type for all but the Montgomery ones.
+    /// A curve is named by a `PrintableString` exactly where PKCS#11 3.0 allows it (not for a
+    /// Weierstrass curve), and that string is the curve's name. ECDSA has a hash only on the
+    /// Weierstrass curves, and cakeys-core has a key type for every curve except the Montgomery
+    /// curves.
     #[test]
     fn each_curve_is_what_its_family_says() {
         for c in Curve::ALL {
@@ -436,12 +451,13 @@ mod tests {
             assert_eq!(c.params_by_name().map(<[u8]>::to_vec), (!weierstrass).then_some(printable), "{c:?}");
             assert_eq!(HashAlg::for_curve(c).is_some(), weierstrass, "{c:?}");
             assert_eq!(c.in_core(), c.family() != Family::Montgomery, "{c:?}");
-            // An OID: tag 6 and its length.
+            // An OID starts with the tag 6 and its length.
             assert_eq!((c.params()[0], usize::from(c.params()[1])), (0x06, c.params().len() - 2), "{c:?}");
         }
     }
 
-    /// A check value's mechanism follows the key's cipher; every other kind's is the kind's.
+    /// The mechanism of a check value follows the key's cipher. The mechanism of every other kind
+    /// depends only on the kind.
     #[test]
     fn a_check_value_runs_its_ciphers_ecb() {
         for k in [CommitKind::KcvEcb, CommitKind::KcvEcbDec] {

@@ -1,5 +1,5 @@
-//! cakeys core: `keys.toml`/`keys.lock`, error kinds and content-addressed identity (CA-IDs).
-//! Touches no token; backends build on it.
+//! The cakeys core: `keys.toml` and `keys.lock`, the error kinds, and the content-addressed
+//! identity (CA-IDs). This crate never accesses a token, and the backends build on it.
 
 pub mod attrs;
 pub mod chain;
@@ -19,7 +19,7 @@ pub mod reconcile;
 pub mod secret;
 pub mod sig;
 pub mod testing;
-// The one way a test skips, every crate's (review 2026-11-24 C-11).
+// The only way in which a test skips, shared by every crate (review 2026-11-24 C-11).
 #[cfg(test)]
 #[path = "../../test-skip.rs"]
 mod test_skip;

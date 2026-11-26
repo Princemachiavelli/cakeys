@@ -1,13 +1,14 @@
-//! Error classes with HTTP-like semantics and stable exit codes (docs/CAKEYS.md).
+//! The error classes, with meanings similar to HTTP status codes and with exit codes that do not
+//! change (docs/CAKEYS.md).
 
 use crate::check::{Check, Rule};
 use std::fmt;
 
-/// What a [`KmError`] says, the PKCS#11 return value behind it when a module call failed
-/// (`CK_RV`, a `CK_ULONG`: 64 bits on every platform this builds for), the plan's rule that
-/// refused when one did ([`Rule`]), and the check that refused when one did ([`Check`]). It
-/// displays as its text alone: the value, the rule and the check are for code to match on
-/// (ISSUES.md Q3), never part of a message.
+/// The message of a [`KmError`], with the PKCS#11 return value that caused it when a module call
+/// failed (`CK_RV`, a `CK_ULONG`: 64 bits on every platform for which this crate builds), the
+/// plan's rule that refused if one did ([`Rule`]), and the check that refused if one did
+/// ([`Check`]). It displays only its text. The return value, the rule and the check are for code
+/// to match on (ISSUES.md Q3), and they are never part of a message.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Msg {
     text: String,
@@ -17,48 +18,48 @@ pub struct Msg {
 }
 
 impl Msg {
-    /// The return value of the module call that failed, if a module call did.
+    /// Returns the return value of the module call that failed, if a module call failed.
     #[must_use]
     pub fn rv(&self) -> Option<u64> {
         self.rv
     }
 
-    /// The text, owned.
+    /// Returns the text as an owned `String`.
     #[must_use]
     pub fn into_text(self) -> String {
         self.text
     }
 
-    /// Another text in place of this one, with the same return value, rule and check: for a
-    /// message rebuilt around the one it had.
+    /// Returns a message with another text in place of this one, and with the same return value,
+    /// rule and check. It is for a message that is rebuilt around the original message.
     #[must_use]
     pub fn with_text(mut self, text: impl Into<String>) -> Self {
         self.text = text.into();
         self
     }
 
-    /// The same text, carrying the return value of the module call that failed.
+    /// Returns the same text with the return value of the module call that failed.
     #[must_use]
     pub fn with_rv(mut self, rv: Option<u64>) -> Self {
         self.rv = rv;
         self
     }
 
-    /// The plan's rule that refused, if one did.
+    /// Returns the plan's rule that refused, if one did.
     #[must_use]
     pub fn rule(&self) -> Option<Rule> {
         self.rule
     }
 
-    /// The check that refused, if one did.
+    /// Returns the check that refused, if one did.
     #[must_use]
     pub fn check(&self) -> Option<Check> {
         self.check
     }
 
-    /// The same text, naming `check` as the check that refused. A refusal of exit 11, 15 or 16
-    /// names its check this way; the three variants that take a [`Reason`] name one when they
-    /// are made.
+    /// Returns the same text, with `check` as the check that refused. A refusal with exit 11, 15
+    /// or 16 names its check this way. The three variants that take a [`Reason`] name their
+    /// check when they are created.
     #[must_use]
     pub fn with_check(mut self, check: Check) -> Self {
         self.check = Some(check);
@@ -103,33 +104,34 @@ impl PartialEq<&str> for Msg {
     }
 }
 
-/// Why a [`KmError::Conflict`], [`KmError::Ambiguous`] or [`KmError::PreconditionFailed`] was
-/// returned: the message, and either the check or the plan's rule that refused, or the statement
-/// that the input is malformed (a structure that does not parse). The only constructors are
-/// [`Reason::check`], [`Reason::rule`] and [`Reason::malformed`], and there is no `From<String>`,
-/// so every site that makes one of these three errors says which check refused. The JSON rows
-/// print that name ([`KmError::check`]), and a malformed input names none.
-/// `Reason::malformed` is allowed only in the modules that parse a structure
-/// (`malformed_only_in_parsers` in crates/core/tests/checks.rs). It dereferences to its [`Msg`],
-/// so `m.contains(…)` reads its text.
+/// The reason why a [`KmError::Conflict`], [`KmError::Ambiguous`] or
+/// [`KmError::PreconditionFailed`] was returned. It holds the message and either the check or the
+/// plan's rule that refused, or the statement that the input is malformed (a structure that does
+/// not parse). The only constructors are [`Reason::check`], [`Reason::rule`] and
+/// [`Reason::malformed`], and there is no `From<String>`, so every place that creates one of
+/// these three errors must say which check refused. The JSON rows print that name
+/// ([`KmError::check`]), and a malformed input names none. `Reason::malformed` is allowed only in
+/// the modules that parse a structure (`malformed_only_in_parsers` in
+/// crates/core/tests/checks.rs). A `Reason` dereferences to its [`Msg`], so `m.contains(…)` reads
+/// its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reason(Msg);
 
 impl Reason {
-    /// A refusal by `check`, saying `text`.
+    /// Returns a refusal by `check` with the message `text`.
     #[must_use]
     pub fn check(check: Check, text: impl Into<String>) -> Reason {
         Reason(Msg::from(text.into()).with_check(check))
     }
 
-    /// A refusal by the plan's rule `rule`, saying `text`.
+    /// Returns a refusal by the plan's rule `rule` with the message `text`.
     #[must_use]
     pub fn rule(rule: Rule, text: impl Into<String>) -> Reason {
         Reason(Msg { rule: Some(rule), ..Msg::from(text.into()) })
     }
 
-    /// A refusal of an input that does not parse as the structure it should be, saying `text`.
-    /// It names no check.
+    /// Returns a refusal of an input that does not parse as the expected structure, with the
+    /// message `text`. It names no check.
     #[must_use]
     pub fn malformed(text: impl Into<String>) -> Reason {
         Reason(Msg::from(text.into()))
@@ -161,29 +163,30 @@ impl PartialEq<&str> for Reason {
     }
 }
 
-/// Every failure cakeys reports, each with a stable exit code (docs/CAKEYS.md, "Exit codes").
+/// Every failure that cakeys reports, each with an exit code that does not change (docs/CAKEYS.md,
+/// "Exit codes").
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum KmError {
-    /// Nothing under the locator (11).
+    /// No object is under the locator (11).
     #[error("not found: {0}")]
     NotFound(Msg),
     /// Several objects match (12).
     #[error("ambiguous: {0}")]
     Ambiguous(Reason),
-    /// The object is not what the spec says: wrong type or policy, a failed proof of possession,
-    /// a foreign public key under the locator (13).
+    /// The object is not what the spec declares: a wrong type or policy, a failed proof of
+    /// possession, or the public key of another key under the locator (13).
     #[error("conflict: {0}")]
     Conflict(Reason),
-    /// The realisation moved since it was recorded: a spec or policy change, a downgrade, a
-    /// replaced object (14).
+    /// The realisation changed since it was recorded: a change of the spec or the policy, a
+    /// downgrade, or a replaced object (14).
     #[error("precondition failed: {0}")]
     PreconditionFailed(Reason),
     /// The token holds other material than the lock pins (10).
     #[error("hash mismatch in identity of {what}:\n  specified: {expected}\n     got:    {got}")]
     HashMismatch {
-        /// What was identified.
+        /// The object that was identified.
         what: String,
-        /// The ID the lock pins.
+        /// The ID that the lock pins.
         expected: String,
         /// The ID computed from the token.
         got: String,
@@ -191,47 +194,49 @@ pub enum KmError {
         /// [`Check::LockAttestationId`] for an attestation's ID.
         check: Check,
     },
-    /// First use: the lock pins nothing to compare with yet, like a fixed-output derivation
-    /// with a fake hash (18; HTTP's 428 Precondition Required). Not 10: a mismatch against a
-    /// pinned ID is a security event, this the state before `lock` records the `got:` ID.
+    /// First use: the lock pins no ID to compare with yet (18; similar to HTTP's 428 Precondition
+    /// Required). It reports the computed ID, as a Nix fixed-output derivation with a fake hash
+    /// reports the hash that it got. It is not exit 10, because a mismatch against a pinned ID is
+    /// a security event, and this is only the state before `lock` records the `got:` ID.
     #[error(
         "first use of {what}: the lock pins no identity for it yet; review, then `lock` records it\n     got:    {got}"
     )]
     FirstUse {
-        /// What was identified.
+        /// The object that was identified.
         what: String,
         /// The ID computed from the token.
         got: String,
     },
-    /// `create` found its object already under the locator: nothing was made (19).
+    /// `create` found its object already under the locator, so it created nothing (19).
     #[error("already exists: {0}")]
     Exists(Msg),
-    /// `check --token`: an object on the token failed its check; each failure is listed with its
-    /// own code (20).
+    /// `check --token`: an object on the token failed its check. The output lists each failure
+    /// with its own code (20).
     #[error("objects failed: {0}")]
     ObjectsFailed(Msg),
     /// The token cannot do what the spec needs (15).
     #[error("unsupported: {0}")]
     Unsupported(Msg),
-    /// The token cannot be used now: absent, its PIN locked, its module not loadable (16).
+    /// The token cannot be used now: it is absent, its PIN is locked, or its module cannot be
+    /// loaded (16).
     #[error("unavailable: {0}")]
     Unavailable(Msg),
-    /// Invalid config, lock, spec or token options (17). The message names which: every
-    /// keys.toml and keys.lock error starts with its file.
+    /// An invalid configuration, lock, spec or token options (17). The message says which one is
+    /// invalid: every error in keys.toml or keys.lock starts with the file's name.
     #[error("invalid: {0}")]
     Validation(Msg),
-    /// The lock cannot be written (21): a writing run refused before any token is touched (a
-    /// read-only lock or directory, a Nix build sandbox), or a save that failed part-way, after
-    /// which the token may hold what the lock does not record.
+    /// The lock cannot be written (21). Either a run that writes the lock was refused before it
+    /// touched any token (a read-only lock or directory, or a Nix build sandbox), or a save failed
+    /// partway through, and the token may then hold an object that the lock does not record.
     #[error("lock cannot be written: {0}")]
     LockUnwritable(Msg),
-    /// Reading or writing a file failed (exit 1, like any other failure outside the verbs).
+    /// Reading or writing a file failed (exit 1, as for any other failure outside the verbs).
     #[error("{0}")]
     Io(Msg),
 }
 
 impl KmError {
-    /// The process exit code this error ends a run with.
+    /// Returns the process exit code with which this error ends a run.
     #[must_use]
     pub fn exit_code(&self) -> u8 {
         match self {
@@ -251,9 +256,10 @@ impl KmError {
         }
     }
 
-    /// One error of every variant, by its name: what the exit-code tests check the docs and
-    /// tables against. The match below has no wildcard, so a new variant does not compile
-    /// until it is listed here too (review 2026-11-23 A-16: the tests scraped this file).
+    /// Returns one error of every variant, with the variant's name. The exit-code tests check the
+    /// docs and the tables against this list. The match below has no wildcard, so a new variant
+    /// does not compile until it is also listed here (review 2026-11-23 A-16: the tests used to
+    /// read this file as text).
     #[doc(hidden)]
     #[must_use]
     pub fn every_variant() -> Vec<(&'static str, KmError)> {
@@ -304,9 +310,9 @@ impl KmError {
 /// otherwise the failure's code would hide the written lock (review 2026-11-24 L5).
 pub const LOCK_WRITTEN: u8 = 22;
 
-/// Every exit code of the three tools, in order, with what it means: the one table each
-/// `--help` renders (review 2026-11-23 C-10) and docs/CAKEYS.md's "Exit codes" lists
-/// (`the_exit_code_table_lists_every_code`).
+/// Every exit code of the three tools, in order, with its meaning. This is the one table that
+/// every `--help` prints (review 2026-11-23 C-10), and the table "Exit codes" in docs/CAKEYS.md
+/// lists the same codes (`the_exit_code_table_lists_every_code`).
 pub const EXIT_CODES: [(u8, &str); 16] = [
     (0, "ok"),
     (1, "I/O or other failure"),
@@ -329,9 +335,10 @@ pub const EXIT_CODES: [(u8, &str); 16] = [
 /// A result whose error is a [`KmError`].
 pub type Result<T, E = KmError> = std::result::Result<T, E>;
 
-/// `Some` of the [`Msg`] of a variant that says something in its own words, `None` for the two
-/// that format their own fields: the one list of those variants, matched by reference, by
-/// mutable reference or by value as `$e` is. A [`Reason`]'s message is its [`Msg`].
+/// Evaluates to `Some` with the [`Msg`] of a variant that has its own message text, and to `None`
+/// for the two variants that format their own fields. This macro is the only list of those
+/// variants. It matches `$e` by reference, by mutable reference or by value, as `$e` is given. A
+/// [`Reason`]'s message is its [`Msg`].
 macro_rules! said {
     ($e:expr) => {
         match $e {
@@ -352,12 +359,13 @@ macro_rules! said {
 }
 
 impl KmError {
-    /// An I/O error, with what was being done: `.map_err(KmError::io(format!("reading {p}")))`.
+    /// Returns a function that makes an I/O error with a description of the operation that
+    /// failed: `.map_err(KmError::io(format!("reading {p}")))`.
     pub fn io(what: impl std::fmt::Display) -> impl FnOnce(std::io::Error) -> KmError {
         move |e| KmError::Io(format!("{what}: {e}").into())
     }
 
-    /// What it says, when it is one of the variants that say something in their own words.
+    /// Returns the message, when the error is one of the variants with their own message text.
     #[must_use]
     pub fn msg(&self) -> Option<&Msg> {
         said!(self)
@@ -367,8 +375,9 @@ impl KmError {
         said!(self)
     }
 
-    /// The same error, its message led by `what` (`"<what>: <message>"`): one way to say where
-    /// an error arose, whatever its kind. The two variants that format their own fields stay.
+    /// Returns the same error with `what` in front of its message (`"<what>: <message>"`). This is
+    /// the one way to say where an error arose, whatever its kind. The two variants that format
+    /// their own fields are returned unchanged.
     #[must_use]
     pub fn prefixed(mut self, what: impl std::fmt::Display) -> Self {
         if let Some(m) = self.msg_mut() {
@@ -377,9 +386,9 @@ impl KmError {
         self
     }
 
-    /// The same error with `text` as its message, its kind, return value, rule and check kept: a
-    /// refusal said again in other words. The two variants that format their own fields stay as
-    /// they are.
+    /// Returns the same error with `text` as its message, and keeps its kind, return value, rule
+    /// and check. It is for a refusal that is reported again with other words. The two variants
+    /// that format their own fields are returned unchanged.
     #[must_use]
     pub fn with_text(mut self, text: impl Into<String>) -> Self {
         if let Some(m) = self.msg_mut() {
@@ -388,13 +397,14 @@ impl KmError {
         self
     }
 
-    /// The PKCS#11 return value of the module call that failed, where the token layer set it.
+    /// Returns the PKCS#11 return value of the module call that failed, where the token layer set
+    /// it.
     #[must_use]
     pub fn rv(&self) -> Option<u64> {
         self.msg().and_then(Msg::rv)
     }
 
-    /// The same error, carrying the return value of the module call that failed.
+    /// Returns the same error with the return value of the module call that failed.
     #[must_use]
     pub fn with_rv(mut self, rv: Option<u64>) -> Self {
         if let Some(m) = self.msg_mut() {
@@ -403,14 +413,14 @@ impl KmError {
         self
     }
 
-    /// The plan's rule that refused, where one did ([`Rule`]).
+    /// Returns the plan's rule that refused, if one did ([`Rule`]).
     #[must_use]
     pub fn rule(&self) -> Option<Rule> {
         self.msg().and_then(Msg::rule)
     }
 
-    /// The same error, naming the rule that refused. The two variants that format their own
-    /// fields name none: no rule refuses with them.
+    /// Returns the same error, with the rule that refused. The two variants that format their own
+    /// fields name no rule, because no rule refuses with them.
     #[must_use]
     pub fn with_rule(mut self, rule: Rule) -> Self {
         if let Some(m) = self.msg_mut() {
@@ -419,9 +429,9 @@ impl KmError {
         self
     }
 
-    /// The check that refused, where one did ([`Check`]). A [`KmError::HashMismatch`] names the
-    /// check that compared its IDs, and a [`KmError::FirstUse`] names none, because nothing was
-    /// compared.
+    /// Returns the check that refused, if one did ([`Check`]). A [`KmError::HashMismatch`] names
+    /// the check that compared its IDs, and a [`KmError::FirstUse`] names none, because nothing
+    /// was compared.
     #[must_use]
     pub fn check(&self) -> Option<Check> {
         match self {
@@ -430,8 +440,8 @@ impl KmError {
         }
     }
 
-    /// The same error, naming `check` as the check that refused, in place of the one it named.
-    /// A [`KmError::FirstUse`] names none and stays as it is.
+    /// Returns the same error with `check` as the check that refused, in place of the check that
+    /// it named. A [`KmError::FirstUse`] names no check and is returned unchanged.
     #[must_use]
     pub fn with_check(mut self, check: Check) -> Self {
         if let KmError::HashMismatch { check: c, .. } = &mut self {
@@ -442,7 +452,7 @@ impl KmError {
         self
     }
 
-    /// The message of a variant that has one, return value included.
+    /// Returns the message of a variant that has one, including the return value.
     #[must_use]
     pub fn into_msg(self) -> Option<Msg> {
         said!(self)
@@ -453,9 +463,8 @@ impl KmError {
 mod tests {
     use super::*;
 
-    /// Every variant that says something in its own words carries a return value through
-    /// `with_rv`, `rv`, `msg` and `into_msg` alike; the two that format their own fields carry
-    /// none.
+    /// Every variant with its own message text keeps a return value through `with_rv`, `rv`, `msg`
+    /// and `into_msg`. The two variants that format their own fields keep none.
     #[test]
     fn every_message_carries_its_return_value() {
         let m = || Msg::from("said");
@@ -498,8 +507,8 @@ mod tests {
         }
     }
 
-    /// Exit 17 covers keys.toml, keys.lock, token options and addresses alike: its prefix names
-    /// none of them, and the message says which (review error.rs F2).
+    /// Exit 17 covers keys.toml, keys.lock, token options and addresses. Its prefix names none of
+    /// them, and the message says which one is invalid (review error.rs F2).
     #[test]
     fn an_invalid_lock_is_not_called_a_spec() {
         let e = KmError::Validation("keys.lock: object 'a' is not in the lock".into());

@@ -1,15 +1,18 @@
-//! The observation model: what a run saw of a token and its objects, and who said it.
+//! The observation model: what a run saw of a token and its objects, and which source reported
+//! each fact.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Facts about the object and the run at realisation time. Never compared.
+/// Facts about the object and the run at the time of the realisation. They are never compared.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Observed {
-    /// RFC 7512 URI of the object (derived from the token label, serial and locator).
+    /// The RFC 7512 URI of the object, derived from the token label, the serial number and the
+    /// locator.
     pub uri: String,
-    /// Logged in (private objects and duplicate private-key IDs were visible) or not.
+    /// Whether the run was logged in (so that private objects and duplicate private-key IDs were
+    /// visible) or not.
     pub session: Session,
 }
 
@@ -19,11 +22,12 @@ pub struct Observed {
 pub enum Session {
     /// Logged in as the user.
     User,
-    /// No login: public objects only.
+    /// No login, so only public objects were visible.
     Public,
 }
 
-/// One object's history on this token. Never a verdict; re-recording the same object keeps it.
+/// The history of one object on this token. It never affects a verdict, and recording the same
+/// object again keeps it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Provenance {
@@ -40,59 +44,65 @@ pub struct Origin {
     pub from: String,
     /// A method name of `migrate::Method`.
     pub method: String,
-    /// How exposed the material was on the way.
+    /// How exposed the material was during the move.
     pub exposure: crate::migrate::Exposure,
-    /// A vendor method: `exposure` is the level it declared, not one cakeys established.
+    /// Set for a vendor method. Then `exposure` is the level that the vendor method declared, not
+    /// a level that cakeys established.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub declared: bool,
 }
 
-/// What a realisation saw of its token and what handled it (review A3), stored once per
-/// distinct value in the lock's `observations`. Differences warn (module build, token,
-/// provider, a mechanism gone) or note (module file, cakeys version, profile); `lock`
-/// re-binds them. The provider, module and token are absent only in entries recorded before
-/// cakeys wrote them.
+/// What a realisation saw of its token and of the software that handled the token (review A3).
+/// The lock stores each distinct value once in its `observations` table. A difference in the
+/// module build, the token, the provider, or a mechanism that is gone causes a warning. A
+/// difference in the module file, the cakeys version or the profile causes a note. `lock`
+/// records the current values again. The provider, module and token are absent only in entries
+/// that were recorded before cakeys wrote these fields.
 ///
-/// The one lock table that takes keys this cakeys does not know: they never change a verdict,
-/// so a lock a newer cakeys wrote still loads, and they are kept (`extra`) when the lock is
-/// rewritten — only re-recording the realisation, which names a fresh entry, drops them.
+/// This is the only lock table that accepts keys that this version of cakeys does not know. Such
+/// keys never change a verdict, so a lock that a newer cakeys wrote still loads. The keys are
+/// kept (`extra`) when the lock is rewritten. Only recording the realisation again, which refers
+/// to a new entry, drops them.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Observation {
-    /// Provider that handled the module (fix-ups must not change identity).
+    /// The provider that handled the module. Its fix-ups must not change the identity of an
+    /// object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// The cakeys version that recorded it.
+    /// The cakeys version that recorded the entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cakeys_version: Option<String>,
-    /// The module capability profile the token resolved to (docs/CAPROBE.md D8), when one is
-    /// committed for it.
+    /// The module capability profile that the token resolved to (docs/CAPROBE.md D8), when a
+    /// committed profile exists for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
-    /// Usable mechanisms (feeds `functions.<token>` in the Nix library). One that has since gone
-    /// from the token is a warning.
+    /// The usable mechanisms (the Nix library builds `functions.<token>` from them). A mechanism
+    /// that the token no longer offers causes a warning.
     #[serde(default)]
     pub mechanisms: Vec<String>,
-    /// PKCS#11 module (`C_GetInfo`, plus the loaded file).
+    /// The PKCS#11 module (`C_GetInfo`, plus the loaded file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub module: Option<ModuleInfo>,
-    /// Token that holds the objects (`C_GetTokenInfo`).
+    /// The token that holds the objects (`C_GetTokenInfo`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<TokenInfo>,
-    /// What this deployment's token answered about cakeys' operations, keyed as a capability
-    /// profile's rows are (`prove.pop-sign.CKK_EC.secp256r1`, docs/CAPROBE.md): the proofs and
-    /// generations `lock` and `create` just demonstrated. Answers of this token, not of its kind, so they decide before a shipped
-    /// profile does; never a verdict of `check`. Not part of the entry's key, and merged, not
-    /// replaced, as runs record more.
+    /// The answers that this deployment's token gave about the operations of cakeys, with the
+    /// same keys as the rows of a capability profile (`prove.pop-sign.CKK_EC.secp256r1`,
+    /// docs/CAPROBE.md). They are the proofs and generations that `lock` and `create` have just
+    /// performed. They are answers of this token, not of its kind of token, so they take
+    /// precedence over a shipped profile. They are never a verdict of `check`. They are not part
+    /// of the entry's key, and new answers are merged into them, not replaced, as runs record
+    /// more.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub capabilities: BTreeMap<String, Answered>,
-    /// Keys of a newer cakeys, as read.
+    /// The keys of a newer cakeys, as they were read.
     #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
 }
 
-/// What an [`Answered`] says (ISSUES.md Q28): yes or no; any other word, a newer cakeys's, is
-/// kept as read and answers nothing. Written as the word.
+/// The answer in an [`Answered`] (ISSUES.md Q28): yes or no. Any other word comes from a newer
+/// cakeys. It is kept as it was read and answers nothing. The value is written as the word.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(from = "String", into = "String")]
 pub enum Said {
@@ -100,7 +110,7 @@ pub enum Said {
     Yes,
     /// `no`.
     No,
-    /// Another word, as read.
+    /// Another word, as it was read.
     Other(String),
 }
 
@@ -130,25 +140,26 @@ impl From<Said> for String {
     }
 }
 
-/// One answer a token gave (an [`Observation`]'s `capabilities`): `answer` is `yes` or `no`,
-/// `evidence` what showed it, `via` how it succeeded. A newer cakeys' fields are kept.
+/// One answer that a token gave (in the `capabilities` of an [`Observation`]). `answer` is `yes`
+/// or `no`, `evidence` is what showed the answer, and `via` is how the operation succeeded. The
+/// fields of a newer cakeys are kept.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Answered {
-    /// `yes` or `no`; anything else answers nothing.
+    /// `yes` or `no`. Any other word answers nothing.
     pub answer: Said,
-    /// What showed it.
+    /// What showed the answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
-    /// How it succeeded, where there is more than one way.
+    /// How the operation succeeded, where there is more than one way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
-    /// Fields of a newer cakeys, as read.
+    /// The fields of a newer cakeys, as they were read.
     #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
 }
 
 impl Answered {
-    /// A plain yes.
+    /// Returns a plain yes, without evidence or a way.
     #[must_use]
     pub fn yes() -> Answered {
         Answered { answer: Said::Yes, evidence: None, via: None, extra: BTreeMap::new() }
@@ -156,13 +167,15 @@ impl Answered {
 }
 
 impl Observation {
-    /// The entry's key: the SRI SHA-256 of its RFC 8785 (JCS) form, as `id::spec_digest`,
-    /// without its `capabilities` — what the token answered accumulates under one entry.
+    /// Returns the entry's key: the SRI SHA-256 of its RFC 8785 (JCS) form, as for
+    /// `id::spec_digest`, without its `capabilities`. The capabilities are left out so that all
+    /// the answers of the token accumulate under one entry.
     ///
     /// # Panics
     ///
-    /// If the entry does not canonicalize, which only `extra` could cause (a float that is not
-    /// finite); cakeys computes keys only for the entries it builds, which have none.
+    /// Panics if the entry cannot be canonicalized, which only `extra` could cause (with a float
+    /// that is not finite). cakeys computes keys only for the entries that it builds, and those
+    /// have no `extra`.
     #[must_use]
     pub fn digest(&self) -> String {
         let bare = Observation { capabilities: BTreeMap::new(), ..self.clone() };
@@ -171,20 +184,23 @@ impl Observation {
     }
 }
 
-/// What the lock knows of one token's module and hardware ([`super::Lock::token_observation`]).
+/// What the lock knows about the module and the hardware of one token
+/// ([`super::Lock::token_observation`]).
 #[derive(Debug)]
 pub enum TokenObservation<'a> {
     /// No realisation on the token names an observation.
     None,
-    /// Every realisation on the token that names one names this.
+    /// Every realisation on the token that names an observation names this one.
     One(&'a Observation),
-    /// Its realisations were recorded with different observations, so which is current is not
-    /// known: the specs, grouped by the entry they name.
+    /// The realisations on the token were recorded with different observations, so it is not
+    /// known which observation is current. The value holds the specs, grouped by the entry that
+    /// they name.
     Several(Vec<Vec<String>>),
 }
 
 impl TokenObservation<'_> {
-    /// The message for [`TokenObservation::Several`]: what differs and how to refresh it.
+    /// Returns the message for [`TokenObservation::Several`]: what differs, and how to record the
+    /// current observation.
     #[must_use]
     pub fn several(token: &str, groups: &[Vec<String>]) -> String {
         let groups: Vec<String> = groups.iter().map(|g| g.join(", ")).collect();
@@ -197,17 +213,19 @@ impl TokenObservation<'_> {
     }
 }
 
-/// Module that realised an object (`C_GetInfo` plus the loaded file). Provenance only: on verify a
-/// different build identity is a warning, and so is a different `hash` at the same `path` (the
-/// file replaced in place: the case a path outside the Nix store cannot show); a different
-/// `path` alone (a Nix rebuild) is a note. Identity itself is enforced by the CA-IDs.
+/// The module that realised an object (`C_GetInfo` plus the loaded file). It is provenance only.
+/// On verify, a different build identity causes a warning, and so does a different `hash` at the
+/// same `path` (the file was replaced in place, which a path outside the Nix store does not
+/// show). A different `path` alone (a Nix rebuild) causes a note. The CA-IDs enforce the identity
+/// of the object itself.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModuleInfo {
-    /// The file the dynamic loader mapped, symlinks resolved — whatever named it in keys.toml or
-    /// with `--module` (a bare name, a profile symlink, `$NAME`).
+    /// The file that the dynamic loader mapped, with symlinks resolved, whatever named it in
+    /// keys.toml or with `--module` (a file name without a directory, a profile symlink, or
+    /// `$NAME`).
     pub path: String,
-    /// SRI SHA-256 of that file; absent when it could not be read.
+    /// The SRI SHA-256 of that file. It is absent when the file could not be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
     /// `CK_INFO.libraryDescription`.
@@ -216,12 +234,13 @@ pub struct ModuleInfo {
     pub manufacturer: String,
     /// `CK_INFO.libraryVersion`.
     pub version: String,
-    /// `CK_INFO.cryptokiVersion`: the PKCS#11 version the module implements.
+    /// `CK_INFO.cryptokiVersion`: the PKCS#11 version that the module implements.
     pub cryptoki: String,
 }
 
 impl ModuleInfo {
-    /// Equal apart from the file (`path`, `hash`).
+    /// Returns whether the two modules are equal in every field except the file (`path` and
+    /// `hash`).
     #[must_use]
     pub fn same_build_identity(&self, other: &Self) -> bool {
         (&self.description, &self.manufacturer, &self.version, &self.cryptoki)
@@ -229,8 +248,8 @@ impl ModuleInfo {
     }
 }
 
-/// The token a realisation was made on (`C_GetTokenInfo`): provenance, like [`ModuleInfo`]; another
-/// token is a warning.
+/// The token on which a realisation was made (`C_GetTokenInfo`). It is provenance, like
+/// [`ModuleInfo`], and a different token causes a warning.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenInfo {

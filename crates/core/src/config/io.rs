@@ -1,5 +1,5 @@
-//! Reading and writing `keys.lock` on disk: whole-file writes, the update lock, and where a
-//! lock cannot be written (a Nix build, a read-only store).
+//! Reading and writing `keys.lock` on disk: writes of whole files, the advisory lock for updates,
+//! and the places where a lock cannot be written (a Nix build, a read-only store).
 
 use super::{LOCK_VERSION, Lock};
 use crate::error::{KmError, Result};
@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 /// # Errors
 ///
-/// `Io` if the file exists but cannot be read; `Validation` if it is not a valid lock of the
-/// current schema. An absent file is an empty lock, not an error.
+/// Returns `Io` if the file exists but cannot be read, and `Validation` if it is not a valid lock
+/// of the current schema. A missing file is an empty lock, not an error.
 pub fn load_lock(path: &Path) -> Result<Lock> {
     match std::fs::read_to_string(path) {
         Ok(text) => parse_lock(&text, path),
@@ -17,19 +17,22 @@ pub fn load_lock(path: &Path) -> Result<Lock> {
     }
 }
 
-/// [`load_lock`] on text already read; `path` only names it in messages.
+/// Works as [`load_lock`] on text that was already read. `path` is used only to name the file in
+/// messages.
 ///
 /// # Errors
 ///
-/// `Validation` if it is not a valid lock of the current schema.
+/// Returns `Validation` if the text is not a valid lock of the current schema.
 pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
     let mut lock: Lock =
         toml::from_str(text).map_err(|e| KmError::Validation(format!("{}: {e}", path.display()).into()))?;
-    // Recorded types compare equal to canonicalized keys.toml types.
+    // The recorded types are canonicalized, so that they compare equal to the canonicalized types
+    // of keys.toml.
     for t in lock.objects.values_mut().filter_map(|o| o.object_type.as_mut()) {
         t.canonicalize();
     }
-    // Recorded locators too: a lock written before keys.toml's were lower-cased still matches.
+    // The recorded locators are canonicalized too, so that a lock written before the locators of
+    // keys.toml were converted to lower case still matches.
     for (spec, on) in &mut lock.realisations {
         for (token, r) in on {
             r.locator.canonicalize().map_err(|e| {
@@ -41,52 +44,57 @@ pub fn parse_lock(text: &str, path: &Path) -> Result<Lock> {
     Ok(lock)
 }
 
-/// Write the lock through a temporary file synced before it is renamed over the old one (and the
-/// directory synced after), so a
-/// crash leaves the old lock or the new one, never a truncated one. A lock that would not load
-/// again is refused, the old one kept.
+/// Writes the lock through a temporary file, which is synced before it is renamed over the old
+/// file, and then syncs the directory. So a crash leaves either the old lock or the new lock, and
+/// never a truncated lock. A lock that would not load again is refused, and the old file is kept.
 ///
 /// # Errors
 ///
-/// `LockUnwritable` (21) if the lock breaks a load rule (nothing is written), or if the temporary
-/// write, sync or rename fails; `Io` if the lock cannot be encoded.
+/// Returns `LockUnwritable` (21) if the lock breaks a load rule (then nothing is written), or if
+/// the temporary write, the sync or the rename fails. Returns `Io` if the lock cannot be encoded.
 pub fn save_lock(path: &Path, lock: &Lock) -> Result<()> {
-    // Saved after a token write as any other time: the token may hold what the lock does not
-    // record, whichever check stopped the write (review 2026-11-23 A-17).
+    // The lock is checked here also when the save follows a token write. A lock that fails the
+    // check is not written, and the error is `LockUnwritable` (21), whichever check refused it,
+    // because the token may now hold an object that the lock does not record (review 2026-11-23
+    // A-17).
     lock.check(path)
         .map_err(|e| KmError::LockUnwritable(format!("not writing a lock that would not load: {e}").into()))?;
     let text =
         toml::to_string_pretty(lock).map_err(|e| KmError::Io(format!("encoding {}: {e}", path.display()).into()))?;
-    // A new lock is created like any new file (0666 under the umask); one that exists keeps its
-    // mode, and its owner and group where this user may set them (review 2026-11-23 A-4).
+    // A new lock is created like any new file (0666 under the umask). A lock that exists keeps its
+    // mode, and it keeps its owner and group where this user may set them (review 2026-11-23
+    // A-4).
     write_file(path, text.as_bytes(), 0o666, true).map_err(|e| match e {
         KmError::Io(m) => KmError::LockUnwritable(m),
         other => other,
     })
 }
 
-/// Write `bytes` to `path` whole or not at all, as [`save_lock`] writes the lock: a uniquely
-/// named temporary file beside it, created with `mode` under the umask (0600 for a key file),
-/// synced, renamed into place, and the directory synced. What every tool writes a file with.
+/// Writes `bytes` to `path` completely or not at all, in the way that [`save_lock`] writes the
+/// lock. The function creates a temporary file with a unique name in the same directory, with
+/// `mode` under the umask (0600 for a key file). It syncs the file, renames it into place, and
+/// syncs the directory. Every tool writes its files with this function.
 ///
 /// # Errors
 ///
-/// `Io` if the temporary write, sync or rename fails.
+/// Returns `Io` if the temporary write, the sync or the rename fails.
 pub fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     write_file(path, bytes, mode, false)
 }
 
-/// [`write_whole`]; with `keep`, a file already at `path` passes its permission bits to the new
-/// one exactly (not under the umask), and its owner and group as far as this user may set them:
-/// a 0600 lock stays 0600, and a lock a group shares stays the group's.
+/// Works as [`write_whole`]. With `keep`, the new file gets exactly the permission bits of the
+/// file that is already at `path` (not under the umask), and also its owner and group as far as
+/// this user may set them. So a 0600 lock stays 0600, and a lock that a group shares stays shared
+/// with that group.
 fn write_file(path: &Path, bytes: &[u8], mode: u32, keep: bool) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
-    // Through a symlink to the file it names, which the rename would otherwise replace.
+    // Follow a symlink to the file that it names. Otherwise, the rename would replace the
+    // symlink.
     let path = &resolved(path);
     let dir = lock_dir(path);
-    // Beside the target (the same filesystem, for the rename), removed if this run fails before
-    // the rename.
+    // The temporary file is in the target's directory, so that it is on the same filesystem for
+    // the rename. It is removed if this run fails before the rename.
     let mut tmp = tempfile::Builder::new()
         .prefix(".cakeys.")
         .permissions(std::fs::Permissions::from_mode(mode))
@@ -94,9 +102,10 @@ fn write_file(path: &Path, bytes: &[u8], mode: u32, keep: bool) -> Result<()> {
         .map_err(KmError::io(format!("creating a temporary file in {}", dir.display())))?;
     if keep && let Ok(old) = std::fs::metadata(path) {
         use std::os::unix::fs::MetadataExt as _;
-        // Best effort, owner before mode (a chown may clear bits the mode then sets): only root
-        // gives a file another user, and a user gives it only a group it is in. What cannot be
-        // kept is the writer's, as for a new file.
+        // This is a best effort, and it sets the owner before the mode, because a chown may clear
+        // bits that the mode then sets. Only root can give a file to another user, and a user can
+        // give a file only to a group that the user is in. An owner or a group that cannot be
+        // kept becomes the writer's, as for a new file.
         let file = tmp.as_file();
         if std::os::unix::fs::fchown(file, Some(old.uid()), Some(old.gid())).is_err() {
             let _ = std::os::unix::fs::fchown(file, None, Some(old.gid()));
@@ -108,45 +117,49 @@ fn write_file(path: &Path, bytes: &[u8], mode: u32, keep: bool) -> Result<()> {
         .and_then(|()| tmp.as_file().sync_all())
         .map_err(KmError::io(format!("writing {}", tmp.path().display())))?;
     tmp.persist(path).map_err(|e| KmError::Io(format!("renaming over {}: {}", path.display(), e.error).into()))?;
-    // The rename itself is durable once the directory is synced.
+    // The rename itself is durable only after the directory is synced.
     std::fs::File::open(dir).and_then(|d| d.sync_all()).map_err(KmError::io(format!("syncing {}", dir.display())))
 }
 
-/// The directory a lock file lives in: its parent, or the working directory for a bare name.
+/// Returns the directory of a lock file: its parent, or the working directory for a file name
+/// without a directory.
 pub(super) fn lock_dir(path: &Path) -> &Path {
     path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."))
 }
 
-/// The file `path` names, however it is named (a symlink, `..`): a file not yet written resolves
-/// through its directory, and one that does not resolve stays as given. Writing, checking and
-/// guarding a lock all go to this file, so a symlinked lock is written through, never replaced
-/// by a copy, and two names for it share one guard (review D2, config.rs F7).
+/// Returns the file that `path` names, however it is named (through a symlink or with `..`). A
+/// file that does not exist yet is resolved through its directory, and a path that does not
+/// resolve is returned as given. Writing, checking and guarding a lock all use this file. So a
+/// lock behind a symlink is written through the symlink and never replaced by a copy, and two
+/// names for the same lock share one guard (review D2, config.rs F7).
 fn resolved(path: &Path) -> PathBuf {
     std::fs::canonicalize(path)
         .or_else(|_| std::fs::canonicalize(lock_dir(path)).map(|d| d.join(path.file_name().unwrap_or_default())))
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// The advisory lock held around the lock file's read-modify-write (finding M3). A run that may
-/// update the lock takes it before `load_lock` and drops it after `save_lock`, so two concurrent
-/// runs on different tokens cannot lose each other's realisations. Readers never take it: the
-/// temporary-file rename makes each read a consistent snapshot.
+/// The advisory lock that is held while a run reads, changes and writes the lock file (finding
+/// M3). A run that may update the lock takes it before `load_lock` and releases it after
+/// `save_lock`, so two concurrent runs on different tokens cannot lose each other's realisations.
+/// Readers never take it, because the rename of the temporary file makes each read a consistent
+/// snapshot.
 pub struct UpdateGuard(
     #[expect(dead_code, reason = "held, never read: the lock is released when it drops")] std::fs::File,
 );
 
-/// Take the exclusive advisory lock on `<lock>.lck`, waiting for any other updater; `waiting` is
-/// told the sidecar's path first when another holds it, so a run can say why it stopped. The
-/// sidecar file is created if absent; a leftover one is harmless (the lock is advisory and
-/// released when its holder exits). One that exists is opened read-only, since `flock` needs no
-/// write access: a sidecar another user left (0644 under their umask) never refuses a run that
-/// [`lock_unwritable`] let through (review 2026-11-23 A-12).
+/// Takes the exclusive advisory lock on `<lock>.lck`, and waits for any other run that updates
+/// the lock. When another run holds the lock, the function first calls `waiting` with the path of
+/// the sidecar file, so that the run can say why it stopped. The sidecar file is created if it
+/// does not exist. A leftover sidecar file does no harm, because the lock is advisory and is
+/// released when its holder exits. An existing sidecar file is opened read-only, because `flock`
+/// needs no write access. So a sidecar file that another user left (0644 under that user's umask)
+/// never refuses a run that [`lock_unwritable`] allowed (review 2026-11-23 A-12).
 ///
 /// # Errors
 ///
-/// `Io` if the sidecar file cannot be opened or the advisory lock cannot be taken.
+/// Returns `Io` if the sidecar file cannot be opened or the advisory lock cannot be taken.
 pub fn lock_for_update(lock_path: &Path, waiting: impl FnOnce(&Path)) -> Result<UpdateGuard> {
-    // The lock file's own sidecar, however the run names it ([`resolved`]).
+    // The sidecar file of the resolved lock file, however the run names the lock ([`resolved`]).
     let mut sidecar = resolved(lock_path).into_os_string();
     sidecar.push(".lck");
     let file = match std::fs::File::open(&sidecar) {
@@ -168,22 +181,25 @@ pub fn lock_for_update(lock_path: &Path, waiting: impl FnOnce(&Path)) -> Result<
     Ok(UpdateGuard(file))
 }
 
-/// Why this run cannot write the lock at `lock_path`, if it cannot. A run that writes by default
-/// (`lock`, `delete`) asks before it touches a token, so an unwritable lock is a refusal up
-/// front — never a key created and then not recorded — unless `--no-update-lock` was passed.
-/// - Inside a Nix build sandbox (`NIX_BUILD_TOP` set, `IN_NIX_SHELL` not: `nix develop` sets
-///   both) a write is lost: the lock is a read-only store path, or a copy thrown away with the
-///   build.
-/// - Otherwise the lock file, if present, and its directory (temporary file, rename and the
-///   `.lck` sidecar) must be writable by this user (`access(2)`, so a read-only mount counts).
+/// Returns why this run cannot write the lock at `lock_path`, or `None` if it can. A run that
+/// writes the lock by default (`lock`, `delete`) asks this before it touches a token. So an
+/// unwritable lock is refused before the run starts, unless `--no-update-lock` was passed, and a
+/// key is never created and then not recorded.
+/// - Inside a Nix build sandbox (`NIX_BUILD_TOP` is set and `IN_NIX_SHELL` is not; `nix develop`
+///   sets both), a write is lost, because the lock is a read-only store path or a copy that is
+///   discarded with the build.
+/// - Otherwise, this user must be able to write the lock file, if it exists, and its directory
+///   (for the temporary file, the rename and the `.lck` sidecar file). The check uses
+///   `access(2)`, so a read-only mount also counts as unwritable.
 #[must_use]
 pub fn lock_unwritable(lock_path: &Path) -> Option<String> {
     unwritable(lock_path, in_nix_build())
 }
 
-/// Inside a Nix build sandbox: `NIX_BUILD_TOP` set and `IN_NIX_SHELL` not (`nix develop` sets
-/// both), and [`ALLOW_NIX_STORE_KEYS`] not set. Where a lock write is lost, and an admin
-/// operation (docs/CAMIGRATE.md D8) refused.
+/// Returns whether the run is inside a Nix build sandbox: `NIX_BUILD_TOP` is set and
+/// `IN_NIX_SHELL` is not (`nix develop` sets both), and [`ALLOW_NIX_STORE_KEYS`] is not set. In a
+/// sandbox, a write of the lock is lost, and an admin operation (docs/CAMIGRATE.md D8) is
+/// refused.
 #[must_use]
 pub fn in_nix_build() -> bool {
     std::env::var_os("NIX_BUILD_TOP").is_some()
@@ -191,11 +207,12 @@ pub fn in_nix_build() -> bool {
         && !nix_store_keys_allowed()
 }
 
-/// `CAKEYS_ALLOW_NIX_STORE_KEYS=1`: for throwaway keys a Nix build makes and uses (a test, a VM
-/// image), never a deployment's. A secret file (`pinFile`, `soCredentialFile`, a secret
-/// `migrate.file`, `migrate.passphraseFile`) may then be under `/nix/store`, and no run counts as
-/// inside a Nix build sandbox ([`in_nix_build`]): what a sandboxed run would have refused, it
-/// does, and a lock it writes is lost with the build unless the build keeps it.
+/// The environment variable `CAKEYS_ALLOW_NIX_STORE_KEYS`. Set it to `1` for disposable keys that
+/// a Nix build makes and uses (a test or a VM image), and never for the keys of a deployment. A
+/// secret file (`pinFile`, `soCredentialFile`, a secret `migrate.file`, `migrate.passphraseFile`)
+/// may then be under `/nix/store`, and no run counts as inside a Nix build sandbox
+/// ([`in_nix_build`]). A run then does what a sandboxed run would have refused, and a lock that
+/// it writes is lost with the build unless the build keeps it.
 pub const ALLOW_NIX_STORE_KEYS: &str = "CAKEYS_ALLOW_NIX_STORE_KEYS";
 
 /// Whether [`ALLOW_NIX_STORE_KEYS`] is set to `1`.
@@ -206,9 +223,10 @@ pub(crate) fn nix_store_keys_allowed() -> bool {
 /// The Nix store, which anyone on the host can read.
 const NIX_STORE: &str = "/nix/store";
 
-/// Why `what`, a file holding a secret, may not be read from `path`: it resolves into the
-/// world-readable Nix store, and [`ALLOW_NIX_STORE_KEYS`] is not set. Every secret file keys.toml
-/// names is held to it, at load and again when it is read.
+/// Returns why `what`, a file that holds a secret, may not be read from `path`, or `None` if it
+/// may. The file may not be read when `path` resolves into the Nix store, which everyone can read,
+/// and [`ALLOW_NIX_STORE_KEYS`] is not set. Every secret file that keys.toml names gets this
+/// check, at load and again when the file is read.
 pub(crate) fn secret_in_store(what: &dyn std::fmt::Display, path: &Path) -> Option<String> {
     (!nix_store_keys_allowed() && resolves_under(path, Path::new(NIX_STORE))).then(|| {
         format!(
@@ -219,16 +237,18 @@ pub(crate) fn secret_in_store(what: &dyn std::fmt::Display, path: &Path) -> Opti
     })
 }
 
-/// Whether `path` is `root` or under it once both are resolved: symlinks followed
-/// (`./result/k.pem`, `/run/current-system/sw/…`) and `..` taken, component by component, never
-/// a string prefix. A path that does not exist (yet) is resolved as far as it does, and the rest
-/// taken as written; a relative one is relative to the working directory, as a read would be.
+/// Returns whether `path` is `root` or is under it, after both are resolved. The resolution
+/// follows symlinks (`./result/k.pem`, `/run/current-system/sw/…`) and applies `..`, and the
+/// comparison is component by component, never by a string prefix. For a path that does not
+/// exist (yet), the existing part is resolved and the rest is taken as written. A relative path
+/// is relative to the working directory, as it would be for a read.
 pub(crate) fn resolves_under(path: &Path, root: &Path) -> bool {
     resolve(path).starts_with(resolve(root))
 }
 
-/// `path` made absolute with its longest existing prefix canonicalized and the rest applied
-/// lexically.
+/// Returns `path` as an absolute path. Its longest existing prefix is canonicalized, and the
+/// remaining components are applied as text (a `..` removes the last component), without access
+/// to the filesystem.
 fn resolve(path: &Path) -> PathBuf {
     use std::path::Component;
     let path = std::env::current_dir().map_or_else(|_| path.to_owned(), |cwd| cwd.join(path));
@@ -249,7 +269,8 @@ fn resolve(path: &Path) -> PathBuf {
     path
 }
 
-/// [`lock_unwritable`], with whether this run is inside a Nix build sandbox given.
+/// Works as [`lock_unwritable`], with the caller saying whether this run is inside a Nix build
+/// sandbox.
 pub(super) fn unwritable(lock_path: &Path, sandboxed: bool) -> Option<String> {
     let writable = |p: &Path| rustix::fs::access(p, rustix::fs::Access::WRITE_OK).is_ok();
     if sandboxed {
@@ -258,7 +279,7 @@ pub(super) fn unwritable(lock_path: &Path, sandboxed: bool) -> Option<String> {
              it as outside, for throwaway keys only)"
         ));
     }
-    // The file a write would go to: a symlink's target, in the target's directory.
+    // The file to which a write would go: a symlink's target, in the target's directory.
     let lock_path = &resolved(lock_path);
     if lock_path.exists() && !writable(lock_path) {
         return Some(format!("{} is not writable", lock_path.display()));
@@ -276,8 +297,9 @@ mod tests {
     use crate::config::lock::tests::attestable_lock;
     use crate::config::*;
 
-    /// A lock that cannot be saved is `LockUnwritable` (21), whatever stage of the write failed:
-    /// a run that changed the token must say its record is missing, not exit 1 like any I/O.
+    /// A lock that cannot be saved is `LockUnwritable` (21), whatever stage of the write failed.
+    /// A run that changed the token must report that its record is missing, and must not exit
+    /// with 1 like any other I/O error.
     #[test]
     fn a_lock_that_cannot_be_saved_is_its_own_code() {
         use std::os::unix::fs::PermissionsExt;
@@ -287,22 +309,24 @@ mod tests {
             assert_eq!(e.exit_code(), 21, "{e}");
             assert!(e.to_string().contains("lock cannot be written"), "{e}");
         };
-        // A parent that is a file: refused for root too, so the test never passes untried
-        // (review 2026-11-23 A-16).
+        // A parent that is a file is refused for root too, so the test never passes without
+        // testing anything (review 2026-11-23 A-16).
         let file = dir.path().join("file");
         std::fs::write(&file, "").unwrap();
         refused(&file.join("keys.lock"));
         let ro = dir.path().join("ro");
         std::fs::create_dir(&ro).unwrap();
         std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
-        // A read-only directory, where the permission holds (root writes anyway).
+        // A read-only directory, tested only where the permission applies (root can write
+        // anyway).
         if std::fs::File::create(ro.join("probe")).is_err() {
             refused(&ro.join("keys.lock"));
         }
     }
 
-    /// A symlinked lock (a NixOS layout: the lock in a checked-out repository) is written through
-    /// to its target, never replaced by a copy the repository never sees (config.rs F7).
+    /// A lock behind a symlink (a NixOS layout, with the lock in a checked-out repository) is
+    /// written through to its target, and never replaced by a copy that the repository never sees
+    /// (config.rs F7).
     #[test]
     fn a_symlinked_lock_is_written_through() {
         let dir = tempfile::tempdir().unwrap();
@@ -316,8 +340,9 @@ mod tests {
         assert_eq!(unwritable(&link, false), None);
     }
 
-    /// A missing lock is an empty one of the current version; what is saved is what loads back,
-    /// with no temporary file left beside it; a bare file name lives in the working directory.
+    /// A missing lock is an empty lock of the current version. What is saved loads back unchanged,
+    /// and no temporary file is left next to it. A file name without a directory is in the
+    /// working directory.
     #[test]
     fn a_lock_saves_and_loads_back() {
         let dir = tempfile::tempdir().unwrap();
@@ -337,10 +362,11 @@ mod tests {
         assert_eq!(lock_dir(&path), dir.path());
     }
 
-    /// A lock that exists keeps its mode across a save, exactly and whatever the umask: a 0600
-    /// lock stays private, a group's 0660 stays the group's. A key file is never widened by the
-    /// file it replaces. A sidecar this user cannot write (another user's, left 0644) still
-    /// guards the update: `flock` needs no write access (review 2026-11-23 A-4, A-12).
+    /// A lock that exists keeps exactly its mode across a save, whatever the umask is. A 0600 lock
+    /// stays private, and a group's 0660 lock stays shared with the group. A key file never gets
+    /// wider permissions from the file that it replaces. A sidecar file that this user cannot
+    /// write (another user's, left at 0644) still guards the update, because `flock` needs no
+    /// write access (review 2026-11-23 A-4, A-12).
     #[test]
     fn a_saved_lock_keeps_its_mode_and_a_read_only_sidecar_guards() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -366,14 +392,15 @@ mod tests {
         drop(guard);
     }
 
-    /// Why a lock cannot be written: inside a Nix build sandbox, a lock file or a directory this
-    /// user cannot write; nothing when both can be (a lock not there yet included).
+    /// The reasons why a lock cannot be written: inside a Nix build sandbox, or a lock file or a
+    /// directory that this user cannot write. There is no reason when both can be written,
+    /// including when the lock does not exist yet.
     #[test]
     fn an_unwritable_lock_says_why() {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("keys.lock");
-        // What a message names: the path resolved (macOS's /tmp is /private/tmp).
+        // A message names the resolved path (on macOS, /tmp is /private/tmp).
         let real = dir.path().canonicalize().unwrap();
         assert_eq!(unwritable(&path, false), None);
         let sandboxed = unwritable(&path, true).unwrap();
@@ -382,8 +409,9 @@ mod tests {
         assert_eq!(unwritable(&path, false), None);
         let mode = |p: &Path, m: u32| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
         mode(&path, 0o444);
-        // access(2) grants root every write: the permission cases mean nothing as root, and a run
-        // that requires everything is not one (it returned here silently).
+        // access(2) grants every write to root, so the permission cases test nothing when the test
+        // runs as root. The test then skips, and a run that requires every test
+        // (`CAKEYS_REQUIRE_ALL`) fails instead. Earlier, the test returned here without a message.
         if rustix::fs::access(&path, rustix::fs::Access::WRITE_OK).is_ok() {
             let why = "the permission cases: this user writes a mode-444 file";
             crate::test_skip::skip("an_unwritable_lock_says_why", crate::test_skip::REQUIRE_ALL, why);
@@ -395,7 +423,7 @@ mod tests {
         let said = unwritable(&path, false);
         mode(dir.path(), 0o755);
         assert_eq!(said, Some(format!("the lock's directory {} is not writable", real.display())));
-        // A lock not there yet in a directory that cannot take it.
+        // A lock that does not exist yet, in a directory that cannot be written.
         std::fs::remove_file(&path).unwrap();
         mode(dir.path(), 0o555);
         let said = unwritable(&path, false);
@@ -403,8 +431,9 @@ mod tests {
         assert!(said.is_some_and(|s| s.contains("directory")));
     }
 
-    /// The store guard compares resolved paths component by component: a link into the root, a
-    /// `..` out of it and a sibling whose name only starts like it are told apart, existing or not.
+    /// The store guard compares resolved paths component by component. It tells apart a link into
+    /// the root, a `..` out of it, and a sibling whose name only starts with the same characters,
+    /// whether these paths exist or not.
     #[test]
     fn paths_resolve_before_they_compare() {
         let dir = tempfile::tempdir().unwrap();

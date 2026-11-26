@@ -1,6 +1,7 @@
-//! The PKCS#11 object classes and key types cakeys manages, parsed once when keys.toml or the
-//! lock is loaded. They serialize as their PKCS#11 names (`CKO_*`, `CKK_*`), so spec digests and
-//! lock files are unchanged; a name cakeys does not know is invalid at load (17).
+//! The PKCS#11 object classes and key types that cakeys manages. They are parsed once, when
+//! keys.toml or the lock is loaded. They serialize as their PKCS#11 names (`CKO_*`, `CKK_*`), so
+//! spec digests and lock files stay unchanged. A name that cakeys does not know is invalid at
+//! load (17).
 
 use serde::{Deserialize, Serialize};
 
@@ -16,7 +17,7 @@ macro_rules! pkcs11_names {
             /// Every value, in declaration order.
             pub const ALL: &[$ty] = &[$($ty::$variant),*];
 
-            /// The PKCS#11 name, as keys.toml and the lock write it.
+            /// Returns the PKCS#11 name, as keys.toml and the lock write it.
             pub fn name(self) -> &'static str {
                 match self {
                     $($ty::$variant => $name,)*
@@ -41,7 +42,7 @@ macro_rules! pkcs11_names {
 }
 
 pkcs11_names! {
-    /// Object classes (PKCS#11 3.2 §4).
+    /// The object classes (PKCS#11 3.2 §4).
     ObjectClass("object class") {
         Data = "CKO_DATA",
         Certificate = "CKO_CERTIFICATE",
@@ -52,7 +53,7 @@ pkcs11_names! {
 }
 
 pkcs11_names! {
-    /// Key types (PKCS#11 3.2 §6).
+    /// The key types (PKCS#11 3.2 §6).
     KeyType("key type") {
         Rsa = "CKK_RSA",
         Ec = "CKK_EC",
@@ -69,13 +70,14 @@ pkcs11_names! {
 }
 
 impl ObjectClass {
-    /// Private, public and secret keys: the classes with key attributes.
+    /// Returns whether the class is a private, public or secret key, which are the classes with
+    /// key attributes.
     #[must_use]
     pub fn is_key(self) -> bool {
         matches!(self, ObjectClass::PrivateKey | ObjectClass::PublicKey | ObjectClass::SecretKey)
     }
 
-    /// The two halves of a key pair.
+    /// Returns whether the class is one of the two halves of a key pair.
     #[must_use]
     pub fn is_asymmetric(self) -> bool {
         matches!(self, ObjectClass::PrivateKey | ObjectClass::PublicKey)
@@ -83,13 +85,15 @@ impl ObjectClass {
 }
 
 impl KeyType {
-    /// The halves of a key pair have these types; the rest are secret keys.
+    /// Returns whether the key type is a type of the halves of a key pair. The other key types
+    /// are secret keys.
     #[must_use]
     pub fn is_asymmetric(self) -> bool {
         matches!(self, KeyType::Rsa | KeyType::Ec | KeyType::EcEdwards)
     }
 
-    /// The HMAC key types bound to one hash (`CKK_SHA*_HMAC`), which PKCS#11 cannot generate.
+    /// Returns whether the key type is one of the HMAC key types that are bound to one hash
+    /// (`CKK_SHA*_HMAC`), which PKCS#11 cannot generate.
     #[must_use]
     pub fn is_hash_bound_hmac(self) -> bool {
         matches!(
@@ -98,9 +102,9 @@ impl KeyType {
         )
     }
 
-    /// The length in bytes a key type fixes: a `CKK_DES3` key is three-key Triple DES, 24 bytes
-    /// (parity bits included), and PKCS#11 gives it no `CKA_VALUE_LEN` (`SoftHSM` keeps none).
-    /// keys.toml's `valueLen` is then that length or absent.
+    /// Returns the length in bytes that a key type fixes. A `CKK_DES3` key is three-key Triple
+    /// DES with 24 bytes (including the parity bits), and PKCS#11 gives it no `CKA_VALUE_LEN`
+    /// (`SoftHSM` stores none). For such a type, keys.toml's `valueLen` is that length or absent.
     #[must_use]
     pub fn fixed_value_len(self) -> Option<u64> {
         match self {
@@ -125,10 +129,10 @@ mod tests {
             assert_eq!(serde_json::to_value(k).unwrap(), k.name());
             assert_eq!(k.name().parse::<KeyType>(), Ok(*k));
         }
-        // Two-key Triple DES and single DES are not managed (docs/OPEN.md).
+        // cakeys does not manage two-key Triple DES or single DES (docs/OPEN.md).
         assert_eq!("CKK_DES2".parse::<KeyType>(), Err("unknown key type: CKK_DES2".to_owned()));
         assert!("CKK_DES".parse::<KeyType>().is_err());
-        // The error names the PKCS#11 concept, never the Rust type.
+        // The error names the PKCS#11 concept, and never the Rust type.
         assert_eq!("CKO_X".parse::<ObjectClass>(), Err("unknown object class: CKO_X".to_owned()));
     }
 

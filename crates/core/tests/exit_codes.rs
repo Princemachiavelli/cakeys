@@ -1,6 +1,7 @@
-//! What the docs say an error exits with is what it exits with: `read_lock`'s doc said 18 for
-//! the 14 it returns (review D2). Every `` `Variant` (NN) `` in the workspace's sources names a
-//! `KmError` variant and the code [`KmError::exit_code`] gives it.
+//! These tests check that the exit code that the documentation gives for an error is the code
+//! with which the error exits. The doc comment of `read_lock` once said 18 for an error that
+//! exits with 14 (review D2). Every `` `Variant` (NN) `` in the workspace's sources must name a
+//! `KmError` variant and the code that [`KmError::exit_code`] returns for it.
 
 use cakeys_core::KmError;
 use std::path::{Path, PathBuf};
@@ -56,10 +57,11 @@ fn documented_exit_codes_are_the_ones_returned() {
     assert!(checked > 30, "only {checked} documented codes found: the scan no longer reads the docs");
 }
 
-/// `EXIT_CODES`, the table every `--help` renders, holds every code an error exits with, the
-/// lock-written code, 0 and 2, and no other; docs/CAKEYS.md's exit-code table lists the same,
-/// each under the table's name for it: its words up to the first `:`, all of them when it has
-/// none, backticks aside (review 2026-11-24 C-13: rows 1, 17 and 21 said other words).
+/// `EXIT_CODES`, the table that every `--help` prints, holds every code with which an error
+/// exits, the lock-written code, 0, 1 and 2, and no other code. The exit-code table of
+/// docs/CAKEYS.md lists the same codes. Each row must describe its code with the same words as
+/// `EXIT_CODES`: the words up to the first `:`, or all the words when there is no `:`, ignoring
+/// backticks (review 2026-11-24 C-13: rows 1, 17 and 21 used other words).
 #[test]
 fn the_exit_code_table_lists_every_code() {
     use std::collections::{BTreeMap, BTreeSet};

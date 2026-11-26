@@ -1,10 +1,11 @@
-//! docs/CONFIG.md's annotated example loads as written (review 2026-11-23 A-15: it said so, and
-//! no test loaded it).
+//! This test checks that the annotated example in docs/CONFIG.md loads as written (review
+//! 2026-11-23 A-15: the document said that it loads, but no test loaded it).
 
 use std::path::Path;
 
-/// The first `toml` block after "An annotated example" is a keys.toml that loads, with no
-/// environment: load checks a `$NAME` reference's form, and only reading the file needs it set.
+/// The first `toml` block after "An annotated example" is a keys.toml that loads without any
+/// environment variable. The load checks only the form of a `$NAME` reference, and only reading
+/// the referenced file needs the variable to be set.
 #[test]
 fn the_annotated_config_example_loads() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/CONFIG.md");

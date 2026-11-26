@@ -1,12 +1,14 @@
-//! The names of what refuses an object: the rules a plan asks before a write ([`Rule`]) and the
-//! checks a run makes of a token, a lock, an attestation or a file ([`Check`]). A refusal carries
-//! one of them ([`crate::Reason`], [`crate::KmError::check`]), and a JSON row prints its name in
-//! the `rule` field. Users and scripts read these names, so each one is stable: a test holds
-//! every name to the tables in docs/CAKEYS.md ("Rules and checks"). Rule names are kebab-case
-//! words, and check names are dotted (`identity.material`), so the two lists never share a name.
+//! The names of the rules and the checks that can refuse an object. A [`Rule`] is a rule that a
+//! plan checks before a write. A [`Check`] is a check that a run makes of a token, a lock, an
+//! attestation or a file. A refusal carries one of these names ([`crate::Reason`],
+//! [`crate::KmError::check`]), and a JSON row prints the name in its `rule` field. Users and
+//! scripts read these names, so no name may change: a test compares every name with the tables
+//! in docs/CAKEYS.md ("Rules and checks"). Rule names are kebab-case words, and check names are
+//! dotted (`identity.material`), so the two lists never share a name.
 
-/// One enum of names: the variants with their names, `ALL` in declaration order, `name`,
-/// `named` and `Display`.
+/// Defines one enum of names: the variants with their names, the constant `ALL` with every
+/// variant in declaration order, the methods `name` and `named`, and an implementation of
+/// `Display`.
 macro_rules! names {
     ($(#[$enum_doc:meta])* $enum:ident { $($(#[$doc:meta])* $variant:ident = $name:literal,)* }) => {
         $(#[$enum_doc])*
@@ -16,10 +18,10 @@ macro_rules! names {
         }
 
         impl $enum {
-            /// Every one, in declaration order.
+            /// Every variant, in declaration order.
             pub const ALL: &[$enum] = &[$($enum::$variant),*];
 
-            /// Its name, as refusals and the JSON rows print it.
+            /// Returns the variant's name, as refusals and the JSON rows print it.
             #[must_use]
             pub fn name(self) -> &'static str {
                 match self {
@@ -27,7 +29,7 @@ macro_rules! names {
                 }
             }
 
-            /// The one whose name is `name`, if there is one.
+            /// Returns the variant whose name is `name`, or `None` if no variant has that name.
             #[must_use]
             pub fn named(name: &str) -> Option<$enum> {
                 $enum::ALL.iter().copied().find(|v| v.name() == name)
@@ -43,41 +45,49 @@ macro_rules! names {
 }
 
 names! {
-    /// A rule a plan asks before a write (docs/CAKEYS.md, "Rules and checks"). The plan and its
-    /// refusals live in `cakeys_pkcs11::ops`, which re-exports this enum; the enum is here so that
-    /// a refusal's [`crate::Reason`] can name its rule, and so that one test holds the rule names
-    /// and the check names apart.
+    /// A rule that a plan checks before a write (docs/CAKEYS.md, "Rules and checks"). The plan and
+    /// its refusals are in `cakeys_pkcs11::ops`, which re-exports this enum. The enum is defined
+    /// in this crate so that a refusal's [`crate::Reason`] can name its rule, and so that one test
+    /// can check that no rule name is also a check name.
     Rule {
-        /// Where the module may place a key (`cakeys_pkcs11::provider::Provider::placement`): 17.
+        /// The module allows a key in the place where the write puts it
+        /// (`cakeys_pkcs11::provider::Provider::placement`): 17.
         Placement = "placement",
-        /// An attestation the spec opts into, which the provider computes for the class: 15.
+        /// The provider can compute, for the object's class, the attestation that the spec opts
+        /// into: 15.
         AttestationCover = "attestation-cover",
-        /// An attestation of a key that is imported, which the provider gives only for one the
-        /// device generated (PIV): 15.
+        /// The spec does not ask for an attestation of an imported key when the provider attests
+        /// only a key that the device generated (PIV): 15.
         ImportedAttestation = "imported-attestation",
-        /// A key the module generates from its own template only, which it refuses to make as
-        /// declared (`cakeys_pkcs11::provider::Provider::generation`): 15 or 17.
+        /// The module can generate the key as the spec declares it. A module that generates a key
+        /// only from its own template refuses a declared template
+        /// (`cakeys_pkcs11::provider::Provider::generation`): 15 or 17.
         OwnGeneration = "own-generation",
-        /// The templates the write sends, as the provider adjusts them
-        /// (`cakeys_pkcs11::provider::Provider::template`): the provider's refusal, 15 or 17.
+        /// The provider accepts the templates that the write sends, after it adjusts them
+        /// (`cakeys_pkcs11::provider::Provider::template`). The exit code is the one of the
+        /// provider's refusal: 15 or 17.
         Templates = "templates",
-        /// What the token can do: the mechanisms, the generation, the proof and the commitments, by
-        /// its capability profiles or the open token: 15.
+        /// The token can do what the write needs: the mechanisms, the generation, the proof and
+        /// the commitments, according to its capability profiles or to the open token: 15.
         Capability = "capability",
-        /// Nothing else under the locator a creation is made under: 13.
+        /// No other object is under the locator under which a creation puts the new object: 13.
         LocatorFree = "locator-free",
-        /// A key the lock does not pin already under the locator `create` makes it under: 19.
+        /// No key that the lock does not pin is already under the locator under which `create`
+        /// puts the new key: 19.
         UnpinnedExists = "unpinned-exists",
-        /// The lock pins material the token does not hold: a new generation could never match: 14.
+        /// The lock does not pin material that the token does not hold, because a newly generated
+        /// key could never match the pinned material: 14.
         PinnedLost = "pinned-lost",
-        /// An object only a login shows, asked of a session without one: 16.
+        /// The run does not look for an object that only a login shows in a session without a
+        /// login: 16.
         NeedsLogin = "needs-login",
-        /// The object holds the identity a delete expects: 14.
+        /// The object has the identity that a delete expects: 14.
         IfMatch = "if-match",
-        /// The module does not remove objects of the class: its profile's `delete.<class>` row, or
-        /// the provider (`cakeys_pkcs11::provider::Provider::deletion`): 15.
+        /// The module can remove objects of the class, according to its profile's
+        /// `delete.<class>` row or to the provider (`cakeys_pkcs11::provider::Provider::deletion`):
+        /// 15.
         DeleteRefused = "delete-refused",
-        /// What a delete destroyed is still under the locator: 16.
+        /// The object that a delete destroyed is no longer under the locator: 16.
         DeleteKept = "delete-kept",
         /// The lock can be written: 21.
         LockWritable = "lock-writable",
@@ -85,12 +95,13 @@ names! {
 }
 
 names! {
-    /// A check that a run makes of what a token, a lock, an attestation or a file says, and that
-    /// refuses the object when it fails (docs/CAKEYS.md, "Rules and checks"). Every
-    /// [`crate::KmError::Conflict`], [`crate::KmError::Ambiguous`] and
-    /// [`crate::KmError::PreconditionFailed`] names the check or the rule that refused it, or says
-    /// that its input did not parse ([`crate::Reason`]). The exit code of each refusal is its
-    /// error's; the comment on each variant gives the usual one.
+    /// A check that a run makes of the data that a token, a lock, an attestation or a file
+    /// provides, and that refuses the object when it fails (docs/CAKEYS.md, "Rules and checks").
+    /// Every [`crate::KmError::Conflict`], [`crate::KmError::Ambiguous`] and
+    /// [`crate::KmError::PreconditionFailed`] names the check or the rule that refused the object,
+    /// or says that its input did not parse ([`crate::Reason`]). The exit code of a refusal is the
+    /// code of its error. The comment on each variant states the condition that passes and, after
+    /// the colon, the usual exit code when it fails.
     Check {
         // Identity and proof of possession.
         /// The token's material hashes to the IDs that the lock pins for the object: 10.
@@ -141,7 +152,8 @@ names! {
         // The lock's rules (crates/core/spec/lock.qnt; crates/core/tests/lock_mbt.rs).
         /// The object's type in keys.toml is the type the lock recorded: 14.
         LockType = "lock.type",
-        /// The spec (its object, locator, `publicOnly` and digest) is the one realised: 14.
+        /// The spec (its object, locator, `publicOnly` and digest) is the spec that the lock
+        /// recorded for the realisation: 14.
         LockSpec = "lock.spec",
         /// The identity mode is at least the mode the lock recorded: 14.
         LockMode = "lock.mode",
@@ -171,12 +183,13 @@ names! {
         /// The lock pins IDs for an object that is imported, so the imported material can be
         /// checked: 14.
         LockImportIds = "lock.import-ids",
-        /// A second spec of the same token object does not realise it weaker than the first spec
-        /// did: 14.
+        /// A second spec of the same token object does not realise the object with less than the
+        /// first spec established: 14.
         LockSameObject = "lock.same-object",
 
         // Attestation chains (PIV device certificates, TPM EK certificates).
-        /// Each certificate of the chain is valid at the time it is judged at: 13.
+        /// Each certificate of the chain is valid at the time for which the run checks the chain
+        /// (`at` in `chain::chain_to_anchor`): 13.
         ChainValidity = "chain.validity",
         /// Each issuer is a CA that may sign certificates (`basicConstraints`, its `pathLen`, and
         /// `keyCertSign` when it has a `keyUsage`): 13.
@@ -226,8 +239,9 @@ names! {
         /// The EK certificate names the purpose `tcg-kp-EKCertificate` and this TPM's
         /// endorsement key: 13.
         AttestTpmEkCertificate = "attest.tpm.ek-certificate",
-        /// The TPM activates a credential made for the Attestation Key and the endorsement key
-        /// to its secret, so the two keys are in one TPM: 13.
+        /// The TPM activates a credential that was made for the Attestation Key and the
+        /// endorsement key, and so recovers the credential's secret. This shows that the two keys
+        /// are in the same TPM: 13.
         AttestTpmCredential = "attest.tpm.credential",
 
         // The host path (camigrate's `host` and `file` moves).
@@ -238,21 +252,24 @@ names! {
 
         // camigrate's moves.
         /// A sealed bundle's wrapped key unwraps on the target, so the bundle is intact and was
-        /// wrapped to the target's transport key: 13, or 16 where the module says only that the
-        /// unwrap failed. A dry run defers it: only the run's unwrap decides it.
+        /// wrapped to the target's transport key: 13, or 16 when the module reports only that the
+        /// unwrap failed. A dry run does not make this check, because only the real unwrap can
+        /// decide it.
         ImportUnwraps = "import.unwraps",
-        /// What a move hands over or unwraps is the key that the lock pins: its IDs (10) and its
-        /// proof of possession (13). A dry run defers it: only the moved key decides it.
+        /// The key that a move hands over or unwraps is the key that the lock pins: its IDs (10)
+        /// and its proof of possession (13). A dry run does not make this check, because only the
+        /// moved key can decide it.
         ImportIdentity = "import.identity",
         /// The transport key that a sealed move wraps to is the one that the lock pins on the
         /// target, under a spec that keys.toml names, and a bundle is made for that target and
         /// sealed to that key: 10 where the key's hash differs, 14 otherwise.
         ImportTransport = "import.transport",
-        /// The lock pins what a move checks the moved object by: its IDs, its type, the scheme
-        /// that pairs a key with its certificate, and a locked key for a key file's identity: 14.
+        /// The lock pins everything with which a move checks the moved object: its IDs, its type,
+        /// the scheme that pairs a key with its certificate, and, for the identity of a key file,
+        /// a locked key: 14.
         ImportLocked = "import.locked",
         /// An EC or Edwards key that a bundle file carries is bound by a proof of possession,
-        /// because a `token-asserted` binding would rest on the public key that the bundle
+        /// because a `token-asserted` binding would depend only on the public key that the bundle
         /// itself names: 14.
         ImportBinding = "import.binding",
 
@@ -280,10 +297,10 @@ mod tests {
         names.partition(|n| !n.contains('.'))
     }
 
-    /// Each name is the name of one rule or one check, and stays so. Rule names are kebab-case
-    /// words and check names are dotted words, both lowercase, so no name is used twice. The
-    /// tables in docs/CAKEYS.md ("Rules and checks") list every name in the order of `ALL`, so a
-    /// renamed, added or removed rule or check changes the doc in the same diff.
+    /// Each name belongs to exactly one rule or one check. Rule names are kebab-case words and
+    /// check names are dotted words, both in lowercase, so no name is used twice. The tables in
+    /// docs/CAKEYS.md ("Rules and checks") must list every name in the order of `ALL`, so a
+    /// renamed, added or removed rule or check must change the document in the same diff.
     #[test]
     fn check_names_are_stable_and_disjoint_from_rules() {
         let word =

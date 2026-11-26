@@ -1,14 +1,15 @@
-//! Helpers for the tests of every crate: what a refusal must name.
+//! Helpers for the tests of every crate. They assert which check a refusal names.
 
 use crate::{Check, KmError};
 
-/// What [`assert_fires`] reads the refusal from: an error, or a result that should be one.
+/// The value from which [`assert_fires`] reads the refusal: an error, or a result that should be
+/// an error.
 pub trait Refused {
-    /// The error, or what was returned instead of one.
+    /// Returns the error, or the value that was returned instead of an error.
     ///
     /// # Errors
     ///
-    /// The `Debug` text of a value that is not an error.
+    /// Returns the `Debug` text of a value that is not an error.
     fn refusal(&self) -> Result<&KmError, String>;
 }
 
@@ -27,13 +28,14 @@ impl<T: std::fmt::Debug> Refused for crate::Result<T> {
     }
 }
 
-/// Assert that `result` is a refusal by `check`: an error whose [`KmError::check`] is `check`.
-/// The liar lint (`crates/cli/tests/liar_lint.rs`) accepts a unit test as the one that fires a
-/// check when the test's body calls this function with that check.
+/// Asserts that `result` is a refusal by `check`: an error whose [`KmError::check`] is `check`.
+/// The lint in `crates/cli/tests/liar_lint.rs` accepts a unit test as the test that fires a check
+/// when the test's body calls this function with that check.
 ///
 /// # Panics
 ///
-/// When `result` is no error, or an error that names another check or none.
+/// Panics when `result` is not an error, or when it is an error that names a different check or
+/// no check.
 #[track_caller]
 pub fn assert_fires(result: &impl Refused, check: Check) {
     match result.refusal() {
