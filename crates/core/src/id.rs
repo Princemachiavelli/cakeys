@@ -1,7 +1,9 @@
-//! CA-ID computation: SRI rendering, spec digest, SPKI normalisation, commitment labels.
+//! The computation of CA-IDs: the SRI encoding, the spec digest, the normalisation of an SPKI,
+//! and the commitment labels.
 //!
-//! Public keys are decoded and re-encoded by the `RustCrypto` crates (`p256`, `p384`, `p521`,
-//! `ed25519-dalek`, `ed448`, `rsa`); this module only chooses which one by curve or OID.
+//! The `RustCrypto` crates (`p256`, `p384`, `p521`, `ed25519-dalek`, `ed448`, `rsa`) decode and
+//! re-encode the public keys. This module only chooses which crate to use, by the curve or by the
+//! OID.
 
 use crate::Check;
 use crate::config::{ObjectCfg, SpecCfg};
@@ -15,14 +17,15 @@ use sha2::{Digest, Sha256};
 type Bp256 = p256::elliptic_curve::PublicKey<bp256::BrainpoolP256r1>;
 type Bp384 = p256::elliptic_curve::PublicKey<bp384::BrainpoolP384r1>;
 
-/// `sha256-<base64>`: drops straight into a Nix `outputHash`, but nothing depends on it.
+/// Returns the SRI form `sha256-<base64>` of the SHA-256 of `bytes`. A Nix `outputHash` accepts
+/// this form as it is, but no code depends on that.
 #[must_use]
 pub fn sri(bytes: &[u8]) -> String {
     format!("sha256-{}", base64::engine::general_purpose::STANDARD.encode(Sha256::digest(bytes)))
 }
 
-/// Whether `s` is an SRI SHA-256 digest as `sri` writes it: `sha256-` and 32 bytes in padded
-/// standard base64.
+/// Returns whether `s` is an SRI SHA-256 digest in the form that `sri` writes: `sha256-` followed
+/// by 32 bytes in padded standard base64.
 #[must_use]
 pub fn is_sri(s: &str) -> bool {
     s.strip_prefix("sha256-")
@@ -30,12 +33,13 @@ pub fn is_sri(s: &str) -> bool {
         .is_some_and(|d| d.len() == 32)
 }
 
-/// Hash of the canonical JSON (RFC 8785, JCS) of (object type, policy attributes, public-half
-/// attributes).
+/// Returns the SRI hash of the canonical JSON (RFC 8785, JCS) of the object type, the policy
+/// attributes and the attributes of the public half.
 ///
 /// # Panics
 ///
-/// Never: the document holds only strings, booleans and small integers, which always canonicalize.
+/// Never panics, because the document holds only strings, booleans and small integers, which
+/// always canonicalize.
 #[must_use]
 pub fn spec_digest(object: &ObjectCfg, spec: &SpecCfg) -> String {
     let mut doc = serde_json::json!({
@@ -43,46 +47,52 @@ pub fn spec_digest(object: &ObjectCfg, spec: &SpecCfg) -> String {
         "type": object,
         "attributes": spec.attributes,
     });
-    // Only when declared, so the digests of specs without it are unchanged.
+    // The public attributes are added only when the spec declares them, so that the digests of
+    // the specs without them did not change when this field was introduced.
     if !spec.public_attributes.is_empty() {
         doc["publicAttributes"] = serde_json::json!(spec.public_attributes);
     }
-    // RFC 8785 (JCS): keys sorted at every level, no whitespace. The document holds only
-    // strings, booleans and small integers, which every JSON library serializes alike.
+    // RFC 8785 (JCS) sorts the keys at every level and writes no whitespace. The document holds
+    // only strings, booleans and small integers, which every JSON library serializes in the same
+    // way.
     sri(serde_jcs::to_string(&doc).expect("a JSON value of strings, booleans and integers canonicalizes").as_bytes())
 }
 
-/// Commitment label for objects the lock does not know yet. The lock records, per object, the
-/// label its commitments were computed with, and that recorded value is what verification uses:
-/// changing this default never breaks an existing lock (docs/DESIGN.md §3.3).
+/// The commitment label for the objects that the lock does not record yet. The lock records, for
+/// each object, the label with which its commitments were computed, and verification uses that
+/// recorded label. So a change of this default never breaks an existing lock (docs/DESIGN.md
+/// §3.3).
 pub const DEFAULT_COMMITMENT_LABEL: &str = "key-management/v1";
 
-/// The identity schemes this version defines (§3.1 of docs/DESIGN.md). The lock keys its IDs by
-/// [`Scheme::name`]; it keeps them as strings, so a scheme from a newer cakeys still loads (and
-/// is reported as unchecked) instead of failing the whole lock.
+/// The identity schemes that this version defines (§3.1 of docs/DESIGN.md). The lock keys its IDs
+/// by [`Scheme::name`]. It stores the keys as strings, so that a lock with a scheme from a newer
+/// cakeys still loads, and the run reports that scheme as not checked instead of refusing the
+/// whole lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Scheme {
-    /// RFC 7093 §2 method 4: SHA-256 of the canonical `SubjectPublicKeyInfo`.
+    /// RFC 7093 §2 method 4: the SHA-256 of the canonical `SubjectPublicKeyInfo`.
     Rfc7093m4,
-    /// SHA-256 of a certificate's DER.
+    /// The SHA-256 of a certificate's DER.
     Certhash,
-    /// SHA-256 of a data object's `CKA_VALUE` (of a private one only when its spec declares
-    /// `CKA_PRIVATE = true`: docs/DESIGN.md §8.2).
+    /// The SHA-256 of a data object's `CKA_VALUE`. For a private data object, this scheme is
+    /// computed only when its spec declares `CKA_PRIVATE = true` (docs/DESIGN.md §8.2).
     Valuehash,
-    /// HMAC over the commitment label (`Commit::Hmac`).
+    /// An HMAC over the commitment label (`Commit::Hmac`).
     Commitment,
-    /// AES-CMAC over the commitment label (`Commit::Cmac`).
+    /// An AES-CMAC over the commitment label (`Commit::Cmac`).
     Cmac,
-    /// ECB encryption (AES, DES3) of one block derived from the label: a key check value
-    /// (`Commit::KcvEcb`).
+    /// The ECB encryption (AES or DES3) of one block derived from the label, which is a key check
+    /// value (`Commit::KcvEcb`).
     KcvEcb,
-    /// ECB decryption of that block, for decrypt-only keys (`Commit::KcvEcbDecrypt`).
+    /// The ECB decryption of that block, for keys that can only decrypt (`Commit::KcvEcbDecrypt`).
     KcvEcbDec,
-    /// RFC 3394 key wrap of a fixed key derived from the label (`Commit::Kw`).
+    /// The RFC 3394 key wrap of a fixed key derived from the label (`Commit::Kw`).
     Kw,
-    /// A `YubiKey` PIV attestation, verified to the pinned Yubico root (per realisation).
+    /// A `YubiKey` PIV attestation, verified to the pinned Yubico root (recorded for each
+    /// realisation).
     PivAttestation,
-    /// A native `TPM2_Certify`, verified against a provisioned Attestation Key (per realisation).
+    /// A native `TPM2_Certify`, verified against a provisioned Attestation Key (recorded for each
+    /// realisation).
     TpmCertify,
 }
 
@@ -101,16 +111,17 @@ impl Scheme {
         Scheme::TpmCertify,
     ];
 
-    /// Schemes whose computation is deprecated (docs/DESIGN.md §3.1). Identities already locked
-    /// under one keep verifying — with a warning — but `lock` never records a new one: a
-    /// changed or weakened computation gets a *new* scheme name (§10), so the empty list is the
-    /// "nothing is deprecated" state, pinned by test.
+    /// The schemes whose computation is deprecated (docs/DESIGN.md §3.1). An identity that the
+    /// lock already records under such a scheme still verifies, with a warning, but `lock` never
+    /// records a new one. A changed or weakened computation gets a *new* scheme name (§10). The
+    /// list is empty because nothing is deprecated now, and a test checks that.
     pub const DEPRECATED: [Scheme; 0] = [];
 
-    /// Input-only aliases (CLI and Nix library); a lock always uses the scheme name.
+    /// The aliases that only the input accepts (the command line and the Nix library). A lock
+    /// always uses the scheme name.
     pub const ALIASES: [(&str, Scheme); 1] = [("pubkeyhash", Scheme::Rfc7093m4)];
 
-    /// The name the lock records.
+    /// Returns the name that the lock records.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -127,39 +138,43 @@ impl Scheme {
         }
     }
 
-    /// The scheme a lock names, exactly (no aliases: the lock refuses them).
+    /// Returns the scheme with exactly this name. Aliases are not accepted, because the lock
+    /// refuses them.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Scheme> {
         Scheme::ALL.into_iter().find(|s| s.name() == name)
     }
 
-    /// The scheme a user names on input, resolving aliases.
+    /// Returns the scheme that a user names on input, and resolves an alias to its scheme.
     #[must_use]
     pub fn from_input(name: &str) -> Option<Scheme> {
         Scheme::ALIASES.iter().find(|(a, _)| *a == name).map(|(_, s)| *s).or_else(|| Scheme::from_name(name))
     }
 
-    /// Computed from a commitment label (every `Commit` variant).
+    /// Returns whether the scheme is computed from a commitment label (every `Commit` variant).
     #[must_use]
     pub fn is_commitment(self) -> bool {
         matches!(self, Scheme::Commitment | Scheme::Cmac | Scheme::KcvEcb | Scheme::KcvEcbDec | Scheme::Kw)
     }
 
-    /// Attestation schemes (§3.7 of docs/DESIGN.md): IDs from a vendor- or TPM-signed
-    /// attestation of the key. They are *provenance* evidence for one device: the same material
-    /// on another token either cannot attest (PIV attests only keys generated on the device) or
-    /// attests to a different ID (a TPM's qualified Name names its own hierarchy). So they are
-    /// recorded per realisation, never in an object's shared `ids`, and never stand alone: the
-    /// realisation must also match a portable scheme, which is what links the same material
-    /// across tokens. Unlike the commitment schemes, they take no `commitmentLabel`: their input
-    /// is the attestation itself, not a message the token MACs.
+    /// Returns whether the scheme is an attestation scheme (§3.7 of docs/DESIGN.md). An
+    /// attestation scheme computes an ID from an attestation of the key that a vendor or a TPM
+    /// signed. Such an ID is *provenance* evidence for one device. The same material on another
+    /// token either cannot be attested (PIV attests only keys that the device generated) or gets
+    /// a different ID (a TPM's qualified Name names the TPM's own hierarchy). So these IDs are
+    /// recorded for each realisation and never in an object's `ids`, which every token shares.
+    /// They are also never the only scheme: the realisation must also match a portable scheme,
+    /// because only a portable scheme links the same material on different tokens. Unlike the
+    /// commitment schemes, they use no `commitmentLabel`, because their input is the attestation
+    /// itself and not a message of which the token computes a MAC.
     #[must_use]
     pub fn is_attestation(self) -> bool {
         self.attestation_kind().is_some()
     }
 
-    /// The lock-record `attestation.kind` of an attestation scheme (§3.7): which evidence
-    /// produced the ID. One kind per scheme, pinned so a lock names its evidence exactly.
+    /// Returns the `attestation.kind` that the lock records for an attestation scheme (§3.7),
+    /// which names the evidence that produced the ID. Each scheme has exactly one kind, and the
+    /// kind never changes, so a lock names its evidence exactly.
     #[must_use]
     pub fn attestation_kind(self) -> Option<&'static str> {
         match self {
@@ -169,13 +184,14 @@ impl Scheme {
         }
     }
 
-    /// The attestation scheme a lock-record kind names.
+    /// Returns the attestation scheme that an `attestation.kind` in the lock names.
     #[must_use]
     pub fn from_attestation_kind(kind: &str) -> Option<Scheme> {
         Scheme::ALL.into_iter().find(|s| s.attestation_kind() == Some(kind))
     }
 
-    /// Listed in [`Scheme::DEPRECATED`]: verifies with a warning, never newly recorded.
+    /// Returns whether the scheme is listed in [`Scheme::DEPRECATED`]. Such a scheme verifies with
+    /// a warning, and the lock never records a new ID of it.
     #[must_use]
     pub(crate) fn is_deprecated(self) -> bool {
         Scheme::DEPRECATED.contains(&self)
@@ -188,9 +204,10 @@ impl std::fmt::Display for Scheme {
     }
 }
 
-/// The canonical encoding shared by the attestation commitment definitions: a domain-separated
-/// tag, then each field as a u32 length prefix and its bytes, so no field can bleed into the
-/// next (§3.7, §10).
+/// The canonical encoding that the definitions of the attestation commitments share: a tag for
+/// domain separation, then each field as a u32 length prefix followed by its bytes. The length
+/// prefix ensures that the bytes of one field can never be read as part of the next field (§3.7,
+/// §10).
 pub(crate) fn attest_encoding(tag: &[u8], fields: &[&[u8]]) -> Vec<u8> {
     let mut v = Vec::with_capacity(tag.len() + fields.len() * 8);
     v.extend_from_slice(tag);
@@ -203,13 +220,15 @@ pub(crate) fn attest_encoding(tag: &[u8], fields: &[&[u8]]) -> Vec<u8> {
     v
 }
 
-/// The `piv-attestation` commitment (§3.7): what a `YubiKey` PIV attestation certificate *asserts*,
-/// not its bytes. The certificate is generated on demand with a random serial and a randomized
-/// ECDSA signature, so hashing the DER would be unstable; these fields are the stable claims.
-/// `issuer_spki` is the device attestation key in slot f9 (pinned per realisation through the
-/// verified chain to the Yubico root), `subject_spki` is the attested key — the same public key
-/// the object's `rfc7093m4` hashes, which the caller must have checked — and the rest are the
-/// Yubico extension values (1.3.6.1.4.1.41482.3.3/.3.7/.3.8/.3.9), empty when the cert omits one.
+/// The `piv-attestation` commitment (§3.7). It hashes what a `YubiKey` PIV attestation
+/// certificate *asserts*, not the certificate's bytes. The device generates the certificate on
+/// demand, with a random serial number and a randomized ECDSA signature, so a hash of the DER
+/// would differ each time. These fields are the claims that stay the same. `issuer_spki` is the
+/// device attestation key in slot f9, which is pinned for each realisation through the verified
+/// chain to the Yubico root. `subject_spki` is the attested key, which is the same public key
+/// that the object's `rfc7093m4` hashes; the caller must have checked that. The other fields are
+/// the values of the Yubico extensions (1.3.6.1.4.1.41482.3.3, .3.7, .3.8 and .3.9), and each is
+/// empty when the certificate omits that extension.
 #[must_use]
 pub fn piv_attestation_id(
     issuer_spki: &[u8],
@@ -225,18 +244,18 @@ pub fn piv_attestation_id(
     ))
 }
 
-/// The `tpm-certify` commitment (§3.7): the Name and qualified Name a `TPM2_Certify` statement
-/// attests, signed by an Attestation Key. The Name is `nameAlg ‖ H(TPMT_PUBLIC)` — it covers the
-/// public key, every `objectAttributes` bit and the `authPolicy` — and the qualified Name places
-/// the object in its hierarchy. The qualifying data (host nonce) proves freshness and is
-/// verification evidence only: never part of the ID.
+/// The `tpm-certify` commitment (§3.7): the Name and the qualified Name that a `TPM2_Certify`
+/// statement, signed by an Attestation Key, attests. The Name is `nameAlg ‖ H(TPMT_PUBLIC)`, so it
+/// covers the public key, every `objectAttributes` bit and the `authPolicy`. The qualified Name
+/// places the object in its hierarchy. The qualifying data (the host's nonce) proves that the
+/// statement is fresh. It is used only during verification and is never part of the ID.
 #[must_use]
 pub fn tpm_certify_id(name: &[u8], qualified_name: &[u8]) -> String {
     sri(&attest_encoding(b"cakeys/tpm-certify/v1\0", &[name, qualified_name]))
 }
 
-/// Hash of an HMAC commitment. A key bound to a hash (`CKK_SHA384_HMAC`, ...) is committed with
-/// that hash; generic secrets use SHA-256.
+/// The hash of an HMAC commitment. A key type that is bound to a hash (`CKK_SHA384_HMAC`, ...)
+/// computes its commitment with that hash. A generic secret uses SHA-256.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HmacHash {
     /// SHA-1 (`CKK_SHA_1_HMAC`).
@@ -252,7 +271,7 @@ pub enum HmacHash {
 }
 
 impl HmacHash {
-    /// The HMAC hash for a secret key type, if it is an HMAC-capable type.
+    /// Returns the HMAC hash for a secret key type, or `None` if the type cannot compute an HMAC.
     #[must_use]
     pub fn for_key_type(key_type: KeyType) -> Option<HmacHash> {
         match key_type {
@@ -266,18 +285,19 @@ impl HmacHash {
     }
 }
 
-/// The block cipher of a key check value (`Commit::KcvEcb`, `Commit::KcvEcbDecrypt`), which the
-/// key type implies.
+/// The block cipher of a key check value (`Commit::KcvEcb`, `Commit::KcvEcbDecrypt`). The key type
+/// determines the cipher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockCipher {
-    /// AES (`CKK_AES`, `CKM_AES_ECB`): 16-byte blocks.
+    /// AES (`CKK_AES`, `CKM_AES_ECB`), with 16-byte blocks.
     Aes,
-    /// Three-key Triple DES (`CKK_DES3`, `CKM_DES3_ECB`): 8-byte blocks.
+    /// Three-key Triple DES (`CKK_DES3`, `CKM_DES3_ECB`), with 8-byte blocks.
     Des3,
 }
 
 impl BlockCipher {
-    /// The block cipher of a secret key type, if it is one.
+    /// Returns the block cipher of a secret key type, or `None` if the type is not a block
+    /// cipher.
     #[must_use]
     pub fn for_key_type(key_type: KeyType) -> Option<BlockCipher> {
         match key_type {
@@ -287,7 +307,7 @@ impl BlockCipher {
         }
     }
 
-    /// The key type it is the cipher of.
+    /// Returns the key type of this cipher.
     #[must_use]
     pub fn key_type(self) -> KeyType {
         match self {
@@ -296,7 +316,8 @@ impl BlockCipher {
         }
     }
 
-    /// The block length in bytes: what a key check value encrypts.
+    /// Returns the block length in bytes, which is the length of the input that a key check value
+    /// encrypts.
     #[must_use]
     pub fn block_len(self) -> usize {
         match self {
@@ -306,32 +327,37 @@ impl BlockCipher {
     }
 }
 
-/// Secret-key commitments: a deterministic on-token operation over a public, domain-separated
-/// input. Each needs a different key usage bit and gives a different value, so each is its own
-/// scheme. The lock stores only SHA-256 of the output (`sri`), never a MAC or ciphertext that
-/// could be replayed under the key.
+/// The commitments of a secret key: a deterministic operation on the token over a public input
+/// with domain separation. Each commitment needs a different key usage attribute and gives a
+/// different value, so each one is a separate scheme. The lock stores only the SHA-256 of the
+/// output (`sri`), and never a MAC or a ciphertext that someone could replay as an output of the
+/// key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Commit {
-    /// HMAC over the label (`CKA_SIGN`; generic secrets and HMAC key types), with the hash the
-    /// key type implies. One scheme: the key type is in the label, so types never share an ID.
+    /// An HMAC over the label (`CKA_SIGN`; for generic secrets and HMAC key types), with the hash
+    /// that the key type determines. All the hashes share one scheme, because the key type is in
+    /// the label, so two key types never share an ID.
     Hmac(HmacHash),
-    /// `CKM_AES_CMAC` over the label (`CKA_SIGN`).
+    /// A `CKM_AES_CMAC` over the label (`CKA_SIGN`).
     Cmac,
-    /// ECB encryption (`CKM_AES_ECB`, `CKM_DES3_ECB`) of one block, the first block-length bytes
-    /// of SHA-256(label): a key check value (`CKA_ENCRYPT`). Single-block ECB only: a fixed nonce
-    /// with CTR/GCM would leak. One scheme for both ciphers, as for the HMAC hashes: the key
-    /// type is in the label. Not the payment industry's KCV (the key's encryption of a zero
-    /// block): that block carries no label and no key type, HSMs hand it out freely, and the
-    /// lock's hash of a whole block could not be compared with its printed three bytes anyway.
+    /// The ECB encryption (`CKM_AES_ECB`, `CKM_DES3_ECB`) of one block, which consists of the first
+    /// block-length bytes of SHA-256(label). This is a key check value (`CKA_ENCRYPT`). Only
+    /// single-block ECB is used, because CTR or GCM with a fixed nonce would leak information
+    /// about the key. Both ciphers share one scheme, as the HMAC hashes do, because the key type
+    /// is in the label. This is not the payment industry's KCV (the key's encryption of a zero
+    /// block). That block contains no label and no key type, and HSMs give it out freely. The
+    /// lock's hash of a whole block also could not be compared with the three bytes that are
+    /// printed for a KCV.
     KcvEcb(BlockCipher),
-    /// ECB decryption of one such block (`CKA_DECRYPT`): for decrypt-only keys.
+    /// The ECB decryption of one such block (`CKA_DECRYPT`), for keys that can only decrypt.
     KcvEcbDecrypt(BlockCipher),
-    /// `CKM_AES_KEY_WRAP` (RFC 3394, deterministic) of a fixed key, SHA-256(label) (`CKA_WRAP`).
+    /// The `CKM_AES_KEY_WRAP` (RFC 3394, deterministic) of a fixed key, SHA-256(label)
+    /// (`CKA_WRAP`).
     Kw,
 }
 
 impl Commit {
-    /// The scheme this commitment's ID is recorded under.
+    /// Returns the scheme under which this commitment's ID is recorded.
     #[must_use]
     pub fn scheme(self) -> Scheme {
         match self {
@@ -343,7 +369,8 @@ impl Commit {
         }
     }
 
-    /// The usage bit a spec declares to have this commitment computed (docs/DESIGN.md §3.1).
+    /// Returns the usage attribute that a spec must declare to have this commitment computed
+    /// (docs/DESIGN.md §3.1).
     #[must_use]
     pub fn usage(self) -> &'static str {
         match self {
@@ -354,10 +381,12 @@ impl Commit {
         }
     }
 
-    /// The kind a profile's `commit.<kind>.<key type>.<bytes>` rows name it by
-    /// (`cakeys_names::CommitKind`, whose table names it and the mechanism it runs): the
-    /// scheme's own name, the HMAC's hash beside it (one scheme for every hash, which a generic
-    /// secret does not imply). The cipher is the row's key type, as it is the label's.
+    /// Returns the kind by which a profile's `commit.<kind>.<key type>.<bytes>` rows name this
+    /// commitment (`cakeys_names::CommitKind`, whose table gives the kind's name and the
+    /// mechanism that it runs). The kind is the scheme's own name, with the HMAC's hash added for
+    /// an HMAC. The hash is added because one scheme covers every hash, and a generic secret does
+    /// not determine the hash. The cipher of a check value is not in the kind, because it is the
+    /// row's key type, as it is in the label.
     #[must_use]
     pub fn kind(self) -> cakeys_names::CommitKind {
         use cakeys_names::CommitKind as K;
@@ -374,29 +403,30 @@ impl Commit {
         }
     }
 
-    /// The `CKM_` name of the mechanism the commitment runs: what a declared
-    /// `CKA_ALLOWED_MECHANISMS` must hold for it, what cakeys-pkcs11's `commit_mechanism` asks
-    /// the token for, and what a `commit.*` row was measured with: [`Commit::kind`]'s, on a
-    /// check value's cipher.
+    /// Returns the `CKM_` name of the mechanism that the commitment runs. A declared
+    /// `CKA_ALLOWED_MECHANISMS` must include it, cakeys-pkcs11's `commit_mechanism` asks the token
+    /// for it, and a `commit.*` row was measured with it. It is the mechanism of
+    /// [`Commit::kind`], with a check value's cipher.
     #[must_use]
     pub fn mechanism(self) -> &'static str {
         let key_type = match self {
             Commit::KcvEcb(c) | Commit::KcvEcbDecrypt(c) => c.key_type().name(),
-            // No cipher: the kind alone names the mechanism.
+            // These commitments have no cipher, so the kind alone names the mechanism.
             Commit::Hmac(_) | Commit::Cmac | Commit::Kw => "",
         };
         self.kind().mechanism(key_type)
     }
 
-    /// [`Commit::kind`]'s name: what a `commit.*` row calls it (review 2026-11-23 A-9: one
-    /// table, no name of the profile's own).
+    /// Returns the name of [`Commit::kind`], which is the name that a `commit.*` row uses (review
+    /// 2026-11-23 A-9: there is one table of names, and the profiles have no names of their own).
     #[must_use]
     pub fn profile_kind(self) -> &'static str {
         self.kind().name()
     }
 
-    /// Domain-separation label `<commitment label>/<scheme>/<keyType>/<bits>`. The intrinsic type
-    /// is mixed in so the same bytes held as two key types never share an ID.
+    /// Returns the label for domain separation, `<commitment label>/<scheme>/<keyType>/<bits>`.
+    /// The label includes the intrinsic type, so that the same bytes held as two key types never
+    /// share an ID.
     pub fn label(self, commitment_label: &str, object: &ObjectCfg) -> Vec<u8> {
         format!(
             "{commitment_label}/{}/{}/{}",
@@ -407,8 +437,8 @@ impl Commit {
         .into_bytes()
     }
 
-    /// The fixed input the token operates on: the label, or its SHA-256 (truncated to one block
-    /// of the cipher for the KCV).
+    /// Returns the fixed input on which the token operates: the label, or the SHA-256 of the label
+    /// (truncated to one block of the cipher for a key check value).
     #[must_use]
     pub fn input(self, commitment_label: &str, object: &ObjectCfg) -> Vec<u8> {
         let label = self.label(commitment_label, object);
@@ -420,10 +450,10 @@ impl Commit {
     }
 }
 
-/// Named curves for `CKK_EC` and `CKK_EC_EDWARDS`: the curves of `cakeys_names::Curve` that
-/// core has a key type for (`in_core`), whose table gives each its names, parameters and ECDSA
-/// hash. This enum holds what core computes with, so a curve it has no key type for (a
-/// Montgomery one) cannot reach a key here.
+/// The named curves for `CKK_EC` and `CKK_EC_EDWARDS`: the curves of `cakeys_names::Curve` for
+/// which core has a key type (`in_core`). The table of `cakeys_names::Curve` gives each curve its
+/// names, its parameters and its ECDSA hash. This enum holds only the curves with which core
+/// computes, so a curve without a key type in core (a Montgomery curve) cannot reach a key here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Curve {
     /// NIST P-256 (`secp256r1`).
@@ -444,11 +474,12 @@ pub enum Curve {
     Ed448,
 }
 
-/// Named curves tokens offer that have no `RustCrypto` crate to validate and encode them with.
+/// The named curves that tokens offer and for which no `RustCrypto` crate exists to validate and
+/// encode the keys.
 pub const CURVES_WITHOUT_CRATE: [&str; 1] = ["brainpoolP512r1"];
 
-/// The curve in the names table: what names it, and what its ECDSA hash is
-/// (`HashAlg::for_curve` takes a core curve through this).
+/// Converts a curve to its entry in the names table, which gives the curve's names and its ECDSA
+/// hash (`HashAlg::for_curve` uses this conversion for a curve of core).
 impl From<Curve> for cakeys_names::Curve {
     fn from(c: Curve) -> Self {
         use cakeys_names::Curve as N;
@@ -466,9 +497,10 @@ impl From<Curve> for cakeys_names::Curve {
 }
 
 impl Curve {
-    /// Every curve cakeys has a key type for, Weierstrass then Edwards: the curves keys.toml
-    /// takes, and the ones the probe generates on (beside the Montgomery curves it measures).
-    /// The names table's `in_core` curves, in its order (`the_curves_are_the_names_tables`).
+    /// Every curve for which cakeys has a key type, the Weierstrass curves first and then the
+    /// Edwards curves. These are the curves that keys.toml accepts and on which the probe
+    /// generates keys (the probe also measures the Montgomery curves). They are the `in_core`
+    /// curves of the names table, in the table's order (`the_curves_are_the_names_tables`).
     pub const ALL: [Curve; 8] = [
         Curve::P256,
         Curve::P384,
@@ -480,14 +512,14 @@ impl Curve {
         Curve::Ed448,
     ];
 
-    /// The curve in the names table.
+    /// Returns the curve's entry in the names table.
     #[must_use]
     pub fn named(self) -> cakeys_names::Curve {
         self.into()
     }
 
-    /// `curve` in keys.toml, for the given `keyType`: the canonical name, the display name
-    /// (`P-256`, `Ed25519`), or OpenSSL's `prime256v1`.
+    /// Parses `curve` in keys.toml for the given `keyType`. It accepts the canonical name, the
+    /// display name (`P-256`, `Ed25519`), or OpenSSL's `prime256v1`.
     #[must_use]
     pub fn from_cfg(key_type: KeyType, name: &str) -> Option<Curve> {
         let edwards = match key_type {
@@ -499,50 +531,53 @@ impl Curve {
         Curve::ALL.into_iter().find(|c| c.edwards() == edwards && named(c))
     }
 
-    /// The canonical `curve` name, as recorded in the lock.
+    /// Returns the canonical `curve` name, as the lock records it.
     #[must_use]
     pub fn name(self) -> &'static str {
         self.named().name()
     }
 
-    /// An Edwards curve (`CKK_EC_EDWARDS`) rather than a Weierstrass one (`CKK_EC`).
+    /// Returns whether this is an Edwards curve (`CKK_EC_EDWARDS`) and not a Weierstrass curve
+    /// (`CKK_EC`).
     #[must_use]
     pub fn edwards(self) -> bool {
         self.named().family() == cakeys_names::Family::Edwards
     }
 
-    /// `CKA_EC_PARAMS` used when generating: the DER OID (RFC 5480 / RFC 8410).
+    /// Returns the `CKA_EC_PARAMS` that a key generation uses: the DER OID (RFC 5480 or RFC 8410).
     #[must_use]
     pub fn params(self) -> &'static [u8] {
         self.named().params()
     }
 
-    /// PKCS#11 3.0 also allows Edwards curves as a `PrintableString` curve name.
+    /// Returns the curve name encoded as a `PrintableString`, which PKCS#11 3.0 also allows in
+    /// `CKA_EC_PARAMS` for an Edwards curve, or `None` for a curve without that form.
     #[must_use]
     pub fn params_by_name(self) -> Option<&'static [u8]> {
         self.named().params_by_name()
     }
 
-    /// The curve named by a token's `CKA_EC_PARAMS`.
+    /// Returns the curve that a token's `CKA_EC_PARAMS` names.
     #[must_use]
     pub fn from_params(params: &[u8]) -> Option<Curve> {
         Curve::ALL.into_iter().find(|c| c.params() == params || c.params_by_name() == Some(params))
     }
 
-    /// The name a message gives it: `P-256`, `Ed25519`.
+    /// Returns the name that messages use for the curve, such as `P-256` or `Ed25519`.
     #[must_use]
     pub fn display(self) -> &'static str {
         self.named().display()
     }
 }
 
-/// The size in bits of an RSA modulus (`cakeys_names::modulus_bits`): its significant bits, never
-/// its bytes times eight.
+/// The size in bits of an RSA modulus (`cakeys_names::modulus_bits`). It counts the significant
+/// bits, not the number of bytes times eight.
 pub use cakeys_names::modulus_bits;
 
-/// What a key is, by its `AlgorithmIdentifier` (ISSUES.md Q20): a key on a curve (Edwards
-/// included) or RSA. The one parser that reads it is chosen by these OIDs, never by trying each
-/// in turn, so a malformed key is reported by the parser of its own type.
+/// The algorithm of a key, according to its `AlgorithmIdentifier` (ISSUES.md Q20): a key on a
+/// curve (including an Edwards curve) or an RSA key. These OIDs select the one parser that reads
+/// the key, instead of a trial of each parser in turn, so the parser of the key's own type
+/// reports a malformed key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyAlg {
     /// `id-ecPublicKey` on a named curve, or `id-Ed25519` / `id-Ed448` (RFC 8410).
@@ -557,18 +592,19 @@ const EC_PUBLIC_KEY: pkcs8::ObjectIdentifier = pkcs8::ObjectIdentifier::new_unwr
 const RSA_ENCRYPTION: pkcs8::ObjectIdentifier = pkcs8::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
 
 impl KeyAlg {
-    /// The key a `SubjectPublicKeyInfo` holds.
+    /// Returns the algorithm of the key that a `SubjectPublicKeyInfo` holds.
     ///
     /// # Errors
     ///
-    /// `Unsupported` for bytes that are no `SubjectPublicKeyInfo`, or a key of an algorithm or
-    /// curve cakeys does not read.
+    /// Returns `Unsupported` for bytes that are not a `SubjectPublicKeyInfo`, or for a key of an
+    /// algorithm or a curve that cakeys does not read.
     pub fn of_spki(spki: &[u8]) -> Result<KeyAlg> {
         KeyAlg::read_spki(spki).map(|(alg, _)| alg)
     }
 
-    /// The curve: `Some` for an EC or Edwards key, `None` for RSA. With [`Self::of_spki`], the
-    /// curve a canonical SPKI's key is on (review D6, and 2026-11-23 A-13).
+    /// Returns the curve: `Some` for an EC or Edwards key, and `None` for RSA. Together with
+    /// [`Self::of_spki`], it returns the curve of the key in a canonical SPKI (review D6, and
+    /// 2026-11-23 A-13).
     #[must_use]
     pub fn curve(self) -> Option<Curve> {
         match self {
@@ -577,19 +613,19 @@ impl KeyAlg {
         }
     }
 
-    /// [`KeyAlg::of_spki`], with the parsed SPKI its key's own parser takes next: the bytes
-    /// are decoded once.
+    /// Works as [`KeyAlg::of_spki`] and also returns the parsed SPKI, which the parser of the
+    /// key's own type reads next, so that the bytes are decoded only once.
     pub(crate) fn read_spki(spki: &[u8]) -> Result<(KeyAlg, pkcs8::SubjectPublicKeyInfoRef<'_>)> {
         let info = pkcs8::SubjectPublicKeyInfoRef::from_der(spki)
             .map_err(|e| KmError::Unsupported(format!("not a SubjectPublicKeyInfo: {e}").into()))?;
         Ok((KeyAlg::of(&info.algorithm)?, info))
     }
 
-    /// The key a PKCS#8 `PrivateKeyInfo` holds.
+    /// Returns the algorithm of the key that a PKCS#8 `PrivateKeyInfo` holds.
     ///
     /// # Errors
     ///
-    /// As [`KeyAlg::of_spki`], for a `PrivateKeyInfo`.
+    /// Returns the same errors as [`KeyAlg::of_spki`], for a `PrivateKeyInfo`.
     pub fn of_pkcs8(der: &[u8]) -> Result<KeyAlg> {
         let info = pkcs8::PrivateKeyInfoRef::from_der(der)
             .map_err(|e| KmError::Unsupported(format!("not a PKCS#8 PrivateKeyInfo: {e}").into()))?;
@@ -610,7 +646,8 @@ impl KeyAlg {
                 .map(KeyAlg::Ec)
                 .ok_or_else(|| unread("an EC key on another curve".into()));
         }
-        // An Edwards key's algorithm OID is its curve's (RFC 8410), what `Curve::params` holds.
+        // The algorithm OID of an Edwards key is the OID of its curve (RFC 8410), which is the
+        // value that `Curve::params` holds.
         alg.oid
             .to_der()
             .ok()
@@ -623,14 +660,17 @@ impl KeyAlg {
 }
 
 impl Curve {
-    /// Canonical DER SPKI from `CKA_EC_POINT`. That is normally a DER OCTET STRING wrapping the
-    /// point (SEC1 for Weierstrass curves, RFC 8032 for Edwards); some providers return it raw.
+    /// Returns the canonical DER SPKI for a `CKA_EC_POINT`. That value is normally a DER OCTET
+    /// STRING that contains the point (SEC1 for Weierstrass curves, RFC 8032 for Edwards curves),
+    /// but some providers return the point without the OCTET STRING.
     ///
     /// # Errors
     ///
-    /// `Conflict` if the value — wrapped or raw — is not a valid point of this curve.
+    /// Returns `Conflict` if the value, with or without the OCTET STRING, is not a valid point of
+    /// this curve.
     pub fn spki_from_point(self, ec_point: &[u8]) -> Result<Vec<u8>> {
-        // A raw point can look like an OCTET STRING, so fall back to raw if unwrapping fails.
+        // A raw point can look like an OCTET STRING, so the value is read as a raw point when the
+        // point inside the OCTET STRING does not decode.
         <&OctetStringRef>::from_der(ec_point)
             .ok()
             .and_then(|o| self.spki_from_raw(o.as_bytes()).ok())
@@ -649,19 +689,22 @@ impl Curve {
             Curve::BrainpoolP256r1 => encode(&Bp256::from_sec1_bytes(point).map_err(|e| bad(&e))?),
             Curve::BrainpoolP384r1 => encode(&Bp384::from_sec1_bytes(point).map_err(|e| bad(&e))?),
             Curve::Ed25519 => encode(&ed25519_dalek::VerifyingKey::try_from(point).map_err(|e| bad(&e))?),
-            // No stable Ed448 point arithmetic crate yet: the encoding is checked for length only.
+            // No stable crate for Ed448 point arithmetic exists yet, so only the length of the
+            // encoding is checked.
             Curve::Ed448 => encode(&ed448::pkcs8::PublicKeyBytes(point.try_into().map_err(|e| bad(&e))?)),
         }
     }
 }
 
-/// Canonical DER SPKI from any SPKI encoding (`CKA_PUBLIC_KEY_INFO`, a certificate): decode
-/// with the matching crate and re-encode, so provider encoding quirks never change the hash.
+/// Returns the canonical DER SPKI for any encoding of an SPKI (`CKA_PUBLIC_KEY_INFO`, or the SPKI
+/// of a certificate). The function decodes the SPKI with the crate for its algorithm and encodes
+/// it again, so that differences in how providers encode an SPKI never change the hash.
 ///
 /// # Errors
 ///
-/// `Unsupported` for no SPKI, one of a key type cakeys does not hash ([`KeyAlg::of_spki`]), or
-/// one its algorithm's own parser refuses, which names the error.
+/// Returns `Unsupported` for bytes that are not an SPKI, for an SPKI of a key type that cakeys
+/// does not hash ([`KeyAlg::of_spki`]), or for an SPKI that the parser of its algorithm refuses.
+/// The error names the parser's reason.
 pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
     let alg = KeyAlg::of_spki(spki)?;
     let bad = |e: &dyn std::fmt::Display| {
@@ -688,13 +731,13 @@ pub fn spki_canonical(spki: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
-/// The RSA public key a DER SPKI holds, whatever its size (`rsa_key`): for what reads a key
-/// without computing with it (its identity, its modulus and exponent, its size). The `rsa`
-/// crate's own parser refuses keys outside its limits.
+/// Returns the RSA public key that a DER SPKI holds, whatever its size (`rsa_key`). It is for
+/// code that reads a key without computing with it (its identity, its modulus and exponent, or
+/// its size). The `rsa` crate's own parser refuses keys outside its limits.
 ///
 /// # Errors
 ///
-/// The reason, when it is not an SPKI holding an RSA key at all.
+/// Returns the reason when the bytes are not an SPKI that holds an RSA key.
 pub fn rsa_of_spki(spki: &[u8]) -> std::result::Result<rsa::PublicKey, String> {
     let info = pkcs8::spki::SubjectPublicKeyInfoRef::from_der(spki).map_err(|e| e.to_string())?;
     let bits = info.subject_public_key.as_bytes().ok_or("the key's bits are not whole bytes")?;
@@ -702,24 +745,27 @@ pub fn rsa_of_spki(spki: &[u8]) -> std::result::Result<rsa::PublicKey, String> {
     rsa_key(key.modulus.as_bytes(), key.public_exponent.as_bytes()).map_err(str::to_owned)
 }
 
-/// Canonical DER SPKI from `CKA_MODULUS` and `CKA_PUBLIC_EXPONENT` (big-endian), of any size.
+/// Returns the canonical DER SPKI for a `CKA_MODULUS` and a `CKA_PUBLIC_EXPONENT` (big-endian),
+/// of any size.
 ///
 /// # Errors
 ///
-/// `Conflict` if the values are not an RSA public key at all (`rsa_key`).
+/// Returns `Conflict` if the values cannot be an RSA public key (`rsa_key`).
 pub fn rsa_spki(modulus: &[u8], exponent: &[u8]) -> Result<Vec<u8>> {
     let key = rsa_key(modulus, exponent)
         .map_err(|e| KmError::Conflict(Reason::check(Check::PublicKeyType, format!("invalid RSA public key: {e}"))))?;
     encode(&key)
 }
 
-/// An RSA public key from its modulus and exponent (big-endian), whatever its size: identity
-/// hashes public bytes and needs no key the `rsa` crate would compute with, so its limits
-/// (1024–8192 bits, e ≤ 2^33−1) are not cakeys' (id.rs F1; a legacy RSA-768 key or an
-/// RSA-16384 one has an identity). Refused only when it is no RSA key: an even (or zero)
-/// modulus, an even exponent or one below 3, or an exponent not below the modulus.
+/// Returns an RSA public key for a modulus and an exponent (big-endian), whatever its size. The
+/// identity is a hash of public bytes and needs no key with which the `rsa` crate would compute,
+/// so the limits of that crate (1024 to 8192 bits, and e ≤ 2^33−1) do not apply to cakeys (id.rs
+/// F1). For example, a legacy RSA-768 key and an RSA-16384 key both have an identity. The
+/// function refuses the values only when they cannot be an RSA key: an even (or zero) modulus,
+/// an even exponent, an exponent below 3, or an exponent that is not below the modulus.
 fn rsa_key(modulus: &[u8], exponent: &[u8]) -> std::result::Result<rsa::PublicKey, &'static str> {
-    // Big-endian: the last byte is the low one (and an empty value is zero, so even).
+    // The values are big-endian, so the last byte is the lowest byte. An empty value is zero,
+    // which is even.
     let odd = |v: &[u8]| v.last().is_some_and(|b| b & 1 == 1);
     let (n, e) = (rsa::BoxedUint::from_be_slice_vartime(modulus), rsa::BoxedUint::from_be_slice_vartime(exponent));
     if !odd(modulus) {
@@ -734,12 +780,13 @@ fn rsa_key(modulus: &[u8], exponent: &[u8]) -> std::result::Result<rsa::PublicKe
     Ok(rsa::PublicKey::new_unchecked(n, e))
 }
 
-/// Canonical DER SPKI of a certificate's subject key: links a certificate to its key object.
+/// Returns the canonical DER SPKI of a certificate's subject key, which links a certificate to
+/// its key object.
 ///
 /// # Errors
 ///
-/// `Conflict` if the value is not a parsable X.509 certificate, or its subject key is one
-/// `spki_canonical` refuses (also `Unsupported` in that case).
+/// Returns `Conflict` if the value is not an X.509 certificate that parses. Returns `Unsupported`
+/// if `spki_canonical` refuses the subject key.
 pub fn cert_spki(cert: &[u8]) -> Result<Vec<u8>> {
     let cert = x509_cert::Certificate::from_der(cert).map_err(|e| {
         KmError::Conflict(Reason::check(
@@ -767,9 +814,10 @@ mod tests {
     use super::*;
     use crate::config::AttrValue;
 
-    /// A key's type comes from its OIDs (ISSUES.md Q20): a P-256 key whose point is off the
-    /// curve is refused by P-256's parser, by name, where it used to fall through to RSA's; an
-    /// algorithm cakeys does not read is named by its OID; every curve's key reads as itself.
+    /// The OIDs of a key determine its type (ISSUES.md Q20). The P-256 parser refuses a P-256 key
+    /// whose point is not on the curve, and the error names P-256; earlier, such a key was passed
+    /// on to the RSA parser. The error for an algorithm that cakeys does not read names its OID.
+    /// The key of every curve is read as a key of that curve.
     #[test]
     fn a_key_is_read_by_the_parser_its_oids_name() {
         let good = p256::SecretKey::from_slice(&[1u8; 32]).unwrap().public_key().to_public_key_der().unwrap();
@@ -778,7 +826,7 @@ mod tests {
         *off_curve.last_mut().unwrap() ^= 1;
         let e = spki_canonical(&off_curve).unwrap_err();
         assert!(matches!(&e, KmError::Unsupported(m) if m.starts_with("SPKI of a P-256 key")), "{e}");
-        // X25519 (1.3.101.110): a Montgomery key, which no identity scheme reads.
+        // X25519 (1.3.101.110) is a Montgomery key, which no identity scheme reads.
         let x25519 = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00]
             .into_iter()
             .chain([9u8; 32])
@@ -791,7 +839,7 @@ mod tests {
         assert_eq!(spki_canonical(ed.as_bytes()).unwrap(), ed.as_bytes());
     }
 
-    /// An object type from its PKCS#11 names (`""`: no key type).
+    /// Returns an object type with the given PKCS#11 names (`""` means no key type).
     fn cfg(class: &str, key_type: &str) -> ObjectCfg {
         ObjectCfg::new(class.parse().unwrap(), (!key_type.is_empty()).then(|| key_type.parse().unwrap()))
     }
@@ -817,8 +865,9 @@ mod tests {
         let c = spec_digest(&obj, &mk(&[("CKA_SENSITIVE", false), ("CKA_SIGN", true)]));
         assert_eq!(a, b);
         assert_ne!(a, c);
-        // A reordered mechanism list is the same set: the same digest. (`load_config` sorts
-        // declared lists through `AttrValue::mechanisms`, so the digest only sees sorted ones.)
+        // A mechanism list in a different order is the same set and has the same digest.
+        // (`load_config` sorts the declared lists through `AttrValue::mechanisms`, so the digest
+        // only receives sorted lists.)
         let list = |names: &[&str]| SpecCfg {
             object: "o".into(),
             attributes: [(
@@ -835,7 +884,7 @@ mod tests {
             spec_digest(&obj, &list(&["CKM_ECDSA", "CKM_ECDSA_SHA256"])),
             spec_digest(&obj, &list(&["CKM_ECDSA_SHA256", "CKM_ECDSA"]))
         );
-        // `publicAttributes` take part only when declared.
+        // `publicAttributes` change the digest only when the spec declares them.
         let mut with_public = mk(&[]);
         with_public.public_attributes.insert("CKA_VERIFY".into(), AttrValue::Bool(true));
         assert_ne!(spec_digest(&obj, &mk(&[])), spec_digest(&obj, &with_public));
@@ -860,9 +909,10 @@ mod tests {
         assert_eq!(spki_canonical(&a).unwrap(), a);
     }
 
-    /// Every RSA key has an identity, whatever its size or exponent (id.rs F1): from its
-    /// modulus and from its SPKI alike, the same bytes `rsa`'s checked key encodes to where it
-    /// takes one (so no identity changed), and only what is no RSA key at all is refused.
+    /// Every RSA key has an identity, whatever its size or exponent (id.rs F1). The identity is
+    /// the same whether it is computed from the modulus or from the SPKI. Where the `rsa` crate's
+    /// checked key accepts the key, the encoding is the same bytes as that key's encoding, so no
+    /// identity changed. Only values that cannot be an RSA key are refused.
     #[test]
     fn rsa_keys_of_any_size_have_an_identity() {
         let f4 = [1u8, 0, 1];
@@ -879,7 +929,7 @@ mod tests {
                 assert_eq!(encode(&checked).unwrap(), a, "{} bits: the identity changed", bytes * 8);
             }
         }
-        // Leading zero bytes are no part of the key.
+        // Leading zero bytes are not part of the key.
         assert_eq!(
             rsa_spki(&[&[0u8, 0][..], &[0xc5; 96]].concat(), &[0, 1, 0, 1]).unwrap(),
             rsa_spki(&[0xc5; 96], &f4).unwrap()
@@ -908,7 +958,8 @@ mod tests {
         assert_eq!(Commit::Kw.input(DEFAULT_COMMITMENT_LABEL, &obj).len(), 32);
     }
 
-    /// Each commitment's usage bit (DESIGN §3.1), and the cipher each block key type implies.
+    /// Checks the usage attribute of each commitment (docs/DESIGN.md §3.1), and the cipher that
+    /// each block cipher key type determines.
     #[test]
     fn commit_usage_bits_and_block_ciphers() {
         use BlockCipher::{Aes, Des3};
@@ -945,9 +996,10 @@ mod tests {
         assert_eq!(Curve::from_params(b"\x13\x0cedwards25519"), Some(Curve::Ed25519));
     }
 
-    /// Core's curves are the names table's `in_core` ones, in its order: a curve the table
-    /// gains for core, or core for the table, fails here until the other has it. keys.toml takes
-    /// each by its canonical and its display name, as the lock and the messages write them.
+    /// Core's curves are the `in_core` curves of the names table, in the table's order. A curve
+    /// that is added to only one of the two fails here until the other one has it too. keys.toml
+    /// accepts each curve by its canonical name and by its display name, as the lock and the
+    /// messages write them.
     #[test]
     fn the_curves_are_the_names_tables() {
         let core: Vec<cakeys_names::Curve> = Curve::ALL.map(Curve::named).into();
@@ -963,9 +1015,10 @@ mod tests {
         assert_eq!(Curve::from_cfg(KeyType::Ec, "curve25519"), None, "no Montgomery key type in core");
     }
 
-    /// Every commitment is a kind of the names table, every kind is some commitment's, and a
-    /// kind other than an HMAC is named as its scheme (frozen: `scheme_definitions_are_pinned`),
-    /// so a `commit.*` row, the lock's scheme and the mechanism asked for are one commitment.
+    /// Every commitment is a kind in the names table, every kind belongs to a commitment, and
+    /// every kind other than an HMAC has the name of its scheme (which must not change:
+    /// `scheme_definitions_are_pinned`). So a `commit.*` row, the lock's scheme and the requested
+    /// mechanism all refer to the same commitment.
     #[test]
     fn every_commitment_is_a_kind_of_the_names_table() {
         let ciphers = [BlockCipher::Aes, BlockCipher::Des3];
@@ -1005,8 +1058,9 @@ mod tests {
                 };
                 spec_digest(&o, &s)
             };
-        // The certificate type lives in `certificateType` (this digest changed when it did, and
-        // is pinned since: the RSA, EC and generic-secret digests below must not move).
+        // The certificate type is in `certificateType`. This digest changed when the field was
+        // introduced and is pinned since then. The RSA, EC and generic-secret digests below must
+        // not change.
         let cert = ObjectCfg { certificate_type: Some("CKC_X_509".into()), ..cfg("CKO_CERTIFICATE", "") };
         let none = SpecCfg {
             object: "x".into(),
@@ -1044,13 +1098,14 @@ mod tests {
         );
     }
 
-    /// Known-answer tests: each scheme's definition, pinned. A code or crate change that alters
-    /// any of these breaks existing locks, so it must fail here, not in a user's lock. A scheme
-    /// whose computation changes needs a new name (docs/DESIGN.md §10).
+    /// Known-answer tests that pin the definition of each scheme. A change of the code or of a
+    /// crate that alters any of these values breaks existing locks, so it must fail here and not
+    /// in a user's lock. A scheme whose computation changes needs a new name (docs/DESIGN.md §10).
     #[test]
     fn scheme_definitions_are_pinned() {
         let obj = |kt: &str, len: u64| ObjectCfg { value_len: Some(len), ..cfg("CKO_SECRET_KEY", kt) };
-        // What each commitment scheme feeds the token (the token's output is then hashed).
+        // The input that each commitment scheme gives to the token. The token's output is then
+        // hashed.
         for (kt, len, c, want) in [
             (
                 "CKK_GENERIC_SECRET",
@@ -1073,7 +1128,8 @@ mod tests {
                 "sha256-Ht1do336beKCgXkt86UdPfbUUdqLPc7Md3/3IybSftI=",
             ),
             ("CKK_AES", 32, Commit::Kw, "sha256-woiHkSVHlbF2VQCQbiHKffrxo2ShyBOMzsdtKDPtH7c="),
-            // DES3: the same construction, one 8-byte block, the length the key type fixes.
+            // DES3 uses the same construction, with one 8-byte block, which is the length that
+            // the key type fixes.
             ("CKK_DES3", 24, Commit::KcvEcb(BlockCipher::Des3), "sha256-NRjuYQG3VCPqI2KhH8s3pChrlFGSWwvCQNd4BedHPeo="),
             (
                 "CKK_DES3",
@@ -1084,7 +1140,8 @@ mod tests {
         ] {
             assert_eq!(sri(&c.input(DEFAULT_COMMITMENT_LABEL, &obj(kt, len))), want, "{kt} {}", c.scheme());
         }
-        // rfc7093m4: canonical SPKI from fixed points (compressed secp256k1 input normalizes).
+        // rfc7093m4: the canonical SPKI from fixed points (a compressed secp256k1 point is
+        // normalized to the uncompressed form).
         let unhex = |h: &str| crate::hex::decode(h).unwrap();
         for (c, point, want) in [
             (
@@ -1135,14 +1192,16 @@ mod tests {
         );
     }
 
-    /// The deprecation register (docs/DESIGN.md §3.1, finding S15): empty today, so adding a name
-    /// is a deliberate, reviewed diff; and a deprecated name must be one this cakeys knows.
+    /// The list of deprecated schemes (docs/DESIGN.md §3.1, finding S15) is empty today, so the
+    /// addition of a name must be a deliberate change that a person reviews. A deprecated name
+    /// must be a scheme that this cakeys knows.
     #[test]
     fn the_deprecation_register_is_pinned() {
         assert!(Scheme::DEPRECATED.is_empty(), "deprecating a scheme is a design decision; see docs/DESIGN.md §3.1");
     }
 
-    /// Scheme names are lock keys: renaming one breaks every lock that records it (§10).
+    /// Scheme names are keys in the lock, so a renamed scheme breaks every lock that records it
+    /// (§10).
     #[test]
     fn scheme_names_are_pinned() {
         let names: Vec<&str> = Scheme::ALL.into_iter().map(Scheme::name).collect();
@@ -1167,31 +1226,34 @@ mod tests {
         assert_eq!(Scheme::from_name("pubkeyhash"), None, "a lock never uses an alias");
     }
 
-    /// The attestation commitment definitions (docs/DESIGN.md §3.7, §10): each scheme's canonical
-    /// input, pinned. The attestations are verified evidence — Yubico PIV certificate chain,
-    /// `TPM2_Certify` over the object's Name — and the canonical encoding below is what an ID is
-    /// the SHA-256 of, so a change here breaks locks and must be a new scheme name instead.
+    /// Pins the canonical input of each attestation scheme (docs/DESIGN.md §3.7, §10). The
+    /// attestations are verified evidence: the Yubico PIV certificate chain, and `TPM2_Certify`
+    /// over the object's Name. An ID is the SHA-256 of the canonical encoding below, so a change
+    /// here breaks locks and must use a new scheme name instead.
     #[test]
     fn attestation_definitions_are_pinned() {
         let kinds: Vec<(&str, &str)> =
             Scheme::ALL.into_iter().filter_map(|s| Some((s.name(), s.attestation_kind()?))).collect();
         assert_eq!(kinds, [("piv-attestation", "yubico-piv"), ("tpm-certify", "tpm-certify")]);
-        // piv-attestation: domain tag, then issuer SPKI (f9 device key), subject SPKI (the key),
-        // firmware (1.3.6.1.4.1.41482.3.3), serial (.3.7), PIN/touch policy (.3.8), formfactor
-        // (.3.9) — length-prefixed in that order, absent extensions as empty fields.
+        // piv-attestation: the domain tag, then the issuer SPKI (the f9 device key), the subject
+        // SPKI (the key), the firmware (1.3.6.1.4.1.41482.3.3), the serial number (.3.7), the PIN
+        // and touch policy (.3.8) and the form factor (.3.9). Each field has a length prefix, in
+        // that order, and an absent extension is an empty field.
         assert_eq!(
             piv_attestation_id(b"issuer", b"subject", b"\x05\x07\x04", b"\x00\x01\x02\x03", b"\x04\x01", b"\x05"),
             "sha256-Ag0O41w4o5kTLdmBZotdL9DKXHQKn36fPRTUWXLpTJY="
         );
-        // tpm-certify: domain tag, then the attested Name (nameAlg tag + H(TPMT_PUBLIC)) and the
-        // qualified Name. The freshness nonce is verification evidence and never part of the ID.
+        // tpm-certify: the domain tag, then the attested Name (the nameAlg tag followed by
+        // H(TPMT_PUBLIC)) and the qualified Name. The nonce that proves freshness is used only
+        // during verification and is never part of the ID.
         assert_eq!(
             tpm_certify_id(b"\x00\x0bname", b"\x00\x0bqn"),
             "sha256-gtESMfaa12qwnzF1o9xnvKzbZUFlO7WOTHi4aj52aq0="
         );
     }
 
-    /// The curve an SPKI names, as the stand-in check compares it with the private key's own.
+    /// Checks the curve that an SPKI names, which the stand-in check compares with the private
+    /// key's own curve.
     #[test]
     fn spki_curve_names_the_key_kind() {
         macro_rules! fixture {
@@ -1206,9 +1268,10 @@ mod tests {
         assert_eq!(curve(fixture!("adopt-cert-ed25519.der")), Some(Curve::Ed25519));
     }
 
-    /// The SPKI forms the second dispatcher read and `KeyAlg::of_spki` does not (review D6, which
-    /// removed it): each is refused by `KeyAlg::of_spki` and by `spki_canonical`, which every SPKI
-    /// a caller passes came through, so one dispatcher decides both.
+    /// Review D6 removed a second dispatcher, which read some SPKI forms that `KeyAlg::of_spki`
+    /// does not read. Both `KeyAlg::of_spki` and `spki_canonical` refuse each of those forms.
+    /// Every SPKI that a caller passes has gone through `spki_canonical`, so one dispatcher
+    /// decides both.
     #[test]
     fn spki_curve_reads_what_canonical_spkis_hold() {
         let tlv = |tag: u8, body: &[&[u8]]| {
