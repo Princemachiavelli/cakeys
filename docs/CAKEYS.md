@@ -180,6 +180,7 @@ holds the two tables below to the code, in order. The exit code is the refusing 
 | `import.transport` | 10, 14 | The transport key that a sealed move wraps to is the one that the lock pins on the target, under a spec that keys.toml names, and a bundle is made for that target and sealed to that key (10 where the key's hash differs). |
 | `import.locked` | 14 | The lock pins what a move checks the moved object by: its IDs, its type, the scheme that pairs a key with its certificate, and a locked key for a key file's identity. |
 | `import.binding` | 14 | An EC or Edwards key that a bundle file carries is bound by a proof of possession, because a `token-asserted` binding would rest on the public key that the bundle itself names. |
+| `probe.same-key` | 13 | The key that a probe's move brings back is the key that it moved: the host's check value of an AES key, or the commitment that the module computes. |
 
 ## The contract with programs that use keys
 

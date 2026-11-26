@@ -94,6 +94,7 @@ impl ChainTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cakeys_core::{Check, Reason};
 
     /// Every verb but `check` warns about a chain's dates, `check` refuses it, `--ignore-validity`
     /// skips them; a chain wrong for any other reason is refused under each (review D5).
@@ -101,7 +102,9 @@ mod tests {
     fn a_chain_out_of_its_dates_warns_where_check_refuses() {
         use super::ChainTime::{At, Unchecked, Warn};
         let dated = |at: Option<u64>| match at {
-            Some(t) if t > 100 => Err(KmError::Conflict("'slot' is not valid at 101".into())),
+            Some(t) if t > 100 => {
+                Err(KmError::Conflict(Reason::check(Check::ChainValidity, "'slot' is not valid at 101")))
+            }
             _ => Ok("attested"),
         };
         assert_eq!(Warn(50).verify(dated).unwrap(), ("attested", None));
@@ -109,7 +112,9 @@ mod tests {
         assert_eq!((v, warning.as_deref()), ("attested", Some("conflict: 'slot' is not valid at 101")));
         assert_eq!(At(101).verify(dated).unwrap_err().exit_code(), 13);
         assert_eq!(Unchecked.verify(dated).unwrap(), ("attested", None));
-        let unpinned = |_: Option<u64>| -> Result<&str> { Err(KmError::Conflict("signed by no pinned root".into())) };
+        let unpinned = |_: Option<u64>| -> Result<&str> {
+            Err(KmError::Conflict(Reason::check(Check::ChainAnchor, "signed by no pinned root")))
+        };
         for when in [Warn(101), At(101), Unchecked] {
             assert!(when.verify(unpinned).unwrap_err().to_string().contains("no pinned root"), "{when:?}");
         }
@@ -126,7 +131,9 @@ mod tests {
         assert_eq!(ChainTime::by_clock(before, true), ChainTime::NoClock { warn: true });
         assert_eq!(ChainTime::by_clock(Ok(Duration::from_secs(7)), false), ChainTime::At(7));
         assert_eq!(ChainTime::by_clock(Ok(Duration::from_secs(7)), true), ChainTime::Warn(7));
-        let dated = |at: Option<u64>| at.map_or(Ok("attested"), |_| Err(KmError::Conflict("not valid at 0".into())));
+        let dated = |at: Option<u64>| {
+            at.map_or(Ok("attested"), |_| Err(KmError::Conflict(Reason::check(Check::ChainValidity, "not valid at 0"))))
+        };
         let e = ChainTime::NoClock { warn: false }.verify(dated).unwrap_err();
         assert!(matches!(&e, KmError::Unavailable(m) if m.contains("system clock reads before 1970")), "{e}");
         let (v, warning) = ChainTime::NoClock { warn: true }.verify(dated).unwrap();

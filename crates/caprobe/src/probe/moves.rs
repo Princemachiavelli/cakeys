@@ -15,7 +15,7 @@ use cakeys_core::migrate::Method;
 use cakeys_core::migrate::OaepHash;
 use cakeys_core::plaintext::{private_from_pkcs8, spki_of_pkcs8};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
-use cakeys_core::{KmError, Result, id};
+use cakeys_core::{Check, KmError, Reason, Result, id};
 use cakeys_pkcs11::provider::PlaintextKind;
 use cakeys_pkcs11::token::{self, SessionObject, locator_attrs, public_object_attrs};
 use cakeys_pkcs11::{Declared, SessionKey, Template, Topic, Via};
@@ -1005,7 +1005,7 @@ pub(super) fn same_aes(made: &Made, h: ObjectHandle, value: &[u8]) -> Result<()>
     if Some(token) == host_kcv(value) {
         Ok(())
     } else {
-        Err(KmError::Conflict("its check value is another key's".into()))
+        Err(KmError::Conflict(Reason::check(Check::ProbeSameKey, "its check value is another key's")))
     }
 }
 
@@ -1092,7 +1092,7 @@ fn import_secret(made: &mut Made, profile: &mut Draft, kt: Kt, value: &[u8], tra
     let same = |m: &Made, h2| match (commit, &first) {
         (Some(c), Some(first)) => match m.tok.commit(h2, &object, c, "cakeys probe: import") {
             Ok(v) if &v == first => Ok(Checked::unverified()),
-            Ok(_) => Err(KmError::Conflict("its commitment is another key's".into())),
+            Ok(_) => Err(KmError::Conflict(Reason::check(Check::ProbeSameKey, "its commitment is another key's"))),
             Err(e) => Err(e),
         },
         _ => Checked::verified(same_aes(m, h2, value)),

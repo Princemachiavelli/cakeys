@@ -51,7 +51,7 @@ fn every_unit_row_names_a_test_that_fires_its_rule() {
     let mut wrong = Vec::new();
     for t in tables() {
         for u in &t.units {
-            let fires: Vec<String> = match (Rule::named(&u.rule), Check::named(&u.rule)) {
+            let forms: Vec<String> = match (Rule::named(&u.rule), Check::named(&u.rule)) {
                 (Some(rule), _) => vec![format!("Rule::{rule:?}"), format!("\"{}\"", rule.name())],
                 (None, Some(check)) => vec![format!("Check::{check:?}")],
                 (None, None) => {
@@ -59,14 +59,14 @@ fn every_unit_row_names_a_test_that_fires_its_rule() {
                     continue;
                 }
             };
-            let check = Check::named(&u.rule).is_some();
+            let by_check = Check::named(&u.rule).is_some();
             let bodies: Vec<&str> = texts.iter().filter_map(|text| body(text, &u.test)).collect();
             let named =
-                |b: &&str| fires.iter().any(|f| b.contains(f.as_str())) && (!check || b.contains("assert_fires("));
+                |b: &&str| forms.iter().any(|f| b.contains(f.as_str())) && (!by_check || b.contains("assert_forms("));
             if bodies.is_empty() {
                 wrong.push(format!("unit {}: no fn {} in crates/", u.rule, u.test));
             } else if !bodies.iter().any(named) {
-                wrong.push(format!("unit {}: fn {} names none of {fires:?}", u.rule, u.test));
+                wrong.push(format!("unit {}: fn {} names none of {forms:?}", u.rule, u.test));
             }
             if u.why.trim().is_empty() {
                 wrong.push(format!("unit {}: no why", u.rule));

@@ -28,7 +28,7 @@ impl<T: std::fmt::Debug> Refused for crate::Result<T> {
 }
 
 /// Assert that `result` is a refusal by `check`: an error whose [`KmError::check`] is `check`.
-/// The liar lint (crates/cli/tests/liar_lint.rs) accepts a unit test as the one that fires a
+/// The liar lint (`crates/cli/tests/liar_lint.rs`) accepts a unit test as the one that fires a
 /// check when the test's body calls this function with that check.
 ///
 /// # Panics

@@ -227,9 +227,10 @@ mod tests {
     #[test]
     fn a_run_ends_with_the_one_refusal_or_20() {
         assert!(refused(Vec::new(), "pairs refused").is_none());
-        let one = refused(vec![KmError::Conflict("taken".into())], "pairs refused").unwrap();
+        let taken = || KmError::Conflict(Reason::rule(Rule::LocatorFree, "taken"));
+        let one = refused(vec![taken()], "pairs refused").unwrap();
         assert_eq!(one.exit_code(), 13);
-        let two = vec![KmError::Conflict("taken".into()), KmError::Unsupported("no".into())];
+        let two = vec![taken(), KmError::Unsupported("no".into())];
         let several = refused(two, "pairs refused").unwrap();
         assert!(several.exit_code() == 20 && several.to_string().contains("2 pairs refused"), "{several}");
     }

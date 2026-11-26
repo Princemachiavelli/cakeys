@@ -228,6 +228,11 @@ names! {
         /// because a `token-asserted` binding would rest on the public key that the bundle
         /// itself names: 14.
         ImportBinding = "import.binding",
+
+        // caprobe's probes.
+        /// The key that a probe's move brings back is the key that it moved: the host's check
+        /// value of an AES key, or the commitment that the module computes: 13.
+        ProbeSameKey = "probe.same-key",
     }
 }
 
