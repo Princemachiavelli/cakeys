@@ -13,13 +13,14 @@
 //!
 //! A row with none of these fails the test, which lists it: a new spec revision or a new code
 //! path shows up as a diff. With `CAKEYS_COVERAGE_TRACE` naming a trace directory, the `used`
-//! rows come from the trace, and `CAKEYS_UPDATE_COVERAGE=1` rewrites the committed file (and
-//! writes `coverage-report.txt`, the tests behind each used row, into the trace directory).
+//! rows come from the trace, and `CAKEYS_UPDATE_COVERAGE=1` regenerates the committed file
+//! (beside it as `.new`, or over it with `CAKEYS_ACCEPT=1`: `cakeys_profile::regenerate`), and
+//! writes `coverage-report.txt`, the tests behind each used row, into the trace directory.
 //! Without it, the committed file's own `used` rows stand in for the trace, so every other
 //! status is still checked on every run.
 
-use cakeys_profile::Baseline;
 use cakeys_profile::baseline::TABLES;
+use cakeys_profile::{Baseline, regenerate};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -388,7 +389,7 @@ fn committed_coverage_is_generated_from_the_trace() {
     };
     if trace.is_some() && std::env::var_os("CAKEYS_UPDATE_COVERAGE").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, &generated).unwrap();
+        eprintln!("{}", regenerate::write(&path, &generated, regenerate::accepted()).unwrap());
         return;
     }
     assert!(

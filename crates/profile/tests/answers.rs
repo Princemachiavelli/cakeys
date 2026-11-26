@@ -3,11 +3,12 @@
 //! row a consumer reads directly, for every embedded profile. A change of
 //! the profile format must leave this text unchanged (`tests/answers.txt`); a change of what a
 //! profile says regenerates it with `CAKEYS_WRITE_ANSWERS=1 cargo test -p cakeys-profile --test
-//! answers`, which then fails, so a regenerating run is never a pass: review the diff, then run
-//! again without the variable.
+//! answers`, which then fails, so a regenerating run is never a pass: it writes `answers.txt.new`
+//! (`cakeys_profile::regenerate`); review it, then run again with `CAKEYS_ACCEPT=1` too, and
+//! then without either.
 
 use cakeys_profile::profile::Mode;
-use cakeys_profile::{Capability, Effective, Move, Profile, Set, Verdict};
+use cakeys_profile::{By, Capability, Effective, Move, Profile, Set, Verdict, regenerate};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -176,16 +177,14 @@ fn first_difference(got: &str, pinned: &str) -> Option<String> {
     ))
 }
 
-/// Compare `got` with the pinned text at `path`, or with `write`, put `got` there: an error
-/// either way, so a regenerating run never passes (review answers.rs F1: a shell that kept the
-/// variable accepted every change silently).
-fn pinned_or_written(got: &str, path: &Path, write: bool) -> Result<(), String> {
+/// Compare `got` with the pinned text at `path`, or with `write`, put `got` there
+/// ([`regenerate::write`]: over it only when `accept`ed): an error either way, so a
+/// regenerating run never passes (review answers.rs F1: a shell that kept the variable accepted
+/// every change silently).
+fn pinned_or_written(got: &str, path: &Path, write: bool, accept: bool) -> Result<(), String> {
     if write {
-        std::fs::write(path, got).map_err(|e| format!("{}: {e}", path.display()))?;
-        return Err(format!(
-            "{} rewritten (CAKEYS_WRITE_ANSWERS): review its diff, then run again without the variable",
-            path.display()
-        ));
+        let written = regenerate::write(path, got, accept).map_err(|e| format!("{}: {e}", path.display()))?;
+        return Err(format!("{written} (CAKEYS_WRITE_ANSWERS): review its diff, then run again without the variable"));
     }
     let pinned = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     first_difference(got, &pinned).map_or(Ok(()), Err)
@@ -195,7 +194,8 @@ fn pinned_or_written(got: &str, path: &Path, write: bool) -> Result<(), String> 
 fn every_profile_answers_as_pinned() {
     let got = answers(&Set::embedded().unwrap());
     let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/answers.txt"));
-    if let Err(e) = pinned_or_written(&got, path, std::env::var_os("CAKEYS_WRITE_ANSWERS").is_some()) {
+    let write = std::env::var_os("CAKEYS_WRITE_ANSWERS").is_some();
+    if let Err(e) = pinned_or_written(&got, path, write, regenerate::accepted()) {
         panic!("{e}");
     }
 }
@@ -205,13 +205,92 @@ fn every_profile_answers_as_pinned() {
 #[test]
 fn regenerating_fails_and_a_difference_says_where() {
     let path = std::env::temp_dir().join(format!("cakeys-answers-{}.txt", std::process::id()));
-    let e = pinned_or_written("a\nb\n", &path, true).unwrap_err();
-    assert!(e.contains("rewritten"), "{e}");
+    let e = pinned_or_written("a\nb\n", &path, true, false).unwrap_err();
+    assert!(e.contains("wrote"), "{e}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nb\n");
-    assert_eq!(pinned_or_written("a\nb\n", &path, false), Ok(()));
-    let e = pinned_or_written("a\nb\nc\n", &path, false).unwrap_err();
+    assert_eq!(pinned_or_written("a\nb\n", &path, false, false), Ok(()));
+    // Pinned already, the regeneration waits beside it until accepted (review 2026-11-24 C-8).
+    let new = regenerate::pending(&path);
+    let e = pinned_or_written("a\nB\n", &path, true, false).unwrap_err();
+    assert!(e.contains(&new.display().to_string()), "{e}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nb\n");
+    assert_eq!(std::fs::read_to_string(&new).unwrap(), "a\nB\n");
+    let e = pinned_or_written("a\nb\n", &path, true, true).unwrap_err();
+    assert!(e.contains("unchanged"), "{e}");
+    assert!(!new.exists());
+    let e = pinned_or_written("a\nb\nc\n", &path, false, false).unwrap_err();
     assert!(e.contains("line 3 (3 lines now, 2 pinned)") && e.contains("now:    \"c\"\n  pinned: <end>"), "{e}");
-    let e = pinned_or_written("a\n", &path, false).unwrap_err();
+    let e = pinned_or_written("a\n", &path, false, false).unwrap_err();
     assert!(e.contains("line 2 (1 lines now, 2 pinned)") && e.contains("now:    <end>\n  pinned: \"b\""), "{e}");
     std::fs::remove_file(&path).unwrap();
+}
+
+/// The profiles profiles/LEDGER.toml says every build regenerates (`verified-by`), and those it
+/// records as runs on hardware or a cloud (`[artifact.probed]`); its fixtures and locks aside.
+fn ledger_profiles() -> (Vec<String>, Vec<String>) {
+    let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../profiles/LEDGER.toml"));
+    let ledger: toml::Table = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let (mut regenerated, mut hardware) = (Vec::new(), Vec::new());
+    for a in ledger["artifact"].as_array().unwrap().iter().filter_map(toml::Value::as_table) {
+        let file = a["path"].as_str().unwrap().to_owned();
+        if !file.starts_with("profiles/") {
+            continue;
+        }
+        if a.contains_key("verified-by") {
+            regenerated.push(file);
+        } else if a.contains_key("probed") {
+            hardware.push(file);
+        }
+    }
+    (regenerated, hardware)
+}
+
+/// What is wrong with the provenance of `text`'s yes rows (review 2026-11-24 §3.1): a profile
+/// every build regenerates says of each yes whether the host checked it (`host`) or only the
+/// module said so (`unverified`); a yes of no recorded provenance (legacy) stands only in a
+/// profile last probed on hardware, which the ledger owes a run.
+fn yes_provenance(path: &str, text: &str, regenerated: &[String], hardware: &[String]) -> Vec<String> {
+    let profile = Profile::from_toml(text).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let regenerated = regenerated.iter().any(|r| r == path);
+    let mut out = Vec::new();
+    for (cap, row) in profile.capabilities.iter().filter(|(c, r)| c.probed() && r.answer.yes()) {
+        match row.by {
+            Some(By::Host | By::Unverified) => {}
+            Some(by) => out.push(format!("{path}: {cap} = yes by {by:?}")),
+            None if regenerated => out.push(format!("{path}: {cap} = yes, of no provenance, in a regenerated profile")),
+            None if !hardware.iter().any(|h| h == path) => {
+                out.push(format!("{path}: {cap} = yes, of no provenance, and the ledger records no run of it"));
+            }
+            None => {}
+        }
+    }
+    out
+}
+
+#[test]
+fn every_regenerated_yes_says_by_whom() {
+    let (regenerated, hardware) = ledger_profiles();
+    assert_eq!(regenerated.len(), 3, "the software profiles every build regenerates: {regenerated:?}");
+    let embedded: Vec<&str> = cakeys_profile::embedded::PROFILE_FILES.iter().map(|(p, _)| *p).collect();
+    for path in regenerated.iter().chain(&hardware) {
+        assert!(embedded.contains(&path.as_str()), "{path}: in the ledger, not embedded");
+    }
+    let wrong: Vec<String> = cakeys_profile::embedded::PROFILE_FILES
+        .iter()
+        .flat_map(|(path, text)| yes_provenance(path, text, &regenerated, &hardware))
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    // Seen failing: a regenerated profile's yes stripped of its `by`, and a hardware profile's
+    // legacy yes in a profile the ledger does not record.
+    let softhsm =
+        cakeys_profile::embedded::PROFILE_FILES.iter().find(|(p, _)| p.ends_with("softhsm/2.7.toml")).unwrap();
+    let stripped = softhsm.1.replacen(
+        "\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\", by = \"host\" }",
+        "\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\" }",
+        1,
+    );
+    assert_ne!(stripped, softhsm.1);
+    assert_eq!(yes_provenance(softhsm.0, &stripped, &regenerated, &hardware).len(), 1);
+    let ykcs11 = cakeys_profile::embedded::PROFILE_FILES.iter().find(|(p, _)| p.ends_with("ykcs11/2.7.toml")).unwrap();
+    assert!(!yes_provenance(ykcs11.0, ykcs11.1, &[], &[]).is_empty(), "ykcs11/2.7 holds no legacy yes to refuse");
 }

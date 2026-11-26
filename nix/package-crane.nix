@@ -507,13 +507,15 @@ craneLib.buildPackage (
           preBuild = common.args.preCheck;
           ${runner} = "bash ${./test-tokens.sh}";
           # Not traced: the coverage test, and the fault suites (nix/test-tokens.sh leaves them
-          # untraced, with the other tests it names).
+          # untraced, with the other tests it names). The rewrite is accepted (CAKEYS_ACCEPT): the
+          # file it replaces is this build's copy; copying the result over the committed one is
+          # the change profiles/LEDGER.toml records.
           buildPhaseCargoCommand = ''
             export CAKEYS_TRACE_DIR=$TMPDIR/coverage-trace
             ${cargoTestCommandFor "not (binary(fault) | test(committed_coverage_is_generated_from_the_trace))"}
             ${testCount true}
             unset CAKEYS_TRACE_DIR
-            CAKEYS_COVERAGE_TRACE=$TMPDIR/coverage-trace CAKEYS_UPDATE_COVERAGE=1 \
+            CAKEYS_COVERAGE_TRACE=$TMPDIR/coverage-trace CAKEYS_UPDATE_COVERAGE=1 CAKEYS_ACCEPT=1 \
               ${cargoTestCommandFor "test(committed_coverage_is_generated_from_the_trace)"}
           '';
           installPhaseCommand = ''
