@@ -6,54 +6,59 @@
 [![coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FPrincemachiavelli%2Fcakeys%2Fbadges%2Fcoverage.json)](docs/DEVELOPMENT.md#testing)
 [![mutants caught](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FPrincemachiavelli%2Fcakeys%2Fbadges%2Fmutants.json)](docs/archive/COVERAGE_PLAN.md#mutation-report-2026-11-15)
 
-Content-addressed identity for PKCS#11 objects, as a Nix flake.
+cakeys provides content-addressed identity for PKCS#11 objects, as a Nix flake.
 
-Declare keys, certificates and data objects in `keys.toml`. cakeys finds them on a token by a
+You declare keys, certificates and data objects in `keys.toml`. cakeys finds them on a token by a
 locator (`CKA_LABEL`/`CKA_ID`), identifies them by a **hash of their material** (a CA-ID), and
-records that hash in `keys.lock`. A label or URI can be changed or reused; the hash cannot. A
-check before each use, including inside a Nix build sandbox, verifies that the token still holds
-exactly that material; a private key also proves possession of it, by signing, deriving,
-decrypting or unwrapping a fresh challenge the host checks.
+records that hash in `keys.lock`. A label or a URI can be changed or reused, but the hash cannot.
+A check before each use, including a check inside a Nix build sandbox, verifies that the token
+still holds exactly that material. A private key also proves possession of the material: it
+signs, derives from, decrypts or unwraps a fresh challenge, and the host checks the result.
 
-Status: proof of concept, on x86_64-linux, aarch64-linux and aarch64-darwin (without the TPM
-provider), lock format `version = 1` still a draft. Tested against
-SoftHSM, kryoptic, tpm2-pkcs11 (swtpm) and SoftHSM behind p11-kit in every Nix build, and by hand
-on a YubiKey 5C NFC FIPS and an AMD fTPM. `nix run .#demo` walks through it on throwaway tokens.
+Status: cakeys is a proof of concept. It runs on x86_64-linux, aarch64-linux and aarch64-darwin
+(without the TPM provider), and the lock format `version = 1` is still a draft. Every Nix build
+tests it against SoftHSM, kryoptic, tpm2-pkcs11 (swtpm) and SoftHSM behind p11-kit, and it was
+tested by hand on a YubiKey 5C NFC FIPS and an AMD fTPM. `nix run .#demo` demonstrates it step
+by step on throwaway tokens.
 
 ## Three tools
 
 | Tool | Job | Verbs | Document |
 |---|---|---|---|
-| `cakeys` | Pins and verifies | `validate`, `resolve`, `lock`, `create`, `delete`, `gc`, `check`; the Nix library and NixOS module | [docs/CAKEYS.md](docs/CAKEYS.md) |
-| `caprobe` | Measures modules into capability profiles; the only tool that creates scratch objects | `probe`, `supports`, `caps` | [docs/CAPROBE.md](docs/CAPROBE.md) |
-| `camigrate` | Moves keys between tokens; the only tool that handles key material | `export`, `import`, `migrate`, `transport` | [docs/CAMIGRATE.md](docs/CAMIGRATE.md) |
+| `cakeys` | It pins and verifies keys. | `validate`, `resolve`, `lock`, `create`, `delete`, `gc`, `check`; the Nix library and NixOS module | [docs/CAKEYS.md](docs/CAKEYS.md) |
+| `caprobe` | It measures modules and writes capability profiles. It is the only tool that creates scratch objects. | `probe`, `supports`, `caps` | [docs/CAPROBE.md](docs/CAPROBE.md) |
+| `camigrate` | It moves keys between tokens. It is the only tool that handles key material. | `export`, `import`, `migrate`, `transport` | [docs/CAMIGRATE.md](docs/CAMIGRATE.md) |
 
-All three share one workspace, one flake (`nix run .#caprobe`, `.#camigrate`) and the exit codes.
-A `cakeys` build carries no probe or migration code.
+All three tools share one workspace, one flake (`nix run .#caprobe`, `.#camigrate`) and the exit
+codes. A `cakeys` build contains no probe or migration code.
 
 ## What it is for
 
-- **A copy is really a copy.** Cloned HSM A onto B, or moved keys between vendors: lock each
-  token into one lock, and B's copy must hash to A's locked identities (10 otherwise).
-- **A key is what the software was tested with.** The spec declares type and policy (sign-only,
-  non-extractable, …): another type is refused (13), policy drift reported (14), and a key
-  generated on the device tells itself apart from an imported one (`CKA_LOCAL`, attestation).
-- **An old backup still holds the material.** `check` recomputes every identity from the token;
-  labels only locate.
-- **A module update changed something.** The lock records the module and token behind each
-  entry, and `caprobe probe --diff` compares a token with its committed capability profile.
-- **A signing build signs with the pinned key.** The build runs `cakeys check` first, like a
-  fixed-output derivation, and the NixOS module grants a token only to builds that require it.
-- **A service never starts with the wrong key.** `services.cakeys.checks.<name>` gates units on
-  the identity check.
-- **Keys move between tokens honestly.** `camigrate` says per object how it can move (`sealed`
-  under a key on the target, `enforced` by the source token, through the host, or as a file), and
-  the import is verified against the lock.
+- **A copy holds the same material.** When you clone HSM A onto HSM B, or move keys between
+  vendors, lock each token into one lock. B's copy must then hash to A's locked identities
+  (otherwise the result is 10).
+- **A key is the kind of key that the software was tested with.** The spec declares the type and
+  the policy (sign-only, non-extractable, …). Another type is refused (13), policy drift is
+  reported (14), and a key that was generated on the device can be distinguished from an
+  imported key (`CKA_LOCAL`, attestation).
+- **An old backup still holds the material.** `check` recomputes every identity from the token,
+  and labels only locate the objects.
+- **A module update that changed something is detected.** The lock records the module and the
+  token behind each entry, and `caprobe probe --diff` compares a token with its committed
+  capability profile.
+- **A signing build signs with the pinned key.** The build runs `cakeys check` first, as a pseudo
+  fixed-output check, and the NixOS module grants a token only to the builds that require it.
+- **A service never starts with the wrong key.** `services.cakeys.checks.<name>` makes units
+  depend on the identity check.
+- **A move between tokens is stated and verified.** `camigrate` says for each object how it can
+  move (`sealed` under a key on the target, `enforced` by the source token, through the host, or
+  as a file), and the import is verified against the lock.
 
-cakeys records and verifies; it does not decide how keys are managed. Out of scope: crypto
-implementations and key generation on the host, rotation and approval policy, storing secrets or
-PINs, being a PKCS#11 module, CA work, and proving a key exists nowhere else. Anything true of
-one vendor lives in its provider crate, behind the `Provider` trait.
+cakeys records and verifies, and it does not decide how keys are managed. These things are out
+of scope: crypto implementations and key generation on the host, rotation and approval policy,
+the storage of secrets or PINs, acting as a PKCS#11 module, CA work, and proving that a key
+exists nowhere else. Anything that is true of only one vendor is in that vendor's provider
+crate, behind the `Provider` trait.
 
 ## Example
 
@@ -85,14 +90,20 @@ $ cakeys -c keys.toml check signing     # later: verify, then print the URI (nev
 pkcs11:token=main;serial=...;object=signing;type=private
 ```
 
-Every verb names the object; `--spec` and `--token` narrow it where keys.toml realises it more than once.
-Only `create` makes keys, where keys.toml says `origin = "create"`; `lock` and `check` find what is there. `create`, `lock` and
-`delete` write the lock by default, filling gaps only — a locked ID is never overwritten. A realisation that changed (its locator, spec or policy attributes) is re-recorded,
-and each accepted change is printed (`re-recorded …`). Where the lock cannot be written (a Nix build sandbox, a read-only lock or
-directory) they refuse up front (21) unless told not to write (`lock --dry-run`, `delete --dry-run`,
-`create --no-update-lock`). A run that wrote the lock exits 22, never 0, so a script reviews the
-change on purpose; a lock that is not there is refused (17) unless `--new-lock`, so a mistyped
-`--lock` never starts a second one.
+Every verb names the object, and `--spec` and `--token` narrow the address where keys.toml
+realises the object more than once. Of cakeys' verbs, only `create` makes the keys that
+keys.toml declares, and only where keys.toml says `origin = "create"`. `lock` and `check` find
+what is there (`lock` may also provision a TPM Attestation Key, DESIGN §3.7). `create`, `lock`
+and `delete` write the lock by default, and they only fill gaps: a locked ID is never
+overwritten. A realisation that changed (its locator, its spec or its policy attributes) is
+recorded again, and each accepted change is printed (`re-recorded …`). Where the lock cannot be
+written (in a Nix build sandbox, or with a read-only lock or directory), these verbs refuse to
+run (21) before they start, unless they are told not to write (`lock --dry-run`,
+`delete --dry-run`, `create --no-update-lock`). A run that wrote the lock exits 22, never 0, so
+that a script reviews the change deliberately. The run exits 22 even when a pair failed after
+the write: the failed pair's row keeps its own code, and a note on stderr says why the run exits
+22. A lock that does not exist is refused (17) unless `--new-lock` is given, so a mistyped
+`--lock` never starts a second lock.
 
 ## Supported objects
 
@@ -103,10 +114,10 @@ change on purpose; a lock that is not there is refused (17) unless `--new-lock`,
 | secret keys | AES-128/192/256; Triple DES (`CKK_DES3`); generic secrets; `CKK_SHA{1,224,256,384,512}_HMAC` | on-token commitments: `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`, `commitment` (HMAC); DES3 by `kcv-ecb`, `kcv-ecb-dec` |
 | data objects | `CKO_DATA`: public, or private when the spec declares `CKA_PRIVATE = true` | `valuehash` (SHA-256 of the value) |
 
-Opt-in attestation (`attestation = true` on a spec's token entry) adds signed provenance:
-`piv-attestation` (YubiKey PIV, verified to the pinned Yubico root) and `tpm-certify`
-(tpm2-pkcs11, a native `TPM2_Certify`). It is recorded per realisation beside the portable ID,
-never instead of it.
+Attestation is opt-in (`attestation = true` on a spec's token entry), and it adds signed
+provenance: `piv-attestation` (YubiKey PIV, verified to the pinned Yubico root) and `tpm-certify`
+(tpm2-pkcs11, a native `TPM2_Certify`). The lock records an attestation per realisation beside
+the portable ID, never instead of it.
 
 ## Nix
 
@@ -132,21 +143,24 @@ pkgs.runCommand "signed-artifact" {
 ''
 ```
 
-`signing` is plain data, only what evaluation knows without the token: `type`, `id.<scheme>`,
-the resolved `spec` and `token`, `requiredSystemFeatures` and `check` (use `scheme =
-"certhash"` to require one identity, and `checkArgs` for `cakeys check`'s own flags). The URI
-a consumer uses is the one `check` prints once it has verified the key, never one read from the
-lock. `cakeys resolve` says the rest, `assurance` included: what the check establishes against a
-token that may lie (DESIGN §3.6, §3.7).
+`signing` is plain data that holds only what evaluation knows without the token: `type`,
+`id.<scheme>`, the resolved `spec` and `token`, `requiredSystemFeatures` and `check`. Use
+`scheme = "certhash"` to require one identity, and `checkArgs` for `cakeys check`'s own flags.
+The URI that a consumer uses is the one that `check` prints after it has verified the key, never
+a URI read from the lock. `cakeys resolve` reports the rest, including `assurance`, which says
+what the check establishes against a token that may report false values (DESIGN §3.6, §3.7).
 
-A cached consumer is not rebuilt, so the token is not re-contacted; `nix build --check` forces it.
+A cached consumer is not rebuilt, so the token is not contacted again; `nix build --check`
+forces the check.
 
-The NixOS module (`nixosModules.default`, `services.cakeys`) gives a token's sandbox paths,
-and pcscd or the TPM, **only to builds that require that token's feature** (through a
-pre-build-hook). Those two are host-wide, though: pcscd serves every reader and `/dev/tpmrm0` is
-the whole TPM, so a build granted either reaches every card plugged in, or every TPM object its
-authorization allows, not only that token's. It also defines check units that gate services on the key's identity. Real builds
-reach tokens only through p11-kit forwarding or a real TPM, never through a token database.
+The NixOS module (`nixosModules.default`, `services.cakeys`) gives a token's sandbox paths, and
+pcscd or the TPM, **only to builds that require that token's feature** (through a
+pre-build-hook). However, the pcscd and TPM grants apply to the whole host: pcscd serves every
+reader, and `/dev/tpmrm0` is the whole TPM. A build that is granted either one therefore reaches
+every card that is plugged in, or every TPM object that its authorization allows, not only that
+token's objects. The module also defines check units that make services depend on the key's
+identity. Real builds reach tokens only through p11-kit forwarding or a real TPM, never through
+a token database.
 
 ## Documentation
 
@@ -174,9 +188,9 @@ $ nix run .#fuzz -- lock         # fuzz one target until stopped
 $ nix develop                    # cargo, clippy, softhsm, kryoptic, opensc
 ```
 
-Plain `cargo test` skips the token suites and builds cryptoki without the local patches, which
-the Nix build applies ([docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)). The `tpm2` and `ykcs11`
-providers are default cargo features; third-party providers can be linked in
+Plain `cargo test` skips the token suites, and it builds cryptoki without the local patches,
+which the Nix build applies ([docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)). The `tpm2` and
+`ykcs11` providers are default cargo features, and third-party providers can be linked in
 (`crates/cli/examples/custom-provider.rs`).
 
 License: BSD-3-Clause ([LICENSE](LICENSE)).
