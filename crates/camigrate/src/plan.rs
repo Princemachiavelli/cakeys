@@ -6,7 +6,9 @@
 //! the lock's, in `cakeys_core::migrate`.
 
 use crate::side::{PlaintextImport, ProbedWays, Side};
+use cakeys_core::KmError;
 use cakeys_core::config::{AttrValue, Immutables, ObjectCfg};
+use cakeys_core::known::{Known, Permission, Restriction, Why};
 use cakeys_core::migrate::{Exposure, Method, OaepHash};
 use cakeys_core::types::ObjectClass;
 use serde::Serialize;
@@ -39,11 +41,26 @@ pub(crate) struct Material<'a> {
 }
 
 impl Material<'_> {
-    fn flag(&self, name: &str) -> Option<bool> {
-        match self.policy.get(name) {
-            Some(AttrValue::Bool(b)) => Some(*b),
-            _ => None,
-        }
+    /// A flag as the source's lock recorded it, or that it did not (review 2026-11-24 D-7: an
+    /// unrecorded one was read as `false`).
+    fn known(&self, name: &str) -> Known<bool> {
+        Known::or(
+            match self.policy.get(name) {
+                Some(AttrValue::Bool(b)) => Some(*b),
+                _ => None,
+            },
+            Why::Unrecorded,
+        )
+    }
+
+    /// Whether restriction `r` holds: unrecorded, it does.
+    fn restricted(&self, r: Restriction) -> bool {
+        self.known(r.attr()).restricts()
+    }
+
+    /// Whether permission `p` is granted: unrecorded, it is not.
+    fn permitted(&self, p: Permission) -> bool {
+        self.known(p.attr()).permits()
     }
 }
 
@@ -70,6 +87,42 @@ pub(crate) struct Plan {
     pub reasons: Vec<String>,
     /// What changes on the way (attestation, a declared vendor level, ...).
     pub notes: Vec<String>,
+    /// The rules only the run decides (`ops::Deferred`, by name): the run may end with one of
+    /// them where the plan was ready, and by nothing else (docs/archive/REVIEW-2026-11-24/
+    /// phase1-design.md §1.4). The notes say why.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deferred: Vec<&'static str>,
+    /// The refusal that blocked it, where a rule the write asks did (placement 17, an occupied
+    /// locator 13): the run would end with it, so the plan does ([`Refused::error`]; review
+    /// 2026-11-24 D-2, D-3). `None`: ready, or blocked for a reason of the plan's own (15).
+    #[serde(skip)]
+    pub refused: Option<Refused>,
+}
+
+/// The exit code and the rule of a refusal that blocked a plan ([`Plan::refuse`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Refused {
+    exit: u8,
+    rule: Option<&'static str>,
+}
+
+impl Refused {
+    /// `text` as the error the run ends with: of this refusal's exit code and rule. A plan's
+    /// rules refuse with these codes, and with 15 otherwise.
+    pub(crate) fn error(self, text: String) -> KmError {
+        let m = text.into();
+        let e = match self.exit {
+            13 => KmError::Conflict(m),
+            14 => KmError::PreconditionFailed(m),
+            16 => KmError::Unavailable(m),
+            17 => KmError::Validation(m),
+            _ => KmError::Unsupported(m),
+        };
+        match self.rule {
+            Some(rule) => e.with_rule(rule),
+            None => e,
+        }
+    }
 }
 
 #[expect(clippy::ref_option, reason = "serde's serialize_with hands the field by reference")]
@@ -88,6 +141,15 @@ impl Plan {
         self.reasons.push(why.into());
     }
 
+    /// [`Self::block`] for the refusal `e` of a rule the write asks: the plan, if it was ready,
+    /// ends with `e`'s exit code and rule ([`Self::refused`]).
+    pub(crate) fn refuse(&mut self, e: KmError) {
+        if self.ready {
+            self.refused = Some(Refused { exit: e.exit_code(), rule: e.rule() });
+        }
+        self.block(crate::trust::reason(e));
+    }
+
     /// [`Self::block`], `why` said first: what keeps the object home outranks how it would move.
     pub(crate) fn block_first(&mut self, why: impl Into<String>) {
         self.ready = false;
@@ -102,11 +164,22 @@ impl Plan {
             ready: true,
             reasons: vec![],
             notes: vec![],
+            deferred: vec![],
+            refused: None,
         }
     }
 
     fn impossible(m: &Material, reasons: Vec<String>) -> Plan {
-        Plan { object: m.object.into(), method: None, exposure: None, ready: false, reasons, notes: vec![] }
+        Plan {
+            object: m.object.into(),
+            method: None,
+            exposure: None,
+            ready: false,
+            reasons,
+            notes: vec![],
+            deferred: vec![],
+            refused: None,
+        }
     }
 }
 
@@ -118,14 +191,15 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     let ty = m.ty;
     // A private data object's value is a secret, and the public method would write it into a
     // bundle and recreate it under whatever CKA_PRIVATE the target defaults to (docs/OPEN.md).
-    if ty.class == ObjectClass::Data && m.flag("CKA_PRIVATE") == Some(true) {
+    // One the lock does not record as public is not known to be public, so it is not (D-7).
+    if ty.class == ObjectClass::Data && m.restricted(Restriction::Private) {
         return Plan::impossible(
             m,
-            vec![
-                "a private data object (CKA_PRIVATE = true): its value is a secret, and camigrate moves \
-                  data objects only as public ones"
-                    .into(),
-            ],
+            vec![format!(
+                "a private data object (CKA_PRIVATE = {}): its value is a secret, and camigrate moves data objects \
+                 only as public ones",
+                m.known(Restriction::Private.attr())
+            )],
         );
     }
     if is_public(ty) {
@@ -134,13 +208,16 @@ pub(crate) fn plan(m: &Material, from: &Side, to: &To, allow: Allow) -> Plan {
     if let Some(why) = stays(from, ty) {
         return Plan::impossible(m, vec![why]);
     }
-    if m.flag("CKA_EXTRACTABLE") != Some(true) || m.immutables.never_extractable == Some(true) {
+    // CKA_NEVER_EXTRACTABLE true is a key once made non-extractable: CKA_EXTRACTABLE true, as
+    // it must be known here, says it was not; unrecorded, it decides nothing more.
+    if !m.permitted(Permission::Extractable) || m.immutables.never_extractable == Some(true) {
         return Plan::impossible(
             m,
             vec!["not extractable: exportability is fixed when a key is created (CKA_EXTRACTABLE = false; docs/CAMIGRATE.md D1)".into()],
         );
     }
-    let trusted_only = m.flag("CKA_WRAP_WITH_TRUSTED") == Some(true);
+    // Unrecorded, it restricts: only a trusted transport key may wrap the key (D-7).
+    let trusted_only = m.restricted(Restriction::WrapWithTrusted);
     let mut ways = Ways::default();
     match to {
         // Before anything is offered: a target that takes the type in by no import.
@@ -230,10 +307,9 @@ fn public(m: &Material, to: &To) -> Plan {
     match to {
         To::Token(dst) => match ProbedWays::of(&dst.probed.create, ty) {
             Some(r) if r.yes => Plan::ready(m, Method::Public, Exposure::Public),
-            Some(_) => Plan::impossible(
-                m,
-                vec![format!("{} creates no {} (its create.* row says no)", dst.token, describe(ty))],
-            ),
+            Some(r) => {
+                Plan::impossible(m, vec![format!("{} creates no {} ({})", dst.token, describe(ty), r.said("create.*"))])
+            }
             None if dst.public_import.iter().any(|a| a.covers(ty)) => Plan::ready(m, Method::Public, Exposure::Public),
             None => Plan::impossible(m, vec![format!("{} accepts no {} by import", dst.token, describe(ty))]),
         },
@@ -244,16 +320,18 @@ fn public(m: &Material, to: &To) -> Plan {
 /// Why a key of type `ty` never leaves `from`, if it does not: its probed `export.*` rows decide
 /// for the type they name, the module's claim for the rest.
 fn stays(from: &Side, ty: &ObjectCfg) -> Option<String> {
-    let leaves =
-        [&from.probed.export_host, &from.probed.export_sealed].map(|rows| ProbedWays::of(rows, ty).map(|r| r.yes));
-    match leaves {
-        [Some(false), Some(false)] => Some(format!(
-            "{} ({}) lets no {} leave the token (its export.host and export.sealed rows say no)",
+    let rows = [&from.probed.export_host, &from.probed.export_sealed].map(|rows| ProbedWays::of(rows, ty));
+    let leaves = rows.map(|r| r.map(|r| r.yes));
+    match (leaves, rows) {
+        ([Some(false), Some(false)], [Some(host), Some(sealed)]) => Some(format!(
+            "{} ({}) lets no {} leave the token ({}; {})",
             from.token,
             from.provider,
-            describe(ty)
+            describe(ty),
+            host.said("export.host.*"),
+            sealed.said("export.sealed.*")
         )),
-        l if l.contains(&Some(true)) => None,
+        (l, _) if l.contains(&Some(true)) => None,
         _ => (!from.exports).then(|| format!("{} ({}) never lets a key leave the token", from.token, from.provider)),
     }
 }
@@ -272,13 +350,14 @@ fn describe(ty: &ObjectCfg) -> String {
 
 /// The `sealed` (or `enforced`) methods between two PKCS#11 modules.
 fn sealed(m: &Material, from: &Side, dst: &Side, trusted_only: bool, allow: Allow, ways: &mut Ways) {
-    match ProbedWays::of(&dst.probed.unwrap, m.ty).map(|r| r.yes) {
-        Some(false) => {
+    match ProbedWays::of(&dst.probed.unwrap, m.ty) {
+        Some(r) if !r.yes => {
             ways.block(format!(
-                "{} ({}) does not unwrap a {} (its unwrap.* row says no)",
+                "{} ({}) does not unwrap a {} ({})",
                 dst.token,
                 dst.provider,
-                describe(m.ty)
+                describe(m.ty),
+                r.said("unwrap.*")
             ));
             return;
         }
@@ -288,12 +367,13 @@ fn sealed(m: &Material, from: &Side, dst: &Side, trusted_only: bool, allow: Allo
         }
         _ => {}
     }
-    if ProbedWays::of(&from.probed.export_sealed, m.ty).is_some_and(|r| !r.yes) {
+    if let Some(r) = ProbedWays::of(&from.probed.export_sealed, m.ty).filter(|r| !r.yes) {
         ways.block(format!(
-            "{} ({}) wraps no {} toward another token (its export.sealed.* row says no)",
+            "{} ({}) wraps no {} toward another token ({})",
             from.token,
             from.provider,
-            describe(m.ty)
+            describe(m.ty),
+            r.said("export.sealed.*")
         ));
         return;
     }
@@ -386,12 +466,13 @@ fn host_extractable(from: &Side, ty: &ObjectCfg) -> bool {
 fn host(m: &Material, from: &Side, dst: &Side, ways: &mut Ways) {
     let ty = m.ty;
     let probed = ProbedWays::of(&dst.probed.import, ty);
-    if probed.is_some_and(|r| !r.yes) {
+    if let Some(r) = probed.filter(|r| !r.yes) {
         ways.block(format!(
-            "{} ({}) does not import a {} (its import.* row says no)",
+            "{} ({}) does not import a {} ({})",
             dst.token,
             dst.provider,
-            describe(ty)
+            describe(ty),
+            r.said("import.*")
         ));
         return;
     }
@@ -503,7 +584,18 @@ mod tests {
         Side::pkcs11("cloudhsm", "aws-cloudhsm", mech.map(String::from))
     }
 
+    /// The plan of an object whose source realisation records `flags`, and
+    /// `CKA_WRAP_WITH_TRUSTED = false` where they do not name it, as every reference module
+    /// records it ([`plan_exact`] records only `flags`).
     fn plan_of(ty: &ObjectCfg, flags: &[(&str, bool)], from: &Side, to: &To, allow: Allow) -> Plan {
+        let mut flags = flags.to_vec();
+        if !flags.iter().any(|(n, _)| *n == "CKA_WRAP_WITH_TRUSTED") {
+            flags.push(("CKA_WRAP_WITH_TRUSTED", false));
+        }
+        plan_exact(ty, &flags, from, to, allow)
+    }
+
+    fn plan_exact(ty: &ObjectCfg, flags: &[(&str, bool)], from: &Side, to: &To, allow: Allow) -> Plan {
         let policy = policy(flags);
         let immutables = Immutables::default();
         plan(&Material { object: "k", ty, policy: &policy, immutables: &immutables }, from, to, allow)
@@ -540,6 +632,31 @@ mod tests {
             Allow::default(),
         );
         assert!(!p.ready && p.reasons[0].contains("not extractable"));
+    }
+
+    /// What the source's lock does not record restricts (review 2026-11-24 D-7): a data object
+    /// whose `CKA_PRIVATE` it did not record is never planned public, whatever is allowed; a key
+    /// whose `CKA_WRAP_WITH_TRUSTED` it did not record leaves only under a trusted transport key,
+    /// never through the host nor into a file. Recorded `false`, each moves.
+    #[test]
+    fn unrecorded_restrictions_restrict() {
+        let everything = Allow { host_plaintext: true, trusted_transport: false };
+        let data = obj(ObjectClass::Data, None);
+        for to in [To::Token(&kryoptic()), To::File(FileFormat::Pkcs8)] {
+            let p = plan_exact(&data, &[], &softhsm(), &to, everything);
+            assert!(!p.ready && p.method != Some(Method::Public), "{p:?}");
+            assert!(p.reasons[0].contains("CKA_PRIVATE"), "{p:?}");
+        }
+        let p = plan_exact(&data, &[("CKA_PRIVATE", false)], &softhsm(), &To::Token(&kryoptic()), everything);
+        assert_eq!((p.method.clone(), p.ready), (Some(Method::Public), true), "{p:?}");
+        for to in [To::Token(&kryoptic()), To::File(FileFormat::Pkcs8)] {
+            let p = plan_exact(&p256(), &[("CKA_EXTRACTABLE", true)], &softhsm(), &to, everything);
+            assert!(!p.ready, "{p:?}");
+            assert!(p.reasons.iter().all(|r| r.contains("CKA_WRAP_WITH_TRUSTED")), "{p:?}");
+        }
+        let recorded = [("CKA_EXTRACTABLE", true), ("CKA_WRAP_WITH_TRUSTED", false)];
+        let p = plan_exact(&p256(), &recorded, &softhsm(), &To::Token(&kryoptic()), everything);
+        assert!(p.ready, "{p:?}");
     }
 
     #[test]
@@ -826,6 +943,7 @@ mod tests {
                 covers: Accept { curves: vec!["secp256r1"], ..Accept::key(ObjectClass::PrivateKey, &[KeyType::Ec]) },
                 yes,
                 via: via.map(str::to_owned),
+                unknown: None,
             }]
         };
         let host = Allow { host_plaintext: true, ..Allow::default() };
@@ -868,12 +986,23 @@ mod tests {
             ..softhsm()
         };
         let p = plan_of(&p256(), &ext, &keeps, &To::Token(&kryoptic()), host);
-        assert!(!p.ready && p.reasons.iter().any(|r| r.contains("export.host and export.sealed rows say no")), "{p:?}");
+        assert!(
+            !p.ready
+                && p.reasons
+                    .iter()
+                    .any(|r| r.contains("its export.host.* row says no; its export.sealed.* row says no")),
+            "{p:?}"
+        );
         // A public object: the create row decides over the claimed classes.
         let cert = obj(ObjectClass::Certificate, None);
         let no_certs = Side {
             probed: ProbedWays {
-                create: vec![Probed { covers: Accept::class(ObjectClass::Certificate), yes: false, via: None }],
+                create: vec![Probed {
+                    covers: Accept::class(ObjectClass::Certificate),
+                    yes: false,
+                    via: None,
+                    unknown: None,
+                }],
                 ..ProbedWays::default()
             },
             ..softhsm()

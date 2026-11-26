@@ -14,7 +14,7 @@ use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::plaintext::private_from_pkcs8;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
-use cakeys_pkcs11::ops::{self, Notes, Target};
+use cakeys_pkcs11::ops::{self, Checked, Extracted, Notes, Target};
 use cakeys_pkcs11::token::Occupied;
 use cakeys_pkcs11::{Template, Token, Topic, Via, templates};
 use cryptoki::object::ObjectHandle;
@@ -61,26 +61,25 @@ fn landing(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Result<Occupied> {
     free_locator(dst, to, spki)
 }
 
-/// The identity of the plaintext key on the host, before anything is written: a token that
-/// cannot delete what it imported (a `YubiKey`'s PIV slot) must never receive the wrong key.
+/// `tpm2_ptool import` makes the key pair whole, so the locator must hold not even its public
+/// half (`occupied`), which a creation through the module would reuse.
 ///
 /// # Errors
 ///
-/// `HashMismatch` (10) for a private key whose `rfc7093m4` is not the locked one.
-fn check_identity(dst: &Target, lock: &Lock, plain: &[u8]) -> Result<()> {
-    if dst.object.class != Class::PrivateKey {
+/// `Conflict` (13) for a public key object under the locator.
+pub(crate) fn ptool_free(dst: &Target, occupied: &Occupied) -> Result<()> {
+    if occupied.public_half.is_none() {
         return Ok(());
     }
-    let got = cakeys_core::id::sri(&cakeys_core::id::spki_canonical(&cakeys_core::plaintext::spki_of_pkcs8(plain)?)?);
-    let locked = lock.objects.get(dst.object_name).and_then(|o| o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name()));
-    if locked != Some(&got) {
-        return Err(KmError::HashMismatch {
-            what: format!("{dst}: the key to import"),
-            expected: locked.cloned().unwrap_or_else(|| "a locked rfc7093m4".into()),
-            got,
-        });
-    }
-    Ok(())
+    Err(KmError::Conflict(
+        format!(
+            "objects already sit under the locator of {dst}, and the lock records no realisation there; refusing \
+             to import over them. {}",
+            crate::public::unrecorded_hint(dst)
+        )
+        .into(),
+    )
+    .with_rule(ops::Rule::LocatorFree.name()))
 }
 
 /// The key `src` names on `from`, verified against the lock first: its handle, and a private
@@ -94,19 +93,18 @@ fn source_key(src: &Target, from: &Token, lock: &Lock, notes: &mut Notes) -> Res
 }
 
 /// The key `h` of `from` in this process's memory (`Token::extract`, by RFC 5649), its identity
-/// checked against what the lock pins for `dst` ([`check_identity`]) before any path can write
-/// it: the one way a move from a token holds the plaintext, so none writes an unchecked key
-/// (`tpm2_ptool` once did: review 2026-11-23 C-13).
-fn hand_over(from: &Token, h: ObjectHandle, dst: &Target, lock: &Lock) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+/// checked against what the lock pins for `dst` (`ops::check_identity`) before any path can
+/// write it: a token that cannot delete what it imported (a `YubiKey`'s PIV slot, a TPM) must
+/// never receive the wrong key (`tpm2_ptool` once did: review 2026-11-23 C-13). Every writer
+/// here takes the [`Checked`] it returns.
+fn hand_over(from: &Token, h: ObjectHandle, dst: &Target, lock: &Lock) -> Result<Checked> {
     let kwp = rfc5649(from).ok_or_else(|| {
         from.unsupported_for(
             Topic::Mechanism,
             format!("'{}' offers no RFC 5649 key wrap to hand the key over", from.name),
         )
     })?;
-    let plain = from.extract(h, &kwp)?;
-    check_identity(dst, lock, &plain)?;
-    Ok(plain)
+    ops::check_identity(dst, lock, from.extract(h, &kwp)?)
 }
 
 /// Create the key `plain` (a private key's PKCS#8, of the public key `spki`, or a secret key's
@@ -121,7 +119,7 @@ pub(crate) fn create_and_record(
     dst: &Target,
     to: &Token,
     lock: &mut Lock,
-    plain: &[u8],
+    plain: Extracted,
     spki: Option<&[u8]>,
     origin: Origin,
     notes: &mut Notes,
@@ -130,9 +128,9 @@ pub(crate) fn create_and_record(
         return Ok(Moved::AlreadyThere);
     }
     // The identity on the host first, then the target, before anything is written.
-    check_identity(dst, lock, plain)?;
+    let plain = ops::check_identity(dst, lock, plain)?;
     let occupied = landing(dst, to, spki)?;
-    create_landed(dst, to, lock, plain, spki, &occupied, origin, notes)
+    create_landed(dst, to, lock, &plain, spki, &occupied, origin, notes)
 }
 
 /// [`create_and_record`] once its checks passed: create the key, record it, and remove what was
@@ -143,7 +141,7 @@ fn create_landed(
     dst: &Target,
     to: &Token,
     lock: &mut Lock,
-    plain: &[u8],
+    plain: &Checked,
     spki: Option<&[u8]>,
     occupied: &Occupied,
     origin: Origin,
@@ -182,20 +180,11 @@ pub(crate) fn import_ptool(
     }
     let (h, spki) = source_key(src, from, lock, notes)?;
     let occupied = landing(dst, to, spki.as_deref())?;
-    if occupied.public_half.is_some() {
-        return Err(KmError::Conflict(
-            format!(
-                "objects already sit under the locator of {dst}, and the lock records no realisation there; \
-             refusing to import over them. {}",
-                crate::public::unrecorded_hint(dst)
-            )
-            .into(),
-        ));
-    }
+    ptool_free(dst, &occupied)?;
     // Checked as on every host path: the wrong key never reaches the TPM, nor the PIN
     // tpm2_ptool's command line.
     let plain = hand_over(from, h, dst, lock)?;
-    to.import_plaintext(&dst.object, &dst.on_token.locator, &plain)?;
+    to.import_plaintext(&dst.object, &dst.on_token.locator, plain.plaintext())?;
     drop(plain);
     // The key is in the TPM from here on: a reopen that fails leaves it there, unrecorded, and
     // the next run refuses its locator (13). Say what is there and how to resolve it.
@@ -226,7 +215,7 @@ pub(crate) fn import_ptool(
 
 /// Create the key under `dst` from `plain`: a private key's public half first (unless one is
 /// there already), then the key with the target spec's attributes.
-fn create(dst: &Target, to: &Token, plain: &[u8], spki: Option<&[u8]>, made: &mut Vec<ObjectHandle>) -> Result<()> {
+fn create(dst: &Target, to: &Token, plain: &Checked, spki: Option<&[u8]>, made: &mut Vec<ObjectHandle>) -> Result<()> {
     // The key's template as the provider adjusts it, before anything is created.
     let base = templates::import_key(dst.into(), to.policy_template(&dst.spec.attributes)?)?;
     let base = to.provider.adjusted(&Template::Import(dst.into(), Via::CreateObject), base)?;
@@ -238,10 +227,10 @@ fn create(dst: &Target, to: &Token, plain: &[u8], spki: Option<&[u8]>, made: &mu
     let key = match dst.object.class {
         Class::PrivateKey => {
             let kt = dst.object.key_type().ok_or_else(|| KmError::Validation(format!("{dst}: no key type").into()))?;
-            let parts = private_from_pkcs8(plain, kt, dst.object.curve())?;
+            let parts = private_from_pkcs8(plain.plaintext(), kt, dst.object.curve())?;
             to.create_private(dst.object, base, &parts)?
         }
-        Class::SecretKey => to.create_secret(base, plain)?,
+        Class::SecretKey => to.create_secret(base, plain.plaintext())?,
         class => return Err(KmError::Validation(format!("{dst}: a {class} does not take the host path").into())),
     };
     made.push(key);

@@ -134,9 +134,11 @@ name, as [CONFIG.md](CONFIG.md) already says for any object.
   half has to hash to the same value.
 - A secret key's commitments (`cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`, HMAC) are computed on the
   host from the plaintext, under the object's commitment label. The token then has to compute
-  the same ones. That is new code in `cakeys_core::id`: the host side of each scheme the spec's
-  usage bits choose (DESIGN §3.1), using RustCrypto's `aes`, `cmac`, `hmac` and `des`. It gives
-  a secret key the same check before writing that a private key already gets.
+  the same ones. Built in `cakeys_pkcs11::ops::check_identity` (review 2026-11-24 D-5): the host
+  side of each scheme, using RustCrypto's `aes`, `cmac`, `hmac` and `des`. Once a first token
+  has pinned a secret key, its file is checked against those commitments before any later
+  import writes it, as a private key's is. On its first use the lock pins nothing to check yet,
+  and the first token's own commitments pin it.
 - Certificates, public keys and data objects are identified as today (`certhash`, the SPKI's
   `rfc7093m4`, `valuehash`), computed on the host from the bytes before `C_CreateObject`.
 
@@ -284,8 +286,9 @@ legacy formats come from the tool that writes them in the field.
 - **Secret keys.** An AES-256 raw file whose host commitments match the token's. The same key
   as hex and as base64, with and without `encoding`, imports as that key; an encoding said
   wrongly is 17 (`every_spelling_of_a_secret_key_imports_as_the_same_key`).
-- **Private data objects.** One with `CKA_PRIVATE = true` imports only behind
-  `--allow-host-plaintext`, and its `valuehash` is read back under the login.
+- **Private data objects.** One with `CKA_PRIVATE = true`, or whose spec does not declare it
+  public, imports only behind `--allow-host-plaintext`, and its `valuehash` is read back under
+  the login (`undeclared_data_objects_count_as_private`).
 - **The file is left alone.** After a run, success or failure, the source file's bytes and mode
   are unchanged.
 - **Load rules.** Each F2 rule's 17, including `create` beside `file`, a `/nix/store` key path,
@@ -338,8 +341,11 @@ Where each part lives:
     (`absent`, `crates/pkcs11/src/ops/mod.rs`).
 
 Found by running it: SoftHSM makes a data object private unless told otherwise [run]. So a
-data object whose spec declares no `CKA_PRIVATE` is now created with `CKA_PRIVATE = false`
-(`public::template`). This applies to moves between tokens too.
+data object whose spec declares no `CKA_PRIVATE` is created with `CKA_PRIVATE = false` when it
+moves between tokens, which it does only where the source's lock records it public
+(`templates::object`). From its own file such an object is not known to be public before it is
+made, so its import needs `--allow-host-plaintext` and is recorded as `raw`, exposure `file`;
+it is made as above (review 2026-11-24 D-7).
 
 Tests:
 
@@ -358,12 +364,6 @@ Tests:
 
 Not built:
 
-- **Host-side commitments for secret keys (F3, F-d).**
-  - What happens instead: the first token's commitments pin a secret key. Every later token is
-    checked after it creates the key, and what it made is removed on a mismatch, as for any
-    import.
-  - Why that is enough for now: every token here that takes a secret key can delete one. A
-    host-side check matters for a token that cannot.
 - **A property test over formats.** The unit tests use fixed fixtures; the `key_file` fuzz
   target feeds the reader arbitrary bytes, not keys re-encoded across formats.
 - **The NixOS populate unit (F-e).**

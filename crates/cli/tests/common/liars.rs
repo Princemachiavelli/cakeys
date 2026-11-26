@@ -700,7 +700,7 @@ impl Fixture {
 
     /// The token as a snapshot sees it: through the module itself, not the shim.
     pub fn view(&self) -> TokenView<'_> {
-        TokenView { name: "kmtest", module: &self.real, label: "kmtest", env: &[], db: None }
+        TokenView { name: "kmtest", module: &self.real, label: "kmtest", env: &[], db: vec![] }
     }
 
     /// The lock and the token, now.

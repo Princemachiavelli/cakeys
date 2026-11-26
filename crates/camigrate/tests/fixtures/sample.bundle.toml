@@ -1,6 +1,7 @@
 format = "cakeys-export"
-version = 1
+version = 2
 kek = "a2Vr"
+target = "kryoptic"
 
 [source]
 token = "softhsm"

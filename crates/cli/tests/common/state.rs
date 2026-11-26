@@ -72,7 +72,7 @@ impl Suite {
     /// Its token `kmtest` (`ref` and `ref-anon` of [`super::reference_tokens`]), as a snapshot
     /// sees it.
     pub fn token_view(&self) -> TokenView<'_> {
-        TokenView { name: "kmtest", module: &self.module, label: "kmtest", env: &[], db: database(&self.module) }
+        TokenView { name: "kmtest", module: &self.module, label: "kmtest", env: &[], db: database(&self.module, &[]) }
     }
 
     /// [`Workdir::refused`], the suite's token ([`Self::token_view`]) as it was too: it shadows
@@ -94,9 +94,8 @@ pub struct TokenView<'a> {
     pub label: &'a str,
     /// The environment its module is loaded in.
     pub env: &'a [(&'a str, &'a str)],
-    /// The one file the token is, compared by content instead of listed: kryoptic's
-    /// ([`database`]).
-    pub db: Option<PathBuf>,
+    /// The files the token is, compared by content instead of listed: kryoptic's ([`database`]).
+    pub db: Vec<PathBuf>,
 }
 
 /// `files` (by bytes; a missing one is `None`) and `tokens` (by their objects), as they are now.
@@ -149,11 +148,14 @@ pub fn changes(before: &Snapshot, after: &Snapshot, context: &str) -> Vec<(Strin
 ///
 /// When `pkcs11-tool` cannot list the token.
 pub fn objects(t: &TokenView) -> String {
-    if let Some(db) = &t.db {
-        let bytes = std::fs::read(db).unwrap_or_default();
-        let sum =
-            bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
-        return format!("{}: {} bytes, fnv1a {sum:016x}", db.display(), bytes.len());
+    if !t.db.is_empty() {
+        let hash = |db: &PathBuf| {
+            let bytes = std::fs::read(db).unwrap_or_default();
+            let sum =
+                bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
+            format!("{}: {} bytes, fnv1a {sum:016x}", db.display(), bytes.len())
+        };
+        return t.db.iter().map(hash).collect::<Vec<_>>().join("\n");
     }
     let out = Command::new("pkcs11-tool")
         .envs(t.env.iter().copied())
@@ -171,14 +173,21 @@ pub fn objects(t: &TokenView) -> String {
     lines.join("\n")
 }
 
-/// The database file of a token on `module`, where the token is one: the kryoptic reference's
-/// (`module` is `$CAKEYS_KRYOPTIC_MODULE`), the `dbargs` of `$KRYOPTIC_CONF`
-/// (nix/package-common.nix).
-pub fn database(module: &str) -> Option<PathBuf> {
+/// The database files of a token on `module`, where the token is in them: the kryoptic
+/// reference's (`module` is `$CAKEYS_KRYOPTIC_MODULE`), every `dbargs` of its `KRYOPTIC_CONF`:
+/// the one `env` sets for its runs, else the process's (nix/package-common.nix). Every slot's,
+/// since the configuration does not say which slot holds the token's label. Review 2026-11-24
+/// L3: a reference with a configuration of its own had the process's database compared, not its
+/// own.
+pub fn database(module: &str, env: &[(&str, &str)]) -> Vec<PathBuf> {
     if std::env::var_os("CAKEYS_KRYOPTIC_MODULE").is_none_or(|k| k != module) {
-        return None;
+        return vec![];
     }
-    let conf = std::fs::read_to_string(std::env::var_os("KRYOPTIC_CONF")?).ok()?;
-    let args = conf.lines().find_map(|l| l.trim().strip_prefix("dbargs"))?;
-    Some(PathBuf::from(args.trim_start_matches([' ', '=']).trim().trim_matches('"')))
+    let own = env.iter().find(|(k, _)| *k == "KRYOPTIC_CONF").map(|(_, v)| std::ffi::OsString::from(v));
+    let Some(conf) = own.or_else(|| std::env::var_os("KRYOPTIC_CONF")).and_then(|c| std::fs::read_to_string(c).ok())
+    else {
+        return vec![];
+    };
+    let args = conf.lines().filter_map(|l| l.trim().strip_prefix("dbargs"));
+    args.map(|a| PathBuf::from(a.trim_start_matches([' ', '=']).trim().trim_matches('"'))).collect()
 }

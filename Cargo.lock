@@ -340,16 +340,22 @@ dependencies = [
 name = "cakeys-pkcs11"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "aes-kw",
  "cakeys-core",
  "cakeys-profile",
+ "cmac",
  "cryptoki",
  "cryptoki-sys",
  "der",
+ "des",
  "getrandom 0.4.3",
+ "hmac",
  "libc",
  "p11-names",
  "rsa",
+ "sha1",
+ "sha2",
  "toml",
  "x509-cert",
  "zeroize",

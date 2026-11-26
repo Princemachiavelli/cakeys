@@ -38,6 +38,35 @@ fn workspace_tests() -> Vec<(PathBuf, String)> {
 /// tries): a run that reports any `CKR_PIN_*` fails its test and latches the device off, and the
 /// next test's turn refuses before it logs in. Holding the turn, no `YubiKey` test runs while
 /// this one sets and clears the latch; no device is needed.
+/// The dry-run twin's oracle (review 2026-11-24 phase 1, T-1): a real run keeps its dry run's
+/// promise by the same exit (0 and 22 alike), by a device failure, or by a rule the dry run named
+/// as deferred; never by another refusal, and never by what it says.
+#[test]
+fn the_twin_holds_a_run_to_its_dry_runs_exit_and_deferred_rules() {
+    use common::xref::Dry;
+    let row = |exit: u8, rule: Option<&str>, device: bool| Row {
+        exit,
+        rule: rule.map(str::to_owned),
+        device,
+        ..Row::passed("o", "s", "t", "failed")
+    };
+    let ready = Dry::new(0, vec!["unwraps".into()]);
+    assert!(ready.kept_by(0, &[]) && ready.kept_by(22, &[]), "the same success");
+    let compared = |exit| Dry::new(exit, vec![]).comparing();
+    assert!(compared(18).kept_by(22, &[]) && compared(14).kept_by(22, &[]), "what `lock` records");
+    assert!(!compared(18).kept_by(0, &[]) && !compared(10).kept_by(22, &[]), "a comparison, then another run");
+    assert!(!Dry::new(14, vec![]).kept_by(22, &[]), "a plan refused, then done");
+    assert!(!ready.kept_by(13, &[row(13, Some("locator-free"), false)]), "a rule it did not defer");
+    assert!(ready.kept_by(13, &[row(13, Some("unwraps"), false)]), "a rule it deferred");
+    assert!(ready.kept_by(16, &[row(16, None, true)]), "the device");
+    assert!(!ready.kept_by(16, &[]), "a 16 without its row");
+    assert!(!ready.kept_by(10, &[row(13, Some("unwraps"), false)]), "a row of another exit than the run's");
+    let refused = Dry::new(17, vec![]);
+    assert!(refused.kept_by(17, &[row(17, Some("placement"), false)]));
+    assert!(!refused.kept_by(13, &[row(13, Some("locator-free"), false)]), "refused by one rule, then another");
+    assert!(!refused.kept_by(0, &[]) && !refused.kept_by(22, &[]), "refused, then done");
+}
+
 #[test]
 fn a_failed_yubikey_login_stops_every_later_one() {
     use std::os::unix::process::ExitStatusExt as _;
@@ -326,7 +355,7 @@ fn a_refusal_that_changes_the_token_is_caught() {
     let w = Workdir::new("refusal-changes-the-token");
     let (lock, db) = (w.dir.join("keys.lock"), w.dir.join("token.sql"));
     std::fs::write(&db, "one object").unwrap();
-    let token = || TokenView { name: "kmtest", module: "", label: "kmtest", env: &[], db: Some(db.clone()) };
+    let token = || TokenView { name: "kmtest", module: "", label: "kmtest", env: &[], db: vec![db.clone()] };
     refusal(&[&lock], &[token()], "a refusal", || refused_by(14, "pinned-lost"), 14, "pinned-lost");
     let writes = || {
         std::fs::write(&db, "two objects").unwrap();

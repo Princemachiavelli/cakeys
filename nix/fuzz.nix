@@ -57,7 +57,7 @@ let
     # Hex of whole bytes in mixed case, for hex to mutate.
     [ -e fuzz/corpus/hex/hex ] || printf 0aFF09bc >fuzz/corpus/hex/hex
     cp --update=none "$F/keys.toml" fuzz/corpus/config/
-    cp --update=none crates/camigrate/tests/fixtures/sample.bundle.toml fuzz/corpus/bundle/
+    cp --update=none crates/camigrate/tests/fixtures/sample.bundle.toml crates/camigrate/tests/fixtures/sample-v1.bundle.toml fuzz/corpus/bundle/
     cp --update=none crates/camigrate/tests/fixtures/keyfiles/* fuzz/corpus/key_file/
     cp --update=none crates/tpm2-pkcs11/tests/fixtures/*.yaml fuzz/corpus/tpm_store_row/
     for p in profiles/modules/*/*.toml profiles/layers/*.toml profiles/hardware/*.toml; do

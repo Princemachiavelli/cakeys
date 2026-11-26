@@ -20,10 +20,15 @@ use cakeys_core::{KmError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::trust::Claimed;
+
 /// The `format` of a bundle.
 pub(crate) const BUNDLE_FORMAT: &str = "cakeys-export";
-/// The `version` this camigrate writes and reads.
-pub(crate) const BUNDLE_VERSION: u32 = 1;
+/// The `version` this camigrate writes: 2 names its `target`. It still reads version 1, which
+/// names none, held to the importing token's transport key alone (review 2026-11-24 D-1).
+pub(crate) const BUNDLE_VERSION: u32 = 2;
+/// The version before `target`.
+const BUNDLE_VERSION_UNTARGETED: u32 = 1;
 
 /// One export: the keys, and what they share.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -39,6 +44,10 @@ pub(crate) struct Bundle {
     pub(crate) kek: Option<String>,
     /// The source token and its provider.
     pub(crate) source: Source,
+    /// The token it was made for (version 2), as the export named it: an import elsewhere is
+    /// refused. Absent from version 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) target: Option<String>,
     /// The transport key the wrapped keys are sealed to; absent exactly when the bundle carries
     /// public objects only, which need none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -116,21 +125,35 @@ impl Bundle {
             .is_some_and(|t| t.get("format").and_then(toml::Value::as_str) == Some(BUNDLE_FORMAT))
     }
 
-    /// Read a bundle, checking its form: the format and version, at least one key and each object
+    /// Read a bundle, checking its form: the format and version (version 2 names its target,
+    /// version 1 none), at least one key and each object
     /// once, sealed methods this camigrate knows with the KEK exactly when a composed one needs it
     /// (one OAEP hash for it), a transport key exactly when a key is wrapped, each exposure one
     /// its method can have, base64 blobs, SRI IDs, a commitment label only on a secret key, and
     /// a public key only on a private key, whose hash is the `rfc7093m4` it claims. That the IDs
-    /// are the lock's is the import's check.
+    /// are the lock's, its target the one importing it and its transport key that target's is
+    /// the import's check (`trust::BoundBundle`): until then, what it says is claimed.
     ///
     /// # Errors
     ///
     /// `Validation` (17) for anything malformed or inconsistent.
-    pub(crate) fn parse(text: &str, path: &std::path::Path) -> Result<Bundle> {
+    pub(crate) fn parse(text: &str, path: &std::path::Path) -> Result<Claimed<Bundle>> {
+        Self::read(text, path).map(Claimed::new)
+    }
+
+    /// [`Self::parse`]'s form check.
+    fn read(text: &str, path: &std::path::Path) -> Result<Bundle> {
         let invalid = |msg: String| KmError::Validation(format!("{}: {msg}", path.display()).into());
         let mut b: Bundle = toml::from_str(text).map_err(|e| invalid(e.to_string()))?;
-        if b.format != BUNDLE_FORMAT || b.version != BUNDLE_VERSION {
-            return Err(invalid(format!("not a {BUNDLE_FORMAT} version {BUNDLE_VERSION} file")));
+        if b.format != BUNDLE_FORMAT || !(BUNDLE_VERSION_UNTARGETED..=BUNDLE_VERSION).contains(&b.version) {
+            return Err(invalid(format!("not a {BUNDLE_FORMAT} version {BUNDLE_VERSION} (or 1) file")));
+        }
+        match (b.version, &b.target) {
+            (BUNDLE_VERSION_UNTARGETED, Some(_)) => return Err(invalid("a version 1 bundle names no target".into())),
+            (BUNDLE_VERSION, None) => {
+                return Err(invalid(format!("a version {BUNDLE_VERSION} bundle names its target")));
+            }
+            _ => {}
         }
         if b.keys.is_empty() {
             return Err(invalid("carries no keys".into()));
@@ -317,7 +340,7 @@ fn decode(what: &str, text: &str) -> std::result::Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use cakeys_core::types::{KeyType, ObjectClass};
 
@@ -344,6 +367,7 @@ mod tests {
             version: BUNDLE_VERSION,
             kek: Some(encode(b"kek")),
             source: Source { token: "softhsm".into(), provider: "softhsm".into() },
+            target: Some("kryoptic".into()),
             transport: Some(TransportRef { object: "import-kek".into(), rfc7093m4: cakeys_core::id::sri(b"t") }),
             keys: vec![aes("backup-kek", "rsa-oaep-sha1+aes-kwp"), aes("db-kek", "rsa-oaep-sha1+aes-kwp")],
         }
@@ -356,10 +380,11 @@ mod tests {
         let b = sample();
         let text = b.to_toml().unwrap();
         let path = std::path::Path::new("b.toml");
-        assert_eq!(Bundle::parse(&text, path).unwrap(), b);
+        assert_eq!(Bundle::read(&text, path).unwrap(), b);
         let table: toml::Table = toml::from_str(&text).unwrap();
         let keys: Vec<&str> = table.keys().map(String::as_str).collect();
-        assert_eq!(keys, ["format", "kek", "keys", "source", "transport", "version"]);
+        assert_eq!(keys, ["format", "kek", "keys", "source", "target", "transport", "version"]);
+        assert_eq!(table["version"].as_integer(), Some(2));
         let entry = table["keys"].as_array().unwrap()[0].as_table().unwrap();
         assert_eq!(
             entry.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -367,11 +392,20 @@ mod tests {
         );
     }
 
-    /// The fuzz target's seed (fuzz/, nix/fuzz.nix) is a well-formed bundle.
+    /// The fuzz target's seeds (fuzz/, nix/fuzz.nix) are well-formed bundles, of this version
+    /// and of version 1, which names no target and is still read.
     #[test]
     fn the_fuzz_seed_parses() {
-        let text = include_str!("../tests/fixtures/sample.bundle.toml");
-        Bundle::parse(text, std::path::Path::new("sample.bundle.toml")).unwrap();
+        let path = std::path::Path::new("sample.bundle.toml");
+        let b = Bundle::read(include_str!("../tests/fixtures/sample.bundle.toml"), path).unwrap();
+        assert_eq!((b.version, b.target.as_deref()), (2, Some("kryoptic")));
+        let old = Bundle::read(include_str!("../tests/fixtures/sample-v1.bundle.toml"), path).unwrap();
+        assert_eq!((old.version, old.target), (1, None));
+        assert_eq!(
+            Bundle { version: 2, target: b.target.clone(), ..old },
+            b,
+            "the versions differ in the target alone"
+        );
     }
 
     /// What the form check refuses (17): another format, no keys or one twice, a composed method
@@ -383,11 +417,18 @@ mod tests {
     fn malformed_bundles_are_refused() {
         let path = std::path::Path::new("b.toml");
         let refused = |b: Bundle, what: &str| {
-            let e = Bundle::parse(&b.to_toml().unwrap(), path).unwrap_err();
+            let e = Bundle::read(&b.to_toml().unwrap(), path).unwrap_err();
             assert!(e.exit_code() == 17 && e.to_string().contains(what), "{what}: {e}");
         };
         let direct = || vec![aes("backup-kek", "rsa-oaep-sha1")];
         refused(Bundle { format: "cakeys-transport".into(), ..sample() }, "not a cakeys-export");
+        // Version 2 names its target, version 1 none; no other version reads.
+        refused(Bundle { target: None, ..sample() }, "a version 2 bundle names its target");
+        refused(Bundle { version: 1, ..sample() }, "a version 1 bundle names no target");
+        Bundle::read(&Bundle { version: 1, target: None, ..sample() }.to_toml().unwrap(), path).unwrap();
+        for version in [0, 3] {
+            refused(Bundle { version, ..sample() }, "not a cakeys-export version 2 (or 1) file");
+        }
         refused(Bundle { keys: vec![], ..sample() }, "carries no keys");
         refused(Bundle { keys: vec![aes("k", "rsa-oaep-sha1+aes-kwp"); 2], ..sample() }, "listed twice");
         refused(Bundle { kek: None, ..sample() }, "but no kek");
@@ -395,12 +436,12 @@ mod tests {
         // An enforced key carries its own KEK: no shared one needed, and only a composed key has one.
         let own =
             Entry { kek: Some(encode(b"own")), exposure: Exposure::Enforced, ..aes("e", "rsa-oaep-sha1+aes-kwp") };
-        Bundle::parse(&Bundle { kek: None, keys: vec![own.clone()], ..sample() }.to_toml().unwrap(), path).unwrap();
+        Bundle::read(&Bundle { kek: None, keys: vec![own.clone()], ..sample() }.to_toml().unwrap(), path).unwrap();
         refused(
             Bundle { kek: None, keys: vec![Entry { method: "rsa-oaep-sha1".into(), ..own }], ..sample() },
             "takes no kek of its own",
         );
-        Bundle::parse(&Bundle { kek: None, keys: direct(), ..sample() }.to_toml().unwrap(), path).unwrap();
+        Bundle::read(&Bundle { kek: None, keys: direct(), ..sample() }.to_toml().unwrap(), path).unwrap();
         let two = vec![aes("a", "rsa-oaep-sha1+aes-kwp"), aes("b", "rsa-oaep-sha256+aes-kwp")];
         refused(Bundle { keys: two, ..sample() }, "several OAEP hashes");
         refused(Bundle { keys: vec![aes("k", "host-pkcs8")], ..sample() }, "does not travel in a bundle");
@@ -411,7 +452,7 @@ mod tests {
             value: Some(encode(b"der")),
             ..aes("c", "public")
         };
-        Bundle::parse(
+        Bundle::read(
             &Bundle { keys: vec![aes("k", "rsa-oaep-sha1+aes-kwp"), cert.clone()], ..sample() }.to_toml().unwrap(),
             path,
         )
@@ -427,7 +468,7 @@ mod tests {
         );
         refused(Bundle { keys: vec![aes("k", "rsa-aes")], ..sample() }, "unknown method");
         // A transport key exactly when a key is wrapped: public objects alone name none.
-        Bundle::parse(
+        Bundle::read(
             &Bundle { keys: vec![cert.clone()], kek: None, transport: None, ..sample() }.to_toml().unwrap(),
             path,
         )
@@ -442,7 +483,7 @@ mod tests {
         refused(Bundle { kek: Some("!".into()), ..sample() }, "kek");
         // A sealed composed key with its own KEK (a source without RFC 5649) parses.
         let own = Entry { kek: Some(encode(b"own kek")), ..aes("k", "rsa-oaep-sha1+aes-kwp") };
-        Bundle::parse(&Bundle { keys: vec![own], kek: None, ..sample() }.to_toml().unwrap(), path).unwrap();
+        Bundle::read(&Bundle { keys: vec![own], kek: None, ..sample() }.to_toml().unwrap(), path).unwrap();
         let n = [0xc5u8; 256];
         let spki = cakeys_core::id::rsa_spki(&n, &[1, 0, 1]).unwrap();
         let private = Entry {
@@ -492,7 +533,7 @@ mod tests {
         assert!(cert.wrapped_key().is_err());
         assert_eq!(sample().wrapped_kek().unwrap().as_deref(), Some(&b"kek"[..]));
         let unpinned = TransportRef { object: "import-kek".into(), rfc7093m4: "sha256-short".into() };
-        let e = Bundle::parse(
+        let e = Bundle::read(
             &Bundle { transport: Some(unpinned), ..sample() }.to_toml().unwrap(),
             std::path::Path::new("b"),
         );
@@ -503,7 +544,7 @@ mod tests {
         /// Any text is read or refused as invalid (17), never a panic.
         #[test]
         fn any_text_parses_or_is_invalid(text in "\\PC*") {
-            if let Err(e) = Bundle::parse(&text, std::path::Path::new("b.toml")) {
+            if let Err(e) = Bundle::read(&text, std::path::Path::new("b.toml")) {
                 proptest::prop_assert_eq!(e.exit_code(), 17);
             }
         }
@@ -521,7 +562,7 @@ mod tests {
                 .map(|o| Entry { commitment_label: Some(label.clone()), wrapped: Some(encode(&key)), ..aes(o, "rsa-oaep-sha1+aes-kwp") })
                 .collect();
             let b = Bundle { kek: Some(encode(&kek)), keys, ..sample() };
-            let back = Bundle::parse(&b.to_toml().unwrap(), std::path::Path::new("b.toml")).unwrap();
+            let back = Bundle::read(&b.to_toml().unwrap(), std::path::Path::new("b.toml")).unwrap();
             proptest::prop_assert_eq!(back, b);
         }
     }

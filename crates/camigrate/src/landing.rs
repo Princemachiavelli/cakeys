@@ -1,26 +1,32 @@
 //! The planner's rules past the method choice (review 2026-11-23 C-23: they sat in lib.rs, a
 //! third layer after `plan::plan` and `tokens::plan_moves`): what keeps an object home, which
-//! pair a move lands on, what the landing token must take, what a bundle or a key file can
-//! carry, and the transport key a sealed move wraps to. [`block`] runs them over a run's plans,
-//! in one place, so the dry run and the run block alike (C-2).
+//! pair a move lands on, what the landing token must take (the write's own rules, asked with
+//! the functions the write asks them with: review 2026-11-24 D-2, D-3), and what a bundle or a
+//! key file can carry. [`block`] runs them over a run's plans, in one place, so the dry run and
+//! the run block alike (C-2).
 
 use cakeys_core::KmError;
 use cakeys_core::config::{Config, KeyOrigin, Lock, SpecCfg, SpecTokenCfg};
 use cakeys_core::migrate::{Exposure, Method};
-use cakeys_pkcs11::Registry;
-use cakeys_pkcs11::ops::{Notes, Target};
+use cakeys_core::types::ObjectClass as Class;
+use cakeys_pkcs11::ops::{self, Notes, Seat, Target, Verb};
+use cakeys_pkcs11::{Registry, Token};
 
 use crate::plan::{self, FileFormat};
-use crate::{MoveArgs, MoveCtx, Run, tokens};
+use crate::{MoveCtx, Run, host, public, tokens};
 
 /// Block each plan the run would refuse, said in the plan, in the order the run meets it: what
 /// never leaves `from` (said first), a target with no import pair, the landing pair's own
-/// checks — or, with nothing landing on a token, the source's export — a transport key whose
-/// spec is gone, and what the destination carries. `transport_key` is the one the plan sealed to.
-pub(crate) fn block(run: &Run, ctx: &MoveCtx, transport_key: Option<&str>, moves: &mut tokens::Moves) {
+/// checks — or, with nothing landing on a token, the source's export — and what the destination
+/// carries. The transport key a sealed move wraps to is the plan's (`tokens::plan_moves`).
+/// `target` is the target token of a move, when it opened: what lands there now is checked
+/// against it as the write checks it.
+pub(crate) fn block(run: &Run, ctx: &MoveCtx, moves: &mut tokens::Moves, target: Option<&Token>) {
     let (cfg, registry) = (&run.opener.cfg, run.opener.registry);
     let MoveCtx { objects, from, dest, specs, .. } = *ctx;
-    let (bundle, target_token) = (dest.bundle(), dest.token());
+    let (bundle, target_token) = (dest.bundle(), dest.to());
+    // What lands on the target now, a move's, meets the target token's own checks there.
+    let lands = target.filter(|_| !bundle);
     // Without names, what is kept home is left out quietly; named, it is refused (15).
     if objects.is_empty() {
         moves.plans.retain(|p| no_export(cfg, &p.object, from).is_none());
@@ -38,7 +44,12 @@ pub(crate) fn block(run: &Run, ctx: &MoveCtx, transport_key: Option<&str>, moves
         }
         match target_token {
             Some(to) => match import_target(cfg, &p.object, to, spec_for(cfg, specs, &p.object), MOVE) {
-                Ok(landing) => landing_checks(p, &landing, &moves.source, moves.target.as_ref(), registry),
+                Ok(landing) => {
+                    landing_checks(p, &landing, &moves.source, moves.target.as_ref(), registry);
+                    if let Some(tok) = lands {
+                        landed_checks(p, &landing, tok, &run.lock);
+                    }
+                }
                 // A move must pick its landing pair now: several, and no `--spec` naming
                 // one, is refused by the run, so by the plan. (An object with none is
                 // blocked already, by `no_import_pair`.) A bundle lands later, under the
@@ -55,17 +66,6 @@ pub(crate) fn block(run: &Run, ctx: &MoveCtx, transport_key: Option<&str>, moves
                     }
                 }
             }
-        }
-    }
-    // A sealed move wraps under the transport key's spec in keys.toml: one the lock still
-    // names and keys.toml no longer has is said here, where the move itself would stop.
-    if let Some(to) = target_token
-        && let Ok(spec) = tokens::transport_spec(&run.lock, to, transport_key)
-        && !cfg.specs.contains_key(spec)
-    {
-        let sealed = |p: &plan::Plan| matches!(p.method, Some(Method::RsaOaepAesKwp(_) | Method::RsaOaep(_)));
-        for p in moves.plans.iter_mut().filter(|p| p.ready && sealed(p)) {
-            p.block(format!("the transport key's spec '{spec}' is gone from keys.toml"));
         }
     }
     match dest {
@@ -104,9 +104,12 @@ pub(crate) fn import_checks(
 /// What a ready plan `p` must still pass where it lands on `to`, said in the plan since the run
 /// would refuse it: the target's `lock` must prove possession of a private key the way its spec
 /// says; the providers must take the templates the move sends (`Provider::template`, refused
-/// before anything is created); an imported key is never attested where the provider attests
-/// only what the device made (PIV, docs/CAMIGRATE.md D8), the check the import itself makes.
-/// `dst` is the landing pair, the one `--spec` names.
+/// before anything is created); and the static rules every import asks before its write
+/// (`ops::static_rules`, [`Verb::Import`]): where the module can place the key (a PIV slot by
+/// `CKA_ID`, review 2026-11-24 D-2), the attestation the spec opts into, and never one of an
+/// imported key where the provider attests only what the device made (PIV, docs/CAMIGRATE.md
+/// D8). A provider this plan cannot name defers them, said in the notes. `dst` is the landing
+/// pair, the one `--spec` names.
 fn landing_checks(
     p: &mut plan::Plan,
     dst: &Target,
@@ -127,12 +130,91 @@ fn landing_checks(
             Err(why) => p.block(why),
         }
     }
-    if let (true, Some(target)) = (p.ready, target)
-        && let Ok(Some(provider)) = registry.named(&target.provider)
-        && let Err(why) = cakeys_pkcs11::ops::check_imported_attestation(dst, provider.as_ref())
-    {
-        p.block(why);
+    if let (true, Some(target)) = (p.ready, target) {
+        static_checks(p, dst, &target.provider, registry);
     }
+    // What only the run holds (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4): the blob
+    // the target unwraps, and the key the source hands over, held to the lock's identity (D-5).
+    if p.ready {
+        match p.exposure {
+            Some(Exposure::Sealed | Exposure::Enforced) => {
+                p.deferred.extend([crate::sealed::UNWRAPS, crate::sealed::IDENTITY]);
+            }
+            Some(Exposure::Host | Exposure::File) => p.deferred.push(crate::sealed::IDENTITY),
+            Some(Exposure::Public) | None => {}
+        }
+    }
+}
+
+/// [`landing_checks`]' static rules of `dst`, with the provider named `provider`.
+fn static_checks(p: &mut plan::Plan, dst: &Target, provider: &str, registry: &Registry) {
+    let named = registry.named(provider);
+    let seat = match &named {
+        Ok(Some(p)) => Seat::Resolved(p.as_ref()),
+        Ok(None) => Seat::Unresolved(format!("provider '{provider}' is not in this build")),
+        Err(e) => Seat::Unresolved(e.to_string()),
+    };
+    let verdicts = ops::plan_mode(dst).and_then(|mode| ops::static_rules(dst, mode, seat, Verb::Import, None));
+    match verdicts {
+        Ok(v) => {
+            p.notes.extend(ops::deferred_lines(&v.deferred));
+            p.deferred.extend(v.deferred.iter().map(|d| d.rule.name()));
+            if let Some(r) = v.refusals.into_iter().next() {
+                p.refuse(r.error);
+            }
+        }
+        Err(e) => p.refuse(e),
+    }
+}
+
+/// What a ready plan `p` that lands on the open token `to` now (a move's) must pass there, as
+/// the write asks it of `to` before anything is created: the import's own checks
+/// (`ops::check_import`) and a locator nothing would collide with ([`public::free_locator`];
+/// review 2026-11-24 D-3: only the run asked it, and refused 13 after a ready plan), and the
+/// public half there to reuse holding the spec's `publicAttributes`, which the run's record
+/// asks (13; the exact twin saw a ready plan refused so on p11-kit). A pair the lock records
+/// there already is verified by the run, and moves nothing.
+fn landed_checks(p: &mut plan::Plan, dst: &Target, to: &Token, lock: &Lock) {
+    if !p.ready || lock.realisation(dst.spec_name, dst.token_name).is_some() {
+        return;
+    }
+    if let Err(e) = ops::check_import(dst, to) {
+        return p.refuse(e);
+    }
+    let spki = match public_half(dst, to, lock) {
+        Ok(spki) => spki,
+        Err(e) => return p.refuse(e),
+    };
+    let landed = public::free_locator(dst, to, spki.as_deref()).and_then(|occupied| {
+        if let Some(h) = occupied.public_half {
+            to.check_public_half(h, dst.spec, &dst.on_token.locator, true)?;
+        }
+        if p.method == Some(Method::Tpm2Ptool) { host::ptool_free(dst, &occupied) } else { Ok(()) }
+    });
+    if let Err(e) = landed {
+        p.refuse(e);
+    }
+}
+
+/// The public key of `dst`'s object that a public key object under its locator on `to`
+/// already holds, the identity the lock pins (`rfc7093m4`): the key's public half, which the
+/// import reuses, so no collision ([`public::free_locator`]). The run holds the source's, which
+/// it verifies to be that identity first.
+///
+/// # Errors
+///
+/// `Unavailable` (16) when the token fails a search.
+fn public_half(dst: &Target, to: &Token, lock: &Lock) -> cakeys_core::Result<Option<Vec<u8>>> {
+    let pinned = lock.objects.get(dst.object_name).and_then(|o| o.ids.get("rfc7093m4"));
+    let (true, Some(pinned)) = (matches!(dst.object.class, Class::PrivateKey | Class::PublicKey), pinned) else {
+        return Ok(None);
+    };
+    let loc = &dst.on_token.locator;
+    Ok(to
+        .find(cryptoki::object::ObjectClass::PUBLIC_KEY, loc)?
+        .into_iter()
+        .filter_map(|p| to.spki(p, loc).ok())
+        .find(|spki| cakeys_core::id::sri(spki) == *pinned))
 }
 
 /// Whether a bundle carries what `method` moves: sealed keys and public objects.
@@ -353,42 +435,6 @@ pub(crate) fn no_export(cfg: &Config, object: &str, from: &str) -> Option<String
     })
 }
 
-/// The public key `lock` records for the transport key realised as `spec` on `token`, if any.
-///
-/// # Errors
-///
-/// `Validation` (17) for a recorded public key that is not base64: never read as none.
-pub(crate) fn locked_spki(lock: &Lock, spec: &str, token: &str) -> cakeys_core::Result<Option<Vec<u8>>> {
-    use base64::Engine as _;
-    let Some(key) =
-        lock.realisation(spec, token).and_then(|r| lock.objects.get(&r.object)).and_then(|o| o.public_key.as_ref())
-    else {
-        return Ok(None);
-    };
-    base64::engine::general_purpose::STANDARD.decode(key).map(Some).map_err(|e| {
-        KmError::Validation(format!("the lock's publicKey of transport key '{spec}' on '{token}': {e}").into())
-    })
-}
-
-/// The transport key to seal to on `to`: `--transport-spec`, else the token's `transportWith`.
-pub(crate) fn transport_choice<'a>(cfg: &'a Config, to: &str, how: &'a MoveArgs) -> Option<&'a str> {
-    how.transport_spec.as_deref().or_else(|| cfg.tokens.get(to).and_then(|t| t.migrate.transport_with.as_deref()))
-}
-
-/// The target `token`'s transport key, as a target: the spec `tokens::transport_spec` finds.
-pub(crate) fn transport_target<'a>(
-    cfg: &'a Config,
-    lock: &Lock,
-    token: &'a str,
-    chosen: Option<&str>,
-) -> cakeys_core::Result<Target<'a>> {
-    let spec = tokens::transport_spec(lock, token, chosen).map_err(|e| KmError::PreconditionFailed(e.into()))?;
-    let spec = cfg.specs.get_key_value(spec).map(|(name, _)| name.as_str()).ok_or_else(|| {
-        KmError::PreconditionFailed(format!("the transport key's spec '{spec}' is gone from keys.toml").into())
-    })?;
-    Target::new(cfg, spec, token)
-}
-
 /// The realisation of `object` on `token` the lock records, as a target; `what` names the
 /// object in the refusal (a bundle's transport key names its object).
 pub(crate) fn realised_target<'a>(
@@ -425,24 +471,5 @@ fn limit_file_plans(run: &Run, plans: &mut [plan::Plan], format: FileFormat, fro
                 p.object
             ));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    /// The transport key's recorded public key: none where the lock records none, the bytes
-    /// where it does, and 17 for one that does not decode, never "none" (review lib.rs F10).
-    #[test]
-    fn a_locked_public_key_that_does_not_decode_is_invalid() {
-        use cakeys_core::config::{Lock, LockObject};
-        let text = "version = 1\n[objects.t]\npublicKey = \"AAEC\"\n\
-                    [realisations.tr.tok]\nobject = \"t\"\nspecDigest = \"sha256-x\"\nmode = \"direct\"\n\
-                    schemes = []\nlocator = { CKA_LABEL = \"t\" }\npolicy = {}\n";
-        let mut lock: Lock = toml::from_str(text).unwrap();
-        assert_eq!(super::locked_spki(&lock, "tr", "tok").unwrap(), Some(vec![0, 1, 2]));
-        assert_eq!(super::locked_spki(&lock, "tr", "other").unwrap(), None);
-        lock.objects.insert("t".into(), LockObject { public_key: Some("!".into()), ..LockObject::default() });
-        let e = super::locked_spki(&lock, "tr", "tok").unwrap_err();
-        assert!(e.exit_code() == 17 && e.to_string().contains("publicKey"), "{e}");
     }
 }

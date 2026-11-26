@@ -16,14 +16,16 @@ impl Token {
     /// Hand the key `h` to this process: wrapped by `kwp` (RFC 5649) under a fresh AES-256 key the
     /// host drew and created here as a session key, then unwrapped in memory. What a private key
     /// unwraps to is its PKCS#8 `PrivateKeyInfo`; a secret key's, its value. The session key is
-    /// destroyed whatever happens.
+    /// destroyed whatever happens. Nothing writes what it returns before
+    /// [`check_identity`](crate::ops::check_identity) finds it is the key the lock pins: a module
+    /// may hand over another (review 2026-11-24 D-5).
     ///
     /// # Errors
     ///
     /// `Unavailable` if the random number generator fails; `Unsupported` when the module will not
     /// make the session key or wrap the key with it (`CKA_EXTRACTABLE`, the mechanism);
     /// `Conflict` when the blob does not unwrap.
-    pub fn extract(&self, h: ObjectHandle, kwp: &Mechanism) -> Result<Zeroizing<Vec<u8>>> {
+    pub fn extract(&self, h: ObjectHandle, kwp: &Mechanism) -> Result<crate::ops::Extracted> {
         let mut kek = Zeroizing::new([0u8; 32]);
         getrandom::fill(kek.as_mut_slice())
             .map_err(|e| KmError::Unavailable(format!("OS random number generator: {e}").into()))?;
@@ -48,7 +50,7 @@ impl Token {
             })?
             .len();
         out.truncate(n);
-        Ok(out)
+        Ok(crate::ops::Extracted::new(out))
     }
 
     /// Create a private key from its `parts`, under `base` (class, key type, `CKA_TOKEN`, the

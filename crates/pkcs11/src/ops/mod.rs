@@ -18,9 +18,11 @@ use cakeys_core::reconcile::{self, commitment_label};
 pub use cakeys_core::reconcile::{Facts, LockWrite, Notes, Resolved};
 
 mod capabilities;
+mod identity;
 mod planner;
 mod rules;
 pub use capabilities::*;
+pub use identity::*;
 pub use planner::*;
 pub use rules::*;
 

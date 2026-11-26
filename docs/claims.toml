@@ -12,7 +12,16 @@
 #   and optionally the entry `paths` they cover; or
 # - kind = "descriptive": `why` it is no guarantee a test can hold.
 
-max-unregistered = 101
+max-unregistered = 100
+
+# CAMIGRATE.md D5: a bundle's transport key is the target's own (review 2026-11-24 D-8).
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "never under whichever key the bundle names"
+kind = "enforced"
+tests = ["bundles_are_bound_to_the_targets_transport_key", "a_bundle_binds_only_to_its_targets_transport_key"]
+paths = ["import --in", "import --in --dry-run"]
 
 # DESIGN.md §8.1, "Enforced (with tests)": the bullets whose tests exist.
 
