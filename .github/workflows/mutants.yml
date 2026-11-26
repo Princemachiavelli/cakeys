@@ -5,8 +5,9 @@
 # - the token tier: its files under their package's own tests first (`tokens-first`), then what
 #   that left (`tokens`) under every crate's tests with the token suites, minutes a mutant.
 #
-# - Pull request: the mutants in the lines the change touches (`--in-diff`). `unit` is required
-#   (T0); the token tier is T1, in 4 shards, and refuses over 120 mutants rather than sample.
+# - Pull request: the mutants in the lines the change touches (`--in-diff`). `unit` is the unit
+#   tier (T0); the token tier is T1, in 4 shards, and refuses over 120 mutants rather than sample.
+#   No job is a required check, so a failure does not block a merge.
 # - Mondays at 02:00 UTC: the last week's changes on main, both tiers, the gate in `touched`
 #   mode. The first Monday of a month, instead, every mutant of both tiers in shards (`sweep`):
 #   the gate fails on new survivors and on stale entries, and the README's badge is published.
