@@ -63,9 +63,11 @@ jobs:
       - name: Every output evaluates
         if: matrix.job == 'light'
         run: nix flake check --no-build
-      # A golden file the pull request changes lists in profiles/LEDGER.toml exactly the rows it
-      # moved, each with what it was (nix/golden-rows.py; checks.ledger holds the rest without
-      # git). The moved rows go to the job summary.
+      # Each change of a golden file in the pull request has a record in profiles/LEDGER.toml
+      # that lists exactly the rows that the change moved, each with its old value.
+      # nix/golden-rows.py reads every commit since the merge base, so the checkout step above
+      # fetches the whole history. checks.ledger checks the rest without git. The listed rows go
+      # to the job summary.
       - name: Golden rows
         if: matrix.job == 'light' && github.event_name == 'pull_request'
         env:

@@ -540,8 +540,9 @@ Each golden file has a `[golden."<path>"]` entry. The entry names its `generator
 (`hash`), who made the change, and each row that changed, with its previous value (`was`) and the
 reason why the new value is right (`why`). `checks.ledger` fails when no record names a golden
 file as it is now, when a `why` is empty or `"TODO"`, and when a listed row did not change. In CI,
-`nix/golden-rows.py` checks that the listed rows are exactly the rows that the pull request
-changed ([DEVELOPMENT.md](DEVELOPMENT.md), "Golden files").
+`nix/golden-rows.py` checks that each record lists exactly the rows that its own change moved,
+and that each change in the pull request has a record ([DEVELOPMENT.md](DEVELOPMENT.md), "Golden
+files").
 
 ## Tests
 
