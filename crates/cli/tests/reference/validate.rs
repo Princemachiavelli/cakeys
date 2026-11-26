@@ -1,9 +1,10 @@
-//! What is refused before a token is asked: keys.toml's rules and the address grammar.
+//! Tests of what is refused before any token is asked: keys.toml's rules and the address grammar.
 
 use super::*;
 
-/// What cannot be adopted is invalid (17) at `validate`; what can be adopted but never created
-/// (a publicOnly key, a certificate) is valid there, and `create` naming it refuses it (17).
+/// An object that cannot be adopted is invalid (17) at `validate`. An object that can be adopted
+/// but never created (a publicOnly key, a certificate) is valid there, and a `create` that names
+/// it refuses it (17).
 #[test]
 fn adoption_rules_are_validated() {
     let Some(e) = env("adoption_rules") else { return };
@@ -26,15 +27,16 @@ fn adoption_rules_are_validated() {
     assert!(e.session().labelled("x").is_empty(), "nothing was created");
 }
 
-/// P2-10: declared attribute names must fit the class (PKCS#11 3.2 §4), the extra booleans are
-/// settable, and the refusals apply: `binding = "pop-sign-pin"` is recorded, never configured, a
-/// `CKA_ALWAYS_AUTHENTICATE` key proves possession only by signing, and `CKA_TRUSTED = true` cannot be
-/// generated.
+/// P2-10: declared attribute names must fit the class (PKCS#11 3.2 §4), the extra booleans can be
+/// set, and the refusals apply. `binding = "pop-sign-pin"` is recorded in the lock but never
+/// configured, a `CKA_ALWAYS_AUTHENTICATE` key proves possession only by signing, and a key with
+/// `CKA_TRUSTED = true` cannot be generated.
 #[test]
 fn attributes_are_validated_per_class() {
     let Some(e) = env("attr-class") else { return };
-    // Each invalid (17) for its own reason: the skeleton around it is valid, so a refusal of the
-    // skeleton (a label, origin or locator rule) cannot pass for one of these.
+    // Each case is invalid (17) for its own reason. The configuration around each case is valid,
+    // so a refusal of that configuration (a label, origin or locator rule) cannot be mistaken for
+    // the refusal under test.
     for (object, attrs, why) in [
         (
             "certificateType = \"CKC_X_509\"\nclass = \"CKO_CERTIFICATE\"",
@@ -70,7 +72,8 @@ fn attributes_are_validated_per_class() {
         assert!(code(&o) == 17 && stderr(&o).contains(why), "{attrs}: expected 17 and {why:?}: {}", stderr(&o));
     }
 
-    // CKA_ALWAYS_AUTHENTICATE proves possession with a PIN per use (pop-sign, the default)...
+    // A CKA_ALWAYS_AUTHENTICATE key proves possession with a PIN for each use (pop-sign, the
+    // default)...
     e.config(
         "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
          [specs.s]\nobject = \"o\"\nattributes = { CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE = true }\n\
@@ -85,8 +88,9 @@ fn attributes_are_validated_per_class() {
          tokens.ref = { locator = { CKA_LABEL = \"x\" }, origin = \"adopt\", binding = \"pop-sign-pin\" }\n",
     );
     assert_eq!(e.code(&["validate"]), 17);
-    // Every signing key may declare it, Edwards keys too; a proof without a point for the
-    // per-use login may not.
+    // Every signing key may declare it, including Edwards keys. A key whose proof is not a
+    // signature (here `pop-ecdh`) may not, because only `pop-sign` proves possession with a
+    // per-use login.
     e.config(
         "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards25519\"\n\n\
          [specs.s]\nobject = \"o\"\nattributes = { CKA_SIGN = true, CKA_ALWAYS_AUTHENTICATE = true }\n\
@@ -102,8 +106,8 @@ fn attributes_are_validated_per_class() {
     assert_eq!(code(&o), 17);
     assert!(stderr(&o).contains("only \"pop-sign\" proves possession with it"), "{}", stderr(&o));
 
-    // CKA_TRUSTED is set by the token's security officer, never by generation: such a key is
-    // adopted (or imported), never `origin = "create"`.
+    // The token's security officer sets CKA_TRUSTED, and generation never sets it. Such a key is
+    // therefore adopted (or imported), and it never has `origin = "create"`.
     let trusted = |origin: &str| {
         e.config(&format!(
             "[objects.o]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32\n\n\
@@ -117,8 +121,8 @@ fn attributes_are_validated_per_class() {
     assert_eq!(code(&o), 17);
     assert!(stderr(&o).contains("CKA_TRUSTED = true cannot be generated"), "{}", stderr(&o));
 
-    // The extra booleans are settable: the key is created with them, the policy records them, and
-    // binding = "token-asserted" replaces the impossible proof of possession.
+    // The extra booleans can be set: the key is created with them, and the policy records them.
+    // binding = "token-asserted" replaces the proof of possession, which this key cannot perform.
     let s = e.session();
     e.config(
         "[objects.o]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
@@ -154,8 +158,8 @@ fn brainpool_p512_is_refused_clearly() {
 }
 
 /// `[tokens.<t>.options]` belong to the token's provider, which checks them when the token is
-/// opened (and `validate` checks them when the provider is named): the reference providers take
-/// none, so any is refused (17) rather than silently ignored.
+/// opened (and `validate` checks them when the provider is named). The reference providers take
+/// no options, so any option is refused (17) instead of being silently ignored.
 #[test]
 fn provider_options_are_checked_by_the_provider() {
     let Some(e) = env("options") else { return };
@@ -184,9 +188,9 @@ fn provider_options_are_checked_by_the_provider() {
     assert!(stderr(&o).contains(&refused));
 }
 
-/// One address for every verb (docs/CAKEYS.md): the object first, narrowed by `--spec` and
-/// `--token` when it is realised more than once; `--spec` alone names its object;
-/// `.id.<scheme>` is `check`'s alone; a name keys.toml lacks is 17.
+/// Every verb takes the same address (docs/CAKEYS.md): the object first, narrowed by `--spec`
+/// and `--token` when it is realised more than once. `--spec` alone names its object. Only
+/// `check` accepts `.id.<scheme>`. A name that keys.toml lacks is refused with 17.
 #[test]
 fn every_verb_names_the_object_first() {
     let Some(e) = env("address") else { return };
@@ -225,9 +229,9 @@ tokens.ref = { locator = { CKA_LABEL = "addr-k" }, origin = "create" }
         assert_eq!(e.code(args), 17, "{args:?}");
     }
 
-    // Realised twice — the same key under a second token name — the bare object is ambiguous
-    // (12) for every verb, `delete` included, until `--spec` or `--token` narrows it (review
-    // validate.rs F1).
+    // When the object is realised twice (the same key under a second token name), the bare
+    // object is ambiguous (12) for every verb, including `delete`, until `--spec` or `--token`
+    // narrows it (review validate.rs F1).
     let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
     e.write_config(&format!(
         "{text}\n[tokens.ref2]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n\n\
@@ -246,7 +250,8 @@ tokens.ref = { locator = { CKA_LABEL = "addr-k" }, origin = "create" }
     assert_eq!(e.code(&["check", "signer", "--spec", "signer-ref"]), 0);
     assert_eq!(e.code(&["check", "signer", "--token", "ref"]), 0);
 
-    // And the delete removes the key: `check` finds nothing after it (review validate.rs F3).
+    // The delete also removes the key, so `check` finds nothing afterward (review validate.rs
+    // F3).
     assert_eq!(e.code(&["delete", "signer", "--spec", "signer-ref"]), 22);
     assert_eq!(e.session().labelled("addr-k"), []);
     assert_eq!(e.code(&["check", "signer", "--spec", "signer-ref"]), 11);

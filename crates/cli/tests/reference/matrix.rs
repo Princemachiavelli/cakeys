@@ -1,7 +1,8 @@
-//! The object matrix (`tests/object_matrix/`) on the reference token. Beside the reference suite,
-//! not in it: `tests/softhsm.rs` and `tests/kryoptic.rs` include it, `tests/fault.rs` does not,
-//! where through p11-fault it would be `SoftHSM`'s table again (review 2026-11-24 C-11: it was a
-//! skip there, by design, and passed).
+//! The object matrix (`tests/object_matrix/`) on the reference token. This module sits next to
+//! the reference suite, not in it. `tests/softhsm.rs` and `tests/kryoptic.rs` include it, but
+//! `tests/fault.rs` does not, because through p11-fault the matrix would only produce `SoftHSM`'s
+//! table a second time. (Review 2026-11-24 C-11: in tests/fault.rs, the test was skipped by
+//! design, and the skip counted as a pass.)
 
 use crate::REF;
 use crate::common::*;
@@ -24,8 +25,9 @@ fn object_matrix_is_the_committed_one() {
     });
 }
 
-/// Every committed table keeps the properties (`object_matrix/properties.rs`): no token, so on
-/// every build and platform, the tables of tokens this one is not included.
+/// Every committed table keeps the properties (`object_matrix/properties.rs`). This test needs no
+/// token, so it runs on every build and platform, and it also checks the tables of the tokens that
+/// this test binary does not use.
 #[test]
 fn every_committed_table_keeps_the_properties() {
     let tables = object_matrix::properties::committed();
@@ -36,8 +38,8 @@ fn every_committed_table_keeps_the_properties() {
     }
 }
 
-/// Each property fails on its row flipped in a copy of this token's committed table, and only
-/// the flip makes it fail: none holds vacuously.
+/// Each property fails when its row is flipped in a copy of this token's committed table, and only
+/// the flip makes it fail. So no property passes without checking anything.
 #[test]
 fn each_property_fails_on_its_row_flipped() {
     let path = format!("spec-coverage/objects/{}.toml", REF.provider);

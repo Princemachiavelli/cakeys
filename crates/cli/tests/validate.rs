@@ -1,6 +1,6 @@
-//! The static gate (docs/CAPROBE.md): `validate` checks each spec's needs against its
-//! token's capability profiles, resolved from keys.toml and the lock — no token, no module,
-//! no environment needed, so these run everywhere.
+//! Tests of the static gate (docs/CAPROBE.md). `validate` checks each spec's needs against its
+//! token's capability profiles, which are resolved from keys.toml and the lock. The gate needs no
+//! token, no module and no environment, so these tests run everywhere.
 
 mod common;
 
@@ -14,16 +14,18 @@ fn validate(config: &str) -> Output {
     Run::new(BIN, Path::new(&format!("{FIXTURES}/{config}"))).output(&["validate"])
 }
 
-/// docs/CAPROBE.md's two static-gate cases, each refused (15) naming the profile that decided
-/// it: kryoptic asked to generate secp256k1 (`origin = "create"`), and a `kw` commitment through
-/// p11-kit. Two refusals end the run with 20, each listed with its own code (review 2026-11-24
-/// §1.4; it was 15). A token nothing is known about is skipped with a note.
+/// The two static-gate cases of docs/CAPROBE.md are each refused (15), and the message names the
+/// profile that decided: kryoptic asked to generate secp256k1 (`origin = "create"`), and a `kw`
+/// commitment through p11-kit. Two refusals end the run with 20, and each one is listed with its
+/// own code (review 2026-11-24 §1.4; it was 15). A token about which nothing is known is skipped
+/// with a note.
 #[test]
 fn a_profile_no_refuses_and_names_its_profile() {
     let out = validate("gate.toml");
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(code(&out), 20, "{err}");
-    // Who refused and which profile decided, not the sentence around them (review validate.rs F2).
+    // The test checks which pair was refused and which profile decided, not the sentence around
+    // them (review validate.rs F2).
     let line = |start: &str| err.lines().find(|l| l.contains(start)).unwrap_or_else(|| panic!("{start}: {err}"));
     let k1 = line("'k1' (spec 'k1-kry') on token 'kry': token 'kry' cannot");
     assert!(k1.starts_with("exit 15: ") && k1.contains("kryoptic/1.5"), "{err}");
@@ -31,16 +33,17 @@ fn a_profile_no_refuses_and_names_its_profile() {
     let kw = line("'aes' (spec 'aes-kw')");
     assert!(kw.contains("CKM_AES_KEY_WRAP") && kw.contains("p11-kit/0.26"), "{err}");
     assert!(err.contains("token 'unknown': no provider named"), "{err}");
-    // What the profiles allow passes silently: P-256 on kryoptic.
+    // A spec that the profiles allow passes without a message: P-256 on kryoptic.
     assert!(!err.contains("'p256' (spec 'p256-kry') on token 'kry'"), "{err}");
 }
 
-/// The lock's recorded module and token are the profile source when keys.toml names no
-/// provider: the token's observation resolves softhsm/2.7, whose rows allow every spec
-/// (generation it does not record is a note, never a refusal, and asked only of a pair whose
-/// origin is `create` and whose object the lock does not pin). The fixture's three `SoftHSM`
-/// realisations name three observations, so which is current is not known: a note naming
-/// `lock`, and the token is skipped. With one observation it resolves.
+/// When keys.toml names no provider, the module and token that the lock recorded select the
+/// profiles. The token's observation resolves softhsm/2.7, whose rows allow every spec. A
+/// generation that the profile does not record causes a note, never a refusal, and the gate asks
+/// about generation only for a pair whose origin is `create` and whose object the lock does not
+/// pin. The fixture's three `SoftHSM` realisations name three observations, so it is not known
+/// which one is current. The gate then gives a note that names `lock`, and it skips the token.
+/// With one observation, the stack resolves.
 #[test]
 fn the_lock_resolves_a_token_keys_toml_does_not_name() {
     let out = validate("keys.toml");
@@ -50,8 +53,8 @@ fn the_lock_resolves_a_token_keys_toml_does_not_name() {
     assert!(err.contains("`lock` them") && !err.contains("softhsm/2.7"), "{err}");
 
     let w = Workdir::new("validate-one-observation");
-    // One object the lock does not pin yet, so `create` would make it there, of a length beyond
-    // those the profile's probe generated: its generation is not decided.
+    // Add one object that the lock does not pin yet, so `create` would make it there. Its length
+    // is beyond the lengths that the profile's probe generated, so its generation is not decided.
     let fresh = "\n[objects.fresh]\nclass = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 4096\n\n\
                  [specs.fresh]\nobject = \"fresh\"\nattributes = { CKA_SIGN = true }\n\
                  tokens.softhsm = { locator = { CKA_LABEL = \"fresh\" }, origin = \"create\" }\n";
@@ -68,13 +71,15 @@ fn the_lock_resolves_a_token_keys_toml_does_not_name() {
     let fresh =
         "'fresh' (spec 'fresh') on token 'softhsm': generation not decided: unknown — module profile softhsm/2.7";
     assert!(err.contains(fresh), "{err}");
-    // The lock pins every other object: `create` would make none of them, so no generation is asked.
+    // The lock pins every other object, so `create` would make none of them, and the gate asks
+    // about no other generation.
     assert_eq!(err.lines().filter(|l| l.contains("generation")).count(), 1, "{err}");
 }
 
-/// A secret key to create is decided by the lengths the module profile recorded, in bytes: AES at
-/// 32, Triple DES at the 24 its type fixes and a generic secret between the lengths tried generate
-/// with no note; a generic secret longer than any tried is left open, a note, never a guess.
+/// The gate decides a secret key to create by the lengths that the module profile recorded, in
+/// bytes. AES at 32 bytes, Triple DES at the 24 bytes that its type fixes, and a generic secret
+/// between two tried lengths all generate without a note. A generic secret longer than any tried
+/// length is left undecided with a note, and never guessed.
 #[test]
 fn a_secret_key_to_create_is_decided_by_its_recorded_lengths() {
     let w = Workdir::new("validate-secret-lengths");
@@ -114,21 +119,23 @@ fn a_secret_key_to_create_is_decided_by_its_recorded_lengths() {
     }
     assert!(noted("huge", "generation"), "{err}");
     assert!(err.contains("probed 1, 16, 32, 64, 128, 256, 512, 1024 bytes only"), "{err}");
-    // SoftHSM computes the HMAC commitment at 32 and 64 bytes and refuses 16: 48 lies between two
-    // that worked, 8 below one refused, which is unknown, never a yes (review 2026-11-23 A-1).
+    // SoftHSM computes the HMAC commitment at 32 and 64 bytes and refuses 16 bytes. 48 bytes lies
+    // between two lengths that worked. 8 bytes lies below a refused length, so it is unknown, and
+    // never a yes (review 2026-11-23 A-1).
     assert!(!noted("mac", "commitments"), "{err}");
     assert!(noted("short", "commitments"), "{err}");
     assert!(err.contains("probed hmac-sha256 at 16, 32, 64 bytes only"), "{err}");
 }
 
-/// What the gate refuses or leaves open, from keys.toml alone: a hash-bound HMAC key to
-/// create (PKCS#11 has no mechanism for it) and an attestation the provider cannot make are
-/// refused (15); a provider with no module profile (`generic`) leaves the generation undecided,
-/// a note; so does a family whose profiles need the module's version to choose (`tpm2-pkcs11`,
-/// whose module nobody has seen yet): one stands in without its hardware rows, never an
-/// error; a layer the stack already holds (the binding layer) is not added twice. An adopted
-/// key is never asked about generation. A build whose cryptoki maps the SHA-2 HMAC key types
-/// wrongly refuses the HMAC key by its type before any profile is asked.
+/// This test checks what the gate refuses or leaves undecided from keys.toml alone. A hash-bound
+/// HMAC key to create (PKCS#11 has no mechanism for it) and an attestation that the provider
+/// cannot make are refused (15). A provider with no module profile (`generic`) leaves the
+/// generation undecided, with a note. So does a family whose profiles need the module's version
+/// to choose between them (`tpm2-pkcs11`, whose module no run has seen yet): one of its profiles
+/// is used without its hardware rows, and there is no error. A layer that the stack already holds
+/// (the binding layer) is not added twice. The gate never asks about generation for an adopted
+/// key. A build whose cryptoki maps the SHA-2 HMAC key types wrongly refuses the HMAC key by its
+/// type before any profile is asked.
 #[test]
 fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
     let w = Workdir::new("validate-gate-cases");
@@ -160,8 +167,9 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
         spec("p-gen", "gen", "gen", ""),
         spec("p-tpm", "tpm", "tpm", ""),
         spec("aes-yk", "aes", "yk", ", origin = \"adopt\", attestation = true"),
-        // A key ykcs11 would make under a label, created or imported: it places keys in PIV slots
-        // by CKA_ID alone (review 2026-11-23 B-3: only `create` itself, token open, said so).
+        // A key that ykcs11 would place under a label, whether created or imported. ykcs11 places
+        // keys in PIV slots by CKA_ID alone (review 2026-11-23 B-3: before, only `create` itself
+        // said so, with the token open).
         spec("p-yk", "yk", "yk", ""),
         spec("in-yk", "yk-in", "yk", ", origin = \"import\""),
     ]
@@ -169,7 +177,8 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
     w.write_config(&text);
     let out = w.km(&["validate"]);
     let err = stderr(&out);
-    // Refusals of 15 and 17: 20, each led by its own code (it was 15 whatever the codes).
+    // Refusals with 15 and 17 give exit 20, and each refusal line starts with its own code (it
+    // used to be 15, whatever the codes were).
     assert_eq!(code(&out), 20, "{err}");
     assert!(
         err.lines().any(|l| l.starts_with("exit 17: ")) && err.lines().any(|l| l.starts_with("exit 15: ")),
@@ -196,13 +205,15 @@ fn the_gate_refuses_what_it_can_decide_and_says_what_it_cannot() {
     }
 }
 
-/// A token whose provider is known only when it opens (no `provider`, nothing in the lock: a
-/// ykcs11 module, say) still has its provider's rules asked: `validate` and `create --dry-run`
-/// defer each by name — where a key may go, the module's own generation, the templates, what the
-/// token can do — and never pass them in silence (review 2026-11-24 B-1). The run that opens the
-/// token decides them; a pair it would refuse (ykcs11: a key under a label, 17) differs from the
-/// dry run only by a rule the dry run named. `create --dry-run` opens the token too (review
-/// 2026-11-24 C-4): one that does not open is unavailable (16), as for the run, its rows printed.
+/// For a token whose provider is known only when the token opens (no `provider`, and nothing in
+/// the lock, for example a ykcs11 module), the provider's rules are still asked. `validate` and
+/// `create --dry-run` defer each rule by name (where a key may go, the module's own generation,
+/// the templates, and what the token can do), and they never pass the rules without a message
+/// (review 2026-11-24 B-1). The run that opens the token decides the rules. For a pair that the
+/// run would refuse (ykcs11: a key under a label, 17), the run differs from the dry run only by a
+/// rule that the dry run named. `create --dry-run` also opens the token (review 2026-11-24 C-4).
+/// A token that does not open is unavailable (16), as it is for the run, and the dry run still
+/// prints its rows.
 #[test]
 fn a_provider_known_only_at_open_defers_its_rules_by_name() {
     let w = Workdir::new("validate-unresolved-provider");

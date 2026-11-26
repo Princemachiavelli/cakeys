@@ -1,12 +1,14 @@
 //! The reference-token suite (`tests/reference/`) against a `SoftHSM` token.
 //!
-//! Needs `SOFTHSM2_CONF` and `CAKEYS_TEST_MODULE` (path to libsofthsm2.so) with an initialised token
-//! labelled `kmtest`, user PIN `1234` (the Nix build's preCheck sets this up). Tests are skipped
-//! when `CAKEYS_TEST_MODULE` is unset, unless `CAKEYS_TEST_REQUIRE=1`.
+//! The tests need `SOFTHSM2_CONF` and `CAKEYS_TEST_MODULE` (the path to libsofthsm2.so), with an
+//! initialized token labeled `kmtest` and the user PIN `1234` (the Nix build's preCheck sets this
+//! up). The tests are skipped when `CAKEYS_TEST_MODULE` is unset, unless `CAKEYS_TEST_REQUIRE=1`
+//! is set.
 
 mod common;
 mod reference;
-// Here and in tests/kryoptic.rs, not in tests/fault.rs (its header says why).
+// The object matrix is included here and in tests/kryoptic.rs, but not in tests/fault.rs. The
+// header of reference/matrix.rs says why.
 #[path = "reference/matrix.rs"]
 mod matrix;
 
