@@ -1,11 +1,12 @@
 //! The spec baseline's generator (docs/CAPROBE.md D1): profiles/baselines/pkcs11-3.2.toml is
 //! generated from the vendored OASIS headers, never edited. Test-only: the first test
 //! regenerates and compares on every run (`CAKEYS_UPDATE_BASELINE=1 cargo test -p caprobe`
-//! rewrites the committed file after a header bump); the second pins the frozen spellings and
+//! regenerates the committed file after a header bump: beside it as `.new`, or over it with
+//! `CAKEYS_ACCEPT=1`, `cakeys_profile::regenerate`); the second pins the frozen spellings and
 //! IDs.
 
-use cakeys_profile::Baseline;
 use cakeys_profile::baseline::{CURVES, ClassMembers, TABLES};
+use cakeys_profile::{Baseline, regenerate};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -239,13 +240,20 @@ fn vendored() -> Baseline {
 }
 
 /// The baseline text to compare `generated` with: the committed one compiled in, or, when
-/// `update` names the committed file, `generated` written there, so the regenerating run
-/// compares with what it just wrote and passes.
-fn committed_text(generated: &Baseline, update: Option<&Path>) -> String {
+/// `update` names the committed file, `generated` as the regenerating run wrote it, so it
+/// compares with what it just wrote and passes. Written as every golden file is
+/// ([`regenerate::write`]): over the file only when accepted (`update`'s bool), else beside it
+/// as `.new`; and not at all when the file already parses to `generated` (`nix fmt` formats
+/// it after it is written, so its text is never the emitter's).
+fn committed_text(generated: &Baseline, update: Option<(&Path, bool)>) -> String {
     match update {
-        Some(path) => {
+        Some((path, accept)) => {
             let text = to_toml(generated);
-            std::fs::write(path, &text).expect("writing the regenerated baseline");
+            let now = std::fs::read_to_string(path).ok().and_then(|t| Baseline::from_toml(&t).ok());
+            if now.as_ref() != Some(generated) {
+                let written = regenerate::write(path, &text, accept).expect("writing the regenerated baseline");
+                eprintln!("{written}");
+            }
             text
         }
         None => COMMITTED.to_owned(),
@@ -256,7 +264,7 @@ fn committed_text(generated: &Baseline, update: Option<&Path>) -> String {
 fn committed_baseline_is_generated_from_the_vendored_headers() {
     let generated = vendored();
     let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../profiles/baselines/pkcs11-3.2.toml"));
-    let update = std::env::var_os("CAKEYS_UPDATE_BASELINE").is_some().then_some(path);
+    let update = std::env::var_os("CAKEYS_UPDATE_BASELINE").is_some().then_some((path, regenerate::accepted()));
     let committed = Baseline::from_toml(&committed_text(&generated, update)).expect("the committed baseline parses");
     assert_eq!(
         committed, generated,
@@ -265,17 +273,34 @@ fn committed_baseline_is_generated_from_the_vendored_headers() {
 }
 
 /// `CAKEYS_UPDATE_BASELINE=1` compares with the file it wrote, not the one compiled in: the
-/// regenerating run passes (review baseline F2).
+/// regenerating run passes (review baseline F2). It replaces the committed file only when
+/// accepted, and a file that parses to the same baseline is no change (review 2026-11-24 C-8).
 #[test]
 fn a_regenerating_run_compares_with_what_it_wrote() {
     let mut generated = vendored();
     generated.baseline = "regenerated".to_owned();
-    let path = std::env::temp_dir().join(format!("caprobe-baseline-{}.toml", std::process::id()));
-    let text = committed_text(&generated, Some(&path));
-    let written = std::fs::read_to_string(&path).unwrap();
-    std::fs::remove_file(&path).unwrap();
-    assert_eq!(written, text);
+    let dir = std::env::temp_dir().join(format!("caprobe-baseline-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (path, new) = (dir.join("baseline.toml"), dir.join("baseline.toml.new"));
+    let read = |p: &Path| std::fs::read_to_string(p).ok();
+    let text = committed_text(&generated, Some((&path, false)));
+    assert_eq!(read(&path).as_deref(), Some(text.as_str()));
     assert_eq!(Baseline::from_toml(&text).unwrap(), generated);
+    // Formatted, it is the same baseline: nothing is written.
+    std::fs::write(&path, text.replace(", ", ",\n  ")).unwrap();
+    committed_text(&generated, Some((&path, false)));
+    assert_eq!(read(&new), None);
+    // Another baseline, not accepted: the committed file stays, the regeneration waits beside it.
+    let formatted = read(&path);
+    generated.baseline = "again".to_owned();
+    let again = committed_text(&generated, Some((&path, false)));
+    assert_eq!(read(&path), formatted);
+    assert_eq!(read(&new).as_deref(), Some(again.as_str()));
+    // Accepted: it replaces the file.
+    committed_text(&generated, Some((&path, true)));
+    assert_eq!(read(&path).as_deref(), Some(again.as_str()));
+    assert_eq!(read(&new), None);
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// A family constant written in a form the scanner cannot read fails the generator, naming

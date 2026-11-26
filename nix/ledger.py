@@ -21,6 +21,26 @@ since, and the file as it is now. This fails when:
   `[regen] sources` must pass `--rsa-max-bits` with `[regen] rsa-max-bits` and no other value,
   and an artifact's `regen` may name no other value and no file that is not there.
 
+It also holds the golden files, which a build regenerates and compares with (`GOLDEN`, and
+every `verified-by` profile; review 2026-11-24 C-8: the code under test writes them, so a
+regeneration in the same commit as the code moves the expectation with it). Each has a
+`[golden."<path>"]` entry: `generator`, the globs that write it (as `code`), and its records,
+`[[golden."<path>".regenerated]]` for a run of the generator and `[[golden."<path>".hand-edits]]`
+for an edit by hand, oldest first. Each record names the file it made (`hash`), who (`by`) and
+the rows that moved (`rows = { "<row key>" = { was = <old value>, why = "<why it is right>" } }`,
+`was` left out for a row it adds; `rows()` says what a row is), and a regeneration the
+generator's hash then (`code-hash`). This fails when:
+
+- a golden file has no entry, or no record names the file as it is: a change without a record;
+- the record that names it lists a row the file does not have and did not have, a row whose
+  value `was` already (unchanged), or a `why` that is empty or `"TODO"`, or lists no row and
+  says no `why` of its own;
+- a regeneration names the code-hash of the one before it: the generator did not move, so the
+  change was made by hand.
+
+Which rows moved, exactly, needs the file before the change: nix/golden-rows.py checks that in
+CI, from git. A generator that moved while its output did not needs nothing.
+
 The hashes are of the files in the tree, not git's: the Nix sandbox has no .git. A failure
 prints the hash to record. In the code's hash a Rust source counts as its tokens, so a comment,
 a doc comment or rustfmt's spacing changes nothing, and a literal or any other token does; every
@@ -60,14 +80,23 @@ RUST_TOKEN = re.compile(
     re.X | re.S,
 )
 
+# The golden files besides the `verified-by` profiles: each needs a [golden."<path>"] entry.
+GOLDEN = ("spec-coverage/objects/*.toml", "spec-coverage/cakeys.toml", "profiles/baselines/*.toml")
+# A why no one wrote: empty, or the placeholder nix/golden-rows.py --stub leaves.
+UNWRITTEN = re.compile(r"\s*(TODO\b.*)?", re.I | re.S)
+
 # The keys each table may have: a near miss (`acknowledgement`) fails rather than being ignored.
 KEYS = {
-    "ledger": {"regen", "groups", "artifact"},
+    "ledger": {"regen", "groups", "artifact", "golden"},
     "regen": {"rsa-max-bits", "sources"},
     "artifact": {"path", "from", "regen", "verified-by", "code", "hash", "probed", "hand-edits", "acknowledged"},
     "probed": {"by", "date", "hash", "code-hash"},
     "hand-edits": {"by", "what"},
     "acknowledged": {"code-hash", "by", "why", "reprobe"},
+    "golden": {"generator", "regenerated", "hand-edits"},
+    "regenerated": {"by", "hash", "code-hash", "why", "rows"},
+    "golden hand-edit": {"by", "hash", "why", "rows"},
+    "row": {"was", "why"},
 }
 
 
@@ -182,6 +211,120 @@ def unknown(table, kind, where, misses):
         misses.append(f"{where}: `{k}` is no key of {kind}")
 
 
+def rows(text):
+    """A golden file's rows, by key: each key of a table as `<table>.<key>`, with its whole value
+    (a profile's capability, a matrix row, a coverage status, a baseline ID); each member of a
+    top-level list as `<list>.<member>` = true; any other top-level key as itself. A `summary`
+    table counts the rows, so it is none of them."""
+    out = {}
+    for key, value in tomllib.loads(text).items():
+        if key == "summary":
+            continue
+        if isinstance(value, dict):
+            out.update({f"{key}.{k}": v for k, v in value.items()})
+        elif isinstance(value, list) and all(isinstance(v, (str, int, float, bool)) for v in value):
+            out.update({f"{key}.{v}": True for v in value})
+        else:
+            out[key] = value
+    return out
+
+
+def golden_paths(root, ledger):
+    """The golden files: `GOLDEN`'s and the `verified-by` profiles."""
+    paths = {p.relative_to(root).as_posix() for g in GOLDEN for p in root.glob(g) if p.is_file()}
+    return paths | {a.get("path") for a in ledger.get("artifact", []) if "verified-by" in a}
+
+
+def accepting(entry, now):
+    """The record that names the file as it is (the last such of its kind), its kind, and the
+    regeneration before it, if it is one; or the failure."""
+    found = []
+    for kind in ("regenerated", "hand-edits"):
+        records = entry.get(kind, [])
+        at = max((i for i, r in enumerate(records) if r.get("hash") == now), default=None)
+        if at is not None:
+            found.append((kind, records[at], records[at - 1] if kind == "regenerated" and at else None))
+    if len(found) == 2:
+        return None, "a regeneration and a hand edit both name the file as it is: one is wrong"
+    if not found:
+        return None, (
+            f'no record names the file as it is (hash = "{now}"): a change without a record. '
+            'Add a [[regenerated]] or [[hand-edits]] record with that hash, its rows and why '
+            "(nix/golden-rows.py --stub writes one)"
+        )
+    return found[0], None
+
+
+def check_record(text, record, kind, where, misses):
+    """The record that names the file as it is: each row it lists moved, and says why."""
+    for k in ("by", "hash"):
+        if not record.get(k):
+            misses.append(f"{where}: no `{k}`")
+    if kind == "regenerated" and not record.get("code-hash"):
+        misses.append(f"{where}: no `code-hash`: the generator's hash then")
+    listed = record.get("rows")
+    if not isinstance(listed, dict):
+        misses.append(f'{where}: no `rows` (rows = {{ "<row key>" = {{ was = <old value>, why = "…" }} }})')
+        return
+    if not listed and UNWRITTEN.fullmatch(record.get("why", "")):
+        misses.append(f"{where}: no row moved, so the record says why it changed the file (`why`)")
+    if "why" in record and UNWRITTEN.fullmatch(record["why"]):
+        misses.append(f"{where}: its `why` is not written")
+    try:
+        have = rows(text)
+    except tomllib.TOMLDecodeError as e:
+        misses.append(f"{where}: the file does not parse, so its rows cannot be read: {e}")
+        return
+    for key, row in listed.items():
+        at = f"{where}: row {key!r}"
+        if not isinstance(row, dict):
+            misses.append(f'{at}: is no {{ was = …, why = "…" }} table')
+            continue
+        unknown(row, "row", at, misses)
+        if UNWRITTEN.fullmatch(str(row.get("why", ""))):
+            misses.append(f"{at}: its `why` is not written")
+        if key not in have and "was" not in row:
+            misses.append(f"{at}: the file has no such row, and the record says it had none (`was`)")
+        elif key in have and "was" in row and row["was"] == have[key]:
+            misses.append(f"{at}: unchanged ({have[key]!r}): list only the rows that moved")
+
+
+def check_golden(root, ledger, groups, report, misses):
+    """The golden files: each has an entry, and a record that names it as it is."""
+    entries = ledger.get("golden", {})
+    for path in sorted(golden_paths(root, ledger) - set(entries)):
+        misses.append(f"{LEDGER}: {path} is a golden file without a [golden] entry: name its generator and record it")
+    for path, entry in sorted(entries.items()):
+        where = f'{LEDGER}: [golden."{path}"]'
+        unknown(entry, "golden", where, misses)
+        for kind, key in (("regenerated", "regenerated"), ("hand-edits", "golden hand-edit")):
+            for r in entry.get(kind, []):
+                unknown(r, key, f"{where} [[{kind}]]", misses)
+        if not entry.get("generator"):
+            misses.append(f"{where}: no `generator`: the globs whose change can change the file")
+        files, entries_, empty = code_files(root, entry.get("generator", []), groups)
+        for what in empty:
+            misses.append(f"{where}: generator {what}")
+        if not (root / path).is_file():
+            misses.append(f"{where}: no such file")
+            continue
+        now = file_hash(root / path)
+        found, why = accepting(entry, now)
+        if not found:
+            misses.append(f"{where}: {why}")
+            continue
+        kind, record, before = found
+        at = f"{where} [[{kind}]] {record.get('by', '?')}"
+        if before is not None and before.get("code-hash") == record.get("code-hash"):
+            misses.append(f"{at}: the generator is the previous regeneration's ({before.get('by')}): record it as a hand edit")
+        check_record((root / path).read_text(), record, kind, at, misses)
+        state = f"{kind} by {record.get('by')}"
+        code = code_hash(root, files, entries_)
+        if kind == "regenerated" and code != record.get("code-hash"):
+            state += f"; the generator moved since (now {code}), its output did not"
+        report.append(f"golden  {path}: {state}")
+
+
 def check(root):
     """The report lines and the failures."""
     try:
@@ -228,6 +371,7 @@ def check(root):
         rel = p.relative_to(root).as_posix()
         if rel not in seen:
             misses.append(f"{LEDGER}: {rel} has no [[artifact]]: say what verifies it")
+    check_golden(root, ledger, groups, report, misses)
     return report, misses
 
 

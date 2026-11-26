@@ -58,7 +58,8 @@ Development happens on NixOS or on macOS with Determinate Nix. Neither provides 
 - Generated profiles must stay byte-identical to the committed ones, and only the Nix-built
   binary carries the patched cryptoki the probe needs: `profiles/LEDGER.toml` names each
   profile's command (`scripts/regen-profiles.sh` for the software tokens). The baseline is
-  regenerated with `CAKEYS_UPDATE_BASELINE=1`, then `nix fmt`.
+  regenerated with `CAKEYS_UPDATE_BASELINE=1 CAKEYS_ACCEPT=1`, then `nix fmt`. Every
+  regeneration is written beside the file it would replace until accepted ("Golden files").
 - What only hardware or a cloud can measure is in `profiles/LEDGER.toml`, with its last run. A
   change to the code on its path, or a hand edit, fails `checks.ledger` until the ledger records
   it: an `[artifact.acknowledged]` saying who, why and what needs a run, or a hand-edit row.
@@ -86,7 +87,7 @@ must pass:
 
 | Tier | What | Needs | Must pass |
 |---|---|---|---|
-| T0 | `.#checks-no-vm`: the crane build and its software-token suites (SoftHSM, kryoptic, p11-kit, swtpm, the fault shim), clippy, rustdoc, formatting, `doc-references`, `claims` (a universal claim of the documents that say what the tools guarantee names its tests in `docs/claims.toml`, or is counted against a number that only goes down), `test-count`, `oracle-count` (no test file asserts on a tool's prose more often than `nix/oracle-count.toml` allows, a number that only goes down), `ledger`, `fuzz-lock` and `kani-library-lock` (the second lockfiles still match: a drifted `fuzz/Cargo.lock` kept `vm` red from 38967ae to 61b7000) | Linux, no hardware | before a merge to `main` |
+| T0 | `.#checks-no-vm`: the crane build and its software-token suites (SoftHSM, kryoptic, p11-kit, swtpm, the fault shim), clippy, rustdoc, formatting, `doc-references`, `claims` (a universal claim of the documents that say what the tools guarantee names its tests in `docs/claims.toml`, or is counted against a number that only goes down), `test-count`, `oracle-count` (no test file asserts on a tool's prose more often than `nix/oracle-count.toml` allows, a number that only goes down), `ledger` (with the golden files: each change of what a build regenerates and compares with is recorded with the rows it moved and why; on a pull request the light job's `nix/golden-rows.py` holds the record to exactly the rows the diff moved), `fuzz-lock` and `kani-library-lock` (the second lockfiles still match: a drifted `fuzz/Cargo.lock` kept `vm` red from 38967ae to 61b7000) | Linux, no hardware | before a merge to `main` |
 | T1 | `.#checks-vm`: the NixOS VM tests and the fuzz smoke run | Linux with KVM | before a merge, or within a day of it; red is fixed forward first |
 | T2 | the YubiKey, AMD fTPM, Cloud KMS and CloudHSM suites and probes (`nix run .#coverage-full`, `scripts/cloud/*.sh`) | the device or a billed cloud account | on a schedule or before a release; recorded in the [ledger](CAPROBE.md#the-ledger) |
 
@@ -172,7 +173,7 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 | `checks.msrv` | package build | `cargo check --all-targets` with the toolchain at `Cargo.toml`'s `rust-version` (rust-overlay), the dependencies built with it too |
 | `checks.doc-references` | sandbox | what the docs and the Rust comments cite exists (`nix/doc-references.py`, its fixture tests in `nix/doc-references-test.py` first): a test or function the docs name in backticks is a `fn` in `crates/` or `fuzz/`; a snake name (`a_b`) in a `//`, `///` or `//!` comment, and each segment of a path (`KeyAlg::of_spki`) in either, is a name the Rust code defines (an item, field, variant, parameter or module) or uses as only an item can be (after `.` or `::`, in a `use`), so std's, cryptoki's and a dependency's names pass unlisted, as does a path from another crate; every `docs/*.md` and Rust source (`crates/…/*.rs`) cited from docs, sources, scripts or Nix is a file, and every relative Markdown link resolves. Names of software the code never names, and paths of other software, are listed in the script with what they are; an entry nothing needs fails |
 | `checks.claims` | sandbox | `nix/claims.py` and its fixture tests (`nix/claims-test.py`): a line of CAKEYS, CAMIGRATE, CAPROBE or DESIGN.md that speaks for every case (every, never, always, the one way, …) about a security subject (a PIN, the lock, a slot, plaintext, …) is registered in `docs/claims.toml`, with the tests that hold it (each a `fn`) or as descriptive with why, or is counted against its `max-unregistered`. The check fails above the count and below it, so the number moves only in a diff, and the tests keep it at or below its seed |
-| `checks.ledger` | sandbox | `nix/ledger.py` and its fixture tests (`nix/ledger-test.py`): every file `profiles/LEDGER.toml` records from a run on hardware or a cloud is the one recorded, a hand edit since the run is listed, and the code on its path is the run's or an acknowledged change; every module profile has an entry; every regeneration probes RSA up to `[regen] rsa-max-bits` (CAPROBE.md, "The ledger") |
+| `checks.ledger` | sandbox | `nix/ledger.py` and its fixture tests (`nix/ledger-test.py`): every file `profiles/LEDGER.toml` records from a run on hardware or a cloud is the one recorded, a hand edit since the run is listed, and the code on its path is the run's or an acknowledged change; every module profile has an entry; every regeneration probes RSA up to `[regen] rsa-max-bits`; every golden file (what a build regenerates and compares with) is the one a record names, and that record lists only rows that moved, each with a written why (CAPROBE.md, "The ledger") |
 | `checks.formatting` | treefmt | `nix fmt` would change nothing: the formatters and linters in `treefmt.nix` (rustfmt with `rustfmt.toml`, nixfmt, taplo, shfmt, rumdl, keep-sorted, statix, deadnix, shellcheck, typos) |
 | `checks.test-count` | sandbox | no test binary has fewer tests in its source than `nix/test-count.toml` says (`nix/test-count.py`, its own tests in `nix/test-count-tests.py` first); "No test goes unnoticed" below |
 | `checks.oracle-count` | sandbox | no integration test file has more prose assertion sites (an assert whose subject is `.contains(…)` on a tool's stderr, stdout or rows) than `nix/oracle-count.toml` gives it, and a file it does not name has none; exit-code sites are counted, not limited (`nix/oracle-count.py`, its fixture tests in `nix/oracle-count-tests.py` first). A refusal asserts its exit, the rule its row names and the state it left through `Workdir::refused` (`crates/cli/tests/common/state.rs`) instead. It also fails on a number above its file's count, so a site removed lowers the manifest in the same diff (as `claims` does); `--write` lowers the numbers, never raises them |
@@ -212,6 +213,35 @@ variables, and only for that suite's pass.
 fails when a binary that the run's cargo arguments build ran other tests than its source has: a
 binary lost, or a test left out. With nextest arguments, local-tests only reports. Every nextest
 run passes `--no-tests=fail`.
+
+### Golden files
+
+A golden file is what a build regenerates and compares with: the object matrix's tables
+(`spec-coverage/objects/`), the profiles of the software tokens, `spec-coverage/cakeys.toml` and
+the baseline. The code under test writes them, so a test against one detects a change, not an
+error (review 2026-11-24 C-8). What stands in front of them:
+
+- **The ledger records each change.** `profiles/LEDGER.toml` has a `[golden."<path>"]` entry per
+  file (CAPROBE.md, "The ledger"): every change adds a record naming the file it made and each
+  row that moved, with what it was and why the new value is right. `checks.ledger` fails a file
+  no record names, a why left `"TODO"` and a listed row that did not move. On a pull request,
+  `nix/golden-rows.py --base <rev>` fails when the record lists other rows than the diff moved,
+  and writes them, old and new, to the job summary. `nix develop -c python3 -I
+  nix/golden-rows.py --stub` prints the record to fill in.
+- **A regeneration waits beside the file.** Every writer of one (`caprobe probe --out`, each
+  `CAKEYS_UPDATE_*` test, the regeneration scripts) goes through `cakeys_profile::regenerate`: a
+  file the new text differs from is replaced only when accepted, by `caprobe probe --accept` or
+  `CAKEYS_ACCEPT=1` (for a test or a script); otherwise the text goes beside it as `<file>.new`,
+  which git ignores and `golden-rows.py --stub` reads. The baseline is formatted after it is
+  written: stub it once accepted and formatted.
+- **Properties stand in front of the tables and profiles.** What a golden file must say whatever
+  the code makes of it, derived from PKCS #11, DESIGN.md or the module's own documentation, never
+  from the file: `crates/cli/tests/object_matrix/properties.rs` for the object matrix (each
+  token's fresh table before it is compared or regenerated, and every committed table without a
+  token), `crates/profile/tests/properties.rs` for the software tokens' profiles, and
+  `every_regenerated_yes_says_by_whom` for their provenance. Each is seen failing on its row
+  flipped in a copy. A property that a regeneration breaks is a finding, never a property to
+  change to fit it.
 
 ## Verification beyond tests
 

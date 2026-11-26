@@ -577,8 +577,10 @@ pub fn assert_profile_conforms(
     let committed = std::fs::read(committed_profile(path)).unwrap();
     std::fs::write(scratch, &committed).unwrap();
     let out = scratch.to_str().unwrap();
-    let probe =
-        km(&["probe", "--token", token, "--write-probes", "--rsa-max-bits", "4096", "--diff", name, "--out", out]);
+    // Accepted: the scratch copy is replaced, so the bytes below compare what the probe made
+    // (without it a drifted profile would wait beside the copy, which would then compare equal).
+    let args = ["probe", "--token", token, "--write-probes", "--rsa-max-bits", "4096", "--diff", name];
+    let probe = km(&[&args[..], &["--out", out, "--accept"]].concat());
     assert_eq!(code(&probe), 0, "a fresh probe drifts from {name}: {}", String::from_utf8_lossy(&probe.stderr));
     assert!(
         std::fs::read(scratch).unwrap() == committed,
