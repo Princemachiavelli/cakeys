@@ -227,9 +227,12 @@ What the profile-coverage and probed-move plans built (their history:
   - The sealed exports name camigrate's methods, tried in camigrate's order with
     `CKM_RSA_AES_KEY_WRAP` last.
   - Only the planner, the proof check and `accepts_public_key_objects` read the move rows;
-    `validate` and `create`'s gate do not yet, and nothing reads `delete.*`.
-  - On a YubiKey the probe imports as SO into the scratch slot only, never touches PIV data
-    objects, and leaves a placeholder generated there.
+    `validate` and `create`'s gate do not yet. `delete.*` is read by the delete's rule
+    (`deletion`): a row that answers no refuses the delete before anything is destroyed
+    (`k6_a_profile_no_refuses_the_delete_before_any_destroy`).
+  - On a YubiKey the probe imports as SO into the scratch slot only, and writes there the key
+    it probes and its own mark certificate (`CN=cakeys-probe`), leaving the placeholder
+    certificate ykcs11 generates (`only_the_slots_attestation_sits_beside_the_probes_certificate`).
 
 ## Coverage
 

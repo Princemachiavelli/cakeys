@@ -12,7 +12,7 @@
 #   a Nix check of checks.nix as "checks.<name>"), and optionally the entry `paths` they cover; or
 # - kind = "descriptive": `why` it is no guarantee a test can hold.
 
-max-unregistered = 98
+max-unregistered = 96
 
 # CAMIGRATE.md D5: a bundle's transport key is the target's own (review 2026-11-24 D-8).
 

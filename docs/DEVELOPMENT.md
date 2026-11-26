@@ -285,5 +285,8 @@ The projection (`State::from_driver`) is the trusted part: it maps the lock as s
 the model's shape, field for field, and refuses anything the model does not name rather than
 dropping it: every field of the lock as serialised is either read or named as one the model
 leaves out (the locator, observations), so a new one fails the test. A refusal maps to its rule
-by a marker only that rule's message has (`rule_of`), exactly one or the step fails. A change to the lock rules changes the model in the same commit, or
-`lock_mbt.rs` fails.
+by a marker only that rule's message has (`rule_of`), exactly one or the step fails. A change to
+a lock rule the model's traces reach fails `lock_mbt.rs` unless the model changes with it; a
+rule keyed on what the model leaves out or fixes (its header lists them: imports, locators and
+`publicOnly`, pairs, and in its fixed keys.toml no RSA key and no object two specs share) is
+never reached, so a change to it passes (review 2026-11-24 A-6).
