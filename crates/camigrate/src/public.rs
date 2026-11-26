@@ -1,10 +1,10 @@
-//! Moving a public object (docs/CAMIGRATE.md phase 2, the `public` method): a certificate, a public key
-//! or a data object needs no wrapping. The source object is verified against the lock, its
-//! material taken from what that check established — a public key from its canonical SPKI, a
-//! certificate's attributes from its DER — and created on the target under the target spec's
-//! locator and attributes. It is then recorded through `ops::lock_import`, the lock rules
-//! `cakeys lock` uses: a mismatch (10) removes what was just created and leaves the lock as
-//! it was.
+//! Moves a public object (docs/CAMIGRATE.md phase 2, the `public` method). A certificate, a
+//! public key or a data object needs no wrapping. The source object is verified against the lock,
+//! and its material is taken from what that check established: a public key from its canonical
+//! SPKI, and a certificate's attributes from its DER. The object is then created on the target
+//! under the target spec's locator and attributes. It is recorded through `ops::lock_import`,
+//! which applies the same lock rules that `cakeys lock` uses. A mismatch (10) removes what was
+//! just created and leaves the lock as it was.
 
 use cakeys_core::config::{Lock, Origin};
 use cakeys_core::migrate::{Exposure, Method};
@@ -16,20 +16,21 @@ use cakeys_pkcs11::{Template, Token, Topic, templates};
 use cryptoki::object::{Attribute, AttributeType, ObjectHandle};
 use x509_cert::der::Decode as _;
 
-/// What moving one object did.
+/// The result of moving one object.
 pub(crate) enum Moved {
-    /// Created on the target and recorded with its `origin`.
+    /// The object was created on the target and recorded with its `origin`.
     Imported,
-    /// The target already holds it, recorded and verified: a re-run moves nothing.
+    /// The target already holds the object, and the lock records it and it was verified, so a
+    /// re-run moves nothing.
     AlreadyThere,
 }
 
-/// Move the public object `src` (realised on `from`) to `dst` on `to`, and record it in `lock`:
-/// [`material`] from the source, then [`create`] on the target.
+/// Moves the public object `src` (realised on `from`) to `dst` on `to`, and records it in `lock`.
+/// It calls [`material`] on the source, and then [`create`] on the target.
 ///
 /// # Errors
 ///
-/// As [`material`] and [`create`].
+/// The errors of [`material`] and [`create`].
 pub(crate) fn import(
     src: &Target,
     from: &Token,
@@ -45,14 +46,15 @@ pub(crate) fn import(
     create(dst, to, &bytes, src.token_name, lock, notes)
 }
 
-/// The public object `src` realised on `from`, verified against the lock, as the bytes a target
-/// creates it from (a bundle's `value`): a certificate's DER, a public key's canonical SPKI, a
-/// data object's value.
+/// Returns the public object `src` that is realised on `from`, verified against the lock, as the
+/// bytes from which a target creates it (a bundle's `value`): a certificate's DER, a public key's
+/// canonical SPKI, or a data object's value.
 ///
 /// # Errors
 ///
-/// Whatever `ops::verify` refuses; `NotFound`/`Ambiguous` for the locator; `Conflict` for a
-/// certificate whose value is no X.509 certificate.
+/// The errors of `ops::verify`; `NotFound` (11) or `Ambiguous` (12) for the locator; `Conflict`
+/// (13) for a certificate whose value is not an X.509 certificate; `Unavailable` (16) when the
+/// value cannot be read; and `Validation` (17) for an object that is not a public object.
 pub(crate) fn material(src: &Target, from: &Token, lock: &Lock, notes: &mut Notes) -> Result<Vec<u8>> {
     ops::verify(src, from, lock, notes)?;
     let h = one(from, src)?;
@@ -73,18 +75,17 @@ pub(crate) fn material(src: &Target, from: &Token, lock: &Lock, notes: &mut Note
     }
 }
 
-/// Create the public object `dst` on `to` from `bytes` ([`material`]'s), moved from the token
-/// named `from`, and record it in `lock` with that origin. A realisation the lock already has is
-/// verified, not created again.
+/// Creates the public object `dst` on `to` from `bytes` (the output of [`material`]), moved from
+/// the token named `from`, and records it in `lock` with that origin. A realisation that the lock
+/// already records is verified, and it is not created again.
 ///
 /// # Errors
 ///
-/// `Conflict` (13) when an object of its class sits under the target locator without a
-/// realisation of `dst` (a public key object holding the same key is that object: recorded, not
-/// created again); `Unsupported` (15)
-/// when the target refuses `C_CreateObject`; and, after the creation, whatever
-/// `ops::lock_import` refuses — a hash mismatch (10) included — with what was created removed
-/// again.
+/// `Conflict` (13) when an object of its class is under the target locator and the lock records
+/// no realisation of `dst`. (A public key object that holds the same key is that object, so it is
+/// recorded and not created again.) `Unsupported` (15) when the target refuses `C_CreateObject`.
+/// After the creation, the errors of `ops::lock_import`, including a hash mismatch (10); in that
+/// case, the created object is removed again.
 pub(crate) fn create(
     dst: &Target,
     to: &Token,
@@ -96,12 +97,13 @@ pub(crate) fn create(
     create_as(dst, to, bytes, origin(from, &Method::Public, Exposure::Public), lock, notes)
 }
 
-/// [`create`], recorded with `origin`: a private data object from a file is `raw`, exposure
-/// `file` (docs/FILE.md), though it is created as any data object is.
+/// Works as [`create`], but records the object with `origin`. For example, a private data object
+/// from a file is recorded with the method `raw` and the exposure `file` (docs/FILE.md), although
+/// it is created in the same way as any data object.
 ///
 /// # Errors
 ///
-/// As [`create`].
+/// The errors of [`create`].
 pub(crate) fn create_as(
     dst: &Target,
     to: &Token,
@@ -113,7 +115,7 @@ pub(crate) fn create_as(
     if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
-    // What the record after it asks, before anything is created.
+    // Run the check that the record after the creation makes, before anything is created.
     ops::check_import(dst, to)?;
     let template = template(dst, to, bytes)?;
     let public_half = preflight(dst, to, bytes)?;
@@ -132,18 +134,19 @@ pub(crate) fn create_as(
     }
 }
 
-/// Where an object moved by `method` from the token `from` came from, for the lock's
-/// `provenance.origin`: the exposure is one cakeys established, never a vendor's declared one.
+/// Returns the origin of an object moved by `method` from the token `from`, for the lock's
+/// `provenance.origin`. The exposure is one that cakeys established, never one that a vendor
+/// declared.
 pub(crate) fn origin(from: &str, method: &Method, exposure: Exposure) -> Origin {
     Origin { from: from.to_owned(), method: method.name(), exposure, declared: false }
 }
 
-/// Whether the lock already records `dst`'s realisation: then it is verified, and a re-run
-/// moves nothing.
+/// Returns whether the lock already records `dst`'s realisation. When it does, the realisation is
+/// verified, and a re-run moves nothing.
 ///
 /// # Errors
 ///
-/// Whatever `ops::verify` refuses of a recorded realisation.
+/// The errors of `ops::verify` for a recorded realisation.
 pub(crate) fn already_there(dst: &Target, to: &Token, lock: &Lock, notes: &mut Notes) -> Result<bool> {
     if lock.realisation(dst.spec_name, dst.token_name).is_none() {
         return Ok(false);
@@ -152,8 +155,9 @@ pub(crate) fn already_there(dst: &Target, to: &Token, lock: &Lock, notes: &mut N
     Ok(true)
 }
 
-/// After a failed import: remove exactly the objects it `made` (others may share the locator),
-/// say what happened, and hand back the failure `err`.
+/// Cleans up after a failed import. It removes exactly the objects that the import `made`,
+/// because other objects may share the locator. It reports what happened, and it returns the
+/// failure `err`.
 pub(crate) fn roll_back(dst: &Target, to: &Token, made: &[ObjectHandle], err: KmError, notes: &mut Notes) -> KmError {
     match to.destroy_handles(&dst.object, &dst.on_token.locator, made) {
         Ok(0) => {}
@@ -163,24 +167,26 @@ pub(crate) fn roll_back(dst: &Target, to: &Token, made: &[ObjectHandle], err: Km
     err
 }
 
-/// If-None-Match before [`create`] (docs/CAMIGRATE.md D6): [`free_locator`] for a public object,
-/// whose public key object a key's import already created there is this object (returned:
-/// recorded, not created).
+/// Runs the If-None-Match check before [`create`] (docs/CAMIGRATE.md D6): [`free_locator`] for a
+/// public object. When a key's import already created a public key object there that holds the
+/// same key, that object is this object. Its handle is returned, so that it is recorded and not
+/// created again.
 ///
 /// # Errors
 ///
-/// As [`free_locator`].
+/// The errors of [`free_locator`].
 pub(crate) fn preflight(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Option<ObjectHandle>> {
     let spki = (dst.object.class == Class::PublicKey).then_some(bytes);
     Ok(free_locator(dst, to, spki)?.public_half)
 }
 
-/// If-None-Match before anything is created under `dst` (docs/CAMIGRATE.md D6), the one
-/// occupancy check of every import: nothing an object of its class would collide with may sit
-/// there (`Token::occupied`, per class: the key and certificate a public object usually sits
-/// beside are no collision). The session is logged in, so it sees everything under the locator
-/// (`needs_login`). What is there, with a public key object already holding `spki` (a key's
-/// public half) to reuse.
+/// Runs the If-None-Match check before anything is created under `dst` (docs/CAMIGRATE.md D6).
+/// This is the single occupancy check of every import: no object with which an object of its
+/// class would collide may be under the locator (`Token::occupied`, which decides by class; the
+/// key and the certificate next to which a public object usually sits are not collisions). The
+/// session is logged in, so it sees every object under the locator (`needs_login`). It returns
+/// what is there, including a public key object that already holds `spki` (a key's public half),
+/// which the import reuses.
 ///
 /// # Errors
 ///
@@ -202,9 +208,10 @@ pub(crate) fn free_locator(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Res
     Ok(occupied)
 }
 
-/// How to record a key a run moved to `dst` but could not record (the lock unwritable then,
-/// 21): what a collision under its locator says, and that failure itself (review 2026-11-23
-/// C-21). `cakeys lock` verifies and records it, without how it was moved.
+/// Returns the hint that says how to record a key that a run moved to `dst` but could not record,
+/// because the lock was unwritable at that time (21). Both a collision under the locator and that
+/// failure itself include this hint (review 2026-11-23 C-21). `cakeys lock` verifies and records
+/// the key, but it does not record how the key was moved.
 pub(crate) fn unrecorded_hint(dst: &Target) -> String {
     format!(
         "If a run moved the key there but could not record it, `cakeys lock --spec {} --token {}` records it \
@@ -213,21 +220,23 @@ pub(crate) fn unrecorded_hint(dst: &Target) -> String {
     )
 }
 
-/// The creation template from the object's bytes: the class and type, the material, `CKA_TOKEN`,
-/// the target locator and the target spec's declared attributes, as the provider adjusts it.
+/// Returns the creation template built from the object's bytes: the class and type, the material,
+/// `CKA_TOKEN`, the target locator and the target spec's declared attributes, as the provider
+/// adjusts them.
 fn template(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Vec<Attribute>> {
     let material = public_object_attrs(dst.object, bytes).map_err(|e| prefixed(dst, e))?;
     let t = templates::object(dst.into(), to.policy_template(&dst.spec.attributes)?, Some(material))?;
     to.provider.adjusted(&Template::Object(dst.into()), t)
 }
 
-/// The public key's material from its canonical SPKI, in PKCS#11's encoding
+/// Returns the public key's material from its canonical SPKI, in PKCS#11's encoding
 /// ([`public_key_attrs`]).
 pub(crate) fn public_key(src: &Target, spki: &[u8]) -> Result<Vec<Attribute>> {
     public_key_attrs(src.object, spki).map_err(|e| prefixed(src, e))
 }
 
-/// `e`, its message led by the pair it is about, its rule and return value kept.
+/// Returns a `Conflict` or `Validation` error `e` with its message prefixed by the pair that it is
+/// about, and keeps the error's rule and return value. Other errors are returned unchanged.
 fn prefixed(t: &Target, e: KmError) -> KmError {
     match e {
         KmError::Conflict(_) | KmError::Validation(_) => e.prefixed(t),
@@ -235,7 +244,7 @@ fn prefixed(t: &Target, e: KmError) -> KmError {
     }
 }
 
-/// The one object of `t`'s class under its locator (verified just before).
+/// Returns the one object of `t`'s class under its locator, which the caller verified just before.
 fn one(tok: &Token, t: &Target) -> Result<ObjectHandle> {
     match tok.find(class_of(&t.object), &t.on_token.locator)?.as_slice() {
         [h] => Ok(*h),
@@ -247,7 +256,7 @@ fn one(tok: &Token, t: &Target) -> Result<ObjectHandle> {
     }
 }
 
-/// `CKA_VALUE` of `h`.
+/// Returns the `CKA_VALUE` of `h`.
 fn value(tok: &Token, h: ObjectHandle) -> Result<Vec<u8>> {
     let read = tok.raw().get_attributes(h, &[AttributeType::Value]);
     match read.map_err(|e| read_failed(&e))?.as_slice() {
@@ -256,8 +265,8 @@ fn value(tok: &Token, h: ObjectHandle) -> Result<Vec<u8>> {
     }
 }
 
-/// A `C_GetAttributeValue` that failed: unavailable (16), carrying the module's return value
-/// as every module call's error does (ISSUES.md Q3).
+/// Returns the error for a failed `C_GetAttributeValue`: `Unavailable` (16), with the module's
+/// return value attached, as on the error of every module call (ISSUES.md Q3).
 fn read_failed(e: &cryptoki::error::Error) -> KmError {
     KmError::Unavailable(format!("C_GetAttributeValue: {e}").into()).with_rv(rv_of(e))
 }
@@ -268,8 +277,8 @@ mod tests {
     use cryptoki::context::Function;
     use cryptoki::error::{Error as CkError, RvError};
 
-    /// A failed read of `CKA_VALUE` is 16 with the module's return value on it (review
-    /// public.rs F2), where the build can name it.
+    /// Checks that a failed read of `CKA_VALUE` is `Unavailable` (16), with the module's return
+    /// value attached where the build can name it (review public.rs F2).
     #[test]
     fn a_failed_value_read_carries_its_return_value() {
         let e = read_failed(&CkError::Pkcs11(RvError::DeviceError, Function::GetAttributeValue));
