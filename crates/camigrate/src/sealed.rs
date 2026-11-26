@@ -783,7 +783,7 @@ fn rsa_aes_key_wrap(tok: &Token) -> bool {
 
 /// The smallest RSA transport key, in bits: what it protects is no better guarded than it, and
 /// the planner's direct-OAEP limit (`plan::OAEP_DIRECT_MAX`) assumes at least this.
-pub(crate) const TRANSPORT_MIN_BITS: usize = 2048;
+pub(crate) const TRANSPORT_MIN_BITS: u64 = 2048;
 
 /// Refuse a transport key smaller than [`TRANSPORT_MIN_BITS`].
 ///
@@ -791,20 +791,13 @@ pub(crate) const TRANSPORT_MIN_BITS: usize = 2048;
 ///
 /// `Validation` for an SPKI that is no RSA key, or one too small.
 pub(crate) fn check_transport_size(spki: &[u8]) -> Result<()> {
-    let bits = bit_len(&rsa_parts(spki)?.0);
+    let bits = cakeys_core::id::modulus_bits(&rsa_parts(spki)?.0);
     if bits < TRANSPORT_MIN_BITS {
         return Err(KmError::Validation(
             format!("a transport key is an RSA key of at least {TRANSPORT_MIN_BITS} bits; this one has {bits}").into(),
         ));
     }
     Ok(())
-}
-
-/// The length in bits of the big-endian `n` (as [`rsa_parts`] trims it): its bytes count whole,
-/// so a 2041-bit modulus is not 2048 (review 2026-11-23 C-20).
-fn bit_len(n: &[u8]) -> usize {
-    let skip = n.iter().take_while(|b| **b == 0).count();
-    n.get(skip).map_or(0, |b| (n.len() - skip) * 8 - b.leading_zeros() as usize)
 }
 
 /// An RSA public key's modulus and public exponent, from its SPKI.
@@ -839,17 +832,16 @@ mod tests {
     use cryptoki::context::Function;
     use cryptoki::error::{Error as CkError, RvError};
 
-    /// A transport key's size is its modulus's bits, not its bytes times eight: a 2041- to
-    /// 2047-bit key is under the 2048 minimum (review 2026-11-23 C-20).
+    /// A transport key's size is its modulus's bits (`id::modulus_bits`), not its bytes times
+    /// eight: a 2041- to 2047-bit key is under the 2048 minimum (review 2026-11-23 C-20).
     #[test]
-    fn a_modulus_counts_its_bits() {
-        let modulus = |top: u8| [&[top][..], &[0xff; 255]].concat();
-        assert_eq!(bit_len(&modulus(0x80)), 2048);
-        assert_eq!(bit_len(&modulus(0x7f)), 2047);
-        assert_eq!(bit_len(&modulus(0x01)), 2041);
-        assert_eq!(bit_len(&[&[0, 0][..], &modulus(0x80)].concat()), 2048, "leading zero bytes count nothing");
-        assert_eq!(bit_len(&[0, 0]), 0);
-        assert_eq!(bit_len(&[]), 0);
+    fn a_transport_key_counts_its_bits() {
+        let spki = |top: u8| cakeys_core::id::rsa_spki(&[&[top][..], &[0xff; 255]].concat(), &[1, 0, 1]).unwrap();
+        check_transport_size(&spki(0x80)).unwrap();
+        for top in [0x7f, 0x01] {
+            let e = check_transport_size(&spki(top)).unwrap_err();
+            assert!(e.exit_code() == 17 && e.to_string().contains("this one has 204"), "{top:#x}: {e}");
+        }
     }
 
     /// A failed unwrap is 13 ("tampered with") only when the module says the blob is bad; a

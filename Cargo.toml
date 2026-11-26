@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "crates/core",
+  "crates/names",
   "crates/profile",
   "crates/pkcs11",
   "crates/ykcs11",
@@ -33,6 +34,7 @@ publish = false
 cakeys-core = { path = "crates/core", version = "0.1.0" }
 cakeys-pkcs11 = { path = "crates/pkcs11", version = "0.1.0" }
 cakeys-profile = { path = "crates/profile", version = "0.1.0" }
+cakeys-names = { path = "crates/names", version = "0.1.0" }
 cakeys-ykcs11 = { path = "crates/ykcs11", version = "0.1.0" }
 cakeys-tpm2-pkcs11 = { path = "crates/tpm2-pkcs11", version = "0.1.0" }
 cakeys-kmsp11 = { path = "crates/kmsp11", version = "0.1.0" }

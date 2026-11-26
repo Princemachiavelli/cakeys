@@ -89,7 +89,8 @@ class Ledger(unittest.TestCase):
         self.write(CERT, CAPTURED)
         self.write("code/a.rs", "fn a() {}\n")
         self.write("code/b.rs", "fn b() {}\n")
-        self.write("scripts/regen.sh", "caprobe probe --write-probes --rsa-max-bits 4096 --out x\n")
+        self.write("scripts/regen.sh", '# with --write-probes, as the verb runs\ncaprobe regenerate "$name" --out x\n')
+        self.write("code/verb.rs", "pub const REGENERATE_RSA_MAX_BITS: u32 = 4096;\n")
         self.write("Cargo.lock", CARGO_LOCK)
         self.write("flake.lock", json.dumps(FLAKE_LOCK, indent=2))
         # The code's hash as the check prints it for pasting, read from a run that lacks it.
@@ -110,7 +111,19 @@ class Ledger(unittest.TestCase):
         return re.search(r'code-hash = "(sha256:[0-9a-f]{64})"', out).group(1)
 
     def run_with(
-        self, *, module=None, code_hash=None, code='["@src"]', groups="", edits="", ack="", extra="", soft="", regen="", golden=None
+        self,
+        *,
+        module=None,
+        code_hash=None,
+        code='["@src"]',
+        groups="",
+        edits="",
+        ack="",
+        extra="",
+        soft="",
+        regen="",
+        golden=None,
+        verb="code/verb.rs",
     ):
         """The check over the tree, with the ledger's entries as given; by default every hash is
         the tree's, and the golden SOFT has its first record only."""
@@ -118,6 +131,7 @@ class Ledger(unittest.TestCase):
         ledger = f"""
 [regen]
 rsa-max-bits = 4096
+verb = "{verb}"
 sources = ["scripts/regen.sh"]
 
 [groups]
@@ -382,18 +396,35 @@ hash = "{captured}"
         self.assertEqual(code, 1, out)
         self.assertIn("so it records no run: drop ['code']", out)
 
-    def test_every_regeneration_probes_the_same_rsa_sizes(self):
-        # Review 2026-11-24 E-8: the cloud scripts passed no size and probed to caprobe's default.
-        for script in ("caprobe probe --write-probes --rsa-max-bits 16384\n", "caprobe probe --write-probes\n"):
+    def test_every_regeneration_is_the_one_verb(self):
+        # Review 2026-11-24 E-8: four hand-copied probe lines, two of which probed to caprobe's
+        # default size. Each source calls `caprobe regenerate` and passes none of its flags.
+        for script in (
+            "caprobe probe --write-probes --rsa-max-bits 4096 --out x\n",
+            'caprobe regenerate "$name" --rsa-max-bits 4096 --out x\n',
+            'km(&["regenerate", name, "--write-probes"])\n',
+            '# caprobe regenerate "$name"\ncaprobe probe --out x\n',
+        ):
             self.write("scripts/regen.sh", script)
             code, out = self.run_with()
             self.assertEqual(code, 1, out)
             self.assertIn("scripts/regen.sh", out)
-        self.write("scripts/regen.sh", 'km(&["probe", "--write-probes", "--rsa-max-bits", "4096"])\n')
+        self.write("scripts/regen.sh", 'km(&["regenerate", name, "--token", token, "--out", out])\n')
         self.assertEqual(self.run_with()[0], 0)
-        code, out = self.run_with(regen="caprobe probe --write-probes --rsa-max-bits 2048")
+        code, out = self.run_with(regen="caprobe probe --token t --write-probes --rsa-max-bits 4096 --out f")
         self.assertEqual(code, 1, out)
-        self.assertIn(f"{MODULE}: its regen probes RSA up to 2048, not 4096", out)
+        self.assertIn(f"{MODULE}: its regen passes --rsa-max-bits, which `caprobe regenerate` holds", out)
+        self.assertIn(f"{MODULE}: its regen passes --write-probes, which", out)
+        self.assertEqual(self.run_with(regen="caprobe regenerate m/1 --token t --out f")[0], 0)
+
+    def test_the_verb_states_the_ledgers_size(self):
+        for text in ("pub const REGENERATE_RSA_MAX_BITS: u32 = 16384;\n", "pub const OTHER: u32 = 4096;\n"):
+            self.write("code/verb.rs", text)
+            code, out = self.run_with(code_hash="sha256:none")
+            self.assertIn("[regen] verb code/verb.rs: `caprobe regenerate` probes RSA up to", out)
+        code, out = self.run_with(verb="code/gone.rs")
+        self.assertEqual(code, 1, out)
+        self.assertIn("[regen] verb code/gone.rs: no such file", out)
 
     def test_a_regen_command_names_files_that_exist(self):
         code, out = self.run_with(regen="scripts/gone.sh probe")

@@ -21,7 +21,17 @@ fn committed_profile_is_what_the_probe_observes(r: &Reference, test: &str) {
     let w = Workdir::new(test);
     w.write_config(&reference_tokens(&module, &w.dir));
     let (name, path) = r.profile;
-    assert_profile_conforms(|args| w.km(args), "ref", name, path, &w.dir.join("profile.toml"));
+    let scratch = w.dir.join("profile.toml");
+    assert_profile_conforms(|args| w.km(args), "ref", name, path, &scratch);
+    // `regenerate` names a profile in full: a family is refused before any token is touched,
+    // --accept or not, and nothing is written (review 2026-11-24 E-8; why, in caprobe's
+    // `regenerating_is_the_one_probe_every_regeneration_runs`).
+    let family = name.split('/').next().unwrap();
+    let before = std::fs::read(&scratch).unwrap();
+    let o = w.km(&["regenerate", family, "--token", "ref", "--out", scratch.to_str().unwrap(), "--accept"]);
+    assert_eq!(code(&o), 17, "{}", stderr(&o));
+    assert_eq!(std::fs::read(&scratch).unwrap(), before);
+    assert!(!w.dir.join("profile.toml.new").exists());
     // Against the other reference's profile, the drift is printed row by row and refused (15).
     let other = if r.provider == "softhsm" { KRYOPTIC.profile.0 } else { SOFTHSM.profile.0 };
     let drift = w.km(&["probe", "--token", "ref", "--diff", other]);

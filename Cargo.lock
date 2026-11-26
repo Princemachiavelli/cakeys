@@ -296,6 +296,7 @@ dependencies = [
  "base64",
  "bp256",
  "bp384",
+ "cakeys-names",
  "der",
  "ecdsa",
  "ed25519-dalek",
@@ -337,12 +338,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cakeys-names"
+version = "0.1.0"
+
+[[package]]
 name = "cakeys-pkcs11"
 version = "0.1.0"
 dependencies = [
  "aes",
  "aes-kw",
  "cakeys-core",
+ "cakeys-names",
  "cakeys-profile",
  "cmac",
  "cryptoki",
@@ -365,6 +371,7 @@ dependencies = [
 name = "cakeys-profile"
 version = "0.1.0"
 dependencies = [
+ "cakeys-names",
  "serde",
  "tempfile",
  "toml",
@@ -453,6 +460,7 @@ dependencies = [
  "base64",
  "cakeys-cli-common",
  "cakeys-core",
+ "cakeys-names",
  "cakeys-pkcs11",
  "cakeys-profile",
  "clap",

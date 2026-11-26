@@ -11,22 +11,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The curves cakeys names (crates/core/src/id.rs's vocabulary, not spec constants: pkcs11t.h
-/// carries no curve names), so curve queries validate against the same spellings as keys.toml.
-/// The Montgomery curves (`CKK_EC_MONTGOMERY`, PKCS#11 3.0's `curve25519`/`curve448` names) are
-/// probed and queried, not yet keys.toml objects: id.rs has no Montgomery key type.
-pub const CURVES: [&str; 10] = [
-    "secp256r1",
-    "secp384r1",
-    "secp521r1",
-    "secp256k1",
-    "brainpoolP256r1",
-    "brainpoolP384r1",
-    "edwards25519",
-    "edwards448",
-    "curve25519",
-    "curve448",
-];
+/// The curves cakeys names (`cakeys_names::Curve`, not spec constants: pkcs11t.h carries no
+/// curve names), so curve queries validate against the same spellings as keys.toml. The
+/// Montgomery curves (`CKK_EC_MONTGOMERY`, PKCS#11 3.0's `curve25519`/`curve448` names) are
+/// probed and queried, not yet keys.toml objects: core has no Montgomery key type.
+pub const CURVES: [&str; 10] = cakeys_names::Curve::NAMES;
 
 /// One member group of a baseline class.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]

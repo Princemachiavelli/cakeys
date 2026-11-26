@@ -133,7 +133,9 @@ named! {
 }
 
 named! {
-    /// A proof of possession a `prove.*` row names, by its `binding` (`cakeys_core::config::Binding`).
+    /// A proof of possession a `prove.*` row names, by its `binding` (`cakeys_core::config::Binding`):
+    /// the names table's proofs (`cakeys_names::Proof`), kept as read when another
+    /// (`proofs_are_the_names_tables`).
     Proof {
         PopSign = "pop-sign",
         PopSignPin = "pop-sign-pin",
@@ -172,5 +174,13 @@ mod tests {
         let names: Vec<&str> = kinds.iter().map(KeyKind::name).collect();
         assert_eq!(names, ["CKK_AES", "CKK_EC", "CKK_EC_EDWARDS", "CKK_FUTURE", "CKK_RSA"]);
         assert_eq!(Proof::from("pop-ecdh").to_string(), "pop-ecdh");
+    }
+
+    /// The proofs a row knows are the names table's, in its order: a proof added to either
+    /// fails here until the other has it, so a `prove.*` row core asks about is never read as
+    /// another cakeys's name.
+    #[test]
+    fn proofs_are_the_names_tables() {
+        assert_eq!(Proof::NAMES, cakeys_names::Proof::NAMES.as_slice());
     }
 }

@@ -16,6 +16,7 @@ $ caprobe supports [<CKM_*|CKK_*|CKP_*|curve>] (--profile <p> | --token <t>) [--
     [--bits <n>] [--class pq|hmac|key-wrap|oaep] [--oaep] [--profiles <dir>]
 $ caprobe caps --token <t>
 $ caprobe probe --token <t> [--write-probes] [--out <file> [--accept]] [--diff <profile>] [--name <profile>] [--profiles <dir>]
+$ caprobe regenerate <profile> --token <t> --out <file> [--accept] [--profiles <dir>]
 ```
 
 - `supports` asks the profiles alone; no token is touched, and `--profile` needs no keys.toml.
@@ -30,12 +31,19 @@ $ caprobe probe --token <t> [--write-probes] [--out <file> [--accept]] [--diff <
   JSON.
 - `probe` generates a token's profile (below). With `--diff`, any difference in the observable
   rows is printed and the exit is 15.
+- `regenerate` is the one command that regenerates a committed module profile: `probe` with
+  the write probes, RSA up to 4096 bits (`REGENERATE_RSA_MAX_BITS`), `--name <profile>`, a
+  `--diff` against that profile when the set has it, and `--out`, written as `probe --out` writes
+  (`cakeys_profile::regenerate::write`: beside a file it differs from, as `<file>.new`, unless
+  `--accept`). `<profile>` is a full name
+  (`softhsm/2.7`), never a family (17). Every script and the conformance tests call it, so no
+  copy of its flags can drift (review 2026-11-24 E-8; `checks.ledger` holds them to it).
 
 Other exit codes are the shared ones ([CAKEYS.md](CAKEYS.md#exit-codes)); 17 includes a write
 probe on a token not marked scratch.
 
-Regenerating the committed profiles: `profiles/LEDGER.toml` names the command for each
-(["The ledger"](#the-ledger)). `scripts/regen-profiles.sh` sets up the three reference tokens as the check phase does and
+Regenerating the committed profiles: `caprobe regenerate`, run where `profiles/LEDGER.toml`
+says for each (["The ledger"](#the-ledger)). `scripts/regen-profiles.sh` sets up the three reference tokens as the check phase does and
 regenerates their files; the others take the device or the cloud. Only the Nix-built binary
 carries the patched cryptoki the probe needs.
 
@@ -289,8 +297,8 @@ generated, never edited, and pinned like the baseline:
 - **D10.** A probe measures a module and its hardware together, and nothing in PKCS#11 says whose
   refusal is whose. So an observed profile is a pair, named module first
   (`tpm2-pkcs11/1.10+swtpm`; software tokens keep plain names). A token whose hardware has no
-  pair yet resolves the nearest one for what the module advertises only: generation and wrapping
-  answer unknown. Pairs rank by a hardware layer the config names, then model and firmware.
+  pair yet resolves the nearest one for what the module advertises and what this repo claims of
+  the module (`move.*`) only: every measured row answers unknown. Pairs rank by a hardware layer the config names, then model and firmware.
   A module version no pair of its family records (a client library update) is no error either:
   the nearest recorded version stands in the same way, module rows only, with a note naming
   `caprobe probe`. No profile is ever required to open a token.
@@ -311,8 +319,8 @@ generated, never edited, and pinned like the baseline:
   (refused with 17 otherwise): key pairs per baseline curve, and per RSA size from 512 to 16384
   bits (512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384), whatever the module
   reports — what it reports is a claim, `[reported."CKK_RSA"]`, and cryptoki the only limit;
-  `--rsa-max-bits` stops earlier. Every regeneration passes 4096 (`[regen]` in
-  `profiles/LEDGER.toml`, which `checks.ledger` holds each script to): 16384 bits take a
+  `--rsa-max-bits` stops earlier. Every regeneration stops at 4096, `caprobe regenerate`'s size
+  (`[regen]` in `profiles/LEDGER.toml`, which `checks.ledger` holds the verb and each script to): 16384 bits take a
   software token over a minute, so the committed profiles stop there, and the gate answers
   unknown above. The cloud profiles keep rows to 16384 from before that rule (review 2026-11-24
   E-8) until their next probe. A curve family whose generation mechanism the module does not list is tried
@@ -411,8 +419,10 @@ entry as its parsed value. The check fails when:
 - a file is not its run's output and no hand-edit row says so;
 - the code on its path changed since the run and no `[artifact.acknowledged]` names that code's
   hash, with who, why and what still needs a run on the hardware (`reprobe`);
-- a module profile has no entry, a glob names no file, or a regeneration passes another
-  `--rsa-max-bits` than `[regen]`.
+- a module profile has no entry, or a glob names no file;
+- a regeneration is not `caprobe regenerate`: a `[regen]` source that does not call it or
+  passes its flags (`--write-probes`, `--rsa-max-bits`) itself, a `regen` that names them, or a
+  verb whose size is not `[regen] rsa-max-bits`.
 
 Acknowledging is the reviewable act: the diff carries the new code hash and the reason, and the
 check reports the file `STALE` until the next run. After a run on the hardware: set

@@ -94,8 +94,8 @@ fn ec_lifecycle() {
     assert_eq!(e.code(&del), 0, "nothing was created, so absent is success again");
 }
 
-/// D3: `gc` prints lock entries whose spec or token is gone from keys.toml, and removes exactly
-/// what it printed with `--apply`. Live objects keep their ids.
+/// D3: `gc --dry-run` prints lock entries whose spec or token is gone from keys.toml, and `gc`
+/// removes exactly what it printed. Live objects keep their ids.
 #[test]
 fn gc_prints_then_removes_stale_entries() {
     let Some(e) = env("gc") else { return };
@@ -105,8 +105,8 @@ fn gc_prints_then_removes_stale_entries() {
     let id = e.locked_id("signing", "rfc7093m4");
     let key = || e.lock()["realisations"]["signing-soft"]["ref"]["observation"].as_str().unwrap().to_owned();
 
-    // Nothing stale: prints nothing, and --apply writes nothing.
-    for args in [&["gc"][..], &["gc"][..]] {
+    // Nothing stale: prints nothing, and gc writes nothing.
+    for args in [&["gc", "--dry-run"][..], &["gc"][..]] {
         let o = e.km(args);
         assert_eq!(code(&o), 0, "{args:?}");
         assert_eq!(stdout(&o), "");
@@ -115,14 +115,14 @@ fn gc_prints_then_removes_stale_entries() {
     assert_eq!(e.locked_id("signing", "rfc7093m4"), id);
 
     // The spec is gone: its realisation is stale, printed as the table name, and so is the
-    // observation only it named; --apply removes both but keeps the object's ids (the material may
+    // observation only it named; gc removes both but keeps the object's ids (the material may
     // live on elsewhere).
     e.config(object);
     let stale = format!("realisations.signing-soft.ref\nobservations.\"{}\"", key());
     let o = e.km(&["gc", "--dry-run"]);
     assert_eq!(code(&o), 0);
     assert_eq!(stdout(&o), stale);
-    assert!(e.lock()["realisations"]["signing-soft"]["ref"].is_table(), "not removed before --apply");
+    assert!(e.lock()["realisations"]["signing-soft"]["ref"].is_table(), "not removed by --dry-run");
     let o = e.km(&["gc"]);
     assert_eq!(code(&o), 22);
     assert_eq!(stdout(&o), stale);
@@ -146,7 +146,7 @@ fn gc_prints_then_removes_stale_entries() {
     // The object too is gone from keys.toml: its record is collected.
     e.config("");
     assert_eq!(stdout(&e.km(&["gc", "--dry-run"])), "objects.signing");
-    assert!(e.lock()["objects"]["signing"].is_table(), "not removed before --apply");
+    assert!(e.lock()["objects"]["signing"].is_table(), "not removed by --dry-run");
     assert_eq!(e.code(&["gc"]), 22);
     assert!(e.lock().get("objects").and_then(|o| o.get("signing")).is_none());
     assert_eq!(stdout(&e.km(&["gc", "--dry-run"])), "");
