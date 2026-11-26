@@ -204,7 +204,10 @@ impl Env {
         if reached.is_empty() && !args.contains(&"--token") {
             reached = self.refs.iter().filter(|t| t.plant != Plant::Shared).collect();
         }
-        let tokens: Vec<TokenView> = reached.into_iter().map(Ref::view).collect();
+        // The run's own reference stands for its token: its module and environment are the
+        // ones it reaches the token through (a fault shim's forwarding, say).
+        let tokens: Vec<TokenView> =
+            reached.into_iter().map(|t| if t.name == r.name { r } else { t }).map(Ref::view).collect();
         // What must not change, each with its name: the files' bytes and each token's objects.
         let before = snapshot(&files, &tokens);
         let json: &[&str] = if args.contains(&"--json") { &[] } else { &["--json"] };
