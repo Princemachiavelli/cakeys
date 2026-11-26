@@ -1015,8 +1015,10 @@ fn activate_with_ek(
     out
 }
 
+/// The unit tests of this module. The helpers `blob_of` and `certify_statement` are `pub(crate)`
+/// because the tests in vendor.rs use them to build certify statements too.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tss_esapi::structures::{EccParameter, EccSignature, PublicKeyRsa, RsaSignature};
 
@@ -1154,7 +1156,7 @@ mod tests {
     }
 
     /// The fixture's P-256 public blob with its `unique` point replaced by `key`'s.
-    fn blob_of(key: &p256::ecdsa::SigningKey) -> Vec<u8> {
+    pub(crate) fn blob_of(key: &p256::ecdsa::SigningKey) -> Vec<u8> {
         use p256::pkcs8::EncodePublicKey;
         let spki = key.verifying_key().to_public_key_der().unwrap();
         let point = &spki.as_bytes()[spki.as_bytes().len() - 64..];
@@ -1167,7 +1169,12 @@ mod tests {
     }
 
     /// A `TPMS_ATTEST` certifying `name`/`qn`, signed by `ak` as the TPM would.
-    fn certify_statement(ak: &p256::ecdsa::SigningKey, ak_qn: &[u8], name: &[u8], qn: &[u8]) -> (Attest, Signature) {
+    pub(crate) fn certify_statement(
+        ak: &p256::ecdsa::SigningKey,
+        ak_qn: &[u8],
+        name: &[u8],
+        qn: &[u8],
+    ) -> (Attest, Signature) {
         use p256::ecdsa::signature::Signer;
         let tpm2b = |b: &[u8]| [&u16::try_from(b.len()).unwrap().to_be_bytes()[..], b].concat();
         let bytes = [

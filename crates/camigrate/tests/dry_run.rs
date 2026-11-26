@@ -1118,9 +1118,10 @@ fn export_bundle(e: &Env, soft: &Ref, objects: &[&str]) -> std::path::PathBuf {
 }
 
 /// One bundle per export (docs/CAMIGRATE.md D5): every key, one shared KEK. Each key imports on its
-/// own: one that fails leaves nothing while the others are imported and recorded, and the run
-/// exits with the failure. Named objects export all or nothing: one that cannot move writes no
-/// bundle; without names, what cannot move is warned about and left out.
+/// own: one that fails leaves nothing while the others are imported and recorded. Because the
+/// run wrote the lock, it exits 22, and the failed key's row shows the failure's code (review
+/// 2026-11-24 L5). Named objects export all or nothing: one that cannot move writes no bundle;
+/// without names, what cannot move is warned about and left out.
 #[test]
 fn bundles_carry_every_key_of_an_export() {
     let Some(e) = env("multi-bundles") else { return };
@@ -1140,14 +1141,17 @@ fn bundles_carry_every_key_of_an_export() {
     let o = e.km(kry, &["import", "--to", "kryoptic", "--in", both.to_str().unwrap(), "--dry-run"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(empty("xb-ek1") && empty("xb-sk1"), "the dry run imported");
-    // Each key on its own: with sk1's label altered (10), ek1 still imports and is recorded,
-    // sk1 leaves nothing, and the run exits with sk1's failure.
+    // Each key is imported on its own. With the commitment label of sk1 altered, ek1 still
+    // imports and is recorded, sk1 fails with 10 and leaves nothing, and the run exits 22
+    // because it wrote the lock for ek1. The row of sk1 shows its exit code 10.
     let mut altered = b.clone();
     altered["keys"][1]["commitmentLabel"] = toml::Value::String("another label".into());
     let path = e.dir.join("partial.bundle.toml");
     std::fs::write(&path, toml::to_string(&altered).unwrap()).unwrap();
     let o = import(&path);
-    assert_eq!(code(&o), 10, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
+    let exits: Vec<_> = state::rows(&o).iter().map(|r| (r.object.clone(), r.exit)).collect();
+    assert_eq!(exits, [("ek1".to_owned(), 0), ("sk1".to_owned(), 10)], "{}", stderr(&o));
     assert!(empty("xb-sk1"), "the failed key left objects");
     let lock: toml::Value = toml::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
     assert!(lock["realisations"]["ek1-kry"].get("kryoptic").is_some(), "the good key was not recorded");

@@ -360,9 +360,11 @@ impl Tool for Moves {
         .to_owned()
     }
 
-    /// A move or an import writes the lock (22); an export and a dry run do not (0).
+    /// A move or an import writes the lock (22); an export and a dry run do not (0). The verbs
+    /// whose names start with "migrate" and do not end with "--dry-run" are moves.
     fn honest_exit(&self, _table: &Table, verb: &str, _object: &str) -> i32 {
-        if matches!(verb, "migrate" | "import") { 22 } else { 0 }
+        let moves = verb.starts_with("migrate") && !verb.ends_with("--dry-run");
+        if moves || verb == "import" { 22 } else { 0 }
     }
 
     /// 22 exactly when the lock changed, and a dry run changes nothing.

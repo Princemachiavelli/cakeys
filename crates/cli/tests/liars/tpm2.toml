@@ -29,7 +29,9 @@ class = "private" # locked, also on tpm-b by spec ec-sign-b: a lock compares and
 [objects.ec-adopt]
 token = "tpm"
 class = "private"
-# not locked: an honest lock pins it, a refused one writes nothing
+# not locked, and also placed on tpm-b by the spec ec-adopt-b. A lock without a fault pins it, a
+# refused lock writes nothing, and a lock of both pairs whose second pair is refused writes the
+# first pair's entry
 honest = 22
 
 [objects.aes]
@@ -44,9 +46,9 @@ token = "tpm-ek"
 # tpm-ek's ekCertificate, which the module's certify cannot chain the AK to
 honest = 15
 
-# ── Verbs. `lock --spec --spec` locks ec-sign on tpm, then spec ec-sign-b of the same object on
-# tpm-b: two certifies of one key in one process, so the shim holds the first statement when the
-# second is asked for.
+# ── Verbs. `lock --spec --spec` locks the object (ec-sign or ec-adopt) on tpm and then its spec
+# `<name>-b` on tpm-b. This makes two certify calls for one key in one process, so the shim still
+# has the first statement when the second one is requested.
 
 [verbs.lock]
 args = ["lock", "--spec", "{spec}", "--token", "{token}"]
@@ -137,6 +139,18 @@ lies = ["forge.certify.replay"]
 verbs = ["lock --spec --spec"]
 objects = ["ec-sign"]
 expect = { exit = 13 }
+
+# A replayed nonce after a write: the first statement for ec-adopt is genuine and its lock entry
+# is recorded, and the shim returns that same statement again for ec-adopt-b. The run exits 22
+# because it wrote the lock, and the second row shows 13 (before review 2026-11-24 L5, the run
+# exited 13).
+[[block]]
+lies = ["forge.certify.replay"]
+verbs = ["lock --spec --spec"]
+objects = ["ec-adopt"]
+expect = { exit = 22, refused = 13, changed = [
+  "lock",
+], why = "the first pair's statement is genuine and its lock entry is recorded before the replayed statement of the second pair is refused" }
 
 # The Name (the attested Name, the reported public area's).
 [[block]]
