@@ -9,7 +9,7 @@
 use cakeys_core::config::{Lock, Origin};
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::types::ObjectClass as Class;
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::token::{Occupied, class_of, public_key_attrs, public_object_attrs, rv_of};
 use cakeys_pkcs11::{Template, Token, Topic, templates};
@@ -59,8 +59,12 @@ pub(crate) fn material(src: &Target, from: &Token, lock: &Lock, notes: &mut Note
     match src.object.class {
         Class::Certificate => {
             let der = value(from, h)?;
-            x509_cert::Certificate::from_der(&der)
-                .map_err(|e| KmError::Conflict(format!("{src}: CKA_VALUE is not an X.509 certificate: {e}").into()))?;
+            x509_cert::Certificate::from_der(&der).map_err(|e| {
+                KmError::Conflict(Reason::check(
+                    Check::CertificateDecodes,
+                    format!("{src}: CKA_VALUE is not an X.509 certificate: {e}"),
+                ))
+            })?;
             Ok(der)
         }
         Class::Data => value(from, h),
@@ -184,17 +188,16 @@ pub(crate) fn preflight(dst: &Target, to: &Token, bytes: &[u8]) -> Result<Option
 pub(crate) fn free_locator(dst: &Target, to: &Token, spki: Option<&[u8]>) -> Result<Occupied> {
     let occupied = to.occupied(&dst.object, &dst.on_token.locator, spki)?;
     if occupied.colliding > 0 {
-        return Err(KmError::Conflict(
+        return Err(KmError::Conflict(Reason::rule(
+            ops::Rule::LocatorFree,
             format!(
                 "{} object(s) a {} would collide with already sit under the locator of {dst}, and the lock records \
                  no realisation there; refusing to import over them. {}",
                 occupied.colliding,
                 dst.object.class,
                 unrecorded_hint(dst)
-            )
-            .into(),
-        )
-        .with_rule(ops::Rule::LocatorFree.name()));
+            ),
+        )));
     }
     Ok(occupied)
 }
@@ -237,7 +240,10 @@ fn one(tok: &Token, t: &Target) -> Result<ObjectHandle> {
     match tok.find(class_of(&t.object), &t.on_token.locator)?.as_slice() {
         [h] => Ok(*h),
         [] => Err(KmError::NotFound(t.to_string().into())),
-        _ => Err(KmError::Ambiguous(format!("{t}: several objects under the locator").into())),
+        _ => Err(KmError::Ambiguous(Reason::check(
+            Check::LocatorUnique,
+            format!("{t}: several objects under the locator"),
+        ))),
     }
 }
 

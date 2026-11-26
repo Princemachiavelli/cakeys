@@ -333,7 +333,7 @@ fn new_lock() -> Lock {
 }
 
 /// What a refused path reported: its exit code and the rule it named.
-fn refused<T>(what: &str, r: cakeys_core::Result<T>) -> (u8, Option<&'static str>) {
+fn refused<T>(what: &str, r: cakeys_core::Result<T>) -> (u8, Option<Rule>) {
     match r {
         Ok(_) => panic!("{what}: not refused"),
         Err(e) => (e.exit_code(), e.rule()),
@@ -349,7 +349,7 @@ fn refused<T>(what: &str, r: cakeys_core::Result<T>) -> (u8, Option<&'static str
 #[test]
 fn k1_placement_comes_before_create_on_every_path() {
     let Some((module, _token)) = softhsm("k1_placement_comes_before_create_on_every_path") else { return };
-    let want = (17, Some(Rule::Placement.name()));
+    let want = (17, Some(Rule::Placement));
     for p in providers() {
         let name = spied(p.as_ref());
         let cfg = config("k1", &module, name, &label("k1", name));
@@ -780,7 +780,7 @@ fn k5_a_destroy_the_module_did_not_do_keeps_the_lock() {
         let e = ops::delete(&t, &tok, &mut lock, None, false, &mut notes).err();
         let said = e.as_ref().map(ToString::to_string).unwrap_or_default();
         match e.map(|e| (e.exit_code(), e.rule())) {
-            Some((16, Some(rule))) if rule == Rule::DeleteKept.name() => kept += 1,
+            Some((16, Some(Rule::DeleteKept))) => kept += 1,
             Some((15 | 17, _)) => assert!(!spy.asked().contains(&Hook::Destroy), "{name}: refused after destroying"),
             other => panic!("{name}: {other:?}: {said}"),
         }
@@ -862,9 +862,9 @@ fn what_a_provider_only_says_changes_no_outcome() {
     for p in providers() {
         let name = p.name();
         for about in [Topic::Generate, Topic::Create, Topic::Mechanism] {
-            let e = KmError::Unsupported("refused".into()).with_rule(Rule::Placement.name());
+            let e = KmError::Unsupported("refused".into()).with_rule(Rule::Placement);
             let hinted = p.hinted(about, e);
-            assert_eq!((hinted.exit_code(), hinted.rule()), (15, Some(Rule::Placement.name())), "{name}: {about:?}");
+            assert_eq!((hinted.exit_code(), hinted.rule()), (15, Some(Rule::Placement)), "{name}: {about:?}");
             assert!(hinted.to_string().starts_with("unsupported: refused"), "{name}: {hinted}");
             let other = p.hinted(about, KmError::Validation("v".into()));
             assert_eq!(other.to_string(), KmError::Validation("v".into()).to_string(), "{name}");

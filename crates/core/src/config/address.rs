@@ -2,7 +2,8 @@
 //! keys.toml (review 2026-11-23 A-7).
 
 use super::Config;
-use crate::error::{KmError, Result};
+use crate::Check;
+use crate::error::{KmError, Reason, Result};
 
 impl Config {
     /// The (spec, token) pairs a verb's address selects (`[<object>] [--spec] [--token]`,
@@ -64,9 +65,10 @@ impl Config {
                 )
                 .into(),
             )),
-            _ => Err(KmError::Ambiguous(
-                format!("{what} has several (spec, token) pairs {pairs:?}; pass --spec/--token").into(),
-            )),
+            _ => Err(KmError::Ambiguous(Reason::check(
+                Check::AddressUnique,
+                format!("{what} has several (spec, token) pairs {pairs:?}; pass --spec/--token"),
+            ))),
         }
     }
 }

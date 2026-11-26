@@ -100,28 +100,37 @@ pub(crate) struct Plan {
     pub refused: Option<Refused>,
 }
 
-/// The exit code and the rule of a refusal that blocked a plan ([`Plan::refuse`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Refused {
-    exit: u8,
-    rule: Option<&'static str>,
+/// The refusal that blocked a plan ([`Plan::refuse`]).
+#[derive(Debug, Clone)]
+pub(crate) struct Refused(KmError);
+
+/// Two refusals are the same when their exit code, rule, check and message are.
+impl PartialEq for Refused {
+    fn eq(&self, other: &Refused) -> bool {
+        let said = |e: &KmError| (e.exit_code(), e.rule(), e.check(), e.to_string());
+        said(&self.0) == said(&other.0)
+    }
 }
 
+impl Eq for Refused {}
+
 impl Refused {
-    /// `text` as the error the run ends with: of this refusal's exit code and rule. A plan's
-    /// rules refuse with these codes, and with 15 otherwise.
+    /// `text` as the error the run ends with: this refusal's exit code, rule and check, and no
+    /// return value. A plan's rules refuse with 13, 14, 16 and 17, and a refusal of another code
+    /// ends the run with 15.
     pub(crate) fn error(self, text: String) -> KmError {
-        let m = text.into();
-        let e = match self.exit {
-            13 => KmError::Conflict(m),
-            14 => KmError::PreconditionFailed(m),
-            16 => KmError::Unavailable(m),
-            17 => KmError::Validation(m),
-            _ => KmError::Unsupported(m),
+        let Refused(e) = self;
+        if matches!(e.exit_code(), 13 | 14 | 16 | 17) {
+            return e.with_text(text).with_rv(None);
+        }
+        let unsupported = KmError::Unsupported(text.into());
+        let unsupported = match e.rule() {
+            Some(rule) => unsupported.with_rule(rule),
+            None => unsupported,
         };
-        match self.rule {
-            Some(rule) => e.with_rule(rule),
-            None => e,
+        match e.check() {
+            Some(check) => unsupported.with_check(check),
+            None => unsupported,
         }
     }
 }
@@ -146,7 +155,7 @@ impl Plan {
     /// ends with `e`'s exit code and rule ([`Self::refused`]).
     pub(crate) fn refuse(&mut self, e: KmError) {
         if self.ready {
-            self.refused = Some(Refused { exit: e.exit_code(), rule: e.rule() });
+            self.refused = Some(Refused(e.clone()));
         }
         self.block(crate::trust::reason(e));
     }

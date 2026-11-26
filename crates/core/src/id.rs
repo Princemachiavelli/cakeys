@@ -3,8 +3,9 @@
 //! Public keys are decoded and re-encoded by the `RustCrypto` crates (`p256`, `p384`, `p521`,
 //! `ed25519-dalek`, `ed448`, `rsa`); this module only chooses which one by curve or OID.
 
+use crate::Check;
 use crate::config::{ObjectCfg, SpecCfg};
-use crate::error::{KmError, Result};
+use crate::error::{KmError, Reason, Result};
 use crate::types::KeyType;
 use base64::Engine;
 use der::{Decode, Encode, asn1::OctetStringRef};
@@ -637,8 +638,9 @@ impl Curve {
     }
 
     fn spki_from_raw(self, point: &[u8]) -> Result<Vec<u8>> {
-        let bad =
-            |e: &dyn std::fmt::Display| KmError::Conflict(format!("CKA_EC_POINT is not a {self:?} point: {e}").into());
+        let bad = |e: &dyn std::fmt::Display| {
+            KmError::Conflict(Reason::check(Check::PublicKeyType, format!("CKA_EC_POINT is not a {self:?} point: {e}")))
+        };
         match self {
             Curve::P256 => encode(&p256::PublicKey::from_sec1_bytes(point).map_err(|e| bad(&e))?),
             Curve::P384 => encode(&p384::PublicKey::from_sec1_bytes(point).map_err(|e| bad(&e))?),
@@ -706,8 +708,8 @@ pub fn rsa_of_spki(spki: &[u8]) -> std::result::Result<rsa::PublicKey, String> {
 ///
 /// `Conflict` if the values are not an RSA public key at all (`rsa_key`).
 pub fn rsa_spki(modulus: &[u8], exponent: &[u8]) -> Result<Vec<u8>> {
-    let key =
-        rsa_key(modulus, exponent).map_err(|e| KmError::Conflict(format!("invalid RSA public key: {e}").into()))?;
+    let key = rsa_key(modulus, exponent)
+        .map_err(|e| KmError::Conflict(Reason::check(Check::PublicKeyType, format!("invalid RSA public key: {e}"))))?;
     encode(&key)
 }
 
@@ -739,20 +741,24 @@ fn rsa_key(modulus: &[u8], exponent: &[u8]) -> std::result::Result<rsa::PublicKe
 /// `Conflict` if the value is not a parsable X.509 certificate, or its subject key is one
 /// `spki_canonical` refuses (also `Unsupported` in that case).
 pub fn cert_spki(cert: &[u8]) -> Result<Vec<u8>> {
-    let cert = x509_cert::Certificate::from_der(cert)
-        .map_err(|e| KmError::Conflict(format!("CKA_VALUE is not an X.509 certificate: {e}").into()))?;
+    let cert = x509_cert::Certificate::from_der(cert).map_err(|e| {
+        KmError::Conflict(Reason::check(
+            Check::CertificateDecodes,
+            format!("CKA_VALUE is not an X.509 certificate: {e}"),
+        ))
+    })?;
     let spki = cert
         .tbs_certificate()
         .subject_public_key_info()
         .to_der()
-        .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}").into()))?;
+        .map_err(|e| KmError::Conflict(Reason::check(Check::CertificateDecodes, format!("encoding SPKI: {e}"))))?;
     spki_canonical(&spki)
 }
 
 fn encode(key: &impl EncodePublicKey) -> Result<Vec<u8>> {
     Ok(key
         .to_public_key_der()
-        .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}").into()))?
+        .map_err(|e| KmError::Conflict(Reason::check(Check::PublicKeyType, format!("encoding SPKI: {e}"))))?
         .as_bytes()
         .to_vec())
 }

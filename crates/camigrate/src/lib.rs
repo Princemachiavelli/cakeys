@@ -20,12 +20,12 @@ mod trust;
 use anyhow::Context as _;
 use bundle::Bundle;
 use cakeys_cli_common::{Opener, print, read_lock};
-use cakeys_core::KmError;
 use cakeys_core::config::{
     ALLOW_NIX_STORE_KEYS, Config, KeyOrigin, Lock, Origin, in_nix_build, save_lock, write_whole,
 };
 use cakeys_core::migrate::{Exposure, Method};
 use cakeys_core::types::ObjectClass as Class;
+use cakeys_core::{Check, KmError};
 use cakeys_pkcs11::ops::{Notes, Target};
 use cakeys_pkcs11::token::Access;
 use cakeys_pkcs11::{Registry, Token};
@@ -621,11 +621,10 @@ impl Tally {
     /// failure.
     fn fail(&mut self, of: Of<'_>, what: impl std::fmt::Display, err: KmError, notes: &mut Notes) {
         notes.say(format!("{what}: {err}"));
-        let mut row = of.row("failed").refused_by(Some(&err));
-        // 10 names no rule of its own: the material is not the one the lock pins.
-        if matches!(err, KmError::HashMismatch { .. }) && row.rule.is_none() {
-            row.rule = Some(sealed::IDENTITY.to_owned());
-        }
+        // A mismatch (10, `identity.material`) is the check that only the run decides, by the
+        // name that the dry run defers it by.
+        let err = if err.check() == Some(Check::IdentityMaterial) { err.with_check(sealed::IDENTITY) } else { err };
+        let row = of.row("failed").refused_by(Some(&err));
         self.results.push(cakeys_cli_common::Outcome { error: Some(err.to_string()), ..row });
         self.failed.get_or_insert(err);
     }
@@ -847,8 +846,8 @@ impl Run<'_> {
                     ));
                     // A blob is unwrapped, and what it holds known, only by the import itself.
                     let sealed: &[(&str, &str)] = &[
-                        (sealed::UNWRAPS, "only the target's unwrap shows the blob is intact"),
-                        (sealed::IDENTITY, "only the unwrapped key shows it is the one the lock pins"),
+                        (sealed::UNWRAPS.name(), "only the target's unwrap shows the blob is intact"),
+                        (sealed::IDENTITY.name(), "only the unwrapped key shows it is the one the lock pins"),
                     ];
                     tally.ready(Of::pair(&dst), &e.method, if e.method == public { &[] } else { sealed });
                 }
@@ -1143,7 +1142,7 @@ fn needs_login(cfg: &Config, token: &str) -> cakeys_core::Result<()> {
             )
             .into(),
         )
-        .with_rule(cakeys_pkcs11::ops::Rule::NeedsLogin.name())),
+        .with_rule(cakeys_pkcs11::ops::Rule::NeedsLogin)),
         _ => Ok(()),
     }
 }
@@ -1158,6 +1157,40 @@ mod tests {
         assert!(
             !cakeys_pkcs11::binding::patched() || cfg!(feature = "kwp"),
             "the patched cryptoki is linked without camigrate's `kwp` feature (nix/package-common.nix features)"
+        );
+    }
+
+    /// A failed pair's row names the check that refused it where no rule did (review 2026-11-24
+    /// L4b: migrate's rows of exit 12 named nothing), and a material that is not the locked one
+    /// (10) names `import.identity`, the check that a dry run defers it by.
+    #[test]
+    fn a_refused_row_names_its_check() {
+        use cakeys_core::{Check, KmError, Reason};
+        let mut tally = super::Tally::default();
+        let mut notes = cakeys_core::reconcile::Notes::default();
+        let of = super::Of::object("o", "t");
+        let several = KmError::Ambiguous(Reason::check(Check::LocatorUnique, "2 objects under the locator"));
+        tally.fail(of, "o", several, &mut notes);
+        let mismatch = KmError::HashMismatch {
+            what: "o".into(),
+            expected: "sha256-a".into(),
+            got: "sha256-b".into(),
+            check: Check::IdentityMaterial,
+        };
+        tally.fail(of, "o", mismatch, &mut notes);
+        let transport = KmError::HashMismatch {
+            what: "transport key".into(),
+            expected: "sha256-a".into(),
+            got: "sha256-b".into(),
+            check: Check::ImportTransport,
+        };
+        tally.fail(of, "o", transport, &mut notes);
+        let rows: Vec<(u8, Option<&str>)> = tally.results.iter().map(|r| (r.exit, r.rule.as_deref())).collect();
+        assert_eq!(
+            rows,
+            [(12, Some("locator.unique")), (10, Some("import.identity")), (10, Some("import.transport"))],
+            "{:?}",
+            tally.results
         );
     }
 

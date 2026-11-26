@@ -103,7 +103,12 @@ impl Token {
                     Some(spki) => spki?,
                     None => self.certificate_spki(loc)?,
                 },
-                _ => return Err(KmError::Ambiguous("several public key objects share the locator".into())),
+                _ => {
+                    return Err(KmError::Ambiguous(Reason::check(
+                        Check::LocatorUnique,
+                        "several public key objects share the locator",
+                    )));
+                }
             },
         };
         self.cross_check(h, &spki)?;
@@ -133,16 +138,16 @@ impl Token {
             return Ok(());
         }
         let name = |c: Option<Curve>| c.map_or("RSA", Curve::name);
-        Err(KmError::Conflict(
+        Err(KmError::Conflict(Reason::check(
+            Check::PublicKeyType,
             format!(
                 "token '{}': the public key found for the private key is {} ({}), but the private key is {}",
                 self.name,
                 name(found),
                 id::sri(spki),
                 name(own)
-            )
-            .into(),
-        ))
+            ),
+        )))
     }
 
     /// The public key of the single certificate under the locator: the last stand-in [`Self::spki`]
@@ -158,11 +163,11 @@ impl Token {
                  certificate under the locator holds it; write its public key object or certificate beside it"
                     .into(),
             )),
-            _ => Err(KmError::Ambiguous(
+            _ => Err(KmError::Ambiguous(Reason::check(
+                Check::LocatorUnique,
                 "no public key object, and several certificates share the locator: which holds the key's public \
-                 half is unclear"
-                    .into(),
-            )),
+                 half is unclear",
+            ))),
         }
     }
 
@@ -179,26 +184,26 @@ impl Token {
             match self.held_spki(p)? {
                 Some(held) if held == spki => {}
                 Some(held) => {
-                    return Err(KmError::Conflict(
+                    return Err(KmError::Conflict(Reason::check(
+                        Check::PublicSameKey,
                         format!(
                             "a public key object under locator {loc} on token '{}' holds another key ({}) than the \
                          private key ({}); a consumer selecting the public half by the locator would get it",
                             self.name,
                             id::sri(&held),
                             id::sri(spki)
-                        )
-                        .into(),
-                    ));
+                        ),
+                    )));
                 }
                 None => {
-                    return Err(KmError::Conflict(
+                    return Err(KmError::Conflict(Reason::check(
+                        Check::PublicSameKey,
                         format!(
                             "a public key object under locator {loc} on token '{}' exposes no key material, so it \
                          cannot be told apart from another key's",
                             self.name
-                        )
-                        .into(),
-                    ));
+                        ),
+                    )));
                 }
             }
         }
@@ -240,15 +245,15 @@ impl Token {
     /// Fail when the object's `CKA_PUBLIC_KEY_INFO` names a different key than its material.
     fn cross_check(&self, h: ObjectHandle, spki: &[u8]) -> Result<()> {
         match self.public_key_info(h)? {
-            Some(Ok(asserted)) if asserted != spki => Err(KmError::Conflict(
+            Some(Ok(asserted)) if asserted != spki => Err(KmError::Conflict(Reason::check(
+                Check::PublicKeyInfo,
                 format!(
                     "token '{}' reports a CKA_PUBLIC_KEY_INFO ({}) that disagrees with the key material ({})",
                     self.name,
                     id::sri(&asserted),
                     id::sri(spki)
-                )
-                .into(),
-            )),
+                ),
+            ))),
             _ => Ok(()),
         }
     }

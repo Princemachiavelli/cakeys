@@ -96,15 +96,16 @@ recorded because the lock could not be saved, its row has the exit code 21 and t
 with the code of the first failure, or with 22 if it recorded any object. In that case, the row
 of each failed object shows that object's code, and a note on stderr says why the run exits 22.
 In this way, a written lock is never hidden.
+When no rule refused an object, the row's `rule` names the check that refused it ([CAKEYS.md](CAKEYS.md#rules-and-checks)).
 
-A dry run's plans (`--json`) and rows name the rules that only the run decides (`deferred`). For a
-sealed move, these rules are `unwraps` and `identity`. `unwraps` checks that the blob is intact:
-it fails with 13, or with 16 when the module says only that the unwrap failed. `identity` checks
-that what was unwrapped is the key that the lock pins: it fails with 10, or with 13 when the
-key's proof of possession fails. For a host move or a file move, the deferred rule is `identity`,
-which checks that what the source handed over is the locked key (10). The run therefore ends with
-the same code as its dry run, with the code of one of these deferred rules, or with a device
-failure.
+A dry run's plans (`--json`) and rows name the checks that only the run decides (`deferred`). For
+a sealed move, these checks are `import.unwraps` and `import.identity`. `import.unwraps` checks
+that the blob is intact: it fails with 13, or with 16 when the module says only that the unwrap
+failed. `import.identity` checks that what was unwrapped is the key that the lock pins: it fails
+with 10, or with 13 when the key's proof of possession fails. For a host move or a file move, the
+deferred check is `import.identity`, which checks that what the source handed over is the locked
+key (10). The run therefore ends with the same code as its dry run, with the code of one of these
+deferred checks, or with a device failure.
 
 ## Decisions
 

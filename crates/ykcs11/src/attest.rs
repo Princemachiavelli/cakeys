@@ -15,7 +15,7 @@
 
 use cakeys_core::chain::{Cert, Start, chain_to_anchor, link};
 use cakeys_core::id;
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use x509_cert::der::asn1::ObjectIdentifier;
 
 /// The label prefix ykcs11 gives every slot's attestation certificate (suffix: the slot, e.g.
@@ -65,22 +65,23 @@ pub(crate) fn verify_piv_attestation(
     // both are valid at `at`, and the device's key signed the slot's certificate.
     let anchor = chain_to_anchor(&device, Start::Intermediate, anchors, pool, at, 3)?;
     link(&slot, Start::EndEntity, &device, at).map_err(|e| {
-        KmError::Conflict(
-            format!("the slot attestation certificate does not link to the device attestation certificate: {e}").into(),
-        )
+        KmError::Conflict(Reason::check(
+            Check::AttestPivSlotByDevice,
+            format!("the slot attestation certificate does not link to the device attestation certificate: {e}"),
+        ))
     })?;
     // The attested key is the certificate's subject: it must be the material the identity is
     // for, or the attestation attests something else (13, never a pass).
     let subject = slot.spki()?;
     if spki != subject {
-        return Err(KmError::Conflict(
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestPivSlotKey,
             format!(
                 "the attestation names the public key {}, but the object's material is {}",
                 id::sri(&subject),
                 id::sri(spki)
-            )
-            .into(),
-        ));
+            ),
+        )));
     }
     Ok(PivAttested {
         id: id::piv_attestation_id(
@@ -132,6 +133,7 @@ pub(crate) fn piv_pool(pool: Vec<Cert>) -> Vec<Cert> {
 mod tests {
     use super::*;
     use cakeys_core::chain::pem_certs;
+    use cakeys_core::testing::assert_fires;
     use x509_cert::der::DateTime;
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
@@ -272,10 +274,6 @@ mod tests {
     }
 
     /// Whether `e` is the refusal of a slot certificate the device's key did not sign.
-    fn unlinked(e: &KmError) -> bool {
-        matches!(e, KmError::Conflict(m) if m.contains("does not link to the device attestation certificate"))
-    }
-
     /// A slot's attestation is the device's only when the device's key signed it (review
     /// 2026-11-24 B-11): f9 certificates are public, so that one chains to a pinned root says
     /// nothing of a slot certificate another key signed. Beside a genuine device three links below
@@ -287,8 +285,7 @@ mod tests {
         verify_forged("slot", "f9", &[]).unwrap();
         verify_forged("slot-b", "f9-b", &[]).unwrap();
         for slot in ["slot-self", "slot-forged", "slot-b"] {
-            let e = verify_forged(slot, "f9", &[]).unwrap_err();
-            assert!(unlinked(&e), "{slot}: {e}");
+            assert_fires(&verify_forged(slot, "f9", &[]), Check::AttestPivSlotByDevice);
         }
     }
 
@@ -299,18 +296,14 @@ mod tests {
     /// under the CA, each link of it otherwise valid.
     #[test]
     fn a_chain_longer_than_three_is_refused() {
-        let longer = |e: &KmError| matches!(e, KmError::Conflict(m) if m.contains("longer than 3 links"));
         let deep = ["attestation-ca", "piv-ca", "piv-ca-deep"].map(forged);
         chain_to_anchor(&forged("f9-deep"), Start::Intermediate, &[forged("root")], &deep, None, 4).unwrap();
-        let e = verify_forged("slot-deep", "f9-deep", &["piv-ca-deep"]).unwrap_err();
-        assert!(longer(&e), "{e}");
+        assert_fires(&verify_forged("slot-deep", "f9-deep", &["piv-ca-deep"]), Check::ChainLength);
 
         link(&forged("slot-sub"), Start::EndEntity, &forged("device-sub"), None).unwrap();
         link(&forged("device-sub"), Start::Intermediate, &forged("f9"), None).unwrap();
-        let e = verify_forged("slot-sub", "f9", &[]).unwrap_err();
-        assert!(unlinked(&e), "{e}");
-        let e = verify_forged("slot-sub", "device-sub", &["f9"]).unwrap_err();
-        assert!(longer(&e), "{e}");
+        assert_fires(&verify_forged("slot-sub", "f9", &[]), Check::AttestPivSlotByDevice);
+        assert_fires(&verify_forged("slot-sub", "device-sub", &["f9"]), Check::ChainLength);
     }
 
     /// The fuzz target's input format reaches the whole chain: the fixture chain, length-prefixed

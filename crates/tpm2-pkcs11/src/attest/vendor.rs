@@ -13,7 +13,7 @@
 //! 2026-11-23 B-2: this header said the module was no more trusted than on the store path).
 
 use super::{Tpm2Options, esys};
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cakeys_pkcs11::provider::AttestCtx;
 use cryptoki::mechanism::vendor_defined::VendorDefinedMechanism;
 use cryptoki::mechanism::{Mechanism, MechanismType};
@@ -107,7 +107,7 @@ pub(crate) struct Output {
 /// `Conflict` for anything else: truncated, another magic, a trailing byte, or a structure that
 /// does not marshal back to the bytes it was read from.
 pub(crate) fn parse_output(bytes: &[u8]) -> Result<Output> {
-    let bad = |why: &str| KmError::Conflict(format!("the module's certify output {why}").into());
+    let bad = |why: &str| KmError::Conflict(Reason::malformed(format!("the module's certify output {why}")));
     let size = usize::from(u16::from_be_bytes(*bytes.first_chunk::<2>().ok_or_else(|| bad("is empty"))?));
     let attest_bytes = bytes.get(2..2 + size).ok_or_else(|| bad("is cut short in the attestation"))?;
     let rest = &bytes[2 + size..];
@@ -175,9 +175,9 @@ pub(crate) fn certify(ctx: &AttestCtx<'_>, opts: &Tpm2Options) -> Result<esys::C
         let (spki, qualified) = {
             let mut tpm = esys::context(&super::tcti(ctx, opts)?)?;
             let (_, public, qualified) = esys::attestation_key(&mut tpm, handle, ctx.provision)?;
-            let spki = esys::material_of(&public)?
-                .spki
-                .ok_or_else(|| KmError::Conflict("the Attestation Key exposes no public key".into()))?;
+            let spki = esys::material_of(&public)?.spki.ok_or_else(|| {
+                KmError::Conflict(Reason::check(Check::AttestTpmAk, "the Attestation Key exposes no public key"))
+            })?;
             (spki, qualified.value().to_vec())
         };
         let raw = sign(ctx, CKM_TPM2_CERTIFY, &Signer(c_ulong::from(handle)), &nonce)?;
@@ -206,25 +206,33 @@ fn check_statement(
     let info = match out.attest.attested() {
         AttestInfo::Certify { info } => info,
         other => {
-            return Err(KmError::Conflict(
-                format!("the attestation attests {other:?}, not a certify statement").into(),
-            ));
+            return Err(KmError::Conflict(Reason::check(
+                Check::AttestTpmStatement,
+                format!("the attestation attests {other:?}, not a certify statement"),
+            )));
         }
     };
     if out.attest.extra_data().value() != nonce {
-        return Err(KmError::Conflict("the attestation names other qualifying data than this run's nonce".into()));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmNonce,
+            "the attestation names other qualifying data than this run's nonce",
+        )));
     }
     let name = info.name().value().to_vec();
     if name != esys::recompute_name(blob)? {
-        return Err(KmError::Conflict(
-            "the attested Name is not the Name of the public area the module reports for the object".into(),
-        ));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmName,
+            "the attested Name is not the Name of the public area the module reports for the object",
+        )));
     }
     esys::verify_signature(&out.signature, &signer.spki, &out.attest_bytes)?;
     if let Some(qualified) = &signer.qualified
         && out.attest.qualified_signer().value() != qualified.as_slice()
     {
-        return Err(KmError::Conflict("the attestation was signed by another key than the AK".into()));
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmSigner,
+            "the attestation was signed by another key than the AK",
+        )));
     }
     let material = esys::material_of(public)?;
     esys::cross_check(&material, spki)?;
@@ -286,16 +294,17 @@ fn token_ak(ctx: &AttestCtx<'_>, label: &str) -> Result<(ObjectHandle, Vec<u8>)>
             ));
         }
         many => {
-            return Err(KmError::Conflict(
-                format!("{} private keys are labelled {label:?}: the Attestation Key must be one", many.len()).into(),
-            ));
+            return Err(KmError::Conflict(Reason::check(
+                Check::AttestTpmAk,
+                format!("{} private keys are labelled {label:?}: the Attestation Key must be one", many.len()),
+            )));
         }
     };
     let public = esys::unmarshal_public(&pub_blob(ctx, ak)?)?;
     check_ak(&public, label)?;
-    let spki = esys::material_of(&public)?
-        .spki
-        .ok_or_else(|| KmError::Conflict("the Attestation Key exposes no public key".into()))?;
+    let spki = esys::material_of(&public)?.spki.ok_or_else(|| {
+        KmError::Conflict(Reason::check(Check::AttestTpmAk, "the Attestation Key exposes no public key"))
+    })?;
     Ok((ak, spki))
 }
 
@@ -322,14 +331,14 @@ fn check_ak(public: &Public, label: &str) -> Result<()> {
     if ok {
         return Ok(());
     }
-    Err(KmError::Conflict(
+    Err(KmError::Conflict(Reason::check(
+        Check::AttestTpmAk,
         format!(
             "the key labelled {label:?} is not a cakeys Attestation Key (a restricted P-256 ECDSA-SHA256 \
              signing key, fixedTPM and fixedParent): an unrestricted key could sign forged attestations; \
              rename it or set tokens.<t>.options.akLabel to another"
-        )
-        .into(),
-    ))
+        ),
+    )))
 }
 
 #[cfg(test)]

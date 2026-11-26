@@ -6,7 +6,7 @@
 use super::Tpm2Options;
 use super::esys;
 use cakeys_core::chain::{Cert, Start, TCG_KP_EK_CERTIFICATE, certs_of, chain_to_anchor, pem_certs};
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cakeys_pkcs11::ChainTime;
 use std::sync::LazyLock;
 use tss_esapi::Context;
@@ -82,11 +82,11 @@ fn from_nv(leaf: &Cert, anchors: &[Cert], time: ChainTime) -> Result<Option<Trus
 /// issued is no EK credential (review 2026-11-23 A-3).
 fn verify(leaf: &Cert, anchors: &[Cert], pool: &[Cert], time: ChainTime) -> Result<Trusted> {
     if !leaf.serves(&TCG_KP_EK_CERTIFICATE)? {
-        return Err(KmError::Conflict(
+        return Err(KmError::Conflict(Reason::check(
+            Check::AttestTpmEkCertificate,
             "the EK certificate's extendedKeyUsage does not name tcg-kp-EKCertificate (2.23.133.8.1): it is \
-             no Endorsement Key credential"
-                .into(),
-        ));
+             no Endorsement Key credential",
+        )));
     }
     let (anchor_spki, warning) =
         time.verify(|at| chain_to_anchor(leaf, Start::EndEntity, anchors, pool, at, MAX_LINKS)?.spki())?;

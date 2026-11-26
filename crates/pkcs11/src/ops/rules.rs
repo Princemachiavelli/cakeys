@@ -15,79 +15,9 @@ use crate::resolution::Resolved as Profiles;
 use cakeys_core::config::ObjectCfg;
 use cakeys_profile::{Capability, Effective, On, Set, Verdict};
 
-/// The rules, each with the one name refusals, deferrals and the JSON rows carry.
-macro_rules! rules {
-    ($($(#[$doc:meta])* $variant:ident = $name:literal,)*) => {
-        /// A rule a plan asks before a write (docs/CAKEYS.md, "Rules").
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub enum Rule {
-            $($(#[$doc])* $variant,)*
-        }
-
-        impl Rule {
-            /// Every rule, in declaration order.
-            pub const ALL: &[Rule] = &[$(Rule::$variant),*];
-
-            /// Its name, as refusals and the JSON rows say it.
-            #[must_use]
-            pub fn name(self) -> &'static str {
-                match self {
-                    $(Rule::$variant => $name,)*
-                }
-            }
-        }
-    };
-}
-
-rules! {
-    /// Where the module may place a key ([`Provider::placement`]): 17.
-    Placement = "placement",
-    /// An attestation the spec opts into, which the provider computes for the class: 15.
-    AttestationCover = "attestation-cover",
-    /// An attestation of a key that is imported, which the provider gives only for one the
-    /// device generated (PIV): 15.
-    ImportedAttestation = "imported-attestation",
-    /// A key the module generates from its own template only, which it refuses to make as
-    /// declared ([`Provider::generation`]): 15 or 17.
-    OwnGeneration = "own-generation",
-    /// The templates the write sends, as the provider adjusts them ([`Provider::template`]): the
-    /// provider's refusal, 15 or 17.
-    Templates = "templates",
-    /// What the token can do: the mechanisms, the generation, the proof and the commitments, by
-    /// its capability profiles or the open token: 15.
-    Capability = "capability",
-    /// Nothing else under the locator a creation is made under: 13.
-    LocatorFree = "locator-free",
-    /// A key the lock does not pin already under the locator `create` makes it under: 19.
-    UnpinnedExists = "unpinned-exists",
-    /// The lock pins material the token does not hold: a new generation could never match: 14.
-    PinnedLost = "pinned-lost",
-    /// An object only a login shows, asked of a session without one: 16.
-    NeedsLogin = "needs-login",
-    /// The object holds the identity a delete expects: 14.
-    IfMatch = "if-match",
-    /// The module does not remove objects of the class: its profile's `delete.<class>` row, or
-    /// the provider ([`Provider::deletion`]): 15.
-    DeleteRefused = "delete-refused",
-    /// What a delete destroyed is still under the locator: 16.
-    DeleteKept = "delete-kept",
-    /// The lock can be written: 21.
-    LockWritable = "lock-writable",
-}
-
-impl Rule {
-    /// The rule named `name` ([`Rule::name`]), as an error carries it ([`KmError::rule`]).
-    #[must_use]
-    pub fn named(name: &str) -> Option<Rule> {
-        Rule::ALL.iter().copied().find(|r| r.name() == name)
-    }
-}
-
-impl std::fmt::Display for Rule {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.name())
-    }
-}
+/// The rules, each with the one name refusals, deferrals and the JSON rows carry. The enum lives
+/// in `cakeys_core` beside [`cakeys_core::Check`], so that a refusal's `Reason` can name its rule.
+pub use cakeys_core::Rule;
 
 /// A rule's refusal of a pair: the error the run ends with, carrying the rule's name
 /// ([`KmError::rule`]); the exit code is the error's.
@@ -103,7 +33,7 @@ impl Refusal {
     /// `rule`'s refusal with `error`, which then names it.
     #[must_use]
     pub fn new(rule: Rule, error: KmError) -> Refusal {
-        Refusal { rule, error: error.with_rule(rule.name()) }
+        Refusal { rule, error: error.with_rule(rule) }
     }
 }
 
@@ -255,7 +185,7 @@ pub fn token_rules(t: &Target, tok: &Token, lock: &Lock, verb: Verb) -> Result<V
     // A check's own error, as the refusal of the rule it names; one naming none is no rule's.
     let refused = |r: Result<()>| match r {
         Ok(()) => Ok(None),
-        Err(e) => match e.rule().and_then(Rule::named) {
+        Err(e) => match e.rule() {
             Some(rule) => Ok(Some(Refusal { rule, error: e })),
             None => Err(e),
         },
@@ -274,16 +204,16 @@ pub fn token_rules(t: &Target, tok: &Token, lock: &Lock, verb: Verb) -> Result<V
     // D1: the lock already pins this object's material, so a fresh generation can only end in a
     // mismatch. (Had this token held the same material, it would have been found above.)
     if let Some(ids) = lock.objects.get(t.object_name).map(|o| &o.ids).filter(|ids| !ids.is_empty()) {
-        let e = KmError::PreconditionFailed(
+        let e = KmError::PreconditionFailed(Reason::rule(
+            Rule::PinnedLost,
             format!(
                 "{t}: the lock already pins object '{}' ({}); creating it would generate different material that \
                  can never match; put the same material under the locator, or give this token's key its own object \
                  name",
                 t.object_name,
                 ids.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
-            )
-            .into(),
-        );
+            ),
+        ));
         return Ok(vec![Refusal::new(Rule::PinnedLost, e)]);
     }
     // Whatever the object is, another class under the locator may be private.
@@ -302,13 +232,13 @@ pub fn token_rules(t: &Target, tok: &Token, lock: &Lock, verb: Verb) -> Result<V
     // some other key, never one generated now.
     let present = tok.find_any(loc)?;
     if !present.is_empty() {
-        let e = KmError::Conflict(
+        let e = KmError::Conflict(Reason::rule(
+            Rule::LocatorFree,
             format!(
                 "{} objects of another class already sit under the locator of {t}; refusing to create",
                 present.len()
-            )
-            .into(),
-        );
+            ),
+        ));
         return Ok(vec![Refusal::new(Rule::LocatorFree, e)]);
     }
     Ok(Vec::new())
@@ -611,20 +541,4 @@ fn commitments(t: &Target, eff: &Effective, token: &str) -> Option<std::result::
         .iter()
         .any(|(k, v)| matches!(v, Verdict::Unknown { .. }) && eff.measured_commit(k, kt.name()))
         .then(|| Err(format!("{t}: commitments not decided ({})", lines.join("; "))))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Every rule has a name of its own, and the names are the ones the JSON rows and the docs
-    /// use: kebab-case, never reused.
-    #[test]
-    fn every_rule_has_its_own_name() {
-        let names: std::collections::BTreeSet<&str> = Rule::ALL.iter().map(|r| r.name()).collect();
-        assert_eq!(names.len(), Rule::ALL.len());
-        for n in names {
-            assert!(n.chars().all(|c| c.is_ascii_lowercase() || c == '-'), "{n}");
-        }
-    }
 }

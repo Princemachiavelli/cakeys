@@ -45,7 +45,10 @@ impl Token {
             .map_err(|_| KmError::Unavailable("AES-256 key schedule".into()))?
             .unwrap_key(&blob, &mut out)
             .map_err(|_| {
-                KmError::Conflict(format!("'{}': the key wrapped for the host does not unwrap", self.name).into())
+                KmError::Conflict(Reason::check(
+                    Check::HostUnwraps,
+                    format!("'{}': the key wrapped for the host does not unwrap", self.name),
+                ))
             })?
             .len();
         out.truncate(n);
@@ -72,7 +75,10 @@ impl Token {
         match parts {
             PrivateParts::Ec(scalar) | PrivateParts::Edwards(scalar) => {
                 let curve = object.curve().ok_or_else(|| {
-                    KmError::Conflict(format!("an EC private key's parts for {}", object.cfg()).into())
+                    KmError::Conflict(Reason::check(
+                        Check::HostKeyType,
+                        format!("an EC private key's parts for {}", object.cfg()),
+                    ))
                 })?;
                 base.push(Attribute::EcParams(curve.params().to_vec()));
                 base.push(Attribute::Value(scalar.to_vec()));

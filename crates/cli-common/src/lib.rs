@@ -301,7 +301,7 @@ pub fn read_lock(
 /// (21), so a row says which rule ended the pair ([`Outcome::rule`]).
 #[must_use]
 pub fn lock_rule(e: KmError) -> KmError {
-    if e.exit_code() == 21 { e.with_rule(cakeys_pkcs11::ops::Rule::LockWritable.name()) } else { e }
+    if e.exit_code() == 21 { e.with_rule(cakeys_pkcs11::ops::Rule::LockWritable) } else { e }
 }
 
 /// Save `lock` to `path` if the verb `changed` it, and say so ([`Notes::lock_written`]: the
@@ -331,6 +331,7 @@ pub fn print<T: serde::Serialize>(v: &T) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cakeys_core::{Reason, Rule};
 
     fn cfg(tokens: &[&str]) -> Config {
         let text = tokens.iter().map(|t| format!("[tokens.{t}]\ntokenLabel = \"{t}\"\n")).collect::<Vec<_>>().concat();
@@ -379,7 +380,7 @@ mod tests {
     fn a_run_exits_22_exactly_when_it_wrote_the_lock() {
         let path = Path::new("keys.lock");
         let failure = |code: u8| match code {
-            13 => Some(anyhow::Error::from(KmError::Conflict("pair 2".into()))),
+            13 => Some(anyhow::Error::from(KmError::Conflict(Reason::rule(Rule::LocatorFree, "pair 2")))),
             21 => Some(KmError::LockUnwritable("pair 2".into()).into()),
             1 => Some(anyhow::anyhow!("pair 2: no KmError")),
             _ => None,

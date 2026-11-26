@@ -125,7 +125,7 @@ fn open(cfg: &Config, name: &str, registry: &Registry) -> Token {
 }
 
 /// What a refused path reported: its exit code and the rule it named.
-fn refused<T>(what: &str, r: cakeys_core::Result<T>) -> (u8, Option<&'static str>) {
+fn refused<T>(what: &str, r: cakeys_core::Result<T>) -> (u8, Option<Rule>) {
     match r {
         Ok(_) => panic!("{what}: not refused"),
         Err(e) => (e.exit_code(), e.rule()),
@@ -152,7 +152,7 @@ fn placement_holds_on_every_path() {
     let t = Target::new(&cfg, "s", "t").unwrap();
     let mode = ops::plan_mode(&t).unwrap();
     let lock = Lock { version: cakeys_core::config::LOCK_VERSION, ..Lock::default() };
-    let want = (17, Some(Rule::Placement.name()));
+    let want = (17, Some(Rule::Placement));
 
     // The static gate, as `validate` and `create`'s plan ask it.
     let stack = cakeys_pkcs11::gate::stack("t", &cfg.tokens["t"], &lock).unwrap();
@@ -197,7 +197,7 @@ fn a_provider_override_runs_as_so_where_the_module_needs_it() {
     let handles = generic.find_any(&t.on_token.locator).unwrap();
     // The override destroys nothing, and the look after it says so (review 2026-11-24 B-13).
     let kept = tok.destroy_handles(&cfg.objects["k"], &t.on_token.locator, &handles).err();
-    assert_eq!(kept.map(|e| e.rule()), Some(Some(Rule::DeleteKept.name())));
+    assert_eq!(kept.map(|e| e.rule()), Some(Some(Rule::DeleteKept)));
     assert_eq!(user(), SessionState::RwUser, "the user's session is back after the destroy");
     generic.destroy(&cfg.objects["k"], &t.on_token.locator).unwrap();
 
@@ -221,7 +221,7 @@ fn a_delete_the_module_did_not_do_keeps_the_lock() {
     let (dry, _) = ops::delete(&t, &tok, &mut lock, None, true, &mut notes).unwrap();
     assert_eq!(dry, ops::Deleted::WouldDelete);
     let e = ops::delete(&t, &tok, &mut lock, None, false, &mut notes).err();
-    assert_eq!(e.map(|e| (e.exit_code(), e.rule())), Some((16, Some(Rule::DeleteKept.name()))));
+    assert_eq!(e.map(|e| (e.exit_code(), e.rule())), Some((16, Some(Rule::DeleteKept))));
     assert!(lock.realisation("s", "t").is_some(), "the lock keeps the realisation");
     assert_eq!(toml::to_string(&lock).unwrap(), recorded, "and is as it was");
     assert_eq!(tok.find_any(&t.on_token.locator).unwrap().len(), 2, "the key and its public half are there");
@@ -253,7 +253,7 @@ fn a_profile_row_that_says_the_module_keeps_keys_refuses_the_delete() {
     for dry in [true, false] {
         let e = ops::delete(&t, &tok, &mut lock, None, dry, &mut notes).err();
         let said = e.as_ref().map(ToString::to_string).unwrap_or_default();
-        assert_eq!(e.map(|e| (e.exit_code(), e.rule())), Some((15, Some(Rule::DeleteRefused.name()))), "dry {dry}");
+        assert_eq!(e.map(|e| (e.exit_code(), e.rule())), Some((15, Some(Rule::DeleteRefused))), "dry {dry}");
         assert!(said.contains("delete.CKO_PRIVATE_KEY = no: C_DestroyObject leaves 1 of 1 behind"), "{said}");
     }
     assert_eq!(toml::to_string(&lock).unwrap(), recorded, "the lock is as it was");

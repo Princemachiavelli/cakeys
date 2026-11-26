@@ -113,6 +113,98 @@ event, and "the key is not there" is an operational event. The second is 10 agai
 mismatch against a pinned ID, against a first use with nothing pinned. A first use is the state
 before `lock`, and it is reviewed through the `got:` line.
 
+## Rules and checks
+
+A refusal names the rule or the check that refused it. A JSON row prints the name in its `rule`
+field: the rule's name where a rule refused, and otherwise the check's name. Code reads them as
+`KmError::rule` and `KmError::check`. A rule is a question that a plan asks before a write; a
+check is a comparison that a run makes of what a token, the lock, an attestation or a file
+says. A first use (18) names no check, because nothing was compared. A refusal whose input does
+not parse as the structure it should be (a certificate that is not DER, a TPM structure that
+does not unmarshal, a damaged store row) names neither, and its row has no `rule`.
+Every other refusal of 10, 12, 13 or 14 names a rule or a check (`malformed_only_in_parsers`).
+Scripts may match on these names: they are stable, and
+`check_names_are_stable_and_disjoint_from_rules` holds the two tables below to the code, in
+order. The exit code is the refusing error's own; the tables give the usual one.
+
+| Rule | Exit | What the plan asks before a write |
+|---|---|---|
+| `placement` | 17 | The module may place the key where the spec puts it (the provider's rule). |
+| `attestation-cover` | 15 | The provider computes the attestation that the spec opts into, for the object's class. |
+| `imported-attestation` | 15 | The provider attests a key that is imported (PIV attests only a key the device generated). |
+| `own-generation` | 15, 17 | A module that generates a key only from its own template makes the key as the spec declares it. |
+| `templates` | 15, 17 | The provider accepts the templates that the write sends. |
+| `capability` | 15 | The token can do what the spec needs: the mechanisms, the generation, the proof and the commitments, by its capability profiles or the open token. |
+| `locator-free` | 13 | Nothing of another class is under the locator that a creation or an import is made under. |
+| `unpinned-exists` | 19 | No key that the lock does not pin is under the locator that `create` makes the key under. |
+| `pinned-lost` | 14 | The token still holds the material that the lock pins, so `create` does not generate other material for it. |
+| `needs-login` | 16 | The session is logged in when an object is one that only a login shows. |
+| `if-match` | 14 | The object that `delete` would destroy holds the identity that the delete expects. |
+| `delete-refused` | 15 | The module removes objects of the class (its profile's `delete.<class>` row, or the provider). |
+| `delete-kept` | 16 | What a delete destroyed is no longer under the locator. |
+| `lock-writable` | 21 | The lock can be written. |
+
+| Check | Exit | What it verifies |
+|---|---|---|
+| `identity.material` | 10 | The token's material hashes to the IDs that the lock pins for the object. |
+| `pop.sign` | 13 | The private key signed a fresh challenge, and the signature verifies under the public key that the identity is computed from (`pop-sign`). |
+| `pop.ecdh` | 13 | The private key derived the secret that the host derived with the public key (`pop-ecdh`). |
+| `pop.decrypt` | 13 | The private key decrypted a fresh challenge that the host encrypted to the public key (`pop-decrypt`). |
+| `pop.unwrap` | 13 | The private key unwrapped a fresh secret that the host wrapped to the public key (`pop-unwrap`). |
+| `public.key-type` | 13 | The public key that a token reports, or that a certificate or a file holds, decodes as a key of the object's declared type and curve. |
+| `public.same-key` | 13 | A public key object under the locator holds the private key's public key, and exposes it. |
+| `public.key-info` | 13 | The `CKA_PUBLIC_KEY_INFO` that the token reports for a key is the key's own material. |
+| `certificate.decodes` | 13 | A certificate object's `CKA_VALUE` is a DER X.509 certificate. |
+| `locator.unique` | 12 | One object of the class matches the locator. |
+| `cka-id.unique` | 12 | One private key on the token carries the key's `CKA_ID`. |
+| `token.unique` | 12 | One token of the module carries the token label. |
+| `address.unique` | 12 | The address on the command line selects one (spec, token) pair. |
+| `object.type` | 13 | The object's class, key type, curve, size and certificate type are the ones that the spec declares. |
+| `policy.attribute` | 13 | Each attribute that the spec declares has the declared value on the token. |
+| `lock.type` | 14 | The object's type in keys.toml is the type that the lock recorded. |
+| `lock.spec` | 14 | The spec (its object, locator, `publicOnly` and digest) is the one that was realised. |
+| `lock.mode` | 14 | The identity mode is at least the mode that the lock recorded. |
+| `lock.binding` | 14 | The proof of possession is at least the binding that the lock recorded. |
+| `lock.attestation-anchor` | 14 | The attestation has the kind and the root that the lock recorded. |
+| `lock.attestation-id` | 10 | The attestation ID is the one that the lock recorded under the same root. |
+| `lock.attestation-kept` | 14 | The attestation that the lock recorded is still computed. |
+| `lock.schemes-kept` | 14 | The schemes that the lock recorded for the realisation are still computed. |
+| `lock.immutables` | 14 | The immutables fixed when the object was made (`CKA_LOCAL`, `CKA_NEVER_EXTRACTABLE`, `CKA_ALWAYS_SENSITIVE`) are not weaker than the lock recorded. |
+| `lock.attributes` | 14 | The policy attributes and immutables that the token reports are the ones that the lock recorded. |
+| `lock.shared-scheme` | 14 | The IDs computed now share a scheme with the IDs that the lock pins, so they can be compared. |
+| `lock.realised` | 14 | The lock records a realisation of the spec on the token. |
+| `lock.one-name` | 14 | The lock records the material under one object name of the class. |
+| `lock.import-ids` | 14 | The lock pins IDs for an object that is imported, so the imported material can be checked. |
+| `lock.same-object` | 14 | A second spec of the same token object does not realise it weaker than the first spec did. |
+| `chain.validity` | 13 | Each certificate of an attestation chain is valid at the time that it is judged at. |
+| `chain.ca` | 13 | Each issuer is a CA that may sign certificates (`basicConstraints`, its `pathLen`, and `keyCertSign` when it has a `keyUsage`). |
+| `chain.critical-extension` | 13 | No certificate of the chain has a critical extension that cakeys does not process. |
+| `chain.length` | 13 | The chain has no more links than its attestation allows. |
+| `chain.anchor` | 13 | The chain ends at a pinned root. |
+| `chain.signature` | 13 | Each certificate's signature verifies under its issuer's key, with the algorithm that the signed part of the certificate names. |
+| `attest.scheme` | 13 | The provider attests with the scheme that it advertises. |
+| `attest.piv.slot-by-device` | 13 | The PIV slot's attestation certificate was issued by the device's attestation certificate. |
+| `attest.piv.slot-key` | 13 | The PIV slot's attestation certificate names the object's public key. |
+| `attest.piv.unique` | 12 | One certificate on the PIV token is the slot's, or the device's, attestation certificate. |
+| `attest.tpm.ak` | 13 | The TPM's Attestation Key is a cakeys Attestation Key: one key of its label, a restricted P-256 ECDSA-SHA256 signing key fixed to the TPM and its parent, with a public key. |
+| `attest.tpm.statement` | 13 | The TPM's statement is a certify statement. |
+| `attest.tpm.nonce` | 13 | The certify statement names this run's nonce as its qualifying data. |
+| `attest.tpm.name` | 13 | The Name that the statement attests is the Name of the object's public area, as the module or the store reports it and as the TPM loaded it. |
+| `attest.tpm.signature` | 13 | The statement's signature verifies against the Attestation Key. |
+| `attest.tpm.signer` | 13 | The statement's qualified signer is the Attestation Key. |
+| `attest.tpm.material` | 13 | The key in the attested public area is the object's key, of the same kind, and a certified secret key computes the object's commitment. |
+| `attest.tpm.immutables` | 13 | What the module reports as `CKA_LOCAL` and `CKA_EXTRACTABLE` is what the TPM certified. |
+| `attest.tpm.ek-certificate` | 13 | The EK certificate names the purpose `tcg-kp-EKCertificate` and this TPM's endorsement key. |
+| `attest.tpm.credential` | 13 | The TPM activates a credential made for the Attestation Key and the endorsement key to its secret, so the two keys are in one TPM. |
+| `host.unwraps` | 13 | The key that the source wrapped for the host unwraps under the host's key. |
+| `host.key-type` | 13 | The plaintext key that the host holds is a key of the object's declared type. |
+| `import.unwraps` | 13, 16 | A sealed bundle's wrapped key unwraps on the target, so the bundle is intact and was wrapped to the target's transport key (16 where the module says only that the unwrap failed). A dry run defers it. |
+| `import.identity` | 10, 13 | What a move hands over or unwraps is the key that the lock pins: its IDs (10) and its proof of possession (13). A dry run defers it. |
+| `import.transport` | 10, 14 | The transport key that a sealed move wraps to is the one that the lock pins on the target, under a spec that keys.toml names, and a bundle is made for that target and sealed to that key (10 where the key's hash differs). |
+| `import.locked` | 14 | The lock pins what a move checks the moved object by: its IDs, its type, the scheme that pairs a key with its certificate, and a locked key for a key file's identity. |
+| `import.binding` | 14 | An EC or Edwards key that a bundle file carries is bound by a proof of possession, because a `token-asserted` binding would rest on the public key that the bundle itself names. |
+| `probe.same-key` | 13 | The key that a probe's move brings back is the key that it moved: the host's check value of an AES key, or the commitment that the module computes. |
+
 ## The contract with programs that use keys
 
 A program in any language treats a key as a declared resource whose use can fail in a known set
