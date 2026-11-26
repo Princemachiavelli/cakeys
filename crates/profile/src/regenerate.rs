@@ -1,15 +1,18 @@
-//! Writing a regenerated golden file: what a build regenerates and compares with, a profile, the
-//! object matrix's tables, the coverage file, the baseline (docs/DEVELOPMENT.md, "Golden
-//! files"). The code under test writes them, so a regeneration that replaces the committed file
-//! moves the expectation with the code (review 2026-11-24 C-8). Every writer goes through
-//! [`write`](fn@write): a file that is not there yet is written, but one that is is replaced only when the
-//! regeneration is accepted (`caprobe probe --accept`, or [`ACCEPT`] for a `CAKEYS_UPDATE_*`
-//! run). Otherwise the text goes beside it, as `<file>.new`, for its moved rows to be read
-//! (`nix/golden-rows.py --stub`) and recorded in profiles/LEDGER.toml before it is accepted.
+//! The writing of a regenerated golden file. A golden file is a file that a build regenerates
+//! and compares with the committed copy: a profile, the object matrix's tables, the coverage file
+//! or the baseline (docs/DEVELOPMENT.md, "Golden files"). The code under test writes these files,
+//! so a regeneration that replaces the committed file would change the expected result together
+//! with the code (review 2026-11-24 C-8). Every writer therefore goes through
+//! [`write`](fn@write). It writes a file that does not exist yet. It replaces an existing file
+//! only when the regeneration is accepted (`caprobe probe --accept`, or [`ACCEPT`] for a
+//! `CAKEYS_UPDATE_*` run). Otherwise it writes the text next to the file, as `<file>.new`, so
+//! that a person can read the changed rows (`nix/golden-rows.py --stub`) and record them in
+//! profiles/LEDGER.toml before accepting the file.
 
 use std::path::{Path, PathBuf};
 
-/// The variable that accepts a `CAKEYS_UPDATE_*` run's regeneration: set, it replaces the file.
+/// The environment variable that accepts the regeneration of a `CAKEYS_UPDATE_*` run. When it is
+/// set, the regeneration replaces the committed file.
 pub const ACCEPT: &str = "CAKEYS_ACCEPT";
 
 /// What [`write`](fn@write) did.
@@ -17,11 +20,12 @@ pub const ACCEPT: &str = "CAKEYS_ACCEPT";
 pub enum Written {
     /// The file already held the text: nothing was written.
     Unchanged(PathBuf),
-    /// The file was not there: it is now.
+    /// The file did not exist, and it was created.
     Created(PathBuf),
-    /// Accepted: the file now holds the text.
+    /// The regeneration was accepted, and the file now holds the text.
     Replaced(PathBuf),
-    /// Not accepted: the file is as it was, and the text is beside it, at this path.
+    /// The regeneration was not accepted. The file is unchanged, and the text was written next to
+    /// it, at this path.
     Pending(PathBuf),
 }
 
@@ -50,13 +54,15 @@ impl std::fmt::Display for Written {
     }
 }
 
-/// Whether [`ACCEPT`] is set: the `CAKEYS_UPDATE_*` runs' `--accept`.
+/// Returns whether [`ACCEPT`] is set. For the `CAKEYS_UPDATE_*` runs, this variable does what
+/// `--accept` does for caprobe.
 #[must_use]
 pub fn accepted() -> bool {
     std::env::var_os(ACCEPT).is_some()
 }
 
-/// Where a regeneration of `path` waits until it is accepted: `<path>.new`.
+/// Returns the path at which a regeneration of `path` is kept until it is accepted:
+/// `<path>.new`.
 #[must_use]
 pub fn pending(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
@@ -64,23 +70,26 @@ pub fn pending(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// Write `text` as the regeneration of `path` with [`std::fs::write`]: see [`write_with`].
+/// Writes `text` as the regeneration of `path` with [`std::fs::write`]. [`write_with`] describes
+/// the rules.
 ///
 /// # Errors
 ///
-/// Reading `path`, or writing or removing a file.
+/// Returns the IO error from reading `path`, or from writing or removing a file.
 pub fn write(path: &Path, text: &str, accept: bool) -> std::io::Result<Written> {
     write_with(path, text, accept, |p, t| std::fs::write(p, t))
 }
 
-/// Write `text` as the regeneration of `path`, through `put`: into `path` when it is not there
-/// or `accept`, else into [`pending`]`(path)`, never over a file that holds other text unless
-/// accepted. A file that already holds `text` is left as it is. Once the file holds the text, a
-/// `.new` an earlier run left beside it is stale, and goes.
+/// Writes `text` as the regeneration of `path`, through `put`. It writes into `path` when the
+/// file does not exist or when `accept` is true. Otherwise, it writes into [`pending`]`(path)`,
+/// so it never writes over a file that holds other text unless the regeneration is accepted. A
+/// file that already holds `text` is left as it is. Once the file holds the text, a `.new` file
+/// that an earlier run left next to it is stale, and this function removes it.
 ///
 /// # Errors
 ///
-/// Reading `path` (but its absence), `put`'s, or removing the stale `.new`.
+/// Returns the error from reading `path` (except when the file does not exist), the error of
+/// `put`, or the error from removing the stale `.new` file.
 pub fn write_with<E: From<std::io::Error>>(
     path: &Path,
     text: &str,
@@ -118,26 +127,28 @@ pub fn write_with<E: From<std::io::Error>>(
 mod tests {
     use super::*;
 
-    /// The rule every writer of a golden file goes through (review 2026-11-24 C-8): a
-    /// regeneration replaces the committed file only when accepted, and leaves it beside it
-    /// otherwise.
+    /// This tests the rule that every writer of a golden file follows (review 2026-11-24 C-8). A
+    /// regeneration replaces the committed file only when it is accepted. Otherwise, it writes
+    /// the text next to the file.
     #[test]
     fn regenerate_never_overwrites_without_accept() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("golden.toml");
         let new = dir.path().join("golden.toml.new");
         let read = |p: &Path| std::fs::read_to_string(p).ok();
-        // Nothing there: nothing is overwritten, so it is written.
+        // No file exists, so nothing is overwritten, and the file is written.
         assert_eq!(write(&file, "one\n", false).unwrap(), Written::Created(file.clone()));
         assert_eq!(read(&file).as_deref(), Some("one\n"));
-        // Other text, not accepted: the file stays, the regeneration waits beside it.
+        // Different text that is not accepted: the file stays as it was, and the regeneration is
+        // written next to it.
         assert_eq!(write(&file, "two\n", false).unwrap(), Written::Pending(new.clone()));
         assert_eq!(read(&file).as_deref(), Some("one\n"));
         assert_eq!(read(&new).as_deref(), Some("two\n"));
-        // The same text: nothing written, and the waiting regeneration is stale.
+        // The same text: nothing is written, and the pending `.new` file is stale, so it is
+        // removed.
         assert_eq!(write(&file, "one\n", false).unwrap(), Written::Unchanged(file.clone()));
         assert_eq!(read(&new), None);
-        // Accepted: replaced, and nothing left beside it.
+        // Accepted: the file is replaced, and no `.new` file remains next to it.
         write(&file, "two\n", false).unwrap();
         assert_eq!(write(&file, "two\n", true).unwrap(), Written::Replaced(file.clone()));
         assert_eq!(read(&file).as_deref(), Some("two\n"));
@@ -145,7 +156,8 @@ mod tests {
         assert!(Written::Pending(new.clone()).to_string().contains("nix/golden-rows.py --stub"));
     }
 
-    /// A file that cannot be read is not taken for an absent one, which would be written over.
+    /// A file that cannot be read is not treated as an absent file, because an absent file would
+    /// be written over.
     #[test]
     fn an_unreadable_file_is_not_absent() {
         let dir = tempfile::tempdir().unwrap();
@@ -154,9 +166,10 @@ mod tests {
         assert!(write(&file, "one\n", false).is_err());
     }
 
-    /// Every test or tool that regenerates under a variable (`CAKEYS_UPDATE_*`,
-    /// `CAKEYS_WRITE_*`) writes through [`write`]: a writer of its own would overwrite again
-    /// (review 2026-11-24 C-8; the four writers before this rule each rewrote in place).
+    /// Every test or tool that regenerates a file when a variable is set (`CAKEYS_UPDATE_*`,
+    /// `CAKEYS_WRITE_*`) writes through [`write`]. A writer with its own code would again
+    /// overwrite the committed file (review 2026-11-24 C-8). Before this rule, each of the four
+    /// writers rewrote its file in place.
     #[test]
     fn every_regenerating_writer_goes_through_the_rule() {
         let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

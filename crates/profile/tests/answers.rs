@@ -1,21 +1,23 @@
-//! What every committed profile answers, pinned, beyond its mechanism list: the generation,
-//! curve and OAEP verdicts `Effective` gives (notes included) over the whole baseline, and each
-//! row a consumer reads directly, for every embedded profile. A change of
-//! the profile format must leave this text unchanged (`tests/answers.txt`); a change of what a
-//! profile says regenerates it with `CAKEYS_WRITE_ANSWERS=1 cargo test -p cakeys-profile --test
-//! answers`, which then fails, so a regenerating run is never a pass: it writes `answers.txt.new`
-//! (`cakeys_profile::regenerate`); review it, then run again with `CAKEYS_ACCEPT=1` too, and
-//! then without either.
+//! This test pins what every committed profile answers, beyond its mechanism list. For every
+//! embedded profile, it records the generation, curve and OAEP verdicts that `Effective` gives
+//! over the whole baseline (with their notes), and each row that a consumer reads directly. The
+//! pinned text is `tests/answers.txt`. A change of the profile format must leave this text
+//! unchanged. After a change of what a profile says, regenerate the text with
+//! `CAKEYS_WRITE_ANSWERS=1 cargo test -p cakeys-profile --test answers`. That run writes
+//! `answers.txt.new` (`cakeys_profile::regenerate`) and then fails, so a regenerating run never
+//! passes. Review the new file, run the test again with `CAKEYS_ACCEPT=1` as well, and then run
+//! it once more without either variable.
 
 use cakeys_profile::profile::Mode;
 use cakeys_profile::{By, Capability, Effective, Move, Profile, Set, Verdict, regenerate};
 use std::fmt::Write as _;
 use std::path::Path;
 
-/// The RSA sizes asked after: the reported ranges' edges and the sizes probes generate.
+/// The RSA sizes that the test asks about: the edges of the reported ranges and the sizes that
+/// the probes generate.
 const BITS: [u32; 8] = [512, 1024, 2048, 3072, 4096, 8192, 15360, 16384];
 
-/// The secret key types cakeys generates, which a generation row reads in bytes.
+/// The secret key types that cakeys generates. A generation row gives their sizes in bytes.
 const SECRET_KEYS: [&str; 10] = [
     "CKK_AES",
     "CKK_DES2",
@@ -29,23 +31,24 @@ const SECRET_KEYS: [&str; 10] = [
     "CKK_SHA512_HMAC",
 ];
 
-/// The post-quantum key types, which a generation row reads by parameter set, never by curve or
-/// bits: asked once, as the key type.
+/// The post-quantum key types. A generation row names them by parameter set, never by curve or
+/// bits, so the test asks about each of them once, as the key type.
 const PARAMETER_SET_KEYS: [&str; 3] = ["CKK_ML_DSA", "CKK_ML_KEM", "CKK_SLH_DSA"];
 
-/// The secret-key lengths asked after: the three AES lengths, the edges and the lengths between
-/// and beyond those the probes generate.
+/// The secret-key lengths that the test asks about: the three AES lengths, the edges, and lengths
+/// between and beyond the lengths that the probes generate.
 const BYTES: [u32; 10] = [1, 8, 16, 24, 32, 48, 64, 128, 1024, 4096];
 
-/// A list as a set: no consumer reads these lists' order.
+/// Formats a list in sorted order, because no consumer reads the order of these lists.
 fn sorted<T: Ord + Clone + std::fmt::Debug>(v: &[T]) -> String {
     let mut v = v.to_vec();
     v.sort();
     format!("{v:?}")
 }
 
-/// The rows a consumer reads from a profile itself rather than through [`Effective`]:
-/// possession's ECDH and decryption choices, camigrate's sides, resolution's clearing.
+/// Formats the rows that a consumer reads from a profile directly, not through [`Effective`]:
+/// the ECDH and decryption choices of the possession proofs, the sides of camigrate, and the
+/// hardware rows that resolution clears (`clear_hardware_rows` in cakeys-pkcs11).
 fn rows(p: &Profile) -> String {
     let mut out = String::new();
     let list = |v: &Option<Vec<String>>| v.as_ref().map(|v| sorted(v));
@@ -94,9 +97,10 @@ fn answers(set: &Set) -> String {
             Mode::Delta => Effective::new(baseline, None, &layers),
         };
         let _ = writeln!(out, "# {}\n{}", p.profile, rows(p));
-        // A layer alone answers generation only where it subtracts or restricts: with no module
-        // profile, every other answer is unknown for that reason alone. Told by the stack and
-        // the variant, not by the verdict's words (review answers.rs F3).
+        // A layer alone answers a generation question only where it subtracts or restricts.
+        // Without a module profile, every other answer is unknown for that reason alone, so the
+        // test leaves those answers out. The test identifies them by the stack and the verdict's
+        // variant, not by the verdict's words (review answers.rs F3).
         let alone = p.mode == Mode::Delta;
         let mut answer = |what: String, v: Verdict| {
             if !(alone && matches!(v, Verdict::Unknown { .. })) {
@@ -104,7 +108,7 @@ fn answers(set: &Set) -> String {
             }
         };
         for kt in baseline.key_types.keys() {
-            // A secret key type is asked by length in bytes, never by curve or bits.
+            // The test asks about a secret key type by length in bytes, never by curve or bits.
             if SECRET_KEYS.contains(&kt.as_str()) {
                 answer(kt.clone(), eff.generate_secret(kt, None));
                 if alone || p.generation(kt).is_some() {
@@ -115,8 +119,8 @@ fn answers(set: &Set) -> String {
                 continue;
             }
             let bare = eff.generate(kt, None, None);
-            // The module profile has no row for the key type: each curve and size would say the
-            // same.
+            // When the module profile has no row for the key type, every curve and size would
+            // give the same answer, so the test asks only about the key type.
             let none = !alone && p.generation(kt).is_none();
             answer(kt.clone(), bare);
             if none || PARAMETER_SET_KEYS.contains(&kt.as_str()) {
@@ -135,10 +139,11 @@ fn answers(set: &Set) -> String {
         for (h, v) in eff.oaep() {
             answer(format!("oaep {h}"), v);
         }
-        // Each commitment the profile has rows for, at no length, at each length its rows name
-        // and at the lengths generation is asked at: no commit verdict was pinned, so a wrong one
-        // went unseen (review 2026-11-23 A-16), and one asked only where rows decide never ran
-        // the rule for an untried length (review 2026-11-24 A-9).
+        // The test asks about each commitment for which the profile has rows: without a length,
+        // at each length that its rows name, and at the lengths at which generation is asked.
+        // Earlier, no commitment verdict was pinned, so a wrong verdict went unnoticed (review
+        // 2026-11-23 A-16). A test that asked only at lengths that rows decide never ran the rule
+        // for an untried length (review 2026-11-24 A-9).
         let mut commits = std::collections::BTreeMap::<(String, String), Vec<u32>>::new();
         for c in p.capabilities.keys() {
             if let Capability::Commit { kind, key_type, bytes } = c {
@@ -156,8 +161,9 @@ fn answers(set: &Set) -> String {
     out
 }
 
-/// Where `got` and `pinned` first differ, said so that either side's extra lines show: the line,
-/// both sides of it, and both line counts. `None` when they are the same text.
+/// Describes where `got` and `pinned` first differ, in a form that shows the extra lines of
+/// either side: the line number, both versions of the line, and both line counts. Returns `None`
+/// when the texts are the same.
 fn first_difference(got: &str, pinned: &str) -> Option<String> {
     if got == pinned {
         return None;
@@ -177,10 +183,10 @@ fn first_difference(got: &str, pinned: &str) -> Option<String> {
     ))
 }
 
-/// Compare `got` with the pinned text at `path`, or with `write`, put `got` there
-/// ([`regenerate::write`]: over it only when `accept`ed): an error either way, so a
-/// regenerating run never passes (review answers.rs F1: a shell that kept the variable accepted
-/// every change silently).
+/// Compares `got` with the pinned text at `path`. When `write` is true, it instead writes `got`
+/// there through [`regenerate::write`], which replaces the file only when `accept` is true.
+/// Writing always returns an error, so a regenerating run never passes (review answers.rs F1: a
+/// shell that still had the variable set accepted every change silently).
 fn pinned_or_written(got: &str, path: &Path, write: bool, accept: bool) -> Result<(), String> {
     if write {
         let written = regenerate::write(path, got, accept).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -200,8 +206,9 @@ fn every_profile_answers_as_pinned() {
     }
 }
 
-/// Writing the answers fails the run, after writing them; a text that is a prefix of the other
-/// names the side with more lines and its first extra one, never `<end>` against `<end>`.
+/// Writing the answers fails the run after it writes them. When one text is a prefix of the
+/// other, the message names the side with more lines and its first extra line, and it never
+/// shows `<end>` against `<end>`.
 #[test]
 fn regenerating_fails_and_a_difference_says_where() {
     let path = std::env::temp_dir().join(format!("cakeys-answers-{}.txt", std::process::id()));
@@ -209,7 +216,8 @@ fn regenerating_fails_and_a_difference_says_where() {
     assert!(e.contains("wrote"), "{e}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nb\n");
     assert_eq!(pinned_or_written("a\nb\n", &path, false, false), Ok(()));
-    // Pinned already, the regeneration waits beside it until accepted (review 2026-11-24 C-8).
+    // When a pinned file exists, the regeneration is written next to it and stays there until it
+    // is accepted (review 2026-11-24 C-8).
     let new = regenerate::pending(&path);
     let e = pinned_or_written("a\nB\n", &path, true, false).unwrap_err();
     assert!(e.contains(&new.display().to_string()), "{e}");
@@ -225,8 +233,9 @@ fn regenerating_fails_and_a_difference_says_where() {
     std::fs::remove_file(&path).unwrap();
 }
 
-/// The profiles profiles/LEDGER.toml says every build regenerates (`verified-by`), and those it
-/// records as runs on hardware or a cloud (`[artifact.probed]`); its fixtures and locks aside.
+/// Returns two lists of profiles from profiles/LEDGER.toml: the profiles that every build
+/// regenerates (`verified-by`), and the profiles that it records as runs on hardware or in a
+/// cloud (`[artifact.probed]`). The ledger's fixtures and locks are skipped.
 fn ledger_profiles() -> (Vec<String>, Vec<String>) {
     let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../profiles/LEDGER.toml"));
     let ledger: toml::Table = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
@@ -245,10 +254,11 @@ fn ledger_profiles() -> (Vec<String>, Vec<String>) {
     (regenerated, hardware)
 }
 
-/// What is wrong with the provenance of `text`'s yes rows (review 2026-11-24 §3.1): a profile
-/// every build regenerates says of each yes whether the host checked it (`host`) or only the
-/// module said so (`unverified`); a yes of no recorded provenance (legacy) stands only in a
-/// profile last probed on hardware, which the ledger owes a run.
+/// Returns what is wrong with the provenance of the yes rows in `text` (review 2026-11-24 §3.1).
+/// In a profile that every build regenerates, each yes must record whether the host checked it
+/// (`host`) or only the module reported it (`unverified`). A yes without recorded provenance (a
+/// legacy row) is allowed only in a profile that was last probed on hardware, for which the
+/// ledger records that a new run is owed.
 fn yes_provenance(path: &str, text: &str, regenerated: &[String], hardware: &[String]) -> Vec<String> {
     let profile = Profile::from_toml(text).unwrap_or_else(|e| panic!("{path}: {e}"));
     let regenerated = regenerated.iter().any(|r| r == path);
@@ -280,8 +290,8 @@ fn every_regenerated_yes_says_by_whom() {
         .flat_map(|(path, text)| yes_provenance(path, text, &regenerated, &hardware))
         .collect();
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    // Seen failing: a regenerated profile's yes stripped of its `by`, and a hardware profile's
-    // legacy yes in a profile the ledger does not record.
+    // The check is seen to fail for a yes without its `by` in a regenerated profile, and for a
+    // legacy yes in a hardware profile that the ledger does not record.
     let softhsm =
         cakeys_profile::embedded::PROFILE_FILES.iter().find(|(p, _)| p.ends_with("softhsm/2.7.toml")).unwrap();
     let stripped = softhsm.1.replacen(

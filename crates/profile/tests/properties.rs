@@ -1,8 +1,9 @@
-//! What each software token's committed profile must say, whatever the probe writes (review
-//! 2026-11-24 C-8: the probe writes these files, and the build compares a fresh probe with them,
-//! so a change of the probe moves both). Each property is derived from PKCS #11, from DESIGN.md
-//! (cakeys' spec), or from what the module's own source and documentation say it does, never
-//! from the profile; each is seen failing on its row flipped in a copy.
+//! These tests state what each software token's committed profile must say, whatever the probe
+//! writes. The probe writes these files, and the build compares a fresh probe run with them, so a
+//! change of the probe would change both sides of that comparison (review 2026-11-24 C-8). Each
+//! property comes from PKCS #11, from DESIGN.md (the spec of cakeys), or from what the module's
+//! own source and documentation say that it does, and never from the profile. Each property is
+//! seen to fail when its row is flipped in a copy of the profile.
 
 use cakeys_profile::{Capability, Profile, Row};
 
@@ -10,7 +11,7 @@ const SOFTHSM: &str = "profiles/modules/softhsm/2.7.toml";
 const KRYOPTIC: &str = "profiles/modules/kryoptic/1.5.toml";
 const TPM2: &str = "profiles/modules/tpm2-pkcs11/1.10+swtpm.toml";
 
-/// A property of one profile: `Err` says how the profile breaks it.
+/// A property of one profile. The `Err` value says how the profile breaks the property.
 type Check = fn(&Profile) -> Result<(), String>;
 /// A change of the profile's TOML that breaks the property.
 type Flip = fn(&mut toml::Table);
@@ -31,7 +32,8 @@ fn is_yes(p: &Profile, key: &str) -> bool {
     row(p, key).is_some_and(|r| r.answer.yes())
 }
 
-/// `yes` all answer yes, and none of `not` does (absent, no, or untested).
+/// Checks that every row in `yes` answers yes, and that no row in `not` does (each of those is
+/// absent, no, or untested).
 fn says(p: &Profile, yes: &[&str], not: &[&str]) -> Result<(), String> {
     let wrong: Vec<String> = yes
         .iter()
@@ -42,7 +44,7 @@ fn says(p: &Profile, yes: &[&str], not: &[&str]) -> Result<(), String> {
     if wrong.is_empty() { Ok(()) } else { Err(wrong.join("; ")) }
 }
 
-/// No row whose key starts with one of `prefixes` answers yes.
+/// Checks that no row whose key starts with one of `prefixes` answers yes.
 fn no_yes(p: &Profile, prefixes: &[&str]) -> Result<(), String> {
     let wrong: Vec<String> = p
         .capabilities
@@ -53,8 +55,9 @@ fn no_yes(p: &Profile, prefixes: &[&str]) -> Result<(), String> {
     if wrong.is_empty() { Ok(()) } else { Err(wrong.join("; ")) }
 }
 
-/// The mechanism PKCS #11 names for what a row does, where the row's key says (v3.2: each key
-/// type's generation mechanism, OAEP, ECDH, each commitment's mechanism, DESIGN.md §3.1).
+/// Returns the mechanism that PKCS #11 names for the operation of a row, when the row's key
+/// determines it (v3.2: each key type's generation mechanism, OAEP, ECDH, and each commitment's
+/// mechanism from DESIGN.md §3.1).
 fn mechanism(key: &str) -> Option<String> {
     let parts: Vec<&str> = key.split('.').collect();
     Some(match parts[..] {
@@ -86,8 +89,9 @@ fn mechanism(key: &str) -> Option<String> {
     })
 }
 
-/// Every yes row's mechanism, and the one it went `via`, is one the module lists
-/// (`C_GetMechanismList`) or the profile adds as performed unlisted.
+/// Checks that the mechanism of every yes row, and the mechanism in its `via`, is one that the
+/// module lists (`C_GetMechanismList`) or one that the profile adds as performed although it is
+/// not listed.
 fn offered(p: &Profile) -> Result<(), String> {
     let listed = |m: &str| p.advertise.iter().chain(&p.add).any(|a| a == m);
     let wrong: Vec<String> = p
@@ -110,7 +114,7 @@ fn caps(t: &mut toml::Table) -> &mut toml::Table {
     t.get_mut("capabilities").and_then(toml::Value::as_table_mut).expect("a [capabilities] table")
 }
 
-/// Set `key`'s row: yes as the host verified it, or no as the module refused.
+/// Sets `key`'s row to a yes that the host verified, or to a no that the module refused.
 fn set(t: &mut toml::Table, key: &str, yes: bool) {
     let row = if yes {
         toml::toml! { answer = "yes" by = "host" }
@@ -538,8 +542,8 @@ fn every_software_profile_keeps_its_properties() {
     assert!(broken.is_empty(), "{}", broken.join("\n"));
 }
 
-/// Each property fails on its row flipped in a copy of the committed profile: none holds
-/// vacuously.
+/// Each property fails when its row is flipped in a copy of the committed profile, so no property
+/// passes without checking anything.
 #[test]
 fn each_property_fails_on_its_row_flipped() {
     for (path, name, _, check, flip) in all() {
