@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A report's number as a shields.io endpoint file (https://shields.io/badges/endpoint-badge),
 # on stdout: the README's badges read them from the `badges` branch, where
-# .github/workflows/reports.yml pushes them.
+# .github/workflows/reports.yml (coverage) and mutants.yml (mutants) push them.
 #
 #   scripts/badges.sh coverage <nix build .#coverage result>    lines covered, of all lines
 #   scripts/badges.sh mutants <nix build .#mutants result>      mutants caught, of the viable ones

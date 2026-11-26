@@ -1,0 +1,65 @@
+# The fewest tests each test binary may have, by cargo-nextest's name for the binary
+# (nix/test-count.py, checks.test-count; docs/DEVELOPMENT.md, "Testing"). A binary with fewer
+# in its source fails the check: a test that goes is brought back, or this file is lowered in the
+# same diff, and the commit says why. A new test needs no edit here; `--write` records the source
+# as it is.
+
+cakeys-aws-cloudhsm = 4
+cakeys-cli-common = 9
+"cakeys-cli-common::provider_contract" = 9
+cakeys-core = 111
+"cakeys-core::checks" = 1
+"cakeys-core::config_doc" = 1
+"cakeys-core::exit_codes" = 2
+"cakeys-core::fuzzing_surface" = 2
+"cakeys-core::lock_mbt" = 2
+"cakeys-core::properties" = 10
+"cakeys-core::refusals" = 18
+cakeys-kmsp11 = 8
+cakeys-names = 5
+cakeys-pkcs11 = 66
+"cakeys-pkcs11::library" = 1
+"cakeys-pkcs11::logins" = 2
+"cakeys-pkcs11::patched_cryptoki" = 1
+"cakeys-pkcs11::templates" = 4
+cakeys-profile = 44
+"cakeys-profile::answers" = 3
+"cakeys-profile::properties" = 2
+cakeys-tpm2-pkcs11 = 37
+cakeys-ykcs11 = 10
+"cakeys::cloud" = 2
+"cakeys::fault" = 93
+"cakeys::ftpm" = 4
+"cakeys::harness" = 14
+"cakeys::kryoptic" = 80
+"cakeys::liar_lint" = 3
+"cakeys::liars" = 9
+"cakeys::offline" = 3
+"cakeys::p11kit" = 3
+"cakeys::references" = 5
+"cakeys::rules" = 5
+"cakeys::softhsm" = 80
+"cakeys::surface" = 1
+"cakeys::tpm2" = 23
+"cakeys::validate" = 5
+"cakeys::yubikey" = 2
+camigrate = 54
+"camigrate::dry_run" = 37
+"camigrate::fault" = 8
+"camigrate::from_files" = 6
+"camigrate::liars" = 7
+"camigrate::rules" = 1
+"camigrate::surface" = 1
+"camigrate::yubikey" = 1
+caprobe = 49
+"caprobe::fault" = 9
+"caprobe::ftpm" = 1
+"caprobe::liars" = 3
+"caprobe::reference" = 7
+"caprobe::supports" = 5
+"caprobe::surface" = 1
+"caprobe::template_hook" = 1
+"caprobe::tpm2" = 2
+"caprobe::yubikey" = 2
+p11-fault = 24
+p11-names = 2

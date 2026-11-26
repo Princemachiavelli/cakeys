@@ -1,17 +1,18 @@
-//! X.509 attestation chains, verified on the host: a certificate walked through a pool of
-//! intermediates to one of a set of pinned anchors, every signature checked over the bytes its
-//! issuer signed. The `YubiKey` PIV attestation (ykcs11) and the TPM's EK certificate
-//! (tpm2-pkcs11) both build on it; what a chain must assert is theirs.
+//! The verification of X.509 attestation chains on the host. The walk starts at a certificate
+//! and follows its issuers through a pool of intermediates until it reaches one of a set of
+//! pinned anchors. It checks every signature over the bytes that the issuer signed. The `YubiKey`
+//! PIV attestation (ykcs11) and the TPM's EK certificate (tpm2-pkcs11) both use this module, and
+//! each of them decides what its chain must assert.
 
-use crate::{KmError, Result, id};
+use crate::{Check, KmError, Reason, Result, id};
 use x509_cert::certificate::Certificate;
 use x509_cert::der::asn1::ObjectIdentifier;
 use x509_cert::der::{DateTime, Decode, Encode, Header, Reader, SliceReader, Tagged};
 
-/// Signature algorithm OIDs the chain verifier dispatches on: ECDSA and RSA PKCS#1 v1.5 with
-/// SHA-2. PIV devices sign with ECDSA-SHA256 when the attesting key is EC and
-/// SHA256-PKCS#1v1.5 when it is RSA, and the pinned Yubico roots are RSA-2048 signing with
-/// SHA-256 or SHA-512.
+/// The signature algorithm OIDs by which the chain verifier selects the verification: ECDSA and
+/// RSA PKCS#1 v1.5 with SHA-2. PIV devices sign with ECDSA-SHA256 when the attesting key is an EC
+/// key and with SHA256-PKCS#1v1.5 when it is an RSA key. The pinned Yubico roots are RSA-2048 keys
+/// that sign with SHA-256 or SHA-512.
 const ECDSA_SHA256: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.2");
 const ECDSA_SHA384: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3");
 const ECDSA_SHA512: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.4");
@@ -25,16 +26,18 @@ const BASIC_CONSTRAINTS: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29
 const KEY_USAGE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.15");
 /// `extendedKeyUsage` (2.5.29.37).
 const EXTENDED_KEY_USAGE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.37");
-/// `tcg-kp-EKCertificate` (2.23.133.8.1): the purpose TCG's EK credential profile gives an
-/// Endorsement Key certificate ([`Cert::serves`]).
+/// `tcg-kp-EKCertificate` (2.23.133.8.1): the purpose that TCG's EK credential profile assigns to
+/// an Endorsement Key certificate ([`Cert::serves`]).
 pub const TCG_KP_EK_CERTIFICATE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.23.133.8.1");
 
-/// The extensions a certificate of a walk may mark critical: those the walk or its callers read
-/// (basicConstraints, keyUsage, extendedKeyUsage), and two that restrict nothing an attestation
-/// relies on but that issuers mark critical — subjectAltName (a TCG EK certificate with an empty
-/// subject) and certificatePolicies (Yubico's intermediates). Any other critical extension
-/// (nameConstraints, policyConstraints, a vendor's) may constrain the certificate in a way the
-/// walk does not enforce, so RFC 5280 §4.2 refuses it (review 2026-11-23 A-3).
+/// The extensions that a certificate of a walk may mark as critical. These are the extensions
+/// that the walk or its callers read (basicConstraints, keyUsage and extendedKeyUsage), and two
+/// extensions that restrict nothing on which an attestation relies but that issuers mark as
+/// critical: subjectAltName (in a TCG EK certificate with an empty subject) and
+/// certificatePolicies (in Yubico's intermediates). Any other critical extension
+/// (nameConstraints, policyConstraints, or a vendor's extension) may constrain the certificate in
+/// a way that the walk does not enforce, so the walk refuses it, as RFC 5280 §4.2 requires
+/// (review 2026-11-23 A-3).
 const UNDERSTOOD: [ObjectIdentifier; 5] = [
     BASIC_CONSTRAINTS,
     KEY_USAGE,
@@ -51,56 +54,58 @@ pub struct Cert {
 }
 
 impl Cert {
-    /// Parse one DER certificate, keeping `der` as its bytes.
+    /// Parses one DER certificate and keeps `der` as its bytes.
     ///
     /// # Errors
     ///
-    /// `Conflict` when `der` is no certificate.
+    /// Returns `Conflict` when `der` is not a certificate.
     pub fn from_der(der: Vec<u8>) -> Result<Cert> {
-        let parsed =
-            Certificate::from_der(&der).map_err(|e| KmError::Conflict(format!("parsing certificate: {e}").into()))?;
+        let parsed = Certificate::from_der(&der)
+            .map_err(|e| KmError::Conflict(Reason::malformed(format!("parsing certificate: {e}"))))?;
         Ok(Cert { der, parsed })
     }
 
-    /// The certificate's DER, as it was read.
+    /// Returns the certificate's DER, as it was read.
     #[must_use]
     pub fn der(&self) -> &[u8] {
         &self.der
     }
 
-    /// The decoded certificate.
+    /// Returns the decoded certificate.
     #[must_use]
     pub fn parsed(&self) -> &Certificate {
         &self.parsed
     }
 
-    /// The bytes the signature was computed over: the `tbsCertificate` sliced from the
-    /// certificate's original DER, never re-encoded, so verification is exact.
-    /// `self.parsed.tbs_certificate()` is the decoded structure, whose bytes would come from
-    /// `to_der()`: those equal the signed bytes only when decoding lost nothing, and der 0.8
-    /// accepts an explicitly encoded DEFAULT (a `version [0] v1`) that its encoder then omits.
+    /// Returns the bytes over which the signature was computed: the `tbsCertificate`, cut from the
+    /// certificate's original DER and never encoded again, so that the verification checks
+    /// exactly the signed bytes. `self.parsed.tbs_certificate()` is the decoded structure, whose
+    /// bytes would come from `to_der()`. Those bytes equal the signed bytes only when the decoding
+    /// lost nothing, and der 0.8 accepts an explicitly encoded DEFAULT value (a `version [0] v1`)
+    /// that its encoder then omits.
     fn tbs(&self) -> Result<&[u8]> {
-        // Certificate is SEQUENCE { tbsCertificate, signatureAlgorithm, signature }: the first
-        // TLV after the outer header, header included.
-        let mut reader =
-            SliceReader::new(&self.der).map_err(|e| KmError::Conflict(format!("certificate DER: {e}").into()))?;
+        // A Certificate is SEQUENCE { tbsCertificate, signatureAlgorithm, signature }, so the
+        // `tbsCertificate` is the first TLV after the outer header, including its own header.
+        let mut reader = SliceReader::new(&self.der)
+            .map_err(|e| KmError::Conflict(Reason::malformed(format!("certificate DER: {e}"))))?;
         Header::decode(&mut reader)
             .and_then(|_| reader.tlv_bytes())
-            .map_err(|e| KmError::Conflict(format!("certificate has no tbsCertificate: {e}").into()))
+            .map_err(|e| KmError::Conflict(Reason::malformed(format!("certificate has no tbsCertificate: {e}"))))
     }
 
-    /// The raw signature value: the BIT STRING content, minus the unused-bits byte.
+    /// Returns the raw signature value: the content of the BIT STRING without the byte that
+    /// counts the unused bits.
     fn signature(&self) -> &[u8] {
         self.parsed.signature().raw_bytes()
     }
 
-    /// The subject's canonical SPKI ([`id::spki_canonical`]): for a PIV device certificate, the
-    /// attestation key itself.
+    /// Returns the canonical SPKI of the subject ([`id::spki_canonical`]). For a PIV device
+    /// certificate, that is the attestation key itself.
     ///
     /// # Errors
     ///
-    /// `Conflict` when the SPKI does not encode; [`id::spki_canonical`]'s `Unsupported` for a
-    /// key cakeys does not hash.
+    /// Returns `Conflict` when the SPKI cannot be encoded, and the `Unsupported` of
+    /// [`id::spki_canonical`] for a key that cakeys does not hash.
     pub fn spki(&self) -> Result<Vec<u8>> {
         id::spki_canonical(
             &self
@@ -108,16 +113,16 @@ impl Cert {
                 .tbs_certificate()
                 .subject_public_key_info()
                 .to_der()
-                .map_err(|e| KmError::Conflict(format!("encoding SPKI: {e}").into()))?,
+                .map_err(|e| KmError::Conflict(Reason::malformed(format!("encoding SPKI: {e}"))))?,
         )
     }
 
-    /// Whether `at` (seconds since the Unix epoch) falls within the validity period, both ends
-    /// included (RFC 5280 §4.1.2.5). Asked under `check` only (ISSUES.md B8).
+    /// Checks whether `at` (seconds since the Unix epoch) is within the validity period,
+    /// including both ends (RFC 5280 §4.1.2.5). Only `check` asks this (ISSUES.md B8).
     ///
     /// # Errors
     ///
-    /// `Conflict` naming the time and the period when `at` is outside it.
+    /// Returns `Conflict`, which names the time and the period, when `at` is outside the period.
     pub fn valid_at(&self, at: u64) -> Result<()> {
         let validity = self.parsed.tbs_certificate().validity();
         let (from, to) =
@@ -129,7 +134,8 @@ impl Cert {
             DateTime::from_unix_duration(std::time::Duration::from_secs(s))
                 .map_or_else(|_| s.to_string(), |t| t.to_string())
         };
-        Err(KmError::Conflict(
+        Err(KmError::Conflict(Reason::check(
+            Check::ChainValidity,
             format!(
                 "attestation chain: '{}' is not valid at {} (valid from {} to {}); `check --at <time>` judges the \
                  chain at another time, `--ignore-validity` skips the dates",
@@ -137,12 +143,12 @@ impl Cert {
                 show(at),
                 show(from),
                 show(to)
-            )
-            .into(),
-        ))
+            ),
+        )))
     }
 
-    /// The raw `extnValue` of the extension with this OID, empty when absent.
+    /// Returns the raw `extnValue` of the extension with this OID, or an empty value when the
+    /// certificate has no such extension.
     #[must_use]
     pub fn extension(&self, oid: &ObjectIdentifier) -> Vec<u8> {
         self.parsed
@@ -153,31 +159,36 @@ impl Cert {
             .unwrap_or_default()
     }
 
-    /// The name link of the chain: whether this certificate's subject is `cert`'s issuer,
-    /// compared as decoded Names (nothing is re-encoded, so nothing can fail to encode).
+    /// Returns whether this certificate's subject is the issuer of `cert`. The comparison uses
+    /// the decoded Names, so nothing is encoded again and no encoding can fail. A matching name
+    /// does not prove that this certificate issued `cert`, so this function is private to the
+    /// crate, as [`verify_signed_by`] is. Callers check a link with [`link`] (review 2026-11-24
+    /// A-7).
     #[must_use]
-    pub fn issued(&self, cert: &Cert) -> bool {
+    pub(crate) fn issued(&self, cert: &Cert) -> bool {
         self.parsed.tbs_certificate().subject() == cert.parsed.tbs_certificate().issuer()
     }
 
-    /// Whether the certificate may serve `purpose`: it names no purposes (no
-    /// `extendedKeyUsage`), or names that one (RFC 5280 §4.2.1.12). An EK certificate is held to
-    /// [`TCG_KP_EK_CERTIFICATE`] (review 2026-11-23 A-3).
+    /// Returns whether the certificate may serve `purpose`: either it names no purposes (it has
+    /// no `extendedKeyUsage`), or it names `purpose` (RFC 5280 §4.2.1.12). An EK certificate must
+    /// serve [`TCG_KP_EK_CERTIFICATE`] (review 2026-11-23 A-3).
     ///
     /// # Errors
     ///
-    /// `Conflict` when its `extendedKeyUsage` does not decode.
+    /// Returns `Conflict` when its `extendedKeyUsage` does not decode.
     pub fn serves(&self, purpose: &ObjectIdentifier) -> Result<bool> {
         let eku: Option<x509_cert::ext::pkix::ExtendedKeyUsage> =
             self.decoded(&EXTENDED_KEY_USAGE, "extendedKeyUsage")?;
         Ok(eku.is_none_or(|eku| eku.0.contains(purpose)))
     }
 
-    /// The extension with this OID, decoded as `T`; `None` when absent.
+    /// Returns the extension with this OID, decoded as `T`, or `None` when the certificate has no
+    /// such extension.
     ///
     /// # Errors
     ///
-    /// `Conflict` naming the certificate and `what` when the extension does not decode.
+    /// Returns `Conflict`, which names the certificate and `what`, when the extension does not
+    /// decode.
     fn decoded<T>(&self, oid: &ObjectIdentifier, what: &str) -> Result<Option<T>>
     where
         T: for<'a> Decode<'a, Error = x509_cert::der::Error>,
@@ -189,16 +200,18 @@ impl Cert {
             .map(|e| T::from_der(e.extn_value.as_bytes()))
             .transpose()
             .map_err(|e| {
-                KmError::Conflict(
-                    format!("attestation chain: '{}' {what}: {e}", self.parsed.tbs_certificate().subject()).into(),
-                )
+                KmError::Conflict(Reason::malformed(format!(
+                    "attestation chain: '{}' {what}: {e}",
+                    self.parsed.tbs_certificate().subject()
+                )))
             })
     }
 
-    /// Whether this certificate may issue a chain with `below` CA certificates under it (the
-    /// certificate the walk started from counts as one): `basicConstraints` CA, within its
-    /// `pathLen`, and a `keyUsage`, when it has one, with `keyCertSign` (RFC 5280 §4.2.1.3; review
-    /// 2026-11-23 A-3).
+    /// Checks whether this certificate may issue a chain with `below` CA certificates under it
+    /// (the certificate from which the walk started counts as one when `Start::Intermediate`
+    /// says so). The certificate must be a CA in `basicConstraints`, `below` must be within its
+    /// `pathLen`, and its `keyUsage`, when it has one, must include `keyCertSign` (RFC 5280
+    /// §4.2.1.3; review 2026-11-23 A-3).
     fn may_issue(&self, below: u16) -> Result<()> {
         let subject = self.parsed.tbs_certificate().subject().to_string();
         let bc: Option<x509_cert::ext::pkix::BasicConstraints> =
@@ -206,28 +219,34 @@ impl Cert {
         match bc {
             Some(bc) if bc.ca && bc.path_len_constraint.is_none_or(|n| u16::from(n) >= below) => {}
             Some(bc) if bc.ca => {
-                return Err(KmError::Conflict(
+                return Err(KmError::Conflict(Reason::check(
+                    Check::ChainCa,
                     format!(
                         "attestation chain: '{subject}' allows {} CA certificate(s) below it, the chain has {below}",
                         bc.path_len_constraint.unwrap_or_default()
-                    )
-                    .into(),
-                ));
+                    ),
+                )));
             }
-            _ => return Err(KmError::Conflict(format!("attestation chain: '{subject}' is not a CA").into())),
+            _ => {
+                return Err(KmError::Conflict(Reason::check(
+                    Check::ChainCa,
+                    format!("attestation chain: '{subject}' is not a CA"),
+                )));
+            }
         }
         let ku: Option<x509_cert::ext::pkix::KeyUsage> = self.decoded(&KEY_USAGE, "keyUsage")?;
         if ku.is_some_and(|ku| !ku.key_cert_sign()) {
-            return Err(KmError::Conflict(
-                format!("attestation chain: '{subject}' may not sign certificates: its keyUsage lacks keyCertSign")
-                    .into(),
-            ));
+            return Err(KmError::Conflict(Reason::check(
+                Check::ChainCa,
+                format!("attestation chain: '{subject}' may not sign certificates: its keyUsage lacks keyCertSign"),
+            )));
         }
         Ok(())
     }
 
-    /// RFC 5280 §4.2: a certificate with a critical extension outside [`UNDERSTOOD`] is refused,
-    /// since it may constrain the certificate in a way the walk does not enforce.
+    /// Refuses a certificate with a critical extension that is not in [`UNDERSTOOD`], because such
+    /// an extension may constrain the certificate in a way that the walk does not enforce (RFC
+    /// 5280 §4.2).
     fn no_unknown_critical(&self) -> Result<()> {
         let unknown = self
             .parsed
@@ -238,33 +257,33 @@ impl Cert {
             .find(|e| e.critical && !UNDERSTOOD.contains(&e.extn_id));
         match unknown {
             None => Ok(()),
-            Some(e) => Err(KmError::Conflict(
+            Some(e) => Err(KmError::Conflict(Reason::check(
+                Check::ChainCriticalExtension,
                 format!(
                     "attestation chain: '{}' has the critical extension {}, which cakeys does not process",
                     self.parsed.tbs_certificate().subject(),
                     e.extn_id
-                )
-                .into(),
-            )),
+                ),
+            ))),
         }
     }
 }
 
-/// Parse every PEM `CERTIFICATE` block of `pem` (anchor and pool files), keeping each block's
-/// decoded bytes as the certificate's DER: a re-encoding could differ from the bytes the issuer
-/// signed (see `Cert::tbs`). Text between the blocks is skipped.
+/// Parses every PEM `CERTIFICATE` block of `pem` (the anchor and pool files), and keeps the
+/// decoded bytes of each block as the certificate's DER. A new encoding could differ from the
+/// bytes that the issuer signed (see `Cert::tbs`). Text between the blocks is skipped.
 ///
 /// # Errors
 ///
-/// `Validation` for a block without its END line, one that does not decode, one of another
-/// kind than `CERTIFICATE`, or a certificate that does not parse.
+/// Returns `Validation` for a block without its END line, a block that does not decode, a block
+/// of a kind other than `CERTIFICATE`, or a certificate that does not parse.
 pub fn pem_certs(pem: &str) -> Result<Vec<Cert>> {
     let bad = |e: String| KmError::Validation(format!("pem certificates: {e}").into());
     let mut certs = Vec::new();
     let mut rest = pem;
     while let Some(start) = rest.find("-----BEGIN ") {
         let block = &rest[start..];
-        // The block runs to the dashes closing its END line.
+        // The block ends with the dashes that close its END line.
         let end = block
             .find("-----END ")
             .and_then(|e| block[e + 9..].find("-----").map(|close| e + 9 + close + 5))
@@ -280,12 +299,14 @@ pub fn pem_certs(pem: &str) -> Result<Vec<Cert>> {
     Ok(certs)
 }
 
-/// A file's certificates: a PEM bundle (any number of `CERTIFICATE` blocks, read by
-/// [`pem_certs`]) when the bytes are text holding a BEGIN line, else one DER certificate.
+/// Returns the certificates of a file. When the bytes are text that contains a BEGIN line, the
+/// file is a PEM bundle with any number of `CERTIFICATE` blocks, which [`pem_certs`] reads.
+/// Otherwise, the file is one DER certificate.
 ///
 /// # Errors
 ///
-/// [`pem_certs`]'s for a PEM bundle; [`Cert::from_der`]'s for anything else.
+/// Returns the errors of [`pem_certs`] for a PEM bundle, and the errors of [`Cert::from_der`] for
+/// anything else.
 pub fn certs_of(bytes: &[u8]) -> Result<Vec<Cert>> {
     match std::str::from_utf8(bytes) {
         Ok(text) if text.contains("-----BEGIN ") => pem_certs(text),
@@ -293,21 +314,24 @@ pub fn certs_of(bytes: &[u8]) -> Result<Vec<Cert>> {
     }
 }
 
-/// Walk `cert`'s issuer chain through the intermediates of `pool` until one of `anchors` is
-/// reached, verifying every signature and every issuer's `basicConstraints` (CA, within its
-/// `pathLen`) and `keyUsage` (`keyCertSign`, when present) on the host, and refusing any
-/// certificate of the walk with a critical extension it does not process; the anchor reached is
-/// the answer, and what a caller pins. The walk
-/// takes at most `max_links` signatures, `cert`'s own included. `pathLen` counts the CA
-/// certificates below an issuer (RFC 5280 §4.2.1.9), `cert` among them as `start` says: the
-/// caller's knowledge of what it is walking from, never what `cert` claims of itself. With `at`,
-/// every certificate of the walk must be valid then, `cert` and the anchor included.
+/// Walks the issuer chain of `cert` through the intermediates of `pool` until it reaches one of
+/// `anchors`, and returns that anchor, which the caller pins. On the host, the walk verifies
+/// every signature, the `basicConstraints` of every issuer (it must be a CA, within its
+/// `pathLen`), and its `keyUsage` (it must include `keyCertSign`, when present). The walk refuses
+/// any certificate with a critical extension that it does not process.
+///
+/// The walk verifies at most `max_links` signatures, including the signature of `cert`.
+/// `pathLen` counts the CA certificates below an issuer (RFC 5280 §4.2.1.9). `start` says
+/// whether `cert` counts among them. The caller decides this from what it knows about the
+/// certificate, never from what `cert` claims about itself. With `at`, every certificate of the
+/// walk must be valid at that time, including `cert` and the anchor.
 ///
 /// # Errors
 ///
-/// `Conflict` when no walk reaches an anchor: a signature that does not verify, an issuer that
-/// is not a CA or is outside its dates, a chain longer than `max_links`, or no issuer at all.
-/// `Unsupported` for a signature algorithm other than ECDSA or RSA PKCS#1 v1.5 with SHA-2.
+/// Returns `Conflict` when no walk reaches an anchor: because a signature does not verify, an
+/// issuer is not a CA or is outside its validity period, the chain is longer than `max_links`, or
+/// a certificate has no issuer at all. Returns `Unsupported` for a signature algorithm other than
+/// ECDSA or RSA PKCS#1 v1.5 with SHA-2.
 pub fn chain_to_anchor<'a>(
     cert: &Cert,
     start: Start,
@@ -320,35 +344,36 @@ pub fn chain_to_anchor<'a>(
         cert.valid_at(at)?;
     }
     cert.no_unknown_critical()?;
-    let below = match start {
-        Start::EndEntity => 0,
-        Start::Intermediate => 1,
-    };
-    issuer_chain(cert, Walk { links: 1, below }, anchors, pool, at, max_links)
+    issuer_chain(cert, Walk { links: 1, below: below(start) }, anchors, pool, at, max_links)
 }
 
-/// What [`chain_to_anchor`] walks from, which decides whether it counts against its issuers'
-/// `pathLen`.
+/// The kind of certificate from which [`chain_to_anchor`] starts. The kind decides whether the
+/// certificate counts against the `pathLen` of its issuers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Start {
-    /// An end-entity certificate (an EK certificate): not counted, so a `pathlen:0` CA may sign it.
+    /// An end-entity certificate (an EK certificate). It is not counted, so a CA with `pathlen:0`
+    /// may sign it.
     EndEntity,
-    /// A CA below the chain (a PIV device certificate, which signs the slot's): counted.
+    /// A CA at the bottom of the chain (a PIV device certificate, which signs the slot
+    /// certificate). It is counted.
     Intermediate,
 }
 
-/// Where a walk is: the signatures it has taken (`current`'s included), and the CA certificates
-/// below the next issuer. Both are wider than `max_links`, so neither can wrap on a cyclic pool.
+/// The state of a walk: the number of signatures that it has verified (including the signature of
+/// `current`), and the number of CA certificates below the next issuer. Both counters are `u16`
+/// and `max_links` is a `u8`, so the length check stops a walk through a cyclic pool before
+/// either counter can overflow.
 #[derive(Clone, Copy)]
 struct Walk {
     links: u16,
     below: u16,
 }
 
-/// The rest of [`chain_to_anchor`]'s walk above `current`, at `walk`. Every certificate whose
-/// subject is `current`'s issuer is tried, pooled intermediates first, then anchors: one subject
-/// may name two keys (a re-keyed CA), and a chain through the second must not fail on the first
-/// one's signature. When none links, the first candidate's error is the answer.
+/// Continues the walk of [`chain_to_anchor`] above `current`, in the state `walk`. The function
+/// tries every certificate whose subject is the issuer of `current`, first the intermediates of
+/// the pool and then the anchors. One subject may name two keys (a CA that got a new key), and a
+/// chain through the second key must not fail because of the first key's signature. When no
+/// candidate links, the function returns the first candidate's error.
 fn issuer_chain<'a>(
     current: &Cert,
     walk: Walk,
@@ -357,16 +382,11 @@ fn issuer_chain<'a>(
     at: Option<u64>,
     max_links: u8,
 ) -> Result<&'a Cert> {
-    let bad = |what: String| KmError::Conflict(format!("attestation chain: {what}").into());
+    let bad = |check, what: String| KmError::Conflict(Reason::check(check, format!("attestation chain: {what}")));
     if walk.links > u16::from(max_links) {
-        return Err(bad(format!("longer than {max_links} links")));
+        return Err(bad(Check::ChainLength, format!("longer than {max_links} links")));
     }
-    let link = |issuer: &Cert| -> Result<()> {
-        issuer.no_unknown_critical()?;
-        issuer.may_issue(walk.below)?;
-        verify_signed_by(current, issuer)?;
-        at.map_or(Ok(()), |at| issuer.valid_at(at))
-    };
+    let link = |issuer: &Cert| issued_by(current, issuer, walk.below, at);
     let mut first_error = None;
     for issuer in pool.iter().filter(|c| c.issued(current)) {
         let above = Walk { links: walk.links + 1, below: walk.below + 1 };
@@ -386,24 +406,73 @@ fn issuer_chain<'a>(
         }
     }
     Err(first_error.unwrap_or_else(|| {
-        bad(format!(
-            "'{}' is signed by no pinned root and no intermediate given",
-            current.parsed.tbs_certificate().subject()
-        ))
+        bad(
+            Check::ChainAnchor,
+            format!(
+                "'{}' is signed by no pinned root and no intermediate given",
+                current.parsed.tbs_certificate().subject()
+            ),
+        )
     }))
 }
 
-/// Verify that `cert`'s signature (over its original `tbsCertificate` bytes) was made by
-/// `signer`'s key, with the signature algorithm the certificate names: ECDSA (DER) with the
-/// hash the algorithm names, whatever the curve, or RSA PKCS#1 v1.5 ([`crate::sig`]). The
-/// unsigned outer `signatureAlgorithm` must equal the signed `tbsCertificate.signature`, OID
-/// and parameters (RFC 5280 §4.1.1.2).
+/// Checks whether `issuer` issued `cert`, with every rule that a link of the walk of
+/// [`chain_to_anchor`] checks. `cert` must have no critical extension that cakeys does not
+/// process and must be valid at `at`. `issuer` may issue it (a CA within its `pathLen`, with
+/// `keyCertSign` when it has a `keyUsage`), must have no such critical extension, must be valid at
+/// `at`, and its key must have made the signature of `cert`. `start` says what kind of
+/// certificate `cert` is, as for the walk. The one link that a caller checks outside a walk (the
+/// PIV slot certificate, which the device certificate signs) is checked here, and never by the
+/// signature alone (review 2026-11-24 A-7: the check of the slot link skipped the issuer's CA
+/// flag and `keyUsage` and the slot certificate's critical extensions).
 ///
 /// # Errors
 ///
-/// `Conflict` when the two algorithms differ, the signature does not verify, or `signer` holds
-/// no key of the algorithm's kind; `Unsupported` for another signature algorithm.
-pub fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
+/// Returns `Conflict` when `cert` or `issuer` breaks a rule or the signature does not verify.
+/// Returns `Unsupported` for a signature algorithm other than ECDSA or RSA PKCS#1 v1.5 with SHA-2.
+pub fn link(cert: &Cert, start: Start, issuer: &Cert, at: Option<u64>) -> Result<()> {
+    if let Some(at) = at {
+        cert.valid_at(at)?;
+    }
+    cert.no_unknown_critical()?;
+    issued_by(cert, issuer, below(start), at)
+}
+
+/// Returns the number of CA certificates that the starting certificate adds below its issuer.
+fn below(start: Start) -> u16 {
+    match start {
+        Start::EndEntity => 0,
+        Start::Intermediate => 1,
+    }
+}
+
+/// Checks the issuer's rules of a link ([`link`]). `issuer` may issue a chain with `below` CA
+/// certificates under it, has no critical extension that cakeys does not process, is valid at
+/// `at`, and signed `current`. The walk checks the rules for `current` itself once, either where
+/// the walk starts or when `current` was checked as an issuer.
+fn issued_by(current: &Cert, issuer: &Cert, below: u16, at: Option<u64>) -> Result<()> {
+    issuer.no_unknown_critical()?;
+    issuer.may_issue(below)?;
+    verify_signed_by(current, issuer)?;
+    at.map_or(Ok(()), |at| issuer.valid_at(at))
+}
+
+/// Verifies that the key of `signer` made the signature of `cert` (over the original
+/// `tbsCertificate` bytes), with the signature algorithm that the certificate names. That is
+/// ECDSA (DER) with the hash that the algorithm names, on any curve, or RSA PKCS#1 v1.5
+/// ([`crate::sig`]). The unsigned outer `signatureAlgorithm` must equal the signed
+/// `tbsCertificate.signature`, both the OID and the parameters (RFC 5280 §4.1.1.2).
+///
+/// # Errors
+///
+/// Returns `Conflict` when the two algorithms differ, the signature does not verify, or `signer`
+/// holds no key of the algorithm's kind. Returns `Unsupported` for any other signature
+/// algorithm.
+///
+/// This function checks only the signature and not the other rules of a link. It is private to
+/// the crate, so that no caller outside the walk checks a link with it alone ([`link`]; review
+/// 2026-11-24 A-7).
+pub(crate) fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
     use crate::sig::{self, Encoding, HashAlg};
     let (outer, inner) = (cert.parsed.signature_algorithm(), cert.parsed.tbs_certificate().signature());
     if outer != inner {
@@ -411,15 +480,15 @@ pub fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
             None => a.oid.to_string(),
             Some(p) => format!("{} with {} parameters", a.oid, p.tag()),
         };
-        return Err(KmError::Conflict(
+        return Err(KmError::Conflict(Reason::check(
+            Check::ChainSignature,
             format!(
                 "certificate '{}': its signatureAlgorithm {} is not the signed tbsCertificate.signature {}",
                 cert.parsed.tbs_certificate().subject(),
                 show(outer),
                 show(inner)
-            )
-            .into(),
-        ));
+            ),
+        )));
     }
     let spki = signer.spki()?;
     let (tbs, s) = (cert.tbs()?, cert.signature());
@@ -436,12 +505,14 @@ pub fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
     let sri = id::sri(&spki);
     match verdict {
         Some(Ok(())) => Ok(()),
-        Some(Err(e)) => {
-            Err(KmError::Conflict(format!("certificate signature does not verify against {sri}: {e}").into()))
-        }
-        None => Err(KmError::Conflict(
-            format!("the signer {sri} holds no key for the certificate's signature algorithm").into(),
-        )),
+        Some(Err(e)) => Err(KmError::Conflict(Reason::check(
+            Check::ChainSignature,
+            format!("certificate signature does not verify against {sri}: {e}"),
+        ))),
+        None => Err(KmError::Conflict(Reason::check(
+            Check::ChainSignature,
+            format!("the signer {sri} holds no key for the certificate's signature algorithm"),
+        ))),
     }
 }
 
@@ -449,15 +520,15 @@ pub fn verify_signed_by(cert: &Cert, signer: &Cert) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// The test chain (root → device f9 → slot attestation) and a `YubiKey`'s own slot 95
-    /// attestation, copied from ykcs11's fixtures.
+    /// The directory with the test chain (root → device f9 → slot attestation) and the slot 95
+    /// attestation of a real `YubiKey`, copied from ykcs11's fixtures.
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
     fn fixture(name: &str) -> Vec<u8> {
         std::fs::read(format!("{FIXTURES}/{name}")).unwrap()
     }
 
-    /// A fixture certificate's DER, from its PEM.
+    /// Returns the DER of a fixture certificate, read from its PEM.
     fn der_of(name: &str) -> Vec<u8> {
         x509_cert::der::pem::decode_vec(&fixture(name)).unwrap().1
     }
@@ -466,9 +537,9 @@ mod tests {
         Cert::from_der(der_of(name)).unwrap()
     }
 
-    /// Every issuer in the walk must be a CA within its pathLen: Yubico's FIDO CAs carry
-    /// `pathlen:0`, so even under the pinned root they cannot issue a device certificate. The
-    /// pool is ykcs11's, the file its build pins.
+    /// Every issuer in the walk must be a CA within its `pathLen`. Yubico's FIDO CAs have
+    /// `pathlen:0`, so they cannot issue a device certificate, even under the pinned root. The
+    /// pool is ykcs11's pool, from the file that its build pins.
     #[test]
     fn issuers_must_be_cas_within_their_path_length() {
         let pool = pem_certs(include_str!("../../ykcs11/roots/yubico-intermediate.pem")).unwrap();
@@ -482,9 +553,10 @@ mod tests {
         assert!(cert("slot.pem").may_issue(0).unwrap_err().to_string().contains("is not a CA"));
     }
 
-    /// The walk takes at most `max_links` signatures: slot ← f9 ← root is two, so it reaches
-    /// the root under a limit of 2 and is refused under 1. With no issuer at all, the error
-    /// names the certificate. A limit of 255 on a pool whose certificate issues itself ends.
+    /// The walk verifies at most `max_links` signatures. The chain slot ← f9 ← root has two
+    /// signatures, so the walk reaches the root with a limit of 2 and is refused with a limit of 1.
+    /// When a certificate has no issuer at all, the error names the certificate. A walk with a
+    /// limit of 255 through a pool whose certificate issues itself ends.
     #[test]
     fn the_walk_is_bounded_by_max_links() {
         let (root, f9, slot) =
@@ -501,15 +573,17 @@ mod tests {
             )),
             "{e}"
         );
-        // The self-signed root in the pool links to itself at every step: the count stops it.
+        // The self-signed root in the pool links to itself at every step, and the count of
+        // signatures stops the walk.
         let e = chain_to_anchor(&pool[0], Start::Intermediate, &[], &root, None, u8::MAX).unwrap_err();
         assert!(e.to_string().contains("longer than 255 links"), "{e}");
     }
 
-    /// Whether the starting certificate counts against `pathLen` is the caller's to say: AMD's
-    /// fTPM EK certificate sits under a `pathlen:0` intermediate, which may sign an end entity
-    /// but not a CA. Walked as an intermediate, the same certificate is refused, whatever it
-    /// claims of itself. The chain is tpm2-pkcs11's (its roots, which its build pins).
+    /// The caller decides whether the starting certificate counts against `pathLen`. AMD's fTPM
+    /// EK certificate is under an intermediate with `pathlen:0`, which may sign an end entity but
+    /// not a CA. When the walk starts from the same certificate as an intermediate, it refuses the
+    /// certificate, whatever the certificate claims about itself. The chain is tpm2-pkcs11's
+    /// (with its roots, which its build pins).
     #[test]
     fn the_caller_says_whether_the_start_counts_against_path_length() {
         let bundle = certs_of(include_bytes!("../../tpm2-pkcs11/tests/fixtures/amd-ftpm-ek-ecc.pem")).unwrap();
@@ -521,8 +595,8 @@ mod tests {
         assert!(e.to_string().contains("allows 0 CA certificate(s) below it, the chain has 1"), "{e}");
     }
 
-    /// A file's certificates: a PEM bundle of two keeps both blocks' bytes, a DER certificate is
-    /// one, and anything else is refused.
+    /// Reads the certificates of a file: a PEM bundle of two certificates keeps the bytes of both
+    /// blocks, a DER file is one certificate, and anything else is refused.
     #[test]
     fn certs_of_reads_a_pem_bundle_or_one_der_certificate() {
         let bundle = [fixture("f9.pem"), fixture("root.pem")].concat();
@@ -537,7 +611,7 @@ mod tests {
         assert!(certs_of(key.unwrap().as_bytes()).is_err());
     }
 
-    /// A DER TLV: `tag`, the definite length, `body`.
+    /// Returns a DER TLV: `tag`, the definite length, and `body`.
     fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
         let len = body.len();
         let mut out = vec![tag];
@@ -550,17 +624,18 @@ mod tests {
         out
     }
 
-    /// A certificate assembled from its three parts: `tbs` and `signature_algorithm` as given,
-    /// and `cert`'s own signature value.
+    /// Returns a certificate assembled from three parts: `tbs` and `signature_algorithm` as
+    /// given, and the signature value of `cert`.
     fn reassembled(tbs: &[u8], signature_algorithm: &[u8], cert: &Cert) -> Vec<u8> {
         let signature = cert.parsed.signature().to_der().unwrap();
         tlv(0x30, &[tbs, signature_algorithm, &signature].concat())
     }
 
-    /// The outer signatureAlgorithm, which the signature does not cover, must be the signed
-    /// `tbsCertificate.signature`, parameters included: the slot certificate's outer
-    /// ECDSA-SHA256 with added NULL parameters, or with another hash, is refused before any
-    /// signature check (attest.rs F2). Its own outer algorithm still verifies.
+    /// The outer signatureAlgorithm, which the signature does not cover, must equal the signed
+    /// `tbsCertificate.signature`, including the parameters. When the slot certificate's outer
+    /// ECDSA-SHA256 gets added NULL parameters, or a different hash, the certificate is refused
+    /// before any signature check (attest.rs F2). With its own outer algorithm, it still
+    /// verifies.
     #[test]
     fn the_outer_signature_algorithm_is_the_signed_one() {
         let (slot, device) = (cert("slot.pem"), cert("f9.pem"));
@@ -568,7 +643,7 @@ mod tests {
         let own = slot.parsed.signature_algorithm().to_der().unwrap();
         let as_is = Cert::from_der(reassembled(&tbs, &own, &slot)).unwrap();
         verify_signed_by(&as_is, &device).unwrap();
-        // A YubiKey's own slot attestation (slot 95, firmware 5.7.4) passes the comparison.
+        // The slot attestation of a real YubiKey (slot 95, firmware 5.7.4) passes the comparison.
         let real = cert("attest95.pem");
         assert_eq!(real.parsed.signature_algorithm(), real.parsed.tbs_certificate().signature());
         let with_null = tlv(0x30, &[&ECDSA_SHA256.to_der().unwrap()[..], &[0x05, 0x00]].concat());
@@ -585,10 +660,10 @@ mod tests {
         }
     }
 
-    /// The certificates read from PEM keep the bytes the PEM holds, never a re-encoding: a
-    /// `tbsCertificate` with an explicit `version [0] v1` (a DEFAULT, which DER omits and der's
-    /// encoder drops) keeps it, so its signature is checked over what its issuer signed
-    /// (attest.rs F3). Blocks of another kind are refused.
+    /// The certificates read from PEM keep the bytes that the PEM holds, and never a new
+    /// encoding. A `tbsCertificate` with an explicit `version [0] v1` (a DEFAULT value, which DER
+    /// omits and der's encoder drops) keeps that field, so its signature is checked over the
+    /// bytes that its issuer signed (attest.rs F3). Blocks of another kind are refused.
     #[test]
     fn pem_certificates_keep_their_bytes() {
         let slot = cert("slot.pem");
@@ -608,7 +683,7 @@ mod tests {
             .concat(),
         );
         let der = reassembled(&tbs, &alg, &slot);
-        // The precondition: der reads this certificate and re-encodes it differently.
+        // The precondition of the test: der reads this certificate and encodes it differently.
         assert_ne!(Certificate::from_der(&der).unwrap().to_der().unwrap(), der);
         let pem = x509_cert::der::pem::encode_string("CERTIFICATE", x509_cert::der::pem::LineEnding::LF, &der).unwrap();
         let root = String::from_utf8(fixture("root.pem")).unwrap();
@@ -622,17 +697,17 @@ mod tests {
         assert!(e.to_string().contains("a PRIVATE KEY block"), "{e}");
     }
 
-    /// A chain-rules fixture (tests/fixtures/chain-rules/make.sh).
+    /// Returns a fixture certificate from tests/fixtures/chain-rules (made by `make.sh` there).
     fn rule(name: &str) -> Cert {
         cert(&format!("chain-rules/{name}.pem"))
     }
 
-    /// What the walk enforces beyond basicConstraints (RFC 5280; review 2026-11-23 A-3): an
-    /// issuer whose keyUsage lacks keyCertSign signs no certificate, and a certificate with a
-    /// critical extension the walk does not process (nameConstraints here) is refused wherever
-    /// it sits. A certificate that names its purposes serves only those. Each fixture chain
-    /// differs from the valid `ok` one in its one rule (openssl verifies `ok` and refuses
-    /// `no-certsign`).
+    /// Checks the rules that the walk enforces in addition to basicConstraints (RFC 5280; review
+    /// 2026-11-23 A-3). An issuer whose keyUsage lacks keyCertSign cannot sign a certificate, and
+    /// a certificate with a critical extension that the walk does not process (here,
+    /// nameConstraints) is refused at any position in the chain. A certificate that names its
+    /// purposes serves only those purposes. Each fixture chain differs from the valid `ok` chain
+    /// in one rule (openssl verifies `ok` and refuses `no-certsign`).
     #[test]
     fn issuers_sign_certificates_and_critical_extensions_are_understood() {
         let walk = |leaf: &str, root: &str| {
@@ -652,7 +727,33 @@ mod tests {
         assert!(!rule("server-leaf").serves(&TCG_KP_EK_CERTIFICATE).unwrap());
     }
 
-    /// The chain's name links compare the decoded Names (attest.rs F4).
+    /// A link that is checked outside a walk is held to the walk's rules (review 2026-11-24 A-7).
+    /// The test uses the `piv-` fixtures, and each of them differs from `piv-slot` ← `piv-device`
+    /// in one rule. An issuer that is not a CA, or whose keyUsage lacks keyCertSign, cannot issue
+    /// a certificate. A certificate with a critical extension that cakeys does not process is
+    /// refused. A signature by another key does not verify. The certificate must be valid at
+    /// `at`. An end entity does not count against `pathLen`, but an intermediate does.
+    #[test]
+    fn a_link_keeps_the_walks_rules() {
+        let (slot, device) = (rule("piv-slot"), rule("piv-device"));
+        link(&slot, Start::EndEntity, &device, None).unwrap();
+        link(&device, Start::Intermediate, &rule("piv-root"), None).unwrap();
+        let refused = |cert: &str, issuer: &str| link(&rule(cert), Start::EndEntity, &rule(issuer), None).unwrap_err();
+        let e = refused("piv-slot-no-certsign", "piv-device-no-certsign");
+        assert!(e.to_string().contains("may not sign certificates: its keyUsage lacks keyCertSign"), "{e}");
+        let e = refused("piv-slot-critical", "piv-device");
+        assert!(e.to_string().contains("has the critical extension 1.2.3.4"), "{e}");
+        let e = refused("piv-slot-no-certsign", "piv-device");
+        assert!(e.to_string().contains("signature does not verify"), "{e}");
+        let e = refused("piv-slot", "piv-slot");
+        assert!(e.to_string().contains("is not a CA"), "{e}");
+        let from = slot.parsed().tbs_certificate().validity().not_before.to_unix_duration().as_secs();
+        link(&slot, Start::EndEntity, &device, Some(from)).unwrap();
+        let e = link(&slot, Start::EndEntity, &device, Some(from - 1)).unwrap_err();
+        assert!(e.to_string().contains("piv-slot' is not valid at"), "{e}");
+    }
+
+    /// The name links of the chain compare the decoded Names (attest.rs F4).
     #[test]
     fn issuers_are_linked_by_name() {
         let [root, f9, slot] = ["root.pem", "f9.pem", "slot.pem"].map(cert);
@@ -660,21 +761,22 @@ mod tests {
         assert!(!root.issued(&slot) && !slot.issued(&f9) && !f9.issued(&root));
     }
 
-    /// A CA certificate with the fixture root's subject and another key: the name matches, the
-    /// signature does not.
+    /// Returns a CA certificate with the subject of the fixture root but a different key. Its
+    /// name matches, but a signature check with its key fails.
     fn decoy_root() -> Cert {
         let mut der = der_of("root.pem");
         let root = Cert::from_der(der.clone()).unwrap();
         let spki = root.parsed.tbs_certificate().subject_public_key_info().to_der().unwrap();
         let at = der.windows(spki.len()).position(|w| w == spki).unwrap();
-        // A byte in the middle of the RSA modulus.
+        // The test changes a byte in the middle of the RSA modulus.
         der[at + spki.len() / 2] ^= 0x01;
         Cert::from_der(der).unwrap()
     }
 
-    /// Every issuer whose subject matches is tried: a pooled certificate or an earlier anchor
-    /// with the root's subject but another key (a re-keyed CA) does not hide the root that
-    /// signed the chain (attest.rs F5). With only the decoy, its signature error is the answer.
+    /// The walk tries every issuer whose subject matches. A certificate in the pool, or an earlier
+    /// anchor, with the root's subject but a different key (a CA that got a new key) does not hide
+    /// the root that signed the chain (attest.rs F5). When only the decoy is present, the walk
+    /// returns its signature error.
     #[test]
     fn every_name_matching_issuer_is_tried() {
         let root = pem_certs(&String::from_utf8(fixture("root.pem")).unwrap()).unwrap().remove(0);

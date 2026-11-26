@@ -1,18 +1,24 @@
-//! The probe diff (docs/CAPROBE.md): what a generated profile observed against what
-//! a claimed profile says, over the rows a probe can observe. Empty is conformance — the
-//! shipped profile is what the module does; non-empty is drift, each line naming the row.
+//! The probe diff (docs/CAPROBE.md) compares what a generated profile observed with what a
+//! claimed profile says, over the rows that a probe can observe. An empty diff means conformance:
+//! the shipped profile describes what the module does. A non-empty diff means drift, and each
+//! line names the row that differs.
 
 use cakeys_profile::{Capability, KeyKind, Profile, Row};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Compare the probe-observable rows of `generated` against `claimed`: one line per
-/// difference, empty when the claimed profile is exactly what the probe observed.
+/// Compares the rows of `generated` that a probe can observe with the same rows of `claimed`.
+/// Returns one line for each difference, and an empty list when the claimed profile is exactly
+/// what the probe observed.
 ///
-/// Never compared: the profiles' names (the probe names by provider and expressed version, a
-/// module that hides it names differently), `partial` (whether the probe has filled the rows
-/// is not a claim), the notes, each row's evidence and the `[manual]` findings (human
-/// evidence), and what no probe observes — `[migration]` and the `move.*` capabilities (this
-/// repo's claims). Both subtractions are compared, mechanisms and key types.
+/// These parts are never compared:
+/// - the profiles' names, because the probe names a profile by provider and expressed version,
+///   and a module that hides its version gets another name;
+/// - `partial`, because whether the probe has filled the rows is not a claim;
+/// - the notes, each row's evidence, and the `[manual]` findings, which are human evidence;
+/// - what no probe observes: `[migration]` and the `move.*` capabilities, which are this
+///   repository's claims.
+///
+/// Both subtractions, of mechanisms and of key types, are compared.
 #[must_use]
 pub(crate) fn diff(generated: &Profile, claimed: &Profile) -> Vec<String> {
     let mut out = read_only(generated, claimed);
@@ -53,10 +59,11 @@ pub(crate) fn diff(generated: &Profile, claimed: &Profile) -> Vec<String> {
     out
 }
 
-/// [`diff`] over the rows a read-only probe observes — the match keys, the advertisement and
-/// the key sizes the module reports (`C_GetMechanismInfo`) — so a probe that wrote nothing (a
-/// production token, SO-only hardware) can still conform. A `partial` claimed profile records
-/// no advertisement, so it is not compared.
+/// Runs [`diff`] over only the rows that a read-only probe observes: the match keys, the
+/// advertisement, and the key sizes that the module reports (`C_GetMechanismInfo`). A probe that
+/// wrote nothing (on a production token, or on hardware that only the SO can write) can
+/// therefore still conform. A `partial` claimed profile records no advertisement, so the
+/// advertisement is not compared for it.
 #[must_use]
 pub(crate) fn read_only(generated: &Profile, claimed: &Profile) -> Vec<String> {
     let mut out = Vec::new();
@@ -78,7 +85,7 @@ pub(crate) fn read_only(generated: &Profile, claimed: &Profile) -> Vec<String> {
     out
 }
 
-/// One line per name in only one of the two lists, sorted.
+/// Adds one line for each name that is in only one of the two lists, in sorted order.
 fn sets(what: &str, generated: &[String], claimed: &[String], out: &mut Vec<String>) {
     let (generated, claimed): (BTreeSet<&String>, BTreeSet<&String>) =
         (generated.iter().collect(), claimed.iter().collect());
@@ -90,7 +97,7 @@ fn sets(what: &str, generated: &[String], claimed: &[String], out: &mut Vec<Stri
     }
 }
 
-/// Compare an optional row that both sides may omit.
+/// Compares an optional row that both sides may omit.
 fn optional(what: &str, generated: Option<&String>, claimed: Option<&String>, out: &mut Vec<String>) {
     match (generated, claimed) {
         (Some(g), Some(c)) if g != c => out.push(format!("{what}: observed \"{g}\", claimed \"{c}\"")),
@@ -100,9 +107,9 @@ fn optional(what: &str, generated: Option<&String>, claimed: Option<&String>, ou
     }
 }
 
-/// The numeric restrictions (a hardware layer's generation bounds), keyed by operation and key
-/// type. Two rows for one pair on one side are a line of their own, never one of them
-/// compared as if it were the only one.
+/// Compares the numeric restrictions (the generation bounds of a hardware layer), keyed by
+/// operation and key type. Two rows for the same pair on one side produce a line of their own,
+/// and neither row is compared as if it were the only one.
 fn restrictions(generated: &Profile, claimed: &Profile, out: &mut Vec<String>) {
     let mut key = |p: &Profile, side: &str| -> BTreeMap<(String, KeyKind), (Option<u32>, Option<u32>)> {
         let mut rows = BTreeMap::new();
@@ -130,7 +137,7 @@ fn restrictions(generated: &Profile, claimed: &Profile, out: &mut Vec<String>) {
     }
 }
 
-/// Compare an optional numeric row.
+/// Compares an optional numeric row.
 fn numeric(what: &str, generated: Option<u32>, claimed: Option<u32>, out: &mut Vec<String>) {
     match (generated, claimed) {
         (Some(g), Some(c)) if g != c => out.push(format!("{what}: observed {g}, claimed {c}")),
@@ -148,7 +155,7 @@ mod tests {
         Profile::from_toml(&format!("profile = \"{name}\"\nmode = \"observed\"\n{text}")).unwrap()
     }
 
-    /// `[capabilities]` rows, one per line.
+    /// Returns `[capabilities]` rows, one on each line.
     fn caps(rows: &[(&str, &str)]) -> String {
         let rows: String = rows.iter().fold(String::new(), |s, (c, row)| s + &format!("\"{c}\" = {{ {row} }}\n"));
         format!("[capabilities]\n{rows}")
@@ -163,8 +170,8 @@ mod tests {
         let head =
             "advertise = [\"CKM_AES_KEY_WRAP\"]\n[match]\nmanufacturer = \"SoftHSM\"\nmodule-version = \"2.7\"\n";
         let generated = profile("softhsm/probe", &format!("{head}{rows}[reported.\"CKK_RSA\"]\nmin-bits = 1024\n"));
-        // The claimed profile may carry more than a probe observes: notes, claims, another
-        // row's evidence.
+        // The claimed profile may carry more than a probe observes: notes, claims, and
+        // different evidence for a row.
         let claimed = profile(
             "softhsm/2.7",
             &format!(
@@ -219,8 +226,8 @@ mod tests {
         );
     }
 
-    /// Rows only one side has, in each table the diff compares: capabilities, a size bound,
-    /// and the restrictions.
+    /// Rows that only one side has, in each table that the diff compares: the capabilities, a
+    /// size bound, and the restrictions.
     #[test]
     fn rows_only_one_side_has_are_named() {
         let head = "advertise = [\"CKM_A\"]\n[match]\nmanufacturer = \"M\"\nmodule-version = \"1\"\n";
@@ -265,8 +272,8 @@ mod tests {
         }
     }
 
-    /// Key-type subtractions are compared as mechanism ones are, and a restriction listed
-    /// twice on one side is drift of its own (review diff F1, F2).
+    /// Key-type subtractions are compared in the same way as mechanism subtractions, and a
+    /// restriction that is listed twice on one side is drift by itself (review diff F1, F2).
     #[test]
     fn key_type_subtractions_and_repeated_restrictions_are_named() {
         let rsa =
@@ -286,7 +293,8 @@ mod tests {
 
     #[test]
     fn a_read_only_probe_conforms_on_the_rows_it_observes() {
-        // A read-only probe has no capability rows: only match and advertise count.
+        // A read-only probe has no capability rows, so only the match keys and the
+        // advertisement count.
         let generated = profile(
             "softhsm/probe",
             "advertise = [\"CKM_A\"]\n[match]\nmanufacturer = \"SoftHSM\"\nmodule-version = \"2.7\"\n",
@@ -300,7 +308,8 @@ mod tests {
         );
         assert_eq!(read_only(&generated, &claimed), Vec::<String>::new());
         assert_eq!(diff(&generated, &claimed).len(), 2);
-        // A partial claimed profile records no advertisement: nothing to compare it with.
+        // A partial claimed profile records no advertisement, so there is nothing to compare
+        // the observed advertisement with.
         let partial =
             profile("ykcs11/2.7", "partial = true\n[match]\nmanufacturer = \"SoftHSM\"\nmodule-version = \"2.7\"\n");
         assert_eq!(read_only(&generated, &partial), Vec::<String>::new());

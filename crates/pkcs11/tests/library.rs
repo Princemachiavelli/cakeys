@@ -1,13 +1,18 @@
-//! One module, named two ways, is one library (token/mod.rs F3): a token naming it by its bare
-//! file name (the loader's search) and one naming it by path open side by side, the second
-//! sharing the library the first initialized; a second `C_Initialize` would be refused
-//! (`CKR_CRYPTOKI_ALREADY_INITIALIZED`). Skipped without `CAKEYS_TEST_MODULE`.
+//! One module that is named in two ways is one library (token/mod.rs F3). A token that names the
+//! module by its bare file name (found by the loader's search) and a token that names it by path
+//! open at the same time, and the second token shares the library that the first one
+//! initialized. A second `C_Initialize` would be refused (`CKR_CRYPTOKI_ALREADY_INITIALIZED`).
+//! The test is skipped without `CAKEYS_TEST_MODULE` ([`test_skip::skip`]).
+
+#[path = "../../test-skip.rs"]
+mod test_skip;
 
 use cakeys_core::config::TokenCfg;
 use cakeys_pkcs11::token::Access;
 use cakeys_pkcs11::{ChainTime, Registry, Token};
 
-/// Set in the run this test starts of itself, with the loader's search path.
+/// The environment variable that marks the second run of this test, which the test starts
+/// itself with the loader's search path.
 const CHILD: &str = "CAKEYS_LIBRARY_CHILD";
 
 fn token(module: &str, pin: &std::path::Path) -> TokenCfg {
@@ -18,20 +23,20 @@ fn token(module: &str, pin: &std::path::Path) -> TokenCfg {
 #[test]
 fn a_bare_name_and_a_path_share_one_library() {
     let Ok(module) = std::env::var("CAKEYS_TEST_MODULE") else {
-        // As every token suite: required where the harness says so.
-        assert!(std::env::var("CAKEYS_TEST_REQUIRE").is_err(), "CAKEYS_TEST_MODULE is required");
-        eprintln!("skipping library: CAKEYS_TEST_MODULE is not set");
+        // As in every token suite, the test is required when the run says so.
+        test_skip::skip("library", "CAKEYS_TEST_REQUIRE", "CAKEYS_TEST_MODULE is not set");
         return;
     };
     let path = std::path::Path::new(&module);
     let (dir, name) = (path.parent().unwrap(), path.file_name().unwrap().to_str().unwrap());
     if std::env::var_os(CHILD).is_none() {
-        // The loader reads its search path when the process starts: this test, again, with it.
+        // The loader reads its search path when the process starts, so this test runs itself
+        // again with that search path.
         let o = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["a_bare_name_and_a_path_share_one_library", "--exact", "--nocapture"])
             .env(CHILD, "1")
             .env("LD_LIBRARY_PATH", dir)
-            // macOS's loader searches its own variable.
+            // The macOS loader searches its own variable.
             .env("DYLD_LIBRARY_PATH", dir)
             .output()
             .unwrap();

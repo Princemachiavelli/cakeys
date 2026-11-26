@@ -1,20 +1,21 @@
-//! The cross-reference harness (`cakeys`' tests/references.rs, `camigrate`'s dry-run tests): every
-//! reference token whose suite variables are set, one keys.toml naming them all, and runs of
-//! either binary against it.
+//! The cross-reference harness (used by `cakeys`' tests/references.rs and `camigrate`'s dry-run
+//! tests). It collects every reference token whose suite variables are set, writes one keys.toml
+//! that names them all, and runs either binary against that keys.toml.
 
-use super::{BIN, Run, required_var, sibling};
+use super::state::{Row, TokenView, assert_unchanged, database, snapshot};
+use super::{BIN, REQUIRE_ALL, Run, required_var, sibling, skip};
 use std::fmt::Write;
-use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::path::{Path, PathBuf};
+use std::process::Output;
 
 /// How a reference gets the material.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Plant {
     /// `C_CreateObject` through the module.
     Create,
-    /// `tpm2_ptool import` (tpm2-pkcs11 creates no keys from values).
+    /// `tpm2_ptool import`, because tpm2-pkcs11 creates no keys from values.
     Ptool,
-    /// The token of the reference before it, through another configuration.
+    /// The token of the reference before this one, used through another configuration.
     Shared,
 }
 
@@ -24,11 +25,24 @@ pub struct Ref {
     pub name: &'static str,
     pub module: String,
     pub token_label: &'static str,
-    /// Environment of every cakeys run against it.
+    /// The environment of every cakeys run against this reference.
     pub env: &'static [(&'static str, &'static str)],
     pub plant: Plant,
-    /// `CKM_EDDSA` is usable: not through p11-kit, whose RPC drops it.
+    /// Whether `CKM_EDDSA` is usable. It is not usable through p11-kit, whose RPC drops it.
     pub eddsa: bool,
+}
+
+impl Ref {
+    /// Returns this reference's token, as a snapshot sees it ([`super::state::objects`]).
+    pub fn view(&self) -> TokenView<'_> {
+        TokenView {
+            name: self.name,
+            module: &self.module,
+            label: self.token_label,
+            env: self.env,
+            db: database(&self.module, self.env),
+        }
+    }
 }
 
 pub struct Env {
@@ -36,12 +50,12 @@ pub struct Env {
     pub refs: Vec<Ref>,
 }
 
-/// The variable that requires reference `name` ([`required_var`]): set, a test needing the
-/// reference fails where it would skip ([`Env::needs`]).
+/// Returns the variable that requires reference `name` ([`required_var`]). When the variable is
+/// set, a test that needs the reference fails where it would otherwise skip ([`Env::needs`]).
 ///
 /// # Panics
 ///
-/// For a name no reference has: a test needing it would skip on every run.
+/// Panics for a name that no reference has, because a test that needs it would skip on every run.
 pub fn require_var_of(name: &str) -> &'static str {
     match name {
         "softhsm" => "CAKEYS_TEST_REQUIRE",
@@ -55,7 +69,8 @@ pub fn require_var_of(name: &str) -> &'static str {
 pub fn env(name: &str) -> Option<Env> {
     let mut refs = Vec::new();
     let r = |name, module, token_label, env, plant, eddsa| Ref { name, module, token_label, env, plant, eddsa };
-    // Each quiet when unset: a reference left out is no skip, unless fewer than two are left.
+    // An unset variable is not reported: a reference that is left out does not count as a skip,
+    // unless fewer than two references are left.
     if let Some(m) = required_var("CAKEYS_TEST_MODULE", require_var_of("softhsm")) {
         refs.push(r("softhsm", m, "kmtest", &[], Plant::Create, true));
     }
@@ -71,7 +86,9 @@ pub fn env(name: &str) -> Option<Env> {
         refs.push(r("tpm2", m, "kmtest", &[], Plant::Ptool, false));
     }
     if refs.len() < 2 {
-        eprintln!("skipping {name}: fewer than two reference tokens set");
+        // No variable required the references that are left out, and a run that requires
+        // everything has all of them.
+        skip(name, REQUIRE_ALL, "fewer than two reference tokens set");
         return None;
     }
     let dir = super::test_dir(&format!("xref-{name}"));
@@ -83,13 +100,13 @@ pub fn env(name: &str) -> Option<Env> {
 }
 
 impl Env {
-    /// keys.toml: one token per reference, then `body`.
+    /// Writes keys.toml with one token per reference, followed by `body`.
     pub fn config(&self, body: &str) {
         self.config_with(body, &|_| String::new());
     }
 
-    /// [`Self::config`], with `extra` lines in each reference's token table (a table TOML cannot
-    /// reopen once written).
+    /// Does what [`Self::config`] does, with `extra` lines in each reference's token table. The
+    /// lines must go in here, because TOML cannot reopen a table after it is written.
     pub fn config_with(&self, body: &str, extra: &dyn Fn(&Ref) -> String) {
         let pin = self.dir.join("pin");
         let mut text = String::new();
@@ -101,13 +118,14 @@ impl Env {
         std::fs::write(self.dir.join("keys.toml"), text + body).unwrap();
     }
 
-    /// The package's own binary ([`BIN`]) against reference `r`.
+    /// Runs the package's own binary ([`BIN`]) against reference `r`.
     pub fn km(&self, r: &Ref, args: &[&str]) -> Output {
         self.run(std::path::Path::new(BIN), r, args)
     }
 
-    /// [`Self::km`] with `NIX_BUILD_TOP` set, as inside a Nix build sandbox: no dry-run twin,
-    /// since the point is what the run itself refuses there. `env` is set on top.
+    /// Does what [`Self::km`] does, with `NIX_BUILD_TOP` set, as inside a Nix build sandbox. It
+    /// runs no dry-run twin, because the test is about what the run itself refuses there. `env`
+    /// is set in addition.
     pub fn km_in_nix_build(&self, r: &Ref, env: &[(&str, &str)], args: &[&str]) -> Output {
         self.command(std::path::Path::new(BIN), r)
             .note("in a Nix build")
@@ -116,45 +134,55 @@ impl Env {
             .output(args)
     }
 
-    /// [`Self::km`] without the dry-run twin, for a run whose input is wrong before any plan
-    /// (a missing flag, an empty passphrase file): a plan has nothing to say about those.
+    /// Does what [`Self::km`] does, without the dry-run twin, for a run whose input is wrong
+    /// before any plan (a missing flag, an empty passphrase file). A plan has nothing to report
+    /// about such input.
     pub fn km_alone(&self, r: &Ref, args: &[&str]) -> Output {
         self.run_once(std::path::Path::new(BIN), r, args)
     }
 
-    /// `cakeys` itself, from a package whose own binary is another (`camigrate`'s tests record
-    /// the realisations they plan from with it): [`sibling`].
+    /// Runs `cakeys` itself ([`sibling`]) from a package whose own binary is another one.
+    /// `camigrate`'s tests use it to record the realisations from which they plan.
     pub fn cakeys(&self, r: &Ref, args: &[&str]) -> Output {
         self.run(&sibling("cakeys"), r, args)
     }
 
-    /// Run `bin` against reference `r`. A `camigrate` run that moves something (`export`,
-    /// `import`, `migrate` without `--dry-run`) is preceded by its dry-run twin: the same
-    /// arguments with `--dry-run`, which must change nothing and whose verdict the real run must
-    /// keep ([`Self::dry_run_twin`]).
+    /// Runs `bin` against reference `r`. Before a run that writes (`camigrate`'s `export`,
+    /// `import`, `migrate`; `cakeys`' `create`, `delete`, `lock`, `gc`; each without
+    /// `--dry-run`), it runs the dry-run twin: the same arguments with `--dry-run`. The twin must
+    /// change nothing, and the real run must keep the twin's verdict ([`Self::dry_run_twin`]).
     fn run(&self, bin: &std::path::Path, r: &Ref, args: &[&str]) -> Output {
         let twin = self.dry_run_twin(bin, r, args);
         let out = self.run_once(bin, r, args);
         if let Some(dry) = twin {
             let real = out.status.code().unwrap();
-            // A refusal the dry run saw is the real run's refusal. A dry run that passed promises
-            // only what can be known before anything is created: the real run succeeds (0, or 22
-            // where it wrote the lock), or may still meet
-            // material that is not the locked one (10) or a blob that does not unwrap: 13 where
-            // the module says the data is bad, 16 where it says only that it failed (kryoptic's
-            // CKR_DEVICE_ERROR for a tampered blob [run], said as such). Any other 16 breaks the
-            // promise.
-            let unwrap_failed =
-                real == 16 && String::from_utf8_lossy(&out.stderr).contains("damaged or altered bundle");
-            let kept = if dry == 0 { matches!(real, 0 | 22 | 10 | 13) || unwrap_failed } else { real == dry };
-            assert!(kept, "camigrate {}: --dry-run exited {dry}, the run itself {real}", args.join(" "));
+            // Read the rows when the exit codes alone do not show whether the run kept the dry
+            // run's result, and also after exit 22, because a pair may have failed after the
+            // write. `gc --json` prints names instead of rows, so a parse failure gives no rows.
+            let rows = if !stdout_is_rows(&out) {
+                vec![]
+            } else if !dry.kept_by(real, &[]) {
+                super::state::rows(&out)
+            } else if real == 22 {
+                serde_json::from_slice(&out.stdout).unwrap_or_default()
+            } else {
+                vec![]
+            };
+            assert!(
+                dry.kept_by(real, &rows),
+                "{} {}: --dry-run exited {} (deferring {:?}), the run itself {real}: {rows:?}",
+                bin.display(),
+                args.join(" "),
+                dry.exit,
+                dry.deferred
+            );
         }
         out
     }
 
-    /// The tokens a run naming `args` reaches, each once: a reference that reads another's token
-    /// ([`Plant::Shared`], `kryoptic-der`) stands for that token, never for none (review xref.rs
-    /// F1: a move to `kryoptic-der` compared no token).
+    /// Returns the tokens that a run with `args` reaches, each once. A reference that reads
+    /// another reference's token ([`Plant::Shared`], `kryoptic-der`) stands for that token, and
+    /// never for no token (review xref.rs F1: a move to `kryoptic-der` compared no token).
     pub fn compared(&self, args: &[&str]) -> Vec<&Ref> {
         let mut named: Vec<&Ref> = Vec::new();
         for t in self.refs.iter().filter(|t| args.contains(&t.name)) {
@@ -168,43 +196,53 @@ impl Env {
         named
     }
 
-    /// The dry-run twin of a `camigrate` run that moves something: its exit code, after
-    /// asserting that it left the lock, the output file and every token the run names as they
-    /// were. `None` for any other run.
-    fn dry_run_twin(&self, bin: &std::path::Path, r: &Ref, args: &[&str]) -> Option<i32> {
-        let moves = args.iter().any(|a| matches!(*a, "export" | "import" | "migrate"));
-        if bin.file_name().is_none_or(|n| n != "camigrate") || !moves || args.contains(&"--dry-run") {
+    /// Runs the dry-run twin of a run that writes, in JSON, and returns its verdict. Before it
+    /// returns, it asserts that the twin left the lock, the output file and every token that the
+    /// run names (for `cakeys` without `--token`, every token) as they were. It returns `None` for
+    /// any other run. Review 2026-11-24 C-4: `cakeys`' dry runs had no twin, and
+    /// `create --dry-run` passed where the run refused.
+    fn dry_run_twin(&self, bin: &std::path::Path, r: &Ref, args: &[&str]) -> Option<Dry> {
+        let verb = |v: &[&str]| args.first().is_some_and(|a| v.contains(a));
+        let writes = match bin.file_name().and_then(|n| n.to_str()) {
+            Some("camigrate") => verb(&["export", "import", "migrate"]),
+            Some("cakeys") => verb(&["create", "delete", "lock", "gc"]),
+            _ => false,
+        };
+        if !writes || args.contains(&"--dry-run") {
             return None;
         }
         let value = |flag: &str| args.iter().position(|a| *a == flag).and_then(|i| args.get(i + 1)).copied();
         let lock = value("--lock").map_or_else(|| self.dir.join("keys.lock"), PathBuf::from);
-        let files = [Some(lock), value("--out").map(PathBuf::from)];
-        let named = self.compared(args);
-        // What must not change, each with its name: the files' bytes and each token's objects.
-        let state = || -> Vec<(String, String)> {
-            let file = |f: &PathBuf| (f.display().to_string(), format!("{:?}", std::fs::read(f).ok()));
-            files
-                .iter()
-                .flatten()
-                .map(file)
-                .chain(named.iter().map(|t| (format!("token {}", t.name), objects(t))))
-                .collect()
-        };
-        let before = state();
-        let dry = self.run_once(bin, r, &[args, &["--dry-run"]].concat());
-        for ((what, was), (_, now)) in before.iter().zip(state()) {
-            let changed: Vec<&str> =
-                was.lines().filter(|l| !now.contains(l)).chain(now.lines().filter(|l| !was.contains(l))).collect();
-            assert!(*was == now, "camigrate {} --dry-run changed {what}:\n{}", args.join(" "), changed.join("\n"));
+        let out = value("--out").map(PathBuf::from);
+        let files: Vec<&Path> = [Some(&lock), out.as_ref()].into_iter().flatten().map(PathBuf::as_path).collect();
+        let mut reached = self.compared(args);
+        if reached.is_empty() && !args.contains(&"--token") {
+            reached = self.refs.iter().filter(|t| t.plant != Plant::Shared).collect();
         }
-        dry.status.code()
+        // The run's own reference stands for its token, because the run reaches the token
+        // through that reference's module and environment (for example, a fault shim's
+        // forwarding).
+        let tokens: Vec<TokenView> =
+            reached.into_iter().map(|t| if t.name == r.name { r } else { t }).map(Ref::view).collect();
+        // Record what must not change, each with its name: the files' bytes and each token's
+        // objects.
+        let before = snapshot(&files, &tokens);
+        let json: &[&str] = if args.contains(&"--json") { &[] } else { &["--json"] };
+        // `create --no-update-lock` records nothing, and neither does its dry run, so the flag is
+        // dropped from the dry run's arguments.
+        let dry_args: Vec<&str> = args.iter().copied().filter(|a| *a != "--no-update-lock").collect();
+        let dry = self.run_once(bin, r, &[&dry_args[..], &["--dry-run"], json].concat());
+        let what = format!("{} {} --dry-run", bin.display(), args.join(" "));
+        assert_unchanged(&before, &snapshot(&files, &tokens), &what);
+        let dry = Dry::of(&dry);
+        Some(if bin.ends_with("cakeys") && args.first() == Some(&"lock") { dry.comparing() } else { dry })
     }
 
     fn run_once(&self, bin: &std::path::Path, r: &Ref, args: &[&str]) -> Output {
         self.command(bin, r).output(args)
     }
 
-    /// `bin` on this keys.toml, in reference `r`'s environment.
+    /// Returns a run of `bin` on this keys.toml, in reference `r`'s environment.
     fn command(&self, bin: &std::path::Path, r: &Ref) -> Run {
         Run::new(bin, &self.dir.join("keys.toml")).envs(r.env.iter().copied()).note(r.name)
     }
@@ -213,8 +251,8 @@ impl Env {
         self.refs.iter().filter(|r| keep(r)).collect()
     }
 
-    /// A spec over `object` on `refs`, located by `label`; `extra` is appended to each token entry,
-    /// with `origin = "adopt"` unless it names an origin.
+    /// Returns a spec over `object` on `refs`, located by `label`. `extra` is appended to each
+    /// token entry, together with `origin = "adopt"` unless `extra` names an origin.
     pub fn spec(name: &str, object: &str, attributes: &str, refs: &[&Ref], label: &str, extra: &str) -> String {
         let mut s = format!("[specs.{name}]\nobject = \"{object}\"\n{attributes}");
         let origin = if extra.contains("origin") { "" } else { ", origin = \"adopt\"" };
@@ -225,38 +263,67 @@ impl Env {
     }
 }
 
-/// What a dry run must leave as it was on `r`'s token: every object as `pkcs11-tool` lists it,
-/// logged in — a process of its own, so no module is initialized twice in the test's. kryoptic's
-/// login alone takes over a second (its PIN's key derivation \[run\]), which made the twin cost
-/// ten times the suite: its token is its one database file, compared by content instead.
-fn objects(r: &Ref) -> String {
-    if r.name.starts_with("kryoptic")
-        && let Some(db) = kryoptic_db()
-    {
-        let bytes = std::fs::read(&db).unwrap_or_default();
-        let sum =
-            bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
-        return format!("{}: {} bytes, fnv1a {sum:016x}", db.display(), bytes.len());
-    }
-    let out = Command::new("pkcs11-tool")
-        .envs(r.env.iter().copied())
-        .args(["--module", &r.module, "--token-label", r.token_label, "--login", "--pin", "1234", "--list-objects"])
-        .output()
-        .expect("pkcs11-tool (opensc) lists a reference token's objects for the dry-run twin");
-    assert!(out.status.success(), "pkcs11-tool on {}: {}", r.name, String::from_utf8_lossy(&out.stderr));
-    // Sorted by line: a module may list its objects in another order each time (kryoptic [run]).
-    // A data object's line carries its handle, which SoftHSM numbers afresh in each process (the
-    // same objects listed twice came out as "Data object 6" and "Data object 8" [run]): left out.
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut lines: Vec<&str> =
-        text.lines().map(|l| if l.starts_with("Data object ") { "Data object" } else { l }).collect();
-    lines.sort_unstable();
-    lines.join("\n")
+/// What a dry run reported (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4): its exit code,
+/// and the rules that it named as rules that only the run can decide (each plan's `deferred`, and
+/// each row's).
+#[derive(Debug)]
+pub struct Dry {
+    exit: i32,
+    deferred: Vec<String>,
+    /// Whether this is `cakeys lock --dry-run`, which only compares with the lock. It refuses
+    /// what the run records (a first use, 18; a realisation or a change that the lock lacks, 14).
+    compares: bool,
 }
 
-/// kryoptic's token database: the `dbargs` of `$KRYOPTIC_CONF` (nix/package-common.nix).
-fn kryoptic_db() -> Option<PathBuf> {
-    let conf = std::fs::read_to_string(std::env::var_os("KRYOPTIC_CONF")?).ok()?;
-    let args = conf.lines().find_map(|l| l.trim().strip_prefix("dbargs"))?;
-    Some(PathBuf::from(args.trim_start_matches([' ', '=']).trim().trim_matches('"')))
+impl Dry {
+    /// A dry run that exited `exit`, deferring `deferred`.
+    pub fn new(exit: i32, deferred: Vec<String>) -> Dry {
+        Dry { exit, deferred, compares: false }
+    }
+
+    /// Returns the same verdict, marked as the comparison of `cakeys lock --dry-run`.
+    #[must_use]
+    pub fn comparing(self) -> Dry {
+        Dry { compares: true, ..self }
+    }
+
+    fn of(o: &Output) -> Dry {
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_default();
+        let plans = v.get("plans").and_then(serde_json::Value::as_array).cloned();
+        let entries = plans.or_else(|| v.as_array().cloned()).unwrap_or_default();
+        let deferred = entries
+            .iter()
+            .flat_map(|e| e.get("deferred").and_then(serde_json::Value::as_array).cloned().unwrap_or_default())
+            .filter_map(|d| d.as_str().or_else(|| d.get("rule").and_then(serde_json::Value::as_str)).map(str::to_owned))
+            .collect();
+        Dry::new(o.status.code().unwrap(), deferred)
+    }
+
+    /// Returns whether the real run, which exited `real` with `rows`, is the run that this dry run
+    /// promised. The real run must have the same exit code, with three allowances. 0 and 22 count
+    /// as the same, because a written lock is not a different outcome. When a comparison refused
+    /// something for the lock to record (18 or 14), a real `lock` that writes the lock (22) keeps
+    /// the verdict. And a row may end with a failure of the device, which no dry run foresees, or
+    /// with a rule that this dry run named as deferred. The decision never depends on the text that
+    /// the run prints (review 2026-11-24 L3: a phrase of stderr once allowed a 16 after a dry run
+    /// that exited 0). A run that wrote the lock and then failed exits 22, so in that case the exit
+    /// code of its failed row is compared instead of 22 (review 2026-11-24 L5).
+    pub fn kept_by(&self, real: i32, rows: &[Row]) -> bool {
+        let real = match rows.iter().find(|r| r.exit != 0) {
+            Some(failed) if real == 22 => i32::from(failed.exit),
+            _ => real,
+        };
+        let succeeded = |c: i32| matches!(c, 0 | 22);
+        let admitted = |r: &Row| {
+            i32::from(r.exit) == real && (r.device || r.rule.as_ref().is_some_and(|x| self.deferred.contains(x)))
+        };
+        let recorded = self.compares && matches!(self.exit, 14 | 18) && real == 22;
+        real == self.exit || (succeeded(real) && succeeded(self.exit)) || recorded || rows.iter().any(admitted)
+    }
+}
+
+/// Returns whether `o` printed rows (a JSON array), as `import` and `migrate` do. An export
+/// prints a bundle or nothing.
+fn stdout_is_rows(o: &Output) -> bool {
+    o.stdout.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'[')
 }

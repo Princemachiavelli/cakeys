@@ -1,6 +1,7 @@
-//! caprobe against tpm2-pkcs11 on a software TPM (nix/tpm2-test-env.sh): needs
-//! `CAKEYS_TPM_MODULE` and the harness's environment, as `cakeys`' tpm2 suite does (its header
-//! describes it). Skipped when `CAKEYS_TPM_MODULE` is unset, unless `CAKEYS_TPM_REQUIRE=1`.
+//! Tests of caprobe against tpm2-pkcs11 on a software TPM (nix/tpm2-test-env.sh). The tests need
+//! `CAKEYS_TPM_MODULE` and the harness's environment, as the tpm2 suite of `cakeys` does (the
+//! header of that suite describes them). They are skipped when `CAKEYS_TPM_MODULE` is unset,
+//! unless `CAKEYS_TPM_REQUIRE=1`.
 
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
@@ -14,9 +15,9 @@ fn env(test: &str) -> Option<Workdir> {
     Some(w)
 }
 
-/// `caps` names the tpm2-pkcs11 provider, and the mechanisms show what the provider's refusals
-/// rest on: EC generation is there, AES generation is not (`cakeys`' tpm2 suite tests the
-/// refusals themselves).
+/// `caps` names the tpm2-pkcs11 provider, and its mechanisms show the facts on which the
+/// provider's refusals are based: EC generation is listed, and AES generation is not (the tpm2
+/// suite of `cakeys` tests the refusals themselves).
 #[test]
 fn caps_names_the_provider_and_what_the_module_offers() {
     let Some(w) = env("caps") else { return };
@@ -24,14 +25,14 @@ fn caps_names_the_provider_and_what_the_module_offers() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let caps: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(caps["provider"], "tpm2-pkcs11");
-    // Whole names, not a substring of the list (review tpm2.rs F2).
+    // The test compares whole names, not a substring of the list (review tpm2.rs F2).
     let mechs = caps["mechanisms"].as_array().unwrap();
     let has = |m: &str| mechs.iter().any(|x| x == m);
     assert!(has("CKM_EC_KEY_PAIR_GEN") && !has("CKM_AES_KEY_GEN"), "{mechs:?}");
 }
 
-/// The committed pair profile tpm2-pkcs11/1.10+swtpm is probe output (docs/CAPROBE.md
-/// phase 3): what this module does on this TPM, measured together. A fresh probe conforms and
+/// The committed pair profile tpm2-pkcs11/1.10+swtpm is probe output (docs/CAPROBE.md phase 3):
+/// what this module does on this TPM, measured together. A new probe conforms to it, and
 /// regenerating it changes no byte.
 #[test]
 fn the_committed_profile_is_what_the_probe_observes() {

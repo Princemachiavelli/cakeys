@@ -1,4 +1,4 @@
-//! RFC 7512 URIs and the locator attributes they are built from.
+//! RFC 7512 URIs, and the locator attributes from which they are built.
 
 #[allow(
     clippy::wildcard_imports,
@@ -7,15 +7,15 @@
 use super::*;
 
 impl Token {
-    /// RFC 7512 URI of the object consumers use: for a key adopted public-only this is still
-    /// the private key (only its verification went through the public half).
+    /// Returns the RFC 7512 URI of the object that consumers use. For a key that was adopted
+    /// with `publicOnly`, this is still the private key, because only its verification went
+    /// through the public half.
     ///
     /// # Errors
     ///
-    /// `Validation` when the locator names neither `CKA_LABEL` nor `CKA_ID`, or its `CKA_ID`
-    /// is not hex.
+    /// `Validation` when the locator's `CKA_ID` is not hex.
     pub fn uri(&self, object: &ObjectCfg, loc: &Locator) -> Result<String> {
-        // The serial tells apart tokens that share a label (RFC 7512 `serial`).
+        // The serial number distinguishes tokens that share a label (RFC 7512 `serial`).
         let mut parts = vec![format!("token={}", pct(self.label.as_bytes()))];
         if !self.token.serial.is_empty() {
             parts.push(format!("serial={}", pct(self.token.serial.as_bytes())));
@@ -34,29 +34,32 @@ impl Token {
             _ => "secret-key",
         };
         parts.push(format!("type={kind}"));
-        // A pure locator: which module realised it is recorded separately (ModuleInfo).
+        // The URI is only a locator. The module that realised it is recorded separately
+        // (`ModuleInfo`).
         Ok(format!("pkcs11:{}", parts.join(";")))
     }
 }
 
-/// How a consumer of a checked URI gets the token's user PIN (RFC 7512 §2.3 query attributes).
+/// The way in which a consumer of a checked URI gets the token's user PIN (the query attributes
+/// of RFC 7512 §2.3).
 pub enum PinRef {
     /// `pin-source=file:<path>`: keys.toml's `pinFile`.
     File(std::path::PathBuf),
-    /// `pin-source=env:<var>`: keys.toml's `pinEnv`. A pkcs11-provider extension; RFC 7512 and
-    /// p11-kit know only files.
+    /// `pin-source=env:<var>`: keys.toml's `pinEnv`. This is an extension of pkcs11-provider,
+    /// because RFC 7512 and p11-kit support only files.
     Env(String),
-    /// `pin-value=<pin>`: the PIN itself, in whatever the output reaches.
+    /// `pin-value=<pin>`: the PIN itself, which appears wherever the output goes.
     Value(Zeroizing<String>),
 }
 
-/// The token's user PIN as a consumer should get it: by reference (`pinEnv`, else `pinFile`,
-/// as cakeys reads it, the file made absolute against the working directory) or by value.
+/// Returns the token's user PIN in the form in which a consumer should get it. That is by
+/// reference (`pinEnv`, or otherwise `pinFile`, as cakeys reads it, with the file made absolute
+/// against the working directory), or by value when `by_value` is true.
 ///
 /// # Errors
 ///
-/// `Validation` when keys.toml gives the token no PIN; `Unavailable` when `by_value` and the
-/// PIN cannot be read.
+/// `Validation` when keys.toml gives the token no PIN. `Unavailable` when `by_value` is true and
+/// the PIN cannot be read.
 pub fn pin_ref(name: &str, cfg: &TokenCfg, by_value: bool) -> Result<PinRef> {
     let none =
         || KmError::Validation(format!("token '{name}' has no PIN to put in the URI (set pinFile or pinEnv)").into());
@@ -72,10 +75,10 @@ pub fn pin_ref(name: &str, cfg: &TokenCfg, by_value: bool) -> Result<PinRef> {
         .map_err(|e| KmError::Validation(format!("token '{name}': pinFile {}: {e}", file.display()).into()))
 }
 
-/// Text that may carry the user PIN (`--uri-pin value`): what [`with_query`] and
-/// [`provider_pem`] give. It reads as the text, and is wiped when dropped, as `PinRef::Value`
-/// is: no copy of the PIN is left behind in freed memory (uri.rs F1). Its `Debug` shows none of
-/// it.
+/// Text that may contain the user PIN (`--uri-pin value`), as [`with_query`] and
+/// [`provider_pem`] return it. It dereferences to the text, and it is wiped when it is dropped,
+/// as `PinRef::Value` is, so that no copy of the PIN is left behind in freed memory (uri.rs F1).
+/// Its `Debug` output shows none of the text.
 pub struct PinText(Zeroizing<String>);
 
 impl std::ops::Deref for PinText {
@@ -97,10 +100,11 @@ impl std::fmt::Debug for PinText {
     }
 }
 
-/// A consumer's view of the locator `uri` ([`Token::uri`]): with `module-path` and the user PIN
-/// as query attributes, when asked for. The lock never records them; `check` adds them on
-/// request (docs/CAKEYS.md, "The contract with programs"). Written into one buffer sized for it
-/// up front, so a PIN value is never in a copy that is not wiped.
+/// Returns the locator `uri` ([`Token::uri`]) in the form that a consumer uses, with
+/// `module-path` and the user PIN as query attributes when they are requested. The lock never
+/// records these attributes, and `check` adds them on request (docs/CAKEYS.md, "The contract with
+/// programs"). The text is written into one buffer that is sized in advance, so a PIN value is
+/// never in a copy that is not wiped.
 #[must_use]
 pub fn with_query(uri: &str, module_path: Option<&str>, pin: Option<&PinRef>) -> PinText {
     let mut query: Vec<(&str, &[u8])> = Vec::new();
@@ -113,7 +117,7 @@ pub fn with_query(uri: &str, module_path: Option<&str>, pin: Option<&PinRef>) ->
         Some(PinRef::Value(v)) => query.push(("pin-value=", v.as_bytes())),
         None => {}
     }
-    // Each byte escapes to three characters at most.
+    // Each byte escapes to at most three characters.
     let room = uri.len() + query.iter().map(|(k, v)| 1 + k.len() + 3 * v.len()).sum::<usize>();
     let mut out = Zeroizing::new(String::with_capacity(room));
     out.push_str(uri);
@@ -125,17 +129,19 @@ pub fn with_query(uri: &str, module_path: Option<&str>, pin: Option<&PinRef>) ->
     PinText(out)
 }
 
-/// pkcs11-provider's "key file" for a private key URI: `SEQUENCE { VisibleString
-/// "PKCS#11 Provider URI v1.0", UTF8String uri }` armored as `PKCS#11 PROVIDER URI`, what its
-/// `tools/uri2pem.py` writes and its decoder reads (`src/pk11_uri.h`, 1.3), for programs that
-/// take a key only as a PEM file. The URI may carry the PIN: the DER is written into one wiped
-/// buffer sized for it, and the PEM is a `PinText`, wiped when dropped.
+/// Returns pkcs11-provider's "key file" for a private key URI, for programs that take a key only
+/// as a PEM file. The file is `SEQUENCE { VisibleString "PKCS#11 Provider URI v1.0", UTF8String
+/// uri }` in PEM armor with the label `PKCS#11 PROVIDER URI`. This is what pkcs11-provider's
+/// `tools/uri2pem.py` writes and what its decoder reads (`src/pk11_uri.h`, 1.3). The URI may
+/// contain the PIN, so the DER is written into one wiped buffer that is sized in advance, and the
+/// PEM is a `PinText`, which is wiped when it is dropped.
 ///
 /// # Errors
 ///
 /// `Validation` when the URI cannot be encoded.
 pub fn provider_pem(uri: &str) -> Result<PinText> {
-    // der 0.8 has no VisibleString type; the description is ASCII.
+    // der 0.8 has no `VisibleString` type, so the encoding is written by hand. The description
+    // is ASCII.
     const DESCRIPTION: &[u8] = b"PKCS#11 Provider URI v1.0";
     let tlv = |len: usize| 1 + der_length(None, len) + len;
     let body = tlv(DESCRIPTION.len()) + tlv(uri.len());
@@ -153,13 +159,15 @@ pub fn provider_pem(uri: &str) -> Result<PinText> {
         .map_err(|e| KmError::Validation(format!("PEM of a URI: {e}").into()))
 }
 
-/// The DER length octets of `len`, appended to `out` when given: their count either way.
+/// Computes the DER length octets of `len` and appends them to `out` when `out` is given.
+/// Returns the number of octets in both cases.
 fn der_length(out: Option<&mut Vec<u8>>, len: usize) -> usize {
     let bytes = len.to_be_bytes();
     let used = &bytes[bytes.iter().take_while(|b| **b == 0).count()..];
     let octets: Vec<u8> = match u8::try_from(len) {
         Ok(short) if short < 0x80 => vec![short],
-        // Long form: 0x80 | the count of length bytes, at most eight (a usize).
+        // The long form is 0x80 ORed with the number of length bytes, followed by those bytes.
+        // A `usize` needs at most eight bytes.
         _ => [&[0x80 | u8::try_from(used.len()).unwrap_or(8)][..], used].concat(),
     };
     if let Some(out) = out {
@@ -168,11 +176,12 @@ fn der_length(out: Option<&mut Vec<u8>>, len: usize) -> usize {
     octets.len()
 }
 
-/// The template attributes that put an object under `loc`: `CKA_LABEL` and/or `CKA_ID`.
+/// Returns the template attributes that put an object under `loc`: `CKA_LABEL`, `CKA_ID`, or
+/// both.
 ///
 /// # Errors
 ///
-/// `Validation` for a locator with neither, or a `CKA_ID` that is not hex.
+/// `Validation` for a locator with neither attribute, or for a `CKA_ID` that is not hex.
 pub fn locator_attrs(loc: &Locator) -> Result<Vec<Attribute>> {
     let mut v = Vec::new();
     if let Some(l) = &loc.label {
@@ -191,8 +200,9 @@ pub(super) fn hex_decode(s: &str) -> Result<Vec<u8>> {
     cakeys_core::hex::decode(s).ok_or_else(|| KmError::Validation(format!("CKA_ID '{s}' is not hex").into()))
 }
 
-/// A path attribute's value (`token=`, `serial=`, `object=`): the unreserved characters as they
-/// are, everything else escaped. `/` too: RFC 7512 §2.3 leaves it out of `pk11-pchar`.
+/// Percent-encodes the value of a path attribute (`token=`, `serial=`, `object=`). Unreserved
+/// characters stay as they are, and every other byte is escaped. `/` is escaped too, because
+/// RFC 7512 §2.3 leaves it out of `pk11-pchar`.
 fn pct(bytes: &[u8]) -> String {
     bytes
         .iter()
@@ -203,9 +213,10 @@ fn pct(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// A query attribute's value, appended to `out` without a copy of its own (a PIN goes through
-/// here): [`pct`], also keeping `/` and `:` (RFC 7512 `pk11-qchar`), so a path or `file:` reads
-/// as written; `&`, `;` and `?` are always escaped.
+/// Percent-encodes the value of a query attribute and appends it to `out` without making its own
+/// copy, because a PIN goes through this function. It works as [`pct`], but it also keeps `/`
+/// and `:` (RFC 7512 `pk11-qchar`), so that a path or `file:` stays readable as written. `&`,
+/// `;` and `?` are always escaped.
 fn qpct_into(out: &mut String, bytes: &[u8]) {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     for &b in bytes {
@@ -254,7 +265,8 @@ mod tests {
             &*with_query(LOCATOR, None, Some(&PinRef::Env("KM_PIN".into()))),
             format!("{LOCATOR}?pin-source=env:KM_PIN")
         );
-        // A separator in a value cannot end the attribute: pkcs11-provider splits on `;?&`.
+        // A separator in a value cannot end the attribute, because pkcs11-provider splits on
+        // `;`, `?` and `&`.
         let value = PinRef::Value(Zeroizing::new("1;2?3&4 5%".into()));
         assert_eq!(&*with_query(LOCATOR, None, Some(&value)), format!("{LOCATOR}?pin-value=1%3B2%3F3%264%205%25"));
         assert_eq!(
@@ -263,9 +275,9 @@ mod tests {
         );
     }
 
-    /// Text carrying a PIN value (uri.rs F1) is written into one buffer sized for it, never
-    /// grown (a reallocation leaves the old bytes behind unwiped), and shows nothing of itself
-    /// in `Debug`.
+    /// Text that contains a PIN value (uri.rs F1) is written into one buffer that is sized for
+    /// it and never grows, because a reallocation leaves the old bytes behind without wiping
+    /// them. The text shows nothing of itself in `Debug`.
     #[test]
     fn a_pin_value_is_in_one_wiped_buffer() {
         let worst = PinRef::Value(Zeroizing::new(";;;;".into()));
@@ -278,7 +290,7 @@ mod tests {
         assert_eq!(format!("{pem:?}"), "PinText(..)");
     }
 
-    /// RFC 7512 §2.3: `/` is a `pk11-qchar`, never a `pk11-pchar`.
+    /// RFC 7512 §2.3 makes `/` a `pk11-qchar`, but never a `pk11-pchar`.
     #[test]
     fn a_slash_is_escaped_in_the_path_and_kept_in_the_query() {
         assert_eq!(pct(b"a/b c"), "a%2Fb%20c");
@@ -287,7 +299,8 @@ mod tests {
         assert_eq!(q, "file:/a%20b");
     }
 
-    /// The DER length octets: short form below 128, else long form on as few bytes as hold it.
+    /// The DER length octets use the short form below 128, and otherwise the long form with as
+    /// few bytes as can hold the length.
     #[test]
     fn der_lengths_are_short_then_long() {
         let octets = |n: usize| {
@@ -313,14 +326,16 @@ mod tests {
         assert!(
             matches!(pin_ref("t", &cfg("pinFile = \"/p\""), false), Ok(PinRef::File(p)) if p == std::path::Path::new("/p"))
         );
-        // A relative file is made absolute the way cakeys itself reads it: against the cwd.
+        // A relative file is made absolute in the same way as cakeys itself reads it: against
+        // the current working directory.
         let Ok(PinRef::File(rel)) = pin_ref("t", &cfg("pinFile = \"pin\""), false) else { panic!() };
         assert_eq!(rel, std::env::current_dir().unwrap().join("pin"));
     }
 
-    /// Byte for byte what pkcs11-provider 1.3's `tools/uri2pem.py` writes for the same URIs: the
-    /// SEQUENCE's length in short form, then long form on one and on two bytes (`30 81 CB`,
-    /// `30 82 01 32`), and the 64-column base64 lines with the final newline.
+    /// The output matches, byte for byte, what `tools/uri2pem.py` of pkcs11-provider 1.3 writes
+    /// for the same URIs. The cases cover the SEQUENCE's length in short form, then in long form
+    /// on one byte and on two bytes (`30 81 CB`, `30 82 01 32`), and the 64-column base64 lines
+    /// with the final newline.
     #[test]
     fn provider_pem_matches_uri2pem() {
         let short = "pkcs11:token=kmtest;object=k;type=private";

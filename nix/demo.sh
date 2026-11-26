@@ -29,12 +29,16 @@ cleanup() {
 trap cleanup EXIT
 cd "$work"
 
-declare -A meaning=(
-  [0]="ok" [10]="hash mismatch: prints got:" [11]="not found" [12]="ambiguous"
-  [13]="conflict" [14]="precondition failed" [15]="unsupported" [16]="unavailable"
-  [17]="invalid config, or no lock" [18]="first use: nothing pinned yet, prints got:"
-  [22]="done, and the lock written: review and commit it"
-)
+# What each exit code means: the table every tool's --help ends with (core's EXIT_CODES, as
+# docs/CAKEYS.md lists it), read rather than copied (review 2026-11-24 C-13).
+declare -A meaning=()
+while read -r code means; do
+  meaning[$code]=$means
+done < <(cakeys --help | sed -n '/^Exit codes/,$ s/^ *\([0-9][0-9]*\)  \(.*\)$/\1 \2/p')
+if [ -z "${meaning[0]:-}" ]; then
+  echo "cakeys --help lists no exit codes: the demo cannot say what one means" >&2
+  exit 1
+fi
 
 act() {
   printf '\n%s━━ %s ━━%s\n' "$bold" "$1" "$reset"
@@ -76,10 +80,14 @@ expect() {
     out=$("$@" 2>&1) || code=$?
   fi
   [ -n "$out" ] && indent <<<"$out"
-  if [ "$code" = "$want" ]; then
-    printf '  %s→ exit %s (%s)%s\n' "$green" "$code" "${meaning[$code]:-}" "$reset"
+  if [ -z "${meaning[$want]:-}" ]; then
+    printf '  %s→ expected exit %s, which cakeys --help does not list%s\n' "$red" "$want" "$reset"
+    exit 1
+  elif [ "$code" = "$want" ]; then
+    printf '  %s→ exit %s (%s)%s\n' "$green" "$code" "${meaning[$code]}" "$reset"
   else
-    printf '  %s→ exit %s, expected %s: the demo no longer matches cakeys%s\n' "$red" "$code" "$want" "$reset"
+    printf '  %s→ exit %s (%s), expected %s (%s): the demo no longer matches cakeys%s\n' \
+      "$red" "$code" "${meaning[$code]:-not a code cakeys --help lists}" "$want" "${meaning[$want]}" "$reset"
     exit 1
   fi
   last=$out
@@ -312,8 +320,9 @@ EOF
 echo 'Without a spec, create makes every pair keys.toml says it creates (origin = "create") and the'
 echo "lock does not pin yet, and verifies the ones it pins as check does (shared is adopted, so it"
 echo "is left alone). signing is still the key planted in act 3: the run makes the new keys, records"
-echo "them, then stops there."
-jqf='.[] | {object, token, rfc7093m4: .ids.rfc7093m4}' expect 10 cakeys create --token soft
+echo "them, and then stops at signing, whose row shows exit 10. The run wrote the lock, so it exits"
+echo "22, not 10: a script then reviews the new keys, and the rows show which pair failed."
+jqf='.[] | {object, token, exit, rfc7093m4: .ids.rfc7093m4}' expect 22 cakeys create --token soft
 echo 'movable is born on soft (origin = "create"), so kryo can only import it. A sealed move needs the'
 echo "target to name a transport key: an RSA key there that only unwraps and never leaves it."
 expect 15 camigrate export movable --from soft --to kryo --dry-run

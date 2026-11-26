@@ -1,22 +1,23 @@
-//! Which boolean attributes each object class carries (PKCS#11 3.2 §4): one table for what a spec
-//! may declare and what the observed policy vector records. The two sets differ in two places:
-//! `CKA_TOKEN` is observed but never declared (every managed object is a token object), and a
-//! secret key's `CKA_SIGN_RECOVER`/`CKA_VERIFY_RECOVER` may be declared but are not observed.
+//! The boolean attributes that each object class has (PKCS#11 3.2 §4). One table lists both what
+//! a spec may declare and what the observed policy vector records. The two sets differ in two
+//! places: `CKA_TOKEN` is observed but never declared (every managed object is a token object),
+//! and a secret key's `CKA_SIGN_RECOVER` and `CKA_VERIFY_RECOVER` may be declared but are not
+//! observed.
 
 use crate::types::ObjectClass;
 
 /// How cakeys uses a boolean attribute of a class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Use {
-    /// Declarable in a spec and recorded in the observed policy vector.
+    /// A spec may declare the attribute, and the observed policy vector records it.
     Both,
-    /// Recorded in the policy vector only.
+    /// Only the policy vector records the attribute.
     Observed,
-    /// Declarable only.
+    /// A spec may declare the attribute, but the policy vector does not record it.
     Declared,
 }
 
-/// Booleans every class carries (§4.2, §4.4).
+/// The boolean attributes that every class has (§4.2, §4.4).
 const COMMON: &[(&str, Use)] = &[
     ("CKA_TOKEN", Use::Observed),
     ("CKA_PRIVATE", Use::Both),
@@ -25,7 +26,7 @@ const COMMON: &[(&str, Use)] = &[
     ("CKA_DESTROYABLE", Use::Both),
 ];
 
-/// Usage and policy booleans of each class beyond the common ones.
+/// Returns the usage and policy boolean attributes of each class, in addition to the common ones.
 fn of_class(class: ObjectClass) -> &'static [(&'static str, Use)] {
     #[allow(
         clippy::enum_glob_use,
@@ -72,31 +73,32 @@ fn of_class(class: ObjectClass) -> &'static [(&'static str, Use)] {
     }
 }
 
-/// `CKA_ALLOWED_MECHANISMS`: the one non-boolean policy attribute, on key objects only.
+/// `CKA_ALLOWED_MECHANISMS`: the only policy attribute that is not a boolean. Only key objects
+/// have it.
 pub const ALLOWED_MECHANISMS: &str = "CKA_ALLOWED_MECHANISMS";
 
 fn bools(class: ObjectClass, want: fn(Use) -> bool) -> impl Iterator<Item = &'static str> + use<> {
     COMMON.iter().chain(of_class(class)).filter(move |(_, u)| want(*u)).map(|(n, _)| *n)
 }
 
-/// The booleans of `class` the observed policy vector records.
+/// Returns the boolean attributes of `class` that the observed policy vector records.
 pub fn observed(class: ObjectClass) -> impl Iterator<Item = &'static str> + use<> {
     bools(class, |u| u != Use::Declared)
 }
 
-/// Whether a spec may declare the boolean `name` on a `class` object.
+/// Returns whether a spec may declare the boolean attribute `name` on an object of `class`.
 #[must_use]
 pub fn declarable(class: ObjectClass, name: &str) -> bool {
     bools(class, |u| u != Use::Observed).any(|n| n == name)
 }
 
-/// Whether `name` is a boolean some class may declare.
+/// Returns whether `name` is a boolean attribute that at least one class may declare.
 #[must_use]
 pub fn is_declarable_bool(name: &str) -> bool {
     ObjectClass::ALL.iter().any(|c| declarable(*c, name))
 }
 
-/// Whether a `class` object may carry `CKA_ALLOWED_MECHANISMS`.
+/// Returns whether an object of `class` may have `CKA_ALLOWED_MECHANISMS`.
 #[must_use]
 pub fn has_allowed_mechanisms(class: ObjectClass) -> bool {
     class.is_key()
@@ -106,7 +108,8 @@ pub fn has_allowed_mechanisms(class: ObjectClass) -> bool {
 mod tests {
     use super::*;
 
-    /// The observed vector is part of every recorded realisation: a change here changes locks.
+    /// The observed vector is part of every recorded realisation, so a change to it changes the
+    /// locks.
     #[test]
     fn observed_vectors_are_pinned() {
         let v = |c| observed(c).collect::<Vec<_>>().join(" ");

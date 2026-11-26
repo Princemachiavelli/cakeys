@@ -1,4 +1,5 @@
-//! core's object classes and key types as `cryptoki`'s (review 2026-11-23 B-5).
+//! The mapping of the core crate's object classes and key types to the classes and key types of
+//! `cryptoki` (review 2026-11-23 B-5).
 
 #[allow(
     clippy::wildcard_imports,
@@ -6,7 +7,7 @@
 )]
 use super::*;
 
-/// The `cryptoki` class of a configured object.
+/// Returns the `cryptoki` class of a configured object.
 #[must_use]
 pub fn class_of(object: &ObjectCfg) -> ObjectClass {
     match object.class {
@@ -18,17 +19,18 @@ pub fn class_of(object: &ObjectCfg) -> ObjectClass {
     }
 }
 
-/// The configured class a token reports, if cakeys manages it.
+/// Returns the configured class for a class that a token reports, or `None` when cakeys does not
+/// manage that class.
 pub(super) fn managed_class(class: ObjectClass) -> Option<Class> {
     Class::ALL.iter().copied().find(|c| class_of(&ObjectCfg::new(*c, None)) == class)
 }
 
-/// The `cryptoki` key type of a key.
+/// Returns the `cryptoki` key type of a key.
 ///
 /// # Errors
 ///
-/// `Unsupported` for an object that is no key (a certificate, a data object), and for an HMAC
-/// type the binding cannot name (`hmac_key_type`).
+/// `Unsupported` for an object that is not a key (a certificate or a data object), and for an
+/// HMAC type that the binding cannot name (`hmac_key_type`).
 pub fn key_type_of(object: Object<'_>) -> Result<KeyType> {
     let kt =
         object.key_type().ok_or_else(|| KmError::Unsupported(format!("{} has no key type", object.class).into()))?;
@@ -47,10 +49,11 @@ pub fn key_type_of(object: Object<'_>) -> Result<KeyType> {
     })
 }
 
-/// The generation of a hash-bound HMAC key type: PKCS#11 3.0's `CKM_SHA*_KEY_GEN` for the type
-/// (`CKM_GENERIC_SECRET_KEY_GEN` makes `CKK_GENERIC_SECRET` keys only; `SoftHSM` and kryoptic
-/// refuse it for an HMAC type). `None` for any other key type. By core's key type: cryptoki's
-/// constants for these types collide without the Nix build's patch.
+/// Returns the generation mechanism of a hash-bound HMAC key type, which is the
+/// `CKM_SHA*_KEY_GEN` mechanism of PKCS#11 3.0 for the type. `CKM_GENERIC_SECRET_KEY_GEN` makes
+/// only `CKK_GENERIC_SECRET` keys, and `SoftHSM` and kryoptic refuse it for an HMAC type. Returns
+/// `None` for any other key type. The function matches on the core crate's key type, because
+/// cryptoki's constants for these types collide without the patch of the Nix build.
 #[must_use]
 pub fn hmac_key_gen(kt: Kt) -> Option<Mechanism<'static>> {
     Some(match kt {
@@ -63,9 +66,10 @@ pub fn hmac_key_gen(kt: Kt) -> Option<Mechanism<'static>> {
     })
 }
 
-/// The mechanism that generates a secret key of type `kt`: its own `CKM_SHA*_KEY_GEN` for a
-/// hash-bound HMAC type ([`hmac_key_gen`]), `CKM_DES3_KEY_GEN`, `CKM_AES_KEY_GEN`, else
-/// `CKM_GENERIC_SECRET_KEY_GEN`. What `create` runs and the probe measures.
+/// Returns the mechanism that generates a secret key of type `kt`. That is the type's own
+/// `CKM_SHA*_KEY_GEN` for a hash-bound HMAC type ([`hmac_key_gen`]), `CKM_DES3_KEY_GEN` for DES3,
+/// `CKM_AES_KEY_GEN` for AES, and `CKM_GENERIC_SECRET_KEY_GEN` otherwise. `create` runs this
+/// mechanism, and the probe measures it.
 #[must_use]
 pub fn secret_key_gen(kt: Kt) -> Mechanism<'static> {
     hmac_key_gen(kt).unwrap_or(match kt {
@@ -75,10 +79,12 @@ pub fn secret_key_gen(kt: Kt) -> Mechanism<'static> {
     })
 }
 
-/// cryptoki 0.12.1 (and main) gives `SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC` (0x2b), so such
-/// keys could be neither created nor told apart. The Nix build patches it
-/// (nix/patches/cryptoki-hmac-key-types.patch); refuse rather than misidentify without the patch.
-/// Named by core's key type `name`: cryptoki's own names the type it collides with.
+/// Returns `kt` when it has the correct value `raw`, and refuses the key type otherwise. cryptoki
+/// 0.12.1 (and its main branch) gives `SHA224/384/512_HMAC` the value of `CKK_SHA256_HMAC`
+/// (0x2b), so such keys could be neither created nor told apart. The Nix build patches this
+/// (nix/patches/cryptoki-hmac-key-types.patch). Without the patch, the function refuses the key
+/// type instead of misidentifying it. The error names the core crate's key type `name`, because
+/// cryptoki's own name would be the name of the type that it collides with.
 pub(super) fn hmac_key_type(name: Kt, kt: KeyType, raw: std::os::raw::c_ulong) -> Result<KeyType> {
     if std::os::raw::c_ulong::from(kt) == raw {
         Ok(kt)

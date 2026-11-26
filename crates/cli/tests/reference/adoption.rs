@@ -1,16 +1,16 @@
-//! Adoption: certificates standing in for a key's public half, and `publicOnly` keys.
+//! Tests of adoption: certificates that stand in for a key's public half, and `publicOnly` keys.
 
 use super::*;
 
-/// Hashes of tests/fixtures/adopt-cert.der computed independently with openssl:
+/// Hashes of tests/fixtures/adopt-cert.der that were computed independently with openssl:
 ///   sha256(cert DER) and sha256(`openssl x509 -pubkey | openssl pkey -pubin -outform DER`).
 const ADOPT_CERTHASH: &str = "sha256-lXNE6ciIfLkwGf6kf84qfibQ08d5fkPuGNKQ5KnyTMM=";
 const ADOPT_PUBKEYHASH: &str = "sha256-8DQBv2fMc+z0Q5uxky0+5t9TS6MAHO07fNMqG9thHtM=";
 
-/// A certificate's declared attributes are held to the token as a key's are: a certificate the
-/// spec says is public but the token holds private is refused (13), and one that agrees passes.
-/// Certificates were checked for their type alone, so any declaration passed, `CKA_TRUSTED`
-/// included.
+/// A certificate's declared attributes are checked against the token as a key's attributes are.
+/// A certificate that the spec declares public, but that the token holds as private, is refused
+/// (13), and a certificate that agrees passes. Certificates were once checked only for their
+/// type, so any declaration passed, including `CKA_TRUSTED`.
 #[test]
 fn a_certificates_declared_attributes_are_checked() {
     let Some(e) = env("cert_policy") else { return };
@@ -35,10 +35,10 @@ fn a_certificates_declared_attributes_are_checked() {
     assert_eq!(e.code(&["check", "--spec", "agrees", "--token", "ref"]), 0);
 }
 
-/// An imported EC private key exposes no public point; when its importer wrote only the
-/// certificate beside it, that certificate stands in for the public half (docs/DESIGN.md §3.2),
-/// and only a certificate of the key's own type and curve does: under `token-asserted` no proof
-/// would catch another key's (13).
+/// An imported EC private key exposes no public point. When its importer wrote only a certificate
+/// next to it, that certificate stands in for the public half (docs/DESIGN.md §3.2). Only a
+/// certificate of the key's own type and curve may do so, because under `token-asserted` no proof
+/// would detect the certificate of another key (13).
 #[test]
 fn a_certificate_stands_in_for_an_imported_keys_public_half() {
     let Some(e) = env("cert_stand_in") else { return };
@@ -146,16 +146,17 @@ tokens.ref-anon = { locator = { CKA_ID = "42" }, origin = "adopt" }
     assert!(lock["realisations"]["adopted-cert"]["ref-anon"].get("publicOnly").is_none());
     let verify = e.km(&["check", "--spec", "adopted-pub", "--token", "ref-anon"]);
     assert!(stdout(&verify).contains("object=adopt-key;type=private"), "consumers get the private key URI");
-    // There is no private half: without publicOnly the same locator is simply absent.
+    // There is no private half, so without publicOnly the same locator finds nothing (11).
     assert_eq!(e.code(&["check", "--spec", "adopted-priv", "--token", "ref"]), 11);
-    // Adopted public-only keys are never deleted (only the public half would go).
+    // An adopted public-only key is never deleted, because only the public half would be removed.
     assert_eq!(e.code(&["delete", "--spec", "adopted-pub", "--token", "ref-anon"]), 15);
     // CKA_ID alone also matches the public key object, but certificates are looked up by class.
     let by_id = ["lock", "--spec", "adopted-cert-by-id", "--token", "ref-anon", "--dry-run"];
     assert_eq!(e.code(&by_id), 14, "same certificate, but not recorded under this spec yet");
     assert_eq!(e.code(&recording(&by_id)), 22);
 
-    // Locks split per object and join again: a pair partner in another fragment is allowed.
+    // A lock can be split per object and joined again, and a pair partner may be in another
+    // fragment.
     let full = e.lock();
     let write = |lock: &toml::Value| std::fs::write(e.dir.join("keys.lock"), toml::to_string(lock).unwrap()).unwrap();
     let fragment = |objects: &[&str], specs: &[&str]| {
@@ -175,7 +176,8 @@ tokens.ref-anon = { locator = { CKA_ID = "42" }, origin = "adopt" }
         joined[part].as_table_mut().unwrap().extend(cert[part].as_table().unwrap().clone());
     }
     assert_eq!(joined, full);
-    // Partners that share the key but are not listed: a note, and a writing run records them.
+    // Partners that share the key but are not listed as pairs cause a note, and a writing run
+    // records them.
     let mut unlisted = full.clone();
     for o in ["adopted", "adopted-cert"] {
         unlisted["objects"][o].as_table_mut().unwrap().remove("pairs");
@@ -186,7 +188,7 @@ tokens.ref-anon = { locator = { CKA_ID = "42" }, origin = "adopt" }
     assert!(stderr(&o).contains("not listed as its pairs"), "a partner not listing back is warned: {}", stderr(&o));
     assert_eq!(e.code(&["lock", "--spec", "adopted-pub", "--token", "ref-anon"]), 22);
     assert_eq!(e.lock(), full);
-    // A listed partner that is present must list back.
+    // A listed partner that is present must also list this object, or the lock is invalid (17).
     let mut one_sided = full.clone();
     one_sided["objects"]["adopted"].as_table_mut().unwrap().remove("pairs");
     write(&one_sided);
@@ -215,15 +217,17 @@ tokens.ref-anon = { locator = { CKA_LABEL = "rsa-paths" }, origin = "adopt", pub
     );
     assert_eq!(e.code(&["create", "--spec", "r-gen", "--token", "ref", "--no-update-lock"]), 18);
     assert_eq!(e.code(&["lock", "--spec", "r-gen", "--token", "ref"]), 22);
-    // Same material through the public key object, without login: same locked identity.
+    // The same material, read through the public key object without login, gives the same
+    // locked identity.
     assert_eq!(e.code(&["lock", "--spec", "r-pub", "--token", "ref-anon"]), 22);
     assert_eq!(e.code(&["check", "r", "--spec", "r-pub"]), 0);
 }
 
-/// A legacy RSA key outside the `rsa` crate's limits (768 bits) has an identity (core id.rs
-/// F1): adopted, it is locked from its private key and from its public key without login, the
-/// two agree, and it verifies. It was refused as a conflict (13). A proof of possession, which
-/// needs a verifier of its size, is refused on policy (15), naming the size.
+/// A legacy RSA key outside the `rsa` crate's limits (768 bits) has an identity (core id.rs F1).
+/// When it is adopted, it is locked from its private key and from its public key without login,
+/// the two identities agree, and it verifies. It used to be refused as a conflict (13). A proof
+/// of possession needs a verifier for the key's size, so it is refused on policy (15), and the
+/// message names the size.
 #[test]
 fn a_legacy_rsa_key_has_an_identity() {
     let Some(e) = env("rsa_legacy") else { return };
@@ -239,17 +243,15 @@ fn a_legacy_rsa_key_has_an_identity() {
         ],
         &[Attribute::Token(true), label, Attribute::Sign(true), Attribute::Sensitive(true)],
     );
-    // kryoptic makes no RSA key under 1024 bits; any other reference that fails to is a failure,
-    // not a skip (review D9).
-    match made {
-        Err(err) if REF.provider == "kryoptic" => {
-            eprintln!("skipping rsa_legacy: kryoptic makes no RSA-768 key: {err}");
-            return;
-        }
-        made => {
-            made.unwrap();
-        }
+    // kryoptic makes no RSA key under 1024 bits, so on kryoptic the test asserts that the
+    // creation fails, and then stops (review 2026-11-24 C-11: it used to be a skip). The rest of
+    // the test runs on the other references, and on any of them a failed creation fails the test
+    // (review D9).
+    if REF.provider == "kryoptic" {
+        made.expect_err("kryoptic made an RSA-768 key: let the whole test run there");
+        return;
     }
+    made.unwrap();
     e.config(
         r#"
 [objects.r]
@@ -271,7 +273,8 @@ object = "r"
 tokens.ref-anon = { locator = { CKA_LABEL = "rsa-legacy" }, origin = "adopt", publicOnly = true }
 "#,
     );
-    // No signature verifier of that size: refused on policy (15), by its size, not as a conflict.
+    // There is no signature verifier for that size, so the proof is refused on policy (15)
+    // because of the size, and not as a conflict.
     let o = e.km(&["lock", "--spec", "r-proved", "--token", "ref"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("an RSA key of 768 bits"), "{}", stderr(&o));

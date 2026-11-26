@@ -1,14 +1,16 @@
-//! End-to-end tests of the CLI against a real `YubiKey` (PIV, through ykcs11), read-write.
+//! Read-write end-to-end tests of the CLI against a real `YubiKey` (PIV, through ykcs11).
 //!
-//! Needs `CAKEYS_TEST_YUBIKEY_MODULE` (path to libykcs11.so), `CAKEYS_TEST_YUBIKEY_PIN` (path to
-//! a file holding the PIV PIN) and `CAKEYS_TEST_YUBIKEY_MGM` (path to a file holding the admin
-//! credential: the PIV management key in hex — which logs in without spending a PIN retry — or
-//! the PIN on a PIN-protected-management-key device). The CLI uses it only for the SO steps that
-//! generate keys, then logs the user back in. Tests are skipped when any is unset — they never
-//! run in the Nix build — and the secrets are only ever read by the CLI from these paths: never
-//! printed, never stored, never committed.
+//! The tests need `CAKEYS_TEST_YUBIKEY_MODULE` (the path to libykcs11.so),
+//! `CAKEYS_TEST_YUBIKEY_PIN` (the path to a file that holds the PIV PIN) and
+//! `CAKEYS_TEST_YUBIKEY_MGM` (the path to a file that holds the admin credential: the PIV
+//! management key in hex, which logs in without using a PIN retry, or the PIN on a device with a
+//! PIN-protected management key). The CLI uses the admin credential only for the SO steps that
+//! generate keys, and then logs the user back in. The tests are skipped when any of the variables
+//! is unset, so they never run in the Nix build. Only the CLI reads the secrets, and only from
+//! these paths. The secrets are never printed, stored or committed.
 //!
-//! The tests own the top retired slots, one key type each, and never touch any other slot:
+//! The tests own the top retired slots, with one key type in each, and they never touch any other
+//! slot:
 //!
 //! | slot | `CKA_ID` | what |
 //! |---|---|---|
@@ -20,11 +22,11 @@
 //! | 90 | 13 | RSA-3072, `pop-sign` |
 //!
 //! ykcs11 cannot erase a PIV key (its `C_DestroyObject` clears only the slot's certificate), so
-//! `delete` is refused, and a test adopts, saying so, whatever a previous run left in its slot;
-//! `scripts/coverage-full.sh` with `CAKEYS_YUBIKEY_WIPE=1` empties the slots first
-//! (scripts/yubikey-empty-slots.py), so every key is generated. Every CLI run is
-//! bounded in time: a touch or a PIN prompt would hang the run and fail the test instead of
-//! waiting for a user.
+//! `delete` is refused, and a test adopts whatever a previous run left in its slot, and prints
+//! that it does so. `scripts/coverage-full.sh` with `CAKEYS_YUBIKEY_WIPE=1` empties the slots
+//! first (scripts/yubikey-empty-slots.py), so that every key is generated. Every CLI run has a
+//! time limit, so a run that waits for a touch or a PIN prompt fails the test when the limit
+//! expires, instead of waiting for a user.
 
 mod common;
 
@@ -33,8 +35,9 @@ use std::fmt::Write as _;
 use std::process::Output;
 use std::time::Duration;
 
-/// `YubiKey` operations are interactive hardware calls in the worst case; none of the tested ones
-/// needs presence, and the bound turns a policy change (touch) into a test failure.
+/// The time limit of each CLI run. In the worst case, a `YubiKey` operation is an interactive
+/// hardware call. None of the tested operations needs the user's presence, so the limit turns a
+/// policy change (a touch requirement) into a test failure.
 const RUN_LIMIT: Duration = Duration::from_secs(60);
 
 struct Env {
@@ -42,7 +45,7 @@ struct Env {
     module: String,
     pin: String,
     mgm: String,
-    /// The device, this test's alone; no login after a failed one.
+    /// This test's exclusive turn at the device. After a failed login, no test logs in again.
     turn: common::YubikeyTurn,
 }
 
@@ -52,16 +55,16 @@ fn env(name: &str) -> Option<Env> {
     Some(Env { w: common::Workdir::new(name), module, pin, mgm, turn })
 }
 
-/// One key the read-write tests generate, attest and prove, in a slot of its own.
+/// One key that the read-write tests generate, attest and prove, in a slot of its own.
 struct Case {
     name: &'static str,
-    /// The slot's `CKA_ID` (ykcs11's table: 13-18 are retired slots 90-95).
+    /// The slot's `CKA_ID` (in ykcs11's table, 13-18 are the retired slots 90-95).
     id: &'static str,
     /// The `[objects.<name>]` body after the class.
     object: &'static str,
     /// The spec's policy attributes, as an inline table body.
     attributes: &'static str,
-    /// The possession proof the spec asks for; the lock records it.
+    /// The possession proof that the spec asks for. The lock records it.
     binding: &'static str,
 }
 
@@ -73,12 +76,13 @@ const P256: Case = Case {
     binding: "pop-sign",
 };
 
-/// The other key types this `YubiKey` generates (profiles/modules/ykcs11/2.7.toml), each with
-/// the proof that exercises a different path: ECDH into ykcs11's extractable-only secret, an
-/// Edwards curve it takes only by name, RSA-OAEP decryption, a larger RSA modulus.
+/// The other key types that this `YubiKey` generates (profiles/modules/ykcs11/2.7.toml), each with
+/// a proof that exercises a different path: ECDH into ykcs11's extractable-only secret, an Edwards
+/// curve that ykcs11 accepts only by name, RSA-OAEP decryption, and a larger RSA modulus.
 const KEY_TYPES: [Case; 4] = [
-    // ykcs11 reports CKA_DERIVE false on every key, from a fixed table, while its keys derive
-    // (`derive.key-attribute` in the profile): the provider repairs it, and the proof shows it.
+    // ykcs11 reports CKA_DERIVE as false on every key, from a fixed table, although its keys can
+    // derive (`derive.key-attribute` in the profile). The provider corrects the value, and the
+    // proof shows that the key derives.
     Case {
         name: "p384-ecdh",
         id: "16",
@@ -110,8 +114,9 @@ const KEY_TYPES: [Case; 4] = [
 ];
 
 impl Env {
-    /// The token with both credentials and the probe's scratch slot (`extra` added to it), and
-    /// one spec per case: its key generated on first use into the case's slot, attested.
+    /// Writes keys.toml with the token, both credentials and the probe's scratch slot (with
+    /// `extra` added to the token), and one spec per case. Each spec's key is generated on first
+    /// use into the case's slot, and attested.
     fn config(&self, cases: &[&Case], extra: &str) {
         let mut text = common::yubikey_token(&self.module, &self.pin, &self.mgm, extra);
         for c in cases {
@@ -139,22 +144,23 @@ impl Env {
         self.turn.checked(self.w.run().within(args, RUN_LIMIT))
     }
 
-    /// First use, record, verify, refused delete and idempotent re-lock of `c`: the key is
-    /// generated (or adopted from an earlier run) in its slot, attested, its possession proven
-    /// by `c.binding` — no touch, no prompt — and it keeps its identity throughout.
+    /// Runs the first use, the recording, the verification, the refused delete and the repeated
+    /// lock of `c`. The key is generated in its slot (or adopted from an earlier run), it is
+    /// attested, and its possession is proven by `c.binding` without a touch or a prompt. It keeps
+    /// its identity throughout.
     fn lifecycle(&self, c: &Case) {
         let spec = format!("{}-yubikey", c.name);
         let r = ["create", "--spec", &spec, "--token", "yubikey", "--no-update-lock"];
         let adopt = ["lock", "--spec", &spec, "--token", "yubikey", "--dry-run"];
         let record = ["lock", "--spec", &spec, "--token", "yubikey"];
 
-        // First use: generated into an empty slot (SO login), or adopted where an earlier run
-        // left a key — `create` refuses a key the lock does not pin (19), `lock` takes it — and
-        // identified; nothing is locked yet.
+        // First use: the key is generated into an empty slot (with an SO login), or adopted where
+        // an earlier run left a key (`create` refuses a key that the lock does not pin with 19,
+        // and `lock` accepts it). The key is identified, and nothing is locked yet.
         let mut first = self.km(&r);
         if code(&first) == 19 {
-            // ykcs11 cannot erase a key and the slots were not emptied first (the module doc):
-            // say that this run adopts, rather than generates, what the slot holds.
+            // ykcs11 cannot erase a key, and the slots were not emptied first (see the module
+            // doc). Print that this run adopts what the slot holds instead of generating a key.
             eprintln!("{}: the slot holds an earlier run's key; adopting it with `lock`, not generating", c.name);
             first = self.km(&adopt);
         }
@@ -162,9 +168,10 @@ impl Env {
         let got = got_hash(&first);
         assert!(got.starts_with("sha256-"), "{got}");
 
-        // Record it: the proof and the attestation ran in the user session, and are recorded.
+        // Record the key. The proof and the attestation ran in the user session, and the lock
+        // records them. The run wrote the lock, so it exits 22.
         let recorded = self.km(&record);
-        assert_eq!(code(&recorded), 0, "{}: {}", c.name, String::from_utf8_lossy(&recorded.stderr));
+        assert_eq!(code(&recorded), 22, "{}: {}", c.name, String::from_utf8_lossy(&recorded.stderr));
         let lock = self.lock();
         let real = &lock["realisations"][spec.as_str()]["yubikey"];
         assert_eq!(real["binding"].as_str(), Some(c.binding), "{}: possession proven, not asserted", c.name);
@@ -174,20 +181,21 @@ impl Env {
         assert_eq!(real["object"].as_str(), Some(c.name));
         assert_eq!(lock["objects"][c.name]["ids"]["rfc7093m4"].as_str(), Some(got.as_str()), "the first-use id");
 
-        // Verify in a fresh process: the proof of possession runs again, unattended.
+        // Verify in a new process: the proof of possession runs again, without user interaction.
         let verify = ["check", "--spec", &spec, "--token", "yubikey"];
         let verified = self.km(&verify);
         assert_eq!(code(&verified), 0, "{}: {}", c.name, String::from_utf8_lossy(&verified.stderr));
 
-        // Delete is refused: ykcs11 would clear only the slot's certificate and report success
-        // while the key stays. Nothing changes — the realisation stays and still verifies.
+        // The delete is refused, because ykcs11 would clear only the slot's certificate and
+        // report success while the key stays. Nothing changes: the realisation stays and still
+        // verifies.
         let deleted = self.km(&["delete", "--spec", &spec, "--token", "yubikey"]);
         assert_eq!(code(&deleted), 15, "{}: {}", c.name, String::from_utf8_lossy(&deleted.stderr));
         assert!(String::from_utf8_lossy(&deleted.stderr).contains("ykman piv keys delete"));
         assert!(self.lock()["realisations"][spec.as_str()]["yubikey"].is_table(), "the realisation stays");
         assert_eq!(code(&self.km(&verify)), 0);
 
-        // Re-realising is idempotent: the same key, the same id, nothing generated.
+        // A repeated lock changes nothing: the same key, the same ID, and nothing generated.
         let again = self.km(&record);
         assert_eq!(code(&again), 0, "{}: {}", c.name, String::from_utf8_lossy(&again.stderr));
         assert!(!String::from_utf8_lossy(&again.stderr).contains("created"), "nothing generated");
@@ -195,10 +203,11 @@ impl Env {
     }
 }
 
-/// Read-write on real hardware: generate into the P-256 slot under the SO (management-key)
-/// credential, back in the user session attest it and prove possession by signing (no touch, no
-/// prompt), record, verify; `delete` is refused (15) because ykcs11 would leave the key in the
-/// slot, so the realisation stays and verifies.
+/// Read-write on real hardware: the test generates a key into the P-256 slot under the SO
+/// (management-key) credential. Back in the user session, it attests the key and proves
+/// possession by signing (without a touch or a prompt), records the key, and verifies it.
+/// `delete` is refused (15) because ykcs11 would leave the key in the slot, so the realisation
+/// stays and verifies.
 #[test]
 fn rw_lifecycle_generates_attests_proves_and_refuses_delete_without_touch() {
     let Some(e) = env("yubikey_rw") else { return };
@@ -206,9 +215,10 @@ fn rw_lifecycle_generates_attests_proves_and_refuses_delete_without_touch() {
     e.lifecycle(&P256);
 }
 
-/// Every other key type the device generates, each proven the way its spec asks: ECDH through
-/// ykcs11's extractable-only derivation (it refuses a sealed secret and has no HMAC), Ed25519
-/// generated by curve name (ykcs11 refuses the OID), RSA-OAEP decryption, and RSA-3072.
+/// Every other key type that the device generates, each proven in the way that its spec asks:
+/// ECDH through ykcs11's extractable-only derivation (ykcs11 refuses a sealed secret and has no
+/// HMAC), Ed25519 generated by curve name (ykcs11 refuses the OID), RSA-OAEP decryption, and
+/// RSA-3072.
 #[test]
 fn rw_key_types_generate_attest_and_prove_each_way_without_touch() {
     let Some(e) = env("yubikey_key_types") else { return };
@@ -216,7 +226,7 @@ fn rw_key_types_generate_attest_and_prove_each_way_without_touch() {
     for c in &KEY_TYPES {
         e.lifecycle(c);
     }
-    // The ECDH key's recorded policy is the repaired one: what the key does.
+    // The ECDH key's recorded policy is the corrected one, which matches what the key does.
     let lock = e.lock();
     assert_eq!(lock["realisations"]["p384-ecdh-yubikey"]["yubikey"]["policy"]["CKA_DERIVE"].as_bool(), Some(true));
 }

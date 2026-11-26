@@ -14,12 +14,21 @@ workspace = true
 [dependencies]
 cakeys-core.workspace = true
 cakeys-profile.workspace = true
+# The device-failure names (token/rv.rs), as the profile loader reads them.
+cakeys-names.workspace = true
 cryptoki.workspace = true
 cryptoki-sys.workspace = true
 p11-names.workspace = true
 zeroize.workspace = true
 der.workspace = true
 aes-kw.workspace = true
+# The host's own commitments of a secret key it holds (ops::check_identity).
+aes.workspace = true
+cmac.workspace = true
+des.workspace = true
+hmac.workspace = true
+sha1.workspace = true
+sha2.workspace = true
 libc.workspace = true
 getrandom.workspace = true
 rsa.workspace = true

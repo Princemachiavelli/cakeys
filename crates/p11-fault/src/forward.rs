@@ -1,15 +1,19 @@
-//! The forwarders: one `extern "C"` function per slot of the 2.40 `CK_FUNCTION_LIST`, each
-//! counting its call, asking the plan, and otherwise calling the real module's function with
-//! the caller's arguments unchanged. The list below is `cryptoki-sys`'s signatures; the table
-//! literal names every slot, so a slot missing from it does not compile.
+//! The forwarders: one `extern "C"` function for each slot of the 2.40 `CK_FUNCTION_LIST`. Each
+//! forwarder counts its call, asks the plan, and otherwise calls the real module's function with
+//! the caller's arguments unchanged. The list below has the signatures of `cryptoki-sys`. The
+//! table literal names every slot, so the code does not compile when a slot is missing.
 //!
-//! `=> hook` hands the call to `hooks::hook`, which forwards it itself and may change what the
-//! caller sees; `=> substitute_key` forwards with the third argument, a key, replaced by the
-//! one a rule names; `=> corrupt_output` forwards, then changes the last byte returned where a
-//! rule says so.
+//! `=> hook` hands the call to `hooks::hook`, which forwards the call itself and may change what
+//! the caller sees. `=> substitute_key` forwards the call with the third argument, a key,
+//! replaced by the key that a rule names. (`=> wrap_key` and `=> unwrap_key` do this too, and
+//! also replace the wrapped key or the unwrapped blob.) `=> corrupt_output` forwards the call
+//! and then changes the returned bytes where a rule says so (`=> wrap_key` does this too).
 //!
-//! `[kind(args), ...]` names what the trace reads from the arguments once the call returns
-//! (`trace::Detail`): the mechanism, a template, the user type, the session flags.
+//! `[kind(args), ...]` names what is read from the arguments (`trace::Detail`). Before the call,
+//! it is what the plan's matchers see: the mechanism, an input template's class and key type,
+//! and the session and objects that `of_label` looks at. After the call returns, it is what the
+//! trace records: the mechanism, a template, the user type, the session flags, and what an
+//! output holds.
 
 use crate::{Fatal, guard, hooks, shim};
 use cryptoki_sys::{
@@ -58,7 +62,7 @@ macro_rules! forward {
         Some(stringify!($hook))
     };
     ($($name:ident($($arg:ident: $ty:ty),* $(,)?) $(=> $hook:ident)? $([$($kind:ident($($oarg:ident),*)),+])?;)*) => {
-        /// A forwarded function: what a plan names, and the index of its call counter.
+        /// A forwarded function, which a plan names, and the index of its call counter.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #[expect(non_camel_case_types, reason = "the PKCS#11 function names")]
         pub enum Fn {
@@ -77,9 +81,19 @@ macro_rules! forward {
                 }
             }
 
-            /// The hook its forwarder runs (`=> hook` in the table), if any: what the plan
-            /// parser lets a rule ask of it, read from the table rather than kept beside it
-            /// (review 2026-11-23 B-18).
+            /// Returns what is read from the function's arguments (`[kind(args), ...]` in the
+            /// table), which is what a rule's matchers can see of its calls. The list comes from
+            /// the table and is not kept in a separate list.
+            #[must_use]
+            pub fn reads(self) -> &'static [&'static str] {
+                match self {
+                    $(Fn::$name => &[$($(stringify!($kind)),+)?]),*
+                }
+            }
+
+            /// Returns the hook that the function's forwarder runs (`=> hook` in the table), if
+            /// any, which decides what the plan parser lets a rule ask of the function. The value
+            /// comes from the table and is not kept in a separate list (review 2026-11-23 B-18).
             #[must_use]
             pub fn hook(self) -> Option<&'static str> {
                 match self {
@@ -98,8 +112,9 @@ macro_rules! forward {
                         |call| forward!(@body shim, call, $name, ($($arg),*) $(, $hook)?),
                         |detail: &mut crate::trace::Detail| {
                             let _ = &detail;
-                            // SAFETY: the caller's arguments, still in its call: what the
-                            // contract made readable then is readable now.
+                            // SAFETY: these are the caller's arguments, and the caller's call
+                            // has not returned yet, so what the contract made readable at the
+                            // start of the call is still readable now.
                             $($(
                                 #[allow(unused_unsafe, reason = "one block for the safe readers and the unsafe ones")]
                                 unsafe { detail.$kind($($oarg),*) };
@@ -110,10 +125,10 @@ macro_rules! forward {
             }
         )*
 
-        /// The shim's table: the real one's version, but never above 2.40, our forwarder in
-        /// every slot the real module fills, and `NULL` where it leaves one empty. The table
-        /// is the 2.40 one: a 3.x version on it would tell a client that picks the layout by
-        /// version to read 24 slots past its end.
+        /// Returns the shim's table: the real table's version, but never above 2.40, the shim's
+        /// forwarder in every slot that the real module fills, and `NULL` where the real module
+        /// leaves a slot empty. The table has the 2.40 layout, so a 3.x version on it would
+        /// tell a client that picks the layout by version to read 24 slots past its end.
         pub(crate) fn table(real: &CK_FUNCTION_LIST) -> CK_FUNCTION_LIST {
             let v240 = CK_VERSION { major: 2, minor: 40 };
             CK_FUNCTION_LIST {
@@ -146,38 +161,38 @@ forward! {
     C_Login(arg1: CK_SESSION_HANDLE, arg2: CK_USER_TYPE, arg3: *mut CK_UTF8CHAR, arg4: CK_ULONG) [user(arg2)];
     C_Logout(arg1: CK_SESSION_HANDLE);
     C_CreateObject(arg1: CK_SESSION_HANDLE, arg2: *mut CK_ATTRIBUTE, arg3: CK_ULONG, arg4: *mut CK_OBJECT_HANDLE) [template(arg2, arg3)];
-    C_CopyObject(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG, arg5: *mut CK_OBJECT_HANDLE) [template(arg3, arg4)];
-    C_DestroyObject(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE);
-    C_GetObjectSize(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ULONG);
-    C_GetAttributeValue(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG) => attribute_value [filled_template(arg3, arg4)];
-    C_SetAttributeValue(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG) [template(arg3, arg4)];
+    C_CopyObject(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG, arg5: *mut CK_OBJECT_HANDLE) [session(arg1), object(arg2), template(arg3, arg4)];
+    C_DestroyObject(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE) [session(arg1), object(arg2)];
+    C_GetObjectSize(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ULONG) [session(arg1), object(arg2)];
+    C_GetAttributeValue(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG) => attribute_value [session(arg1), object(arg2), filled_template(arg3, arg4)];
+    C_SetAttributeValue(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG) [session(arg1), object(arg2), template(arg3, arg4)];
     C_FindObjectsInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_ATTRIBUTE, arg3: CK_ULONG) => find_objects_init [template(arg2, arg3)];
     C_FindObjects(arg1: CK_SESSION_HANDLE, arg2: *mut CK_OBJECT_HANDLE, arg3: CK_ULONG, arg4: *mut CK_ULONG) => find_objects;
     C_FindObjectsFinal(arg1: CK_SESSION_HANDLE) => find_objects_final;
-    C_EncryptInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2)];
+    C_EncryptInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [session(arg1), mechanism(arg2), object(arg3)];
     C_Encrypt(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG) => corrupt_output;
     C_EncryptUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_EncryptFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: *mut CK_ULONG);
-    C_DecryptInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2)];
+    C_DecryptInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [session(arg1), mechanism(arg2), object(arg3)];
     C_Decrypt(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG) => corrupt_output;
     C_DecryptUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_DecryptFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: *mut CK_ULONG);
     C_DigestInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM) [mechanism(arg2)];
     C_Digest(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_DigestUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);
-    C_DigestKey(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE);
+    C_DigestKey(arg1: CK_SESSION_HANDLE, arg2: CK_OBJECT_HANDLE) [session(arg1), object(arg2)];
     C_DigestFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: *mut CK_ULONG);
-    C_SignInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2)];
-    C_Sign(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG) => corrupt_output;
+    C_SignInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [session(arg1), mechanism(arg2), object(arg3)];
+    C_Sign(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG) => corrupt_output [session(arg1), signed(arg2, arg3, arg4, arg5)];
     C_SignUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);
     C_SignFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: *mut CK_ULONG) => corrupt_output;
-    C_SignRecoverInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) [mechanism(arg2)];
+    C_SignRecoverInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) [session(arg1), mechanism(arg2), object(arg3)];
     C_SignRecover(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
-    C_VerifyInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2)];
+    C_VerifyInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) => substitute_key [session(arg1), mechanism(arg2), object(arg3)];
     C_Verify(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: CK_ULONG);
     C_VerifyUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);
     C_VerifyFinal(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);
-    C_VerifyRecoverInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) [mechanism(arg2)];
+    C_VerifyRecoverInit(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE) [session(arg1), mechanism(arg2), object(arg3)];
     C_VerifyRecover(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_DigestEncryptUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_DecryptDigestUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
@@ -185,9 +200,9 @@ forward! {
     C_DecryptVerifyUpdate(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG, arg4: *mut CK_BYTE, arg5: *mut CK_ULONG);
     C_GenerateKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG, arg5: *mut CK_OBJECT_HANDLE) [mechanism(arg2), template(arg3, arg4)];
     C_GenerateKeyPair(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: *mut CK_ATTRIBUTE, arg4: CK_ULONG, arg5: *mut CK_ATTRIBUTE, arg6: CK_ULONG, arg7: *mut CK_OBJECT_HANDLE, arg8: *mut CK_OBJECT_HANDLE) [mechanism(arg2), template(arg3, arg4), template(arg5, arg6)];
-    C_WrapKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: CK_OBJECT_HANDLE, arg5: *mut CK_BYTE, arg6: *mut CK_ULONG) => substitute_key [mechanism(arg2)];
-    C_UnwrapKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: *mut CK_BYTE, arg5: CK_ULONG, arg6: *mut CK_ATTRIBUTE, arg7: CK_ULONG, arg8: *mut CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2), template(arg6, arg7)];
-    C_DeriveKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: *mut CK_ATTRIBUTE, arg5: CK_ULONG, arg6: *mut CK_OBJECT_HANDLE) => substitute_key [mechanism(arg2), template(arg4, arg5)];
+    C_WrapKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: CK_OBJECT_HANDLE, arg5: *mut CK_BYTE, arg6: *mut CK_ULONG) => wrap_key [session(arg1), mechanism(arg2), object(arg3), object(arg4)];
+    C_UnwrapKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: *mut CK_BYTE, arg5: CK_ULONG, arg6: *mut CK_ATTRIBUTE, arg7: CK_ULONG, arg8: *mut CK_OBJECT_HANDLE) => unwrap_key [session(arg1), mechanism(arg2), object(arg3), template(arg6, arg7)];
+    C_DeriveKey(arg1: CK_SESSION_HANDLE, arg2: *mut CK_MECHANISM, arg3: CK_OBJECT_HANDLE, arg4: *mut CK_ATTRIBUTE, arg5: CK_ULONG, arg6: *mut CK_OBJECT_HANDLE) => substitute_key [session(arg1), mechanism(arg2), object(arg3), template(arg4, arg5)];
     C_SeedRandom(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);
     C_GenerateRandom(arg1: CK_SESSION_HANDLE, arg2: *mut CK_BYTE, arg3: CK_ULONG);
     C_GetFunctionStatus(arg1: CK_SESSION_HANDLE);
@@ -200,8 +215,8 @@ mod tests {
     use super::table;
     use cryptoki_sys::CK_VERSION;
 
-    /// The shim's table is the 2.40 one, so it says no more than 2.40, whatever the module
-    /// behind it reports; an older version is passed on.
+    /// The shim's table has the 2.40 layout, so it reports no version above 2.40, whatever the
+    /// module behind it reports. An older version is passed on unchanged.
     #[test]
     fn the_table_says_no_more_than_2_40() {
         for ((major, minor), says) in [((3, 0), (2, 40)), ((3, 2), (2, 40)), ((2, 40), (2, 40)), ((2, 20), (2, 20))] {

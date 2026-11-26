@@ -1,4 +1,5 @@
-//! The material CA-IDs: the canonical SPKI of a key, and the secret-key commitments (directly or through a wrap-and-rebind copy).
+//! The material CA-IDs. This file computes the canonical SPKI of a key, and the commitments of a
+//! secret key, either directly or through a wrap-and-rebind copy.
 
 #[allow(
     clippy::wildcard_imports,
@@ -7,18 +8,19 @@
 use super::*;
 
 impl Token {
-    /// Compute the material CA-IDs of the object using `mode`; secret keys use `commits`. With
-    /// `binding`, `h` is a private key whose possession of the public key hashed is proven
-    /// (`None`, or `TokenAsserted`, proves nothing).
+    /// Computes the material CA-IDs of the object with `mode`. Secret keys use the commitments
+    /// `commits`. With `binding`, `h` is a private key, and the function proves that it possesses
+    /// the public key that is hashed (`None` or `TokenAsserted` proves nothing). `spki` is the
+    /// key's own SPKI ([`Self::spki`]) when the caller has already read it.
     ///
     /// # Errors
     ///
-    /// `Conflict` when the token's own cross-checks disagree (a `CKA_PUBLIC_KEY_INFO` that is
-    /// not the object's material, a wrong `CKA_KEY_TYPE`); `NotFound`/`Ambiguous` when the
-    /// public half the object's identity needs is absent or duplicated under the locator;
-    /// `Unsupported` for an unimplemented mode, unreadable material or a curve/mechanism the
-    /// token exposes but cakeys cannot use.
-    /// `spki` is the key's own ([`Self::spki`]) where the caller has read it already.
+    /// - `Conflict` when the token's own cross-checks disagree (a `CKA_PUBLIC_KEY_INFO` that is
+    ///   not the object's material, or a wrong `CKA_KEY_TYPE`).
+    /// - `NotFound` or `Ambiguous` when the public half that the object's identity needs is
+    ///   absent or duplicated under the locator.
+    /// - `Unsupported` for an unimplemented mode, for material that cannot be read, or for a curve
+    ///   or a mechanism that the token exposes but cakeys cannot use.
     #[expect(clippy::too_many_arguments, reason = "one caller (`ops::compute_ids`), the one place they meet")]
     pub fn ids(
         &self,
@@ -41,7 +43,8 @@ impl Token {
                 ids.insert(Scheme::Rfc7093m4.name().into(), id::sri(&id::cert_spki(&der)?));
             }
             Mode::Direct if class_of(&object) == ObjectClass::DATA => {
-                // SHA-256 of the content: the same SRI hash as a flat Nix fixed-output hash.
+                // The ID is the SHA-256 hash of the content, which is the same SRI hash as a
+                // flat Nix fixed-output hash.
                 let Some(Attribute::Value(value)) = self.attr(h, AttributeType::Value)? else {
                     return Err(KmError::Unsupported("data object has no readable CKA_VALUE".into()));
                 };
@@ -68,23 +71,27 @@ impl Token {
         Ok(ids)
     }
 
-    /// Canonical SPKI of a key, from key material rather than from what the module asserts:
-    /// 1. the object's own material (RSA modulus/exponent, EC params and point);
-    /// 2. else the single public key object under the locator (EC/Edwards private keys expose no
-    ///    point; possession of the private half is proven separately);
-    /// 3. else `CKA_PUBLIC_KEY_INFO`;
-    /// 4. else the single certificate under the locator (an imported key whose importer wrote only
-    ///    the certificate beside it: a PIV-style slot, a PKCS #12 import). It stands in like a
-    ///    public key object, no more trusted: a binding proves the private key is its key.
+    /// Returns the canonical SPKI of a key, computed from key material and not from what the
+    /// module asserts. The sources are tried in this order:
+    /// 1. the object's own material (the RSA modulus and exponent, or the EC parameters and
+    ///    point);
+    /// 2. otherwise, the single public key object under the locator (EC and Edwards private keys
+    ///    expose no point, and possession of the private half is proven separately);
+    /// 3. otherwise, `CKA_PUBLIC_KEY_INFO`;
+    /// 4. otherwise, the single certificate under the locator. This covers an imported key whose
+    ///    importer wrote only the certificate beside it, as in a PIV-style slot or a PKCS #12
+    ///    import. The certificate is used in the same way as a public key object and is not
+    ///    trusted more: a binding proves that the private key belongs to it.
     ///
-    /// Whenever `CKA_PUBLIC_KEY_INFO` is present it must agree with the material: modules may let
-    /// it be set without checking (`SoftHSM`, kryoptic), so it is never trusted on its own.
+    /// When `CKA_PUBLIC_KEY_INFO` is present, it must agree with the material. Some modules let it
+    /// be set without a check (`SoftHSM`, kryoptic), so it is never trusted on its own.
     ///
     /// # Errors
     ///
-    /// `NotFound` or `Ambiguous` when no single public key object or certificate stands in for
-    /// missing material; `Conflict` when `CKA_PUBLIC_KEY_INFO` disagrees with the material, or the
-    /// certificate is not one; whatever reading or re-encoding the key refuses.
+    /// `NotFound` or `Ambiguous` when no single public key object or certificate can replace
+    /// the missing material. `Conflict` when `CKA_PUBLIC_KEY_INFO` disagrees with the material,
+    /// or when the public key that was found has another key type or curve than the key. Any
+    /// error from reading or re-encoding the key.
     pub fn spki(&self, h: ObjectHandle, loc: &Locator) -> Result<Vec<u8>> {
         let spki = match self.material_spki(h)? {
             Some(spki) => spki,
@@ -103,7 +110,12 @@ impl Token {
                     Some(spki) => spki?,
                     None => self.certificate_spki(loc)?,
                 },
-                _ => return Err(KmError::Ambiguous("several public key objects share the locator".into())),
+                _ => {
+                    return Err(KmError::Ambiguous(Reason::check(
+                        Check::LocatorUnique,
+                        "several public key objects share the locator",
+                    )));
+                }
             },
         };
         self.cross_check(h, &spki)?;
@@ -111,9 +123,10 @@ impl Token {
         Ok(spki)
     }
 
-    /// The public key [`Self::spki`] found must be of the key's own type and curve. Its own
-    /// material always is; a stand-in (a public key object, a certificate) need not be, and under
-    /// `token-asserted` nothing else would stop another key's from naming it.
+    /// Checks that the public key that [`Self::spki`] found has the key's own type and curve. The
+    /// key's own material always has them. A substitute (a public key object or a certificate)
+    /// might not, and under `token-asserted` no other check would stop the public key of another
+    /// key from being used as this key's identity.
     fn check_kind(&self, h: ObjectHandle, spki: &[u8]) -> Result<()> {
         let own = match self.attr(h, AttributeType::KeyType)? {
             Some(Attribute::KeyType(KeyType::RSA)) => Some(None),
@@ -125,28 +138,29 @@ impl Token {
             }
             _ => None,
         };
-        // Nothing of its own to compare (an unreadable type or unknown curve): reading the
-        // stand-in's key already refused what cakeys cannot use.
+        // The key has nothing of its own to compare (its type cannot be read, or its curve is
+        // unknown). In that case, the read of the substitute's key has already refused any key
+        // that cakeys cannot use.
         let Some(own) = own else { return Ok(()) };
         let found = id::KeyAlg::of_spki(spki)?.curve();
         if found == own {
             return Ok(());
         }
         let name = |c: Option<Curve>| c.map_or("RSA", Curve::name);
-        Err(KmError::Conflict(
+        Err(KmError::Conflict(Reason::check(
+            Check::PublicKeyType,
             format!(
                 "token '{}': the public key found for the private key is {} ({}), but the private key is {}",
                 self.name,
                 name(found),
                 id::sri(spki),
                 name(own)
-            )
-            .into(),
-        ))
+            ),
+        )))
     }
 
-    /// The public key of the single certificate under the locator: the last stand-in [`Self::spki`]
-    /// takes for a private key that exposes no public key.
+    /// Returns the public key of the single certificate under the locator. This certificate is
+    /// the last substitute that [`Self::spki`] uses for a private key that exposes no public key.
     fn certificate_spki(&self, loc: &Locator) -> Result<Vec<u8>> {
         match self.find(ObjectClass::CERTIFICATE, loc)?.as_slice() {
             [c] => match self.attr(*c, AttributeType::Value)? {
@@ -158,74 +172,77 @@ impl Token {
                  certificate under the locator holds it; write its public key object or certificate beside it"
                     .into(),
             )),
-            _ => Err(KmError::Ambiguous(
+            _ => Err(KmError::Ambiguous(Reason::check(
+                Check::LocatorUnique,
                 "no public key object, and several certificates share the locator: which holds the key's public \
-                 half is unclear"
-                    .into(),
-            )),
+                 half is unclear",
+            ))),
         }
     }
 
-    /// Consumers may select a key's public half by the locator alone (`pkcs11:object=…;type=public`):
-    /// every public key object under the locator of a private key must hold its public key,
-    /// `spki` ([`Self::spki`]). Checked on every resolve, declared `publicAttributes` or not.
+    /// Checks that every public key object under the locator of a private key holds its public
+    /// key, `spki` ([`Self::spki`]). The check is needed because consumers may select a key's
+    /// public half by the locator alone (`pkcs11:object=…;type=public`). It runs on every
+    /// resolve, whether or not the spec declares `publicAttributes`.
     ///
     /// # Errors
     ///
-    /// `Conflict` (13) for a public key object holding another key, or exposing no key material
-    /// to compare; `Unavailable` when a read fails.
+    /// `Conflict` (exit 13) for a public key object that holds another key, or that exposes no
+    /// key material to compare. `Unavailable` when a read fails.
     pub fn check_public_objects(&self, spki: &[u8], loc: &Locator) -> Result<()> {
         for p in self.find(ObjectClass::PUBLIC_KEY, loc)? {
             match self.held_spki(p)? {
                 Some(held) if held == spki => {}
                 Some(held) => {
-                    return Err(KmError::Conflict(
+                    return Err(KmError::Conflict(Reason::check(
+                        Check::PublicSameKey,
                         format!(
                             "a public key object under locator {loc} on token '{}' holds another key ({}) than the \
                          private key ({}); a consumer selecting the public half by the locator would get it",
                             self.name,
                             id::sri(&held),
                             id::sri(spki)
-                        )
-                        .into(),
-                    ));
+                        ),
+                    )));
                 }
                 None => {
-                    return Err(KmError::Conflict(
+                    return Err(KmError::Conflict(Reason::check(
+                        Check::PublicSameKey,
                         format!(
                             "a public key object under locator {loc} on token '{}' exposes no key material, so it \
                          cannot be told apart from another key's",
                             self.name
-                        )
-                        .into(),
-                    ));
+                        ),
+                    )));
                 }
             }
         }
         Ok(())
     }
 
-    /// The public key a public key object holds: its material, else its `CKA_PUBLIC_KEY_INFO`;
-    /// `None` when it exposes neither in a form cakeys reads.
+    /// Returns the public key that a public key object holds: its material, or otherwise its
+    /// `CKA_PUBLIC_KEY_INFO`. Returns `None` when the object exposes neither in a form that cakeys
+    /// reads.
     ///
     /// # Errors
     ///
-    /// `Unavailable` when the device, token or session fails a read ([`if_readable`]): never
-    /// "none", which every caller takes for another key's object.
+    /// `Unavailable` when the device, the token or the session fails a read ([`if_readable`]).
+    /// Such a failure never becomes `None`, because every caller treats `None` as the object of
+    /// another key.
     pub(super) fn held_spki(&self, p: ObjectHandle) -> Result<Option<Vec<u8>>> {
         let read = |types: &[AttributeType]| if_readable(self.session.get_attributes(p, types).map(Some));
         match self.material_spki_by(read) {
             Ok(Some(s)) => Ok(Some(s)),
             Ok(None) => Ok(self.public_key_info(p)?.and_then(Result::ok)),
-            // Read leniently, only a failed device, token or session is `Unavailable`; anything
-            // else is a key cakeys does not read.
+            // The attributes are read leniently. Only a failed device, token or session is
+            // `Unavailable`, and any other error means a key that cakeys does not read.
             Err(e @ KmError::Unavailable(_)) => Err(e),
             Err(_) => Ok(None),
         }
     }
 
-    /// `CKA_PUBLIC_KEY_INFO`, canonicalized; `None` when absent, empty or refused (ykcs11
-    /// reports length 0 and then fails the fetch with `CKR_ARGUMENTS_BAD`).
+    /// Returns `CKA_PUBLIC_KEY_INFO` in canonical form, or `None` when it is absent, empty or
+    /// refused (ykcs11 reports a length of 0 and then fails the fetch with `CKR_ARGUMENTS_BAD`).
     ///
     /// # Errors
     ///
@@ -237,36 +254,39 @@ impl Token {
         })
     }
 
-    /// Fail when the object's `CKA_PUBLIC_KEY_INFO` names a different key than its material.
+    /// Fails with `Conflict` when the object's `CKA_PUBLIC_KEY_INFO` names a different key than
+    /// its material.
     fn cross_check(&self, h: ObjectHandle, spki: &[u8]) -> Result<()> {
         match self.public_key_info(h)? {
-            Some(Ok(asserted)) if asserted != spki => Err(KmError::Conflict(
+            Some(Ok(asserted)) if asserted != spki => Err(KmError::Conflict(Reason::check(
+                Check::PublicKeyInfo,
                 format!(
                     "token '{}' reports a CKA_PUBLIC_KEY_INFO ({}) that disagrees with the key material ({})",
                     self.name,
                     id::sri(&asserted),
                     id::sri(spki)
-                )
-                .into(),
-            )),
+                ),
+            ))),
             _ => Ok(()),
         }
     }
 
-    /// SPKI from the key material attributes of `h`; `None` when it carries none (e.g. an EC
-    /// private key without `CKA_EC_POINT`).
+    /// Returns the SPKI built from the key material attributes of `h`, or `None` when `h` has no
+    /// such attributes (for example, an EC private key without `CKA_EC_POINT`).
     ///
     /// # Errors
     ///
-    /// `Unavailable` when the module refuses `C_GetAttributeValue`; `Unsupported` for a curve
-    /// cakeys does not know; whatever re-encoding the point or the RSA key refuses.
+    /// `Unavailable` when the module refuses `C_GetAttributeValue`. `Unsupported` for a curve
+    /// that cakeys does not know, or for a key type that is not RSA, EC or Edwards. Any error
+    /// from re-encoding the point or the RSA key.
     pub fn material_spki(&self, h: ObjectHandle) -> Result<Option<Vec<u8>>> {
         self.material_spki_by(|types| {
             self.session.get_attributes(h, types).map(Some).map_err(ck("C_GetAttributeValue"))
         })
     }
 
-    /// [`Self::material_spki`], its attributes read by `read` (`None`: not read).
+    /// Works as [`Self::material_spki`], but reads the attributes with `read`. When `read` returns
+    /// `None`, the attributes were not read.
     fn material_spki_by(
         &self,
         read: impl Fn(&[AttributeType]) -> Result<Option<Vec<Attribute>>>,
@@ -291,47 +311,41 @@ impl Token {
         }
     }
 
-    /// One commitment (`id::Commit`) on the key `h`: what the verbs compute, and the caprobe's
-    /// `commit.*` rows measure.
+    /// Computes one commitment (`id::Commit`) on the key `h`. The verbs compute this value, and
+    /// the `commit.*` rows of caprobe measure it.
     ///
     /// # Errors
     ///
-    /// `Unsupported` carrying the module's `CK_RV` when it refuses the operation.
+    /// `Unsupported`, with the module's `CK_RV`, when the module refuses the operation.
+    /// `Unavailable` when the device, the token or the session failed
+    /// ([`refused_unless_device`]).
     pub fn commit(&self, h: ObjectHandle, object: &ObjectCfg, c: Commit, commitment_label: &str) -> Result<Vec<u8>> {
         let s = &self.session;
         let input = c.input(commitment_label, object);
         let fail = |e: CkError| {
-            KmError::Unsupported(format!("{} commitment ({}): {e}", c.scheme(), commit_mechanism(c)).into())
-                .with_rv(rv_of(&e))
+            let msg = Msg::from(format!("{} commitment ({}): {e}", c.scheme(), commit_mechanism(c)));
+            refused_unless_device(msg.with_rv(rv_of(&e)), KmError::Unsupported)
         };
+        let m = operation(c);
         match c {
-            Commit::Hmac(hash) => {
-                let m = match hash {
-                    HmacHash::Sha1 => Mechanism::Sha1Hmac,
-                    HmacHash::Sha224 => Mechanism::Sha224Hmac,
-                    HmacHash::Sha256 => Mechanism::Sha256Hmac,
-                    HmacHash::Sha384 => Mechanism::Sha384Hmac,
-                    HmacHash::Sha512 => Mechanism::Sha512Hmac,
-                };
-                s.sign(&m, h, &input).map_err(fail)
-            }
-            Commit::Cmac => s.sign(&Mechanism::AesCMac, h, &input).map_err(fail),
-            Commit::KcvEcb(cipher) => s.encrypt(&ecb(cipher), h, &input).map_err(fail),
-            Commit::KcvEcbDecrypt(cipher) => s.decrypt(&ecb(cipher), h, &input).map_err(fail),
+            Commit::Hmac(_) | Commit::Cmac => s.sign(&m, h, &input).map_err(fail),
+            Commit::KcvEcb(_) => s.encrypt(&m, h, &input).map_err(fail),
+            Commit::KcvEcbDecrypt(_) => s.decrypt(&m, h, &input).map_err(fail),
             Commit::Kw => {
                 let mut template = self.session_template(SessionKey::KwInput)?;
                 template.push(Attribute::Value(input));
                 let fixed = s.create_object(&template).map_err(fail)?;
                 let fixed = SessionObject::new(s, fixed);
-                s.wrap_key(&Mechanism::AesKeyWrap, h, fixed.handle()).map_err(fail)
+                s.wrap_key(&m, h, fixed.handle()).map_err(fail)
             }
         }
     }
 
-    /// Commit through a temporary session copy (docs/DESIGN.md §3.4; the reasoning:
-    /// docs/archive/PRIOR-ART.md, "Wrap-and-rebind"): generate a session wrapping key on the
-    /// token, wrap, unwrap as a key of the same type that allows every operation `commits` need,
-    /// commit, destroy.
+    /// Computes the commitments through a temporary session copy of the key (docs/DESIGN.md
+    /// §3.4; docs/archive/PRIOR-ART.md, "Wrap-and-rebind", gives the reasoning). The function
+    /// generates a session wrapping key on the token, wraps the key, unwraps it as a key of the
+    /// same type that allows every operation that `commits` needs, computes the commitments, and
+    /// destroys the session objects.
     fn wrap_rebind(
         &self,
         target: ObjectHandle,
@@ -341,13 +355,19 @@ impl Token {
     ) -> Result<Vec<(Commit, Vec<u8>)>> {
         let s = &self.session;
         let fail = |what: &'static str| {
-            move |e: CkError| KmError::Unsupported(format!("wrap-rebind {what}: {e}").into()).with_rv(rv_of(&e))
+            move |e: CkError| {
+                refused_unless_device(
+                    Msg::from(format!("wrap-rebind {what}: {e}")).with_rv(rv_of(&e)),
+                    KmError::Unsupported,
+                )
+            }
         };
-        // Both templates before anything is made.
+        // Build both templates before any object is made.
         let kek_template = self.session_template(SessionKey::RebindKek)?;
         let template = self.rebind_copy_template(object, commits)?;
         let kek = s.generate_key(&Mechanism::AesKeyGen, &kek_template).map_err(fail("generating session KEK"))?;
-        // Both session objects go when this returns, however it does.
+        // Both session objects are destroyed when this function returns, whether it succeeds or
+        // fails.
         let kek = SessionObject::new(s, kek);
         let wrap =
             if self.has(MechanismType::AES_KEY_WRAP_PAD) { Mechanism::AesKeyWrapPad } else { Mechanism::AesKeyWrap };
@@ -357,37 +377,39 @@ impl Token {
         commits.iter().map(|c| Ok((*c, self.commit(copy.handle(), &object, *c, commitment_label)?))).collect()
     }
 
-    /// wrap-rebind's copy of `object`'s key for `commits` ([`templates::rebind_copy`]), as the
-    /// provider adjusts it.
+    /// Returns the template of the wrap-rebind copy of the key of `object` for `commits`
+    /// ([`templates::rebind_copy`]), as the provider adjusts it.
     ///
     /// # Errors
     ///
-    /// As [`templates::rebind_copy`]; the provider's refusal.
+    /// The errors of [`templates::rebind_copy`], and the provider's refusal.
     pub(crate) fn rebind_copy_template(&self, object: Object<'_>, commits: &[Commit]) -> Result<Vec<Attribute>> {
-        self.provider.adjusted(&Template::Session(SessionKey::RebindCopy), templates::rebind_copy(object, commits)?)
+        self.provider.adjusted_session(templates::rebind_copy(object, commits)?)
     }
 }
 
-/// The mechanism a commitment computes with.
+/// Returns the mechanism with which a commitment is computed, as a cryptoki value. It is the
+/// mechanism that [`Commit::mechanism`] names, which comes from the names table
+/// (`cakeys_names::CommitKind::mechanism`).
 #[must_use]
 pub fn commit_mechanism(c: Commit) -> MechanismType {
-    match c {
-        Commit::Hmac(HmacHash::Sha1) => MechanismType::SHA1_HMAC,
-        Commit::Hmac(HmacHash::Sha224) => MechanismType::SHA224_HMAC,
-        Commit::Hmac(HmacHash::Sha256) => MechanismType::SHA256_HMAC,
-        Commit::Hmac(HmacHash::Sha384) => MechanismType::SHA384_HMAC,
-        Commit::Hmac(HmacHash::Sha512) => MechanismType::SHA512_HMAC,
-        Commit::Cmac => MechanismType::AES_CMAC,
-        Commit::KcvEcb(cipher) | Commit::KcvEcbDecrypt(cipher) => ecb(cipher).mechanism_type(),
-        Commit::Kw => MechanismType::AES_KEY_WRAP,
-    }
+    operation(c).mechanism_type()
 }
 
-/// The ECB mechanism of a key check value's cipher.
-fn ecb(cipher: BlockCipher) -> Mechanism<'static> {
-    match cipher {
-        BlockCipher::Aes => Mechanism::AesEcb,
-        BlockCipher::Des3 => Mechanism::Des3Ecb,
+/// Returns the operation that [`Token::commit`] runs for a commitment, as cryptoki names it. This
+/// is the only place on the token side that spells a commitment's mechanism, and the test
+/// `commitment_mechanisms_are_pinned` checks it against the names table.
+fn operation(c: Commit) -> Mechanism<'static> {
+    match c {
+        Commit::Hmac(HmacHash::Sha1) => Mechanism::Sha1Hmac,
+        Commit::Hmac(HmacHash::Sha224) => Mechanism::Sha224Hmac,
+        Commit::Hmac(HmacHash::Sha256) => Mechanism::Sha256Hmac,
+        Commit::Hmac(HmacHash::Sha384) => Mechanism::Sha384Hmac,
+        Commit::Hmac(HmacHash::Sha512) => Mechanism::Sha512Hmac,
+        Commit::Cmac => Mechanism::AesCMac,
+        Commit::KcvEcb(BlockCipher::Aes) | Commit::KcvEcbDecrypt(BlockCipher::Aes) => Mechanism::AesEcb,
+        Commit::KcvEcb(BlockCipher::Des3) | Commit::KcvEcbDecrypt(BlockCipher::Des3) => Mechanism::Des3Ecb,
+        Commit::Kw => Mechanism::AesKeyWrap,
     }
 }
 
@@ -395,8 +417,9 @@ fn ecb(cipher: BlockCipher) -> Mechanism<'static> {
 mod tests {
     use super::*;
 
-    /// Known answers for the parts of each scheme's definition that live here: which HMAC hash a
-    /// key type commits with, and which mechanism each commitment runs (docs/DESIGN.md §10).
+    /// Known answers for the parts of each scheme's definition that are in this file: the HMAC
+    /// hash with which each key type commits, and the mechanism that each commitment runs
+    /// (docs/DESIGN.md §10).
     #[test]
     fn commitment_mechanisms_are_pinned() {
         for (key_type, hash, mech) in [
@@ -417,7 +440,9 @@ mod tests {
         assert_eq!(commit_mechanism(Commit::KcvEcb(BlockCipher::Des3)), MechanismType::DES3_ECB);
         assert_eq!(commit_mechanism(Commit::KcvEcbDecrypt(BlockCipher::Des3)), MechanismType::DES3_ECB);
         assert_eq!(commit_mechanism(Commit::Kw), MechanismType::AES_KEY_WRAP);
-        // The name core filters a declared CKA_ALLOWED_MECHANISMS by is this mechanism's.
+        // The mechanism name from the names table is the name by which the core code filters a
+        // declared `CKA_ALLOWED_MECHANISMS`, and with which a profile's `commit.*` row was
+        // measured. It must be the mechanism that the token runs.
         let all = [
             Commit::Cmac,
             Commit::KcvEcb(BlockCipher::Aes),

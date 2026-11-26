@@ -1,13 +1,14 @@
-//! The probes beyond the keys cakeys manages (`docs/archive/CAPROBE_PROFILE_COVERAGE.md`, Parts 3, 6, 7
-//! and 8): the attributes the verbs read, ECDH on Montgomery keys, the key types cakeys does not
-//! manage (`CKK_DES2`, `CKK_HKDF`), post-quantum generation, signing and encapsulation, and what
-//! the module and token claim of themselves. Every key here is a session object the probe
-//! destroys itself; each row is the module's answer on the token, never the host's.
+//! The probes beyond the keys that cakeys manages (`docs/archive/CAPROBE_PROFILE_COVERAGE.md`,
+//! Parts 3, 6, 7 and 8): the attributes that the verbs read, ECDH on Montgomery keys, the key
+//! types that cakeys does not manage (`CKK_DES2`, `CKK_HKDF`), post-quantum generation, signing
+//! and encapsulation, and what the module and the token claim about themselves. Every key here
+//! is a session object, and the probe destroys it itself. The Montgomery ECDH, post-quantum
+//! signature and ML-KEM rows rest only on the module (`by = "unverified"`), because both sides of
+//! each of those checks run on the token.
 
-use super::{Draft, Made, ck_said, ckr};
+use super::{Checked, Draft, Made, ck_said, ckr};
 use cakeys_pkcs11::token::{self, Token};
-use cakeys_profile::{Answer, Capability, KeyKind, MechanismInfo, On};
-use cryptoki::error::RvError;
+use cakeys_profile::{Capability, KeyKind, MechanismInfo, On};
 use cryptoki::mechanism::dsa::{HedgeType, SignAdditionalContext};
 use cryptoki::mechanism::elliptic_curve::{EcKdf, Ecdh1DeriveParams};
 use cryptoki::mechanism::{Mechanism, MechanismType};
@@ -20,9 +21,10 @@ use cryptoki::session::Session;
 /// The message the PQ signatures sign.
 const MSG: &[u8] = b"cakeys probe: post-quantum";
 
-/// `C_GetMechanismInfo` of every mechanism the module lists, as claims (`[mechanism-info]`), and
-/// what the token reports of itself (`[claims]`): not rows, never compared. The range a module
-/// reports for a key generation is then set beside what the generation probes found (`finding`).
+/// Records the `C_GetMechanismInfo` result of every mechanism that the module lists as a claim
+/// (`[mechanism-info]`), and what the token reports about itself (`[claims]`). These are not rows
+/// and are never compared here. [`check_reported_ranges`] later compares the range that a module
+/// reports for a key generation with what the generation probes found.
 pub(super) fn record_claims(tok: &Token, profile: &mut Draft) {
     for (name, min, max, flags) in tok.mechanism_infos() {
         profile.out.mechanism_info.insert(
@@ -50,9 +52,10 @@ pub(super) fn record_claims(tok: &Token, profile: &mut Draft) {
     }
 }
 
-/// Whether the key sizes a module reports for a secret-key generation hold what the probe
-/// generated: a generated length outside `[min, max]` is a finding (kryoptic reports AES lengths
-/// it generates beyond).
+/// Checks whether the key sizes that a module reports for a secret-key generation include every
+/// length that the probe generated. A generated length outside `[min, max]` becomes a note under
+/// `mechanism-info.<mechanism>` (kryoptic generates AES lengths outside the range that it
+/// reports).
 pub(super) fn check_reported_ranges(profile: &mut Draft) {
     let findings: Vec<(String, String)> = profile
         .generate
@@ -84,9 +87,11 @@ pub(super) fn check_reported_ranges(profile: &mut Draft) {
     }
 }
 
-/// A fresh AES key made raw, extractable false, with `extra` in its template (review 2026-11-23
-/// D-5: the template left `CKA_EXTRACTABLE` to the module, so the `CKA_NEVER_EXTRACTABLE` row
-/// could not be no on a module that defaults to extractable).
+/// Generates a new 32-byte AES session key with the probe's own template (not the provider's),
+/// with `CKA_EXTRACTABLE` false and with `extra` added. Returns `None` when the generation fails.
+/// Review 2026-11-23 D-5: the template used to leave `CKA_EXTRACTABLE` to the module, so the
+/// `CKA_NEVER_EXTRACTABLE` row could not be no on a module that makes keys extractable by
+/// default.
 fn aes_key(s: &Session, extra: &[Attribute]) -> Option<ObjectHandle> {
     let mut template = vec![
         Attribute::Token(false),
@@ -98,14 +103,14 @@ fn aes_key(s: &Session, extra: &[Attribute]) -> Option<ObjectHandle> {
     s.generate_key(&Mechanism::AesKeyGen, &template).ok()
 }
 
-/// `attr.read.*` and `attr.set.*` on a generated AES key: whether the module returns the
-/// provenance attributes the verbs read (`CKA_LOCAL`, `CKA_ALWAYS_SENSITIVE`,
-/// `CKA_NEVER_EXTRACTABLE`, `CKA_KEY_GEN_MECHANISM`) truthfully, and takes
-/// `CKA_ALLOWED_MECHANISMS` (`via = "enforced"` when a mechanism outside the list is then
-/// refused). A module that cannot generate AES leaves these to `[untested]`'s neighbours: no row.
+/// Writes the `attr.read.*` and `attr.set.*` rows on a generated AES key. The rows say whether
+/// the module returns correct values for the provenance attributes that the verbs read
+/// (`CKA_LOCAL`, `CKA_ALWAYS_SENSITIVE`, `CKA_NEVER_EXTRACTABLE`, `CKA_KEY_GEN_MECHANISM`), and
+/// whether it accepts `CKA_ALLOWED_MECHANISMS` (`via = "enforced"` when it then refuses a
+/// mechanism outside the list). When the module cannot generate an AES key, the probe writes none
+/// of these rows and adds a line to the undetermined list.
 pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
-    let s = made.session;
-    let aes = KeyKind::Aes;
+    let (s, aes) = (made.session, KeyKind::Aes);
     let Some(key) = aes_key(s, &[Attribute::Encrypt(true), Attribute::Decrypt(true)]) else {
         made.undetermined.push("no attribute rows: the probe could not generate an AES key".into());
         return;
@@ -120,14 +125,20 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
             AttributeType::Extractable,
         ],
     );
+    // A failed read says nothing about any one attribute, so the classifier (`Draft::refused`)
+    // decides each row.
+    let failed = read.as_ref().err().map(|e| (token::rv_of(e), format!("C_GetAttributeValue: {}", ckr(e))));
     let attrs = read.unwrap_or_default();
     let get = |t: AttributeType| attrs.iter().find(|a| a.attribute_type() == t);
-    let row = |attr: &str, answer: Option<(bool, String)>, profile: &mut Draft| {
+    let row = |attr: &str, answer: Option<(bool, String)>, profile: &mut Draft, undetermined: &mut Vec<String>| {
         let cap = Capability::Attr { read: true, attr: attr.into(), key_type: aes.clone() };
-        match answer {
-            Some((true, _)) => profile.set(cap, Answer::Yes, None, None),
-            Some((false, why)) => profile.set(cap, Answer::No, Some(why), None),
-            None => profile.set(cap, Answer::No, Some("the module does not return it".into()), None),
+        // The answer is checked before the match, because the workspace's rust-version (1.89) has
+        // no `if let` guards in match arms.
+        match (&failed, answer.map(|(truthful, why)| (Checked::same(&truthful, &true), why))) {
+            (Some((rv, why)), _) => profile.refused(undetermined, cap, *rv, why.clone()),
+            (None, Some((Some(c), _))) => profile.yes(cap, c, None),
+            (None, Some((None, why))) => profile.wrong(cap, why),
+            (None, None) => profile.wrong(cap, "the module does not return it".into()),
         }
     };
     row(
@@ -135,17 +146,20 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
         get(AttributeType::Local)
             .map(|a| (matches!(a, Attribute::Local(true)), format!("a generated key reads {a:?}"))),
         profile,
+        &mut made.undetermined,
     );
     row(
         "CKA_ALWAYS_SENSITIVE",
         get(AttributeType::AlwaysSensitive)
             .map(|a| (matches!(a, Attribute::AlwaysSensitive(true)), format!("a key made sensitive reads {a:?}"))),
         profile,
+        &mut made.undetermined,
     );
     row(
         "CKA_NEVER_EXTRACTABLE",
         get(AttributeType::NeverExtractable).map(|a| {
-            // Truthful: a key that is not extractable now, and never was, reads true.
+            // The value is correct when the key reads true, or when the key is extractable now.
+            // A key that is not extractable now and never was must read true.
             let extractable = matches!(get(AttributeType::Extractable), Some(Attribute::Extractable(true)));
             (
                 extractable || matches!(a, Attribute::NeverExtractable(true)),
@@ -153,6 +167,7 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
             )
         }),
         profile,
+        &mut made.undetermined,
     );
     row(
         "CKA_KEY_GEN_MECHANISM",
@@ -163,23 +178,26 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
             )
         }),
         profile,
+        &mut made.undetermined,
     );
     let _ = s.destroy_object(key);
-    // `CKA_ALLOWED_MECHANISMS`: taken, read back, and kept to.
+    // `CKA_ALLOWED_MECHANISMS`: the probe checks whether the module accepts the attribute,
+    // returns it when it is read back, and enforces it.
     let cap = Capability::Attr { read: false, attr: "CKA_ALLOWED_MECHANISMS".into(), key_type: aes };
     let allowed = [Attribute::Encrypt(true), Attribute::AllowedMechanisms(vec![MechanismType::AES_ECB])];
     match s.generate_key(
         &Mechanism::AesKeyGen,
         &[&[Attribute::Token(false), Attribute::ValueLen(32.into())][..], &allowed].concat(),
     ) {
-        Err(e) => profile.set(cap, Answer::No, Some(ckr(&e)), None),
+        Err(e) => profile.refused(&mut made.undetermined, cap, token::rv_of(&e), ckr(&e)),
         Ok(h) => {
             let back = s.get_attributes(h, &[AttributeType::AllowedMechanisms]).ok().and_then(|v| v.into_iter().next());
             let kept = matches!(&back, Some(Attribute::AllowedMechanisms(m)) if m == &vec![MechanismType::AES_ECB]);
             if kept {
-                // Outside the list, CBC must be refused if the module enforces it; only a key that
-                // encrypts by what the list allows (ECB), on a module that has CBC, tells a
-                // refusal of the list from one of the key or the mechanism (review 2026-11-23 D-5).
+                // If the module enforces the list, it must refuse CBC, which is outside the list.
+                // Only a key that encrypts with the mechanism that the list allows (ECB), on a
+                // module that has CBC, distinguishes a refusal because of the list from a refusal
+                // of the key or of the mechanism (review 2026-11-23 D-5).
                 let inside = s.encrypt(&Mechanism::AesEcb, h, &[0; 16]).is_ok();
                 let outside = s.encrypt(&Mechanism::AesCbc([0; 16]), h, &[0; 16]).is_ok();
                 let via = match (inside, made.tok.lists(MechanismType::AES_CBC), outside) {
@@ -194,18 +212,25 @@ pub(super) fn probe_attributes(made: &mut Made, profile: &mut Draft) {
                         None
                     }
                 };
-                profile.set(cap, Answer::Yes, None, via.map(Into::into));
+                // When the probe could tell whether the module enforces the list (either
+                // answer), the host checked the row. When it could not tell, the yes rests only on
+                // the module (review 2026-11-24 E-4).
+                let checked =
+                    via.and(Checked::same(&back, &Some(Attribute::AllowedMechanisms(vec![MechanismType::AES_ECB]))));
+                let checked = checked.unwrap_or_else(Checked::unverified);
+                profile.yes(cap, checked, via.map(Into::into));
             } else {
-                profile.set(cap, Answer::No, Some(format!("it reads back {back:?}")), None);
+                profile.wrong(cap, format!("it reads back {back:?}"));
             }
             let _ = s.destroy_object(h);
         }
     }
 }
 
-/// `generate.CKK_DES2.16` and `generate.CKK_HKDF.32`: the key types cakeys does not manage,
-/// generated raw with their own mechanisms where the module lists them, through the same row
-/// the secret sweep writes.
+/// Writes the `generate.CKK_DES2.16` and `generate.CKK_HKDF.32` rows for the key types that
+/// cakeys does not manage. The probe generates each key with its own template and the key type's
+/// own mechanism, only when the module lists that mechanism, and records the result in the same
+/// kind of row that the secret-key probes write.
 pub(super) fn probe_unmanaged_keys(made: &mut Made, profile: &mut Draft) {
     let s = made.session;
     for (kind, mech, key_type, bytes, extra) in [
@@ -227,17 +252,21 @@ pub(super) fn probe_unmanaged_keys(made: &mut Made, profile: &mut Draft) {
                 row.can_bytes.push(bytes);
                 let _ = s.destroy_object(h);
             }
-            Err(e) => {
-                row.cannot_bytes.push(bytes);
-                profile.generation_evidence(&kind, On::Bytes(bytes), format!("valueLen = {bytes}: {}", ckr(&e)));
-            }
+            Err(e) => profile.generation_refused(
+                &mut made.undetermined,
+                &mut row,
+                (&kind, On::Bytes(bytes)),
+                token::rv_of(&e),
+                format!("valueLen = {bytes}: {}", ckr(&e)),
+            ),
         }
         profile.generate.insert(kind, row);
     }
 }
 
-/// The raw point of a public EC key as `C_DeriveKey` takes it: the value of its DER octet
-/// string when the module wraps it.
+/// Returns the raw point of a public EC key in the form that `C_DeriveKey` takes: the contents of
+/// the DER octet string when the module wraps the point in one, and the point unchanged
+/// otherwise.
 fn raw_point(p: &[u8]) -> Vec<u8> {
     match p {
         [0x04, n, rest @ ..] if usize::from(*n) == rest.len() => rest.to_vec(),
@@ -245,9 +274,10 @@ fn raw_point(p: &[u8]) -> Vec<u8> {
     }
 }
 
-/// `derive.ecdh.CKK_EC_MONTGOMERY.<curve>`: ECDH of two key pairs of the curve on the token, each
-/// private key with the other's public point, into readable secrets that must be equal. Called
-/// with the first pair the curve generated; the second is made here.
+/// Writes the `derive.ecdh.CKK_EC_MONTGOMERY.<curve>` row: ECDH between two key pairs of the
+/// curve on the token. Each private key derives with the other pair's public point into a
+/// readable secret, and the two secrets must be equal. The caller passes the first pair that the
+/// curve generated, and this function generates the second pair.
 pub(super) fn montgomery_ecdh(
     made: &mut Made,
     profile: &mut Draft,
@@ -303,13 +333,11 @@ pub(super) fn montgomery_ecdh(
     };
     if let (Some(a), Some(b)) = (point(public_a), point(public_b)) {
         match (secret(private_a, &b), secret(private_b, &a)) {
-            (Ok(x), Ok(y)) if x == y => profile.set(cap, Answer::Yes, None, None),
-            (Ok(_), Ok(_)) => profile.set(cap, Answer::No, Some("the two sides derive different secrets".into()), None),
-            (Err(e), _) | (_, Err(e)) if token::rv_is(e.rv(), RvError::OperationActive) => {
-                made.undetermined.push(format!("no {cap} row: an earlier operation left the session busy"));
-            }
-            (Err(e), _) | (_, Err(e)) if e.rv().is_some() => profile.set(cap, Answer::No, Some(e.to_string()), None),
-            (Err(e), _) | (_, Err(e)) => made.undetermined.push(format!("no {cap} row: {e}")),
+            // Both sides ran on this one module, so the yes is unverified (review 2026-11-24
+            // E-3).
+            (Ok(x), Ok(y)) if x == y => profile.yes(cap, Checked::unverified(), None),
+            (Ok(_), Ok(_)) => profile.wrong(cap, "the two sides derive different secrets".into()),
+            (Err(e), _) | (_, Err(e)) => profile.refused(&mut made.undetermined, cap, e.rv(), e.to_string()),
         }
     } else {
         made.undetermined.push(format!("no {cap} row: a {curve} public key's point is unreadable"));
@@ -363,8 +391,8 @@ fn pq_families() -> Vec<PqFamily> {
     ]
 }
 
-/// The signing mechanisms of a PQ key type: the pure one and each hashed variant, as the token
-/// is asked for them, by `CKM_*` name.
+/// Returns the signing mechanisms of a post-quantum key type, by `CKM_*` name: the pure
+/// mechanism and each hashed variant, with the parameters that the probe sends to the token.
 fn pq_signers(key_type: &str) -> Vec<Mechanism<'static>> {
     let ctx = || SignAdditionalContext::new(HedgeType::Preferred, None);
     match key_type {
@@ -398,11 +426,12 @@ fn pq_signers(key_type: &str) -> Vec<Mechanism<'static>> {
     }
 }
 
-/// Post-quantum keys: `generate.<type>.<parameter set>` per set, then on the first key pair that
-/// generated `sign.<mechanism>.<type>.<set>` (signed and verified on the token) per signing
-/// mechanism the module lists, and `encapsulate.CKK_ML_KEM.<set>` (encapsulated, decapsulated,
-/// the two secrets compared as readable keys). Only types whose key-pair mechanism the module
-/// lists are tried.
+/// Probes the post-quantum keys. The function writes a `generate.<type>.<parameter set>` row for
+/// each parameter set. On the first key pair that generated, it writes a
+/// `sign.<mechanism>.<type>.<set>` row for each signing mechanism that the module lists (signed
+/// and verified on the token), or the `encapsulate.CKK_ML_KEM.<set>` row (encapsulated and
+/// decapsulated, with the two secrets compared as readable keys). It tries only the key types
+/// whose key-pair mechanism the module lists.
 pub(super) fn probe_pq(made: &mut Made, profile: &mut Draft) {
     let s = made.session;
     for family in pq_families() {
@@ -440,21 +469,21 @@ pub(super) fn probe_pq(made: &mut Made, profile: &mut Draft) {
                         let _ = s.destroy_object(h);
                     }
                 }
-                Err(e) => {
-                    row.cannot.push(name.clone());
-                    profile.generation_evidence(
-                        &kind,
-                        On::Item(name.clone()),
-                        format!("generation refused: {}", ckr(&e)),
-                    );
-                }
+                Err(e) => profile.generation_refused(
+                    &mut made.undetermined,
+                    &mut row,
+                    (&kind, On::Item(name.clone())),
+                    token::rv_of(&e),
+                    format!("generation refused: {}", ckr(&e)),
+                ),
             }
         }
         profile.generate.insert(kind, row);
     }
 }
 
-/// `sign.<mechanism>.<type>.<set>` for each signing mechanism the module lists.
+/// Writes a `sign.<mechanism>.<type>.<set>` row for each signing mechanism that the module
+/// lists.
 fn sign_rows(
     made: &mut Made,
     profile: &mut Draft,
@@ -472,18 +501,24 @@ fn sign_rows(
         }
         let cap = Capability::Sign { mechanism: mt.to_string(), key_type: kind.clone(), on: On::Item(set.to_owned()) };
         match s.sign(&mech, private, MSG) {
-            Err(e) => profile.set(cap, Answer::No, Some(ckr(&e)), None),
+            Err(e) => profile.refused(&mut made.undetermined, cap, token::rv_of(&e), ckr(&e)),
+            // The module signed and verified, because the host has no verifier, so the yes is
+            // unverified (review 2026-11-24 E-3).
             Ok(sig) => match s.verify(&mech, public, MSG, &sig) {
-                Ok(()) => profile.set(cap, Answer::Yes, None, None),
-                Err(e) => {
-                    profile.set(cap, Answer::No, Some(format!("the signature does not verify: {}", ckr(&e))), None);
-                }
+                Ok(()) => profile.yes(cap, Checked::unverified(), None),
+                Err(e) => profile.refused(
+                    &mut made.undetermined,
+                    cap,
+                    token::rv_of(&e),
+                    format!("the signature does not verify: {}", ckr(&e)),
+                ),
             },
         }
     }
 }
 
-/// `encapsulate.CKK_ML_KEM.<set>`: the secret both sides derive is the same.
+/// Writes the `encapsulate.CKK_ML_KEM.<set>` row: yes when the secret from the encapsulation and
+/// the secret from the decapsulation are the same.
 fn kem_row(made: &mut Made, profile: &mut Draft, set: &str, public: ObjectHandle, private: ObjectHandle) {
     let s = made.session;
     let cap = Capability::Encapsulate { key_type: KeyKind::from("CKK_ML_KEM"), on: On::Item(set.to_owned()) };
@@ -499,29 +534,33 @@ fn kem_row(made: &mut Made, profile: &mut Draft, set: &str, public: ObjectHandle
         Ok(Some(Attribute::Value(v))) => Some(v),
         _ => None,
     };
-    // A call the binding or the interface in use cannot make (a 2.40 function list has no
-    // C_EncapsulateKey) says nothing of the module: no row, only the module's `CKR_*` is a no.
+    // A call that the binding or the interface in use cannot make (a 2.40 function list has no
+    // C_EncapsulateKey) says nothing about the module, so it produces no row. Only a `CKR_*`
+    // value from the module can be a no.
     let from_module = |e: &cryptoki::error::Error| matches!(e, cryptoki::error::Error::Pkcs11(..));
     match s.encapsulate_key(&mech, public, &template) {
         Err(e) if !from_module(&e) => {
             made.undetermined.push(format!("no {cap} row: C_EncapsulateKey cannot be called: {e}"));
         }
-        Err(e) => profile.set(cap, Answer::No, Some(format!("C_EncapsulateKey: {}", ckr(&e))), None),
+        Err(e) => {
+            profile.refused(&mut made.undetermined, cap, token::rv_of(&e), format!("C_EncapsulateKey: {}", ckr(&e)));
+        }
         Ok((ciphertext, encapsulated)) => match s.decapsulate_key(&mech, private, &template, &ciphertext) {
             Err(e) if !from_module(&e) => {
                 made.undetermined.push(format!("no {cap} row: C_DecapsulateKey cannot be called: {e}"));
                 let _ = s.destroy_object(encapsulated);
             }
             Err(e) => {
-                profile.set(cap, Answer::No, Some(format!("C_DecapsulateKey: {}", ckr(&e))), None);
+                let why = format!("C_DecapsulateKey: {}", ckr(&e));
+                profile.refused(&mut made.undetermined, cap, token::rv_of(&e), why);
                 let _ = s.destroy_object(encapsulated);
             }
             Ok(decapsulated) => {
                 match (value(encapsulated), value(decapsulated)) {
-                    (Some(ours), Some(theirs)) if ours == theirs => profile.set(cap, Answer::Yes, None, None),
-                    (Some(_), Some(_)) => {
-                        profile.set(cap, Answer::No, Some("the two sides derive different secrets".into()), None);
-                    }
+                    // Both sides ran on this one module, so the yes is unverified (review
+                    // 2026-11-24 E-3).
+                    (Some(ours), Some(theirs)) if ours == theirs => profile.yes(cap, Checked::unverified(), None),
+                    (Some(_), Some(_)) => profile.wrong(cap, "the two sides derive different secrets".into()),
                     _ => made.undetermined.push(format!("no {cap} row: the shared secrets are unreadable")),
                 }
                 for h in [encapsulated, decapsulated] {
@@ -532,7 +571,7 @@ fn kem_row(made: &mut Made, profile: &mut Draft, set: &str, public: ObjectHandle
     }
 }
 
-/// All of the labels-target extras, in order.
+/// Runs, in order, all the extra probes that need a scratch token with labels.
 pub(super) fn probe_extras(made: &mut Made, profile: &mut Draft) {
     probe_attributes(made, profile);
     probe_unmanaged_keys(made, profile);

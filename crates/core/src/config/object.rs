@@ -1,72 +1,77 @@
-//! Object declarations: `[objects.<name>]` in keys.toml, their kinds and the
+//! The object declarations: `[objects.<name>]` in keys.toml, the kinds of objects, and the
 //! migration settings of a bundle (docs/CONFIG.md).
 
 use super::{Deserialize, KeyType, KmError, ObjectClass, Result, Serialize};
 
-/// An object's settings for camigrate (`[objects.<o>.migrate]`, docs/FILE.md): the file its
-/// material is born in, for the pairs that say `origin = "file"`.
+/// An object's settings for camigrate (`[objects.<o>.migrate]`, docs/FILE.md): the file from which
+/// its material is created, for the pairs that have `origin = "file"`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ObjectMigrateCfg {
-    /// The file: a path, or `$NAME`/`${NAME}` read from the environment when camigrate reads it
-    /// ([`Config::object_file`]), so hosts that only check load keys.toml without it.
+    /// The file: a path, or `$NAME` or `${NAME}`, which is read from the environment when
+    /// camigrate reads the file ([`Config::object_file`]). So hosts that only run checks can load
+    /// keys.toml without the variable.
+    ///
+    /// [`Config::object_file`]: super::Config::object_file
     pub file: Option<String>,
-    /// A file holding the passphrase of an encrypted key file (`$NAME` as for `file`).
+    /// A file that holds the passphrase of an encrypted key file (`$NAME` works as for `file`).
     pub passphrase_file: Option<String>,
-    /// An environment variable holding that passphrase; it wins over `passphraseFile`.
+    /// An environment variable that holds that passphrase. It takes precedence over
+    /// `passphraseFile`.
     pub passphrase_env: Option<String>,
-    /// How a secret key's file spells its value; absent, its `valueLen` decides (docs/FILE.md F4).
+    /// How a secret key's file encodes its value. When it is absent, the key's `valueLen` decides
+    /// (docs/FILE.md F4).
     pub encoding: Option<Encoding>,
 }
 
-/// How a secret key's file spells its value (`migrate.encoding`): the bytes themselves, or hex
-/// or base64 text of them, whitespace anywhere ignored.
+/// How a secret key's file encodes its value (`migrate.encoding`): the bytes themselves, or the
+/// bytes as hex or base64 text. Whitespace is ignored everywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Encoding {
-    /// The value's bytes, as they are.
+    /// The value's bytes, unchanged.
     Raw,
-    /// Hex digits, either case.
+    /// Hex digits, in upper or lower case.
     Hex,
     /// Standard base64 (RFC 4648 §4), padded.
     Base64,
 }
 
-/// Intrinsic object type: identical across every spec of the object.
+/// The intrinsic object type, which is the same for every spec of the object.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ObjectCfg {
     /// The object class (`CKO_*`).
     pub class: ObjectClass,
-    /// For keys; absent for certificates and data objects.
+    /// The key type, for keys. It is absent for certificates and data objects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_type: Option<KeyType>,
-    /// `CKC_*` for certificates (`CKC_X_509`).
+    /// The `CKC_*` certificate type, for certificates (`CKC_X_509`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub certificate_type: Option<String>,
-    /// Canonical curve name after loading (`secp256r1`, not `P-256`), so an alias is never a
-    /// different type or spec digest.
+    /// The curve name, which is canonical after loading (`secp256r1`, not `P-256`), so that an
+    /// alias never produces a different type or spec digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve: Option<String>,
-    /// Secret key length in bytes.
+    /// The length of a secret key in bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value_len: Option<u64>,
-    /// RSA modulus size in bits.
+    /// The size of an RSA modulus in bits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modulus_bits: Option<u64>,
 }
 
 impl ObjectCfg {
-    /// An object of `class` (and `key_type`) with no further type attributes.
+    /// Returns an object type of `class` (and `key_type`) without further type attributes.
     #[must_use]
     pub fn new(class: ObjectClass, key_type: Option<KeyType>) -> ObjectCfg {
         ObjectCfg { class, key_type, certificate_type: None, curve: None, value_len: None, modulus_bits: None }
     }
 
-    /// Whether `other` is material of this type: every field equal, except that a `modulusBits`
-    /// only one of them declares is no difference. The public key already fixes the modulus and
-    /// the token check verifies a declared size, so declaring it later describes the same key;
-    /// two different declared sizes are different material.
+    /// Returns whether `other` is material of this type. Every field must be equal, except that a
+    /// `modulusBits` that only one of the two declares is not a difference. The public key already
+    /// fixes the modulus, and the token check verifies a declared size, so a size that is declared
+    /// later describes the same key. Two different declared sizes are different material.
     #[must_use]
     pub fn same_type(&self, other: &ObjectCfg) -> bool {
         let bits = match (self.modulus_bits, other.modulus_bits) {
@@ -76,9 +81,10 @@ impl ObjectCfg {
         bits && ObjectCfg { modulus_bits: None, ..self.clone() } == ObjectCfg { modulus_bits: None, ..other.clone() }
     }
 
-    /// Replace a curve alias by its canonical name (unknown names are left for validation), and
-    /// fill in the length a key type fixes (`CKK_DES3`: 24) when `valueLen` is absent, so writing
-    /// it or not is the same type, spec digest and commitment label.
+    /// Replaces a curve alias with its canonical name (an unknown name is left for the
+    /// validation), and fills in the length that a key type fixes (`CKK_DES3`: 24) when `valueLen`
+    /// is absent. So the type, the spec digest and the commitment label are the same whether the
+    /// length is written or not.
     pub fn canonicalize(&mut self) {
         if let Some(kt) = self.key_type
             && let Some(c) = self.curve.as_deref().and_then(|c| crate::id::Curve::from_cfg(kt, c))
@@ -90,12 +96,13 @@ impl ObjectCfg {
         }
     }
 
-    /// The curve of an EC or Edwards key (`curve`, for `keyType`).
+    /// Returns the curve of an EC or Edwards key (`curve`, for `keyType`).
     ///
     /// # Errors
     ///
-    /// `Validation` when the object names no curve; `Unsupported` when the named curve has no
-    /// `RustCrypto` crate to validate and encode it, or is not one of the supported ones.
+    /// Returns `Validation` when the object names no curve. Returns `Unsupported` when no
+    /// `RustCrypto` crate exists to validate and encode keys on the named curve, or when the curve
+    /// is not one of the supported curves.
     pub fn curve(&self) -> Result<crate::id::Curve> {
         let kt = self.key_type.map_or("", KeyType::name);
         let name =
@@ -117,16 +124,17 @@ impl ObjectCfg {
         })
     }
 
-    /// What the object is: its class and type fields parsed into one of the combinations
-    /// cakeys manages ([`ObjectKind`]). Every object is parsed when keys.toml loads, used by a
-    /// spec or not.
+    /// Returns what the object is: its class and type fields parsed into one of the combinations
+    /// that cakeys manages ([`ObjectKind`]). Every object is parsed when keys.toml loads, whether
+    /// a spec uses it or not.
     ///
     /// # Errors
     ///
-    /// `Validation` for a field that names nothing on this class or key type, a certificate
-    /// without a `certificateType`, or one no PKCS#11 certificate type; `Unsupported` for what
-    /// PKCS#11 has but cakeys does not manage: a class/key-type pairing, a certificate type
-    /// other than `CKC_X_509`, or a curve [`Self::curve`] refuses.
+    /// Returns `Validation` for a field that has no meaning for this class or key type, for a
+    /// certificate without a `certificateType`, or for a `certificateType` that is not a PKCS#11
+    /// certificate type. Returns `Unsupported` for what PKCS#11 has but cakeys does not manage: a
+    /// combination of class and key type, a certificate type other than `CKC_X_509`, or a curve
+    /// that [`Self::curve`] refuses.
     pub fn kind(&self) -> Result<ObjectKind> {
         let invalid = |why: &str| Err(KmError::Validation(why.to_owned().into()));
         let class = self.class;
@@ -141,7 +149,8 @@ impl ObjectCfg {
                 "keyType applies to keys only"
             });
         }
-        // A key's class and type pair first: a field that fits neither is the lesser news.
+        // The combination of a key's class and type is checked first, because it is the more
+        // important error. A field that fits neither is reported only after it.
         if class.is_key() && self.key_type.is_none_or(|k| k.is_asymmetric() != class.is_asymmetric()) {
             return Err(KmError::Unsupported(format!("{class}/{}", self.key_type.map_or("", KeyType::name)).into()));
         }
@@ -188,10 +197,10 @@ impl ObjectCfg {
     }
 }
 
-/// What an object is (`[objects.<name>]`, parsed by [`ObjectCfg::kind`]): each combination of
-/// class, key type and type parameters cakeys manages is one variant, so a new parameter set
-/// adds a variant rather than another optional field and its cross-field rules. keys.toml's
-/// form and the spec digest stay [`ObjectCfg`]'s.
+/// What an object is (`[objects.<name>]`, parsed by [`ObjectCfg::kind`]). Each combination of
+/// class, key type and type parameters that cakeys manages is one variant. So a new set of
+/// parameters adds a variant, instead of another optional field with rules that relate it to
+/// other fields. The form of keys.toml and the spec digest remain those of [`ObjectCfg`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectKind {
     /// A private or a public key of an asymmetric type.
@@ -201,8 +210,8 @@ pub enum ObjectKind {
         /// The key's type and its parameters.
         key: AsymmetricKey,
     },
-    /// A secret key: its type, and its length in bytes where keys.toml states it (a type with a
-    /// fixed length has it filled in at load).
+    /// A secret key: its type, and its length in bytes where keys.toml states it (the load fills
+    /// in the length of a type with a fixed length).
     Secret {
         /// `CKK_AES`, an HMAC type, `CKK_GENERIC_SECRET`, `CKK_DES3`.
         key_type: KeyType,
@@ -215,10 +224,10 @@ pub enum ObjectKind {
     Data,
 }
 
-/// An asymmetric key's type and parameters ([`ObjectKind::Asymmetric`]).
+/// The type and the parameters of an asymmetric key ([`ObjectKind::Asymmetric`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AsymmetricKey {
-    /// `CKK_RSA`, with `modulusBits` where keys.toml states it (`create` needs it).
+    /// `CKK_RSA`, with `modulusBits` where keys.toml states it (`create` needs that value).
     Rsa {
         /// `modulusBits`.
         modulus_bits: Option<u64>,
@@ -252,11 +261,12 @@ impl ObjectKind {
     }
 }
 
-/// An object as parsed: keys.toml's form ([`ObjectCfg`], the type the lock pins and the spec
-/// digest hashes) with what it is ([`ObjectKind`]). Made once where a target or a probe names
-/// the object, so what reads its key type or curve after that cannot fail on them (review
-/// 2026-11-23 A-8: every reader re-parsed the strings, with error arms load made unreachable).
-/// Its fields read through to the [`ObjectCfg`].
+/// A parsed object: the form in keys.toml ([`ObjectCfg`], which is the type that the lock pins
+/// and that the spec digest hashes) together with what the object is ([`ObjectKind`]). It is
+/// made once, where a target or a probe names the object, so that code that later reads the key
+/// type or the curve cannot fail on them (review 2026-11-23 A-8: before, every reader parsed the
+/// strings again, with error branches that the load made unreachable). Its fields are read
+/// through to the [`ObjectCfg`].
 #[derive(Debug, Clone, Copy)]
 pub struct Object<'a> {
     pub(super) cfg: &'a ObjectCfg,
@@ -264,22 +274,23 @@ pub struct Object<'a> {
 }
 
 impl<'a> Object<'a> {
-    /// `cfg`, parsed.
+    /// Returns `cfg` parsed.
     ///
     /// # Errors
     ///
-    /// Whatever [`ObjectCfg::kind`] refuses; never for an object of a loaded keys.toml.
+    /// Returns every error of [`ObjectCfg::kind`]. It never fails for an object of a keys.toml
+    /// that loaded.
     pub fn new(cfg: &'a ObjectCfg) -> Result<Object<'a>> {
         Ok(Object { cfg, kind: cfg.kind()? })
     }
 
-    /// keys.toml's form.
+    /// Returns the form in keys.toml.
     #[must_use]
     pub fn cfg(self) -> &'a ObjectCfg {
         self.cfg
     }
 
-    /// What it is.
+    /// Returns what the object is.
     #[must_use]
     pub fn kind(self) -> ObjectKind {
         self.kind

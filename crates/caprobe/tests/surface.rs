@@ -1,9 +1,10 @@
-//! Every verb and flag of `caprobe` is used by an integration test (tests/common/surface.rs).
+//! Checks that an integration test uses every verb and flag of `caprobe`
+//! (tests/common/surface.rs).
 
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
 
-/// Verbs and flags no integration test uses yet, each with why.
+/// The verbs and flags that no integration test uses yet, each with the reason.
 const UNTESTED: &[(&str, &str)] = &[];
 
 #[test]

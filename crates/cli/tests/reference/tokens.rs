@@ -1,10 +1,10 @@
-//! Tokens and credentials: opening a token as named, PIN sources, the SO credential, PIN
-//! counters and provider detection.
+//! Tests of tokens and credentials: opening the token that keys.toml names, PIN sources, the SO
+//! credential, PIN counters and provider detection.
 
 use super::*;
 
-/// The provider is detected from `C_GetInfo`, or named in keys.toml; the lock's observation
-/// records which handled the realisation.
+/// The provider is detected from `C_GetInfo`, or it is named in keys.toml. The lock's observation
+/// records which provider handled the realisation.
 #[test]
 fn provider_is_detected_or_named() {
     let Some(e) = env("provider") else { return };
@@ -25,7 +25,7 @@ fn provider_is_detected_or_named() {
     assert_eq!(e.code(&lock), 17);
 }
 
-/// What opening a token refuses before any object is touched: a PIN from an environment
+/// Opening a token refuses two cases before any object is touched: a PIN from an environment
 /// variable that is not set (16), and a label that two tokens carry (12).
 #[test]
 fn tokens_that_cannot_be_opened_as_named_are_refused() {
@@ -44,8 +44,8 @@ fn tokens_that_cannot_be_opened_as_named_are_refused() {
     assert_eq!(code(&o), 16, "{}", stderr(&o));
     assert!(stderr(&o).contains("env var CAKEYS_TEST_UNSET_PIN not set"), "{}", stderr(&o));
 
-    // A second token labelled like the first, in a slot the module keeps free (SoftHSM does;
-    // kryoptic has the slots its configuration lists).
+    // A second token with the same label as the first, in a free slot that the module provides
+    // (SoftHSM always keeps one free; kryoptic has only the slots that its configuration lists).
     let ctx = Module::open(&e.module);
     let free = ctx.get_all_slots().unwrap().into_iter().find(|slot| {
         ctx.get_slot_info(*slot).unwrap().token_present() && !ctx.get_token_info(*slot).unwrap().token_initialized()
@@ -69,7 +69,8 @@ fn tokens_that_cannot_be_opened_as_named_are_refused() {
         let said = stderr(&o);
         assert!(said.contains("several tokens labelled 'kmtest'") && said.contains("tokenSerial"), "{said}");
         assert!(said.contains(&format!("'{first}'")) && said.contains(&format!("'{second}'")), "{said}");
-        // tokenSerial names one of them: the key is looked for there (and is absent: 11).
+        // tokenSerial names one of them, so the key is searched for on that token, where it is
+        // absent (11).
         let config = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
         e.write_config(&config.replacen("[tokens.ref]\n", &format!("[tokens.ref]\ntokenSerial = \"{first}\"\n"), 1));
         let o = e.km(&["lock", "--spec", "signing-soft", "--token", "ref", "--dry-run"]);
@@ -77,9 +78,10 @@ fn tokens_that_cannot_be_opened_as_named_are_refused() {
     }
 }
 
-/// `pinFile = "$NAME"` reads the pin file's path from the environment when the PIN is read:
-/// unset, `validate` (which opens no token) still passes and a verb that logs in is invalid (17)
-/// naming the variable; set, the PIN loads and a private-key `lock` works.
+/// `pinFile = "$NAME"` reads the pin file's path from the environment when the PIN is read. When
+/// the variable is unset, `validate` (which opens no token) still passes, and a verb that logs in
+/// is unavailable (16), with a message that names the variable. When the variable is set, the PIN
+/// loads, and a `create` of a private key works.
 #[test]
 fn pin_file_path_can_come_from_the_environment() {
     let Some(e) = env("pin-env") else { return };
@@ -92,25 +94,27 @@ fn pin_file_path_can_come_from_the_environment() {
         ),
     )
     .unwrap();
-    // Unset: `validate` touches no token, so it needs no PIN; a verb that logs in is refused,
-    // naming the variable: unavailable (16), the environment's lack and not the file's (review
-    // 2026-11-23 A-14).
+    // Unset: `validate` touches no token, so it needs no PIN. A verb that logs in is refused as
+    // unavailable (16), and the message names the variable, because the environment lacks the
+    // variable; the file is not the problem (review 2026-11-23 A-14).
     let o = e.km(&["validate"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let o = e.km(&["create", "--spec", "signing-soft", "--token", "ref"]);
     assert_eq!(code(&o), 16, "{}", stderr(&o));
     assert!(stderr(&o).contains("KM_E2E_PIN"), "{}", stderr(&o));
-    // Set: the pin file loads, the login works, the private key is made and realised.
+    // Set: the pin file loads, the login works, and the private key is created and realised.
     let pin = e.dir.join("pin");
     let o = e.km_env(&["create", "--spec", "signing-soft", "--token", "ref"], &[("KM_E2E_PIN", &pin)]);
     assert_eq!(code(&o), 22, "{}", stderr(&o));
     assert!(e.lock()["realisations"]["signing-soft"]["ref"].is_table());
 }
 
-/// The admin credential (`soCredentialFile`/`soCredentialEnv`) is read only by a step that needs the
-/// Security Officer: ykcs11's create and delete, and `camigrate transport --trusted` (docs/CAMIGRATE.md
-/// D2). `SoftHSM` creates keys as the user, so a create never reads it: a credential file that
-/// does not exist is no error. Without a user PIN to return to, it is invalid at load.
+/// Only a step that needs the Security Officer reads the admin credential (`soCredentialFile` or
+/// `soCredentialEnv`): ykcs11's create and delete, and `camigrate transport --trust-on`
+/// (docs/CAMIGRATE.md D2). `SoftHSM` creates keys as the user, so a create never reads the
+/// credential, and a credential file that does not exist causes no error. An admin credential
+/// without a user PIN is invalid when keys.toml is loaded, because the session would have no user
+/// login to return to.
 #[test]
 fn admin_credential_is_read_only_by_security_officer_steps() {
     let Some(e) = env("mgm-key") else { return };
@@ -123,31 +127,33 @@ fn admin_credential_is_read_only_by_security_officer_steps() {
         )
     };
     let missing = e.dir.join("never-read");
-    // The key is made under the first credential; under the second it is there and pinned, and
-    // `create` verifies it without the credential either.
+    // The key is created while the first credential is configured. While the second credential is
+    // configured, the key already exists and is pinned, and `create` verifies it, again without
+    // reading the credential.
     for (i, admin) in
         [format!("soCredentialFile = \"{}\"", missing.display()), "soCredentialEnv = \"KM_E2E_NEVER_SET\"".to_owned()]
             .into_iter()
             .enumerate()
     {
         std::fs::write(e.dir.join("keys.toml"), toml(&format!("pinFile = \"{}\"\n{admin}", pin.display()))).unwrap();
-        // Made and recorded the first time (22); there and pinned the second (0).
+        // The first time, the key is created and recorded (22). The second time, it already
+        // exists and is pinned (0).
         for (verb, exit) in [("create", if i == 0 { 22 } else { 0 }), ("resolve", 0)] {
             let o = e.km(&[verb, "--spec", "signing-soft", "--token", "ref"]);
             assert_eq!(code(&o), exit, "{admin} {verb}: {}", stderr(&o));
         }
     }
-    // No user PIN: invalid at load.
+    // Without a user PIN, the configuration is invalid when it is loaded.
     std::fs::write(e.dir.join("keys.toml"), toml(&format!("soCredentialFile = \"{}\"", missing.display()))).unwrap();
     let o = e.km(&["validate"]);
     assert_eq!(code(&o), 17);
     assert!(stderr(&o).contains("needs a user PIN"));
 }
 
-/// Resets the user PIN as the SO when dropped (`C_InitPIN` clears the counters and unlocks it).
-/// Each test has a token set of its own (nix/test-tokens.sh), so this matters only to a run that
-/// shares one, plain `cargo test`: a test that spends PIN tries puts them back, whatever happens
-/// in it.
+/// Resets the user PIN as the SO when it is dropped (`C_InitPIN` clears the counters and unlocks
+/// the PIN). Each test has its own set of tokens (nix/test-tokens.sh), so this matters only to a
+/// run in which the tests share one set, such as plain `cargo test`. A test that uses up PIN tries
+/// restores them, whatever happens in the test.
 struct ResetPin<'a>(&'a Pkcs11, cryptoki::slot::Slot);
 
 impl ResetPin<'_> {
@@ -159,8 +165,9 @@ impl ResetPin<'_> {
 }
 
 impl Drop for ResetPin<'_> {
-    /// Says why it could not, never panics: it runs while a failed test unwinds, and a second
-    /// panic aborts the process, losing the first one's message (review tokens.rs F1).
+    /// If the reset fails, it prints why and does not panic. It runs while a failed test unwinds,
+    /// and a second panic would abort the process and lose the first panic's message (review
+    /// tokens.rs F1).
     fn drop(&mut self) {
         if let Err(err) = self.reset() {
             eprintln!("could not reset the user PIN of slot {}: {err}", self.1);
@@ -168,8 +175,8 @@ impl Drop for ResetPin<'_> {
     }
 }
 
-/// A [`ResetPin`] that cannot reset says so and returns; the test's own failure stays the one
-/// reported.
+/// A [`ResetPin`] that cannot reset the PIN reports that and returns, so the test's own failure
+/// stays the one that is reported.
 #[test]
 fn a_pin_reset_that_fails_does_not_panic() {
     let Some(e) = env("pin-reset-fails") else { return };
@@ -180,9 +187,9 @@ fn a_pin_reset_that_fails_does_not_panic() {
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(guard))).is_ok());
 }
 
-/// One module named two ways — its path and a symlink to it — is one library in this process:
-/// both holders share its context (review common/mod.rs F4). Keyed by the name, the second
-/// initialized it again and failed.
+/// One module named in two ways (its path and a symlink to it) is one library in this process,
+/// so both holders share its context (review common/mod.rs F4). When the cache was keyed by the
+/// name, the second holder initialized the library again and failed.
 #[test]
 fn a_module_named_two_ways_is_held_once() {
     let Some(e) = env("module-two-names") else { return };
@@ -193,10 +200,11 @@ fn a_module_named_two_ways_is_held_once() {
     assert!(direct.find_objects(&[]).is_ok() && linked.find_objects(&[]).is_ok());
 }
 
-/// The PIN counters a module reports (M2), after wrong PINs another program sent: a login that
-/// failed since the last success is a warning; with one try left, cakeys refuses to spend it on
-/// a PIN file that may be wrong (16), and a locked PIN is unavailable (16). `SoftHSM` reports only
-/// the first; kryoptic all three (count-low after 6 failures, final try after 9, locked at 10).
+/// This test checks how cakeys reacts to the PIN counters that a module reports (M2) after another
+/// program sent wrong PINs. A login that failed since the last success causes a warning. With one
+/// try left, cakeys refuses to use that try with a PIN file that may be wrong (16). A locked PIN
+/// is unavailable (16). `SoftHSM` reports only the first counter. kryoptic reports all three
+/// (count-low after 6 failures, final try after 9, locked at 10).
 #[test]
 fn pin_counters_stop_cakeys_before_it_spends_a_try() {
     let Some(e) = env("pin-counters") else { return };

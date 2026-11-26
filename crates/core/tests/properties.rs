@@ -1,6 +1,7 @@
-//! Property tests of the core crate (docs/DEVELOPMENT.md, "Verification beyond tests"): the lock rules over generated
-//! realisations, the injectivity of the identity encodings, and parsers that never panic on
-//! malformed input. The same parsers are fuzz targets under `fuzz/`.
+//! The property tests of the core crate (docs/DEVELOPMENT.md, "Verification beyond tests"): the
+//! lock rules over generated realisations, the injectivity of the identity encodings, and the
+//! parsers, which must never panic on malformed input. The same parsers are fuzz targets under
+//! `fuzz/`.
 
 mod common;
 
@@ -55,7 +56,8 @@ fn snapshot(lock: &Lock) -> String {
     toml::to_string(lock).unwrap()
 }
 
-/// A realisation of the EC key as a token might report it, varied along every compared field.
+/// A realisation of the EC key as a token might report it, varied in every field that is
+/// compared.
 #[derive(Debug, Clone)]
 struct Variant {
     material: bool,
@@ -103,7 +105,8 @@ fn resolved(t: &Target, v: &Variant) -> Resolved {
     }
 }
 
-/// An AES realisation computing `schemes` over `material`: equal material, equal IDs.
+/// Returns an AES realisation that computes `schemes` over `material`. Equal material gives equal
+/// IDs.
 fn aes(t: &Target, material: u8, schemes: &[&str]) -> Resolved {
     Resolved {
         object: t.object_name.into(),
@@ -124,16 +127,16 @@ fn aes(t: &Target, material: u8, schemes: &[&str]) -> Resolved {
     }
 }
 
-/// A non-empty subset of the AES schemes, from a bit mask.
+/// Generates a non-empty subset of the AES schemes from a bit mask.
 fn aes_schemes() -> impl Strategy<Value = Vec<&'static str>> {
     (1u8..16).prop_map(|mask| {
         AES_SCHEMES.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, s)| *s).collect()
     })
 }
 
-/// Valid material as a token gives it: the fixture certificates and their SPKIs, and a public
-/// key of every curve the parsers take, as an SPKI and as its point, raw and wrapped in the DER
-/// OCTET STRING of `CKA_EC_POINT`.
+/// Returns valid material in the form that a token returns it: the fixture certificates and their
+/// SPKIs, and a public key of every curve that the parsers accept, as an SPKI and as its point,
+/// both raw and wrapped in the DER OCTET STRING of `CKA_EC_POINT`.
 fn valid_material() -> Vec<Vec<u8>> {
     use p256::pkcs8::EncodePublicKey as _;
     use x509_cert::der::Decode as _;
@@ -156,7 +159,7 @@ fn valid_material() -> Vec<Vec<u8>> {
         ed25519_dalek::SigningKey::from_bytes(&[7; 32]).verifying_key().to_public_key_der(),
     ]
     .map(|der| der.unwrap().as_bytes().to_vec());
-    // `CKA_EC_POINT`: an OCTET STRING around the point.
+    // `CKA_EC_POINT` is an OCTET STRING that contains the point.
     let wrapped = |point: &[u8]| {
         let len = u8::try_from(point.len()).unwrap();
         [if len < 0x80 { vec![0x04, len] } else { vec![0x04, 0x81, len] }, point.to_vec()].concat()
@@ -170,12 +173,13 @@ fn valid_material() -> Vec<Vec<u8>> {
         let point = info.subject_public_key.as_bytes().unwrap().to_vec();
         out.extend([wrapped(&point), point, spki]);
     }
-    // Ed448: the parser checks the point's length alone.
+    // For Ed448, the parser checks only the length of the point.
     out.extend([vec![7; 57], wrapped(&[7; 57])]);
     out
 }
 
-/// [`valid_material`] as it is (`true`), or with up to three bytes changed, or any bytes at all.
+/// Generates [`valid_material`] unchanged (with `true`), or with up to three bytes changed, or
+/// arbitrary bytes.
 fn key_material() -> impl Strategy<Value = (Vec<u8>, bool)> {
     let edits = proptest::collection::vec((any::<Index>(), 1u8..), 0..4);
     prop_oneof![
@@ -194,13 +198,15 @@ fn exit(r: &cakeys_core::Result<impl Sized>) -> u8 {
     r.as_ref().err().map_or(0, cakeys_core::KmError::exit_code)
 }
 
-/// Whether `now` weakens a flag `was` recorded as true (the object was replaced).
+/// Returns whether `now` weakens a flag that `was` recorded as true, which means that the object
+/// was replaced.
 fn weakened(was: [Option<bool>; 3], now: [Option<bool>; 3]) -> bool {
     was.iter().zip(now).any(|(w, n)| *w == Some(true) && n != Some(true))
 }
 
 proptest! {
-    /// A recorded realisation compares clean, and recording it again changes nothing.
+    /// A recorded realisation compares without a difference, and recording it again changes
+    /// nothing.
     #[test]
     fn recorded_then_compared_and_idempotent(v in variant()) {
         let cfg = config();
@@ -215,10 +221,12 @@ proptest! {
         prop_assert_eq!(snapshot(&lock), recorded);
     }
 
-    /// After `first` is recorded, `second`: another material is a mismatch (10), a weaker binding
-    /// or a replaced object (a recorded `true` flag no longer true) a precondition failure (14),
-    /// in both modes; drift the write is for (policy, spec) fails only a compare. A write that
-    /// succeeds never overwrites the locked ID and leaves a lock that compares clean.
+    /// After `first` is recorded, `second` is compared and written. Different material is a
+    /// mismatch (10). A weaker binding or a replaced object (a recorded `true` flag that is no
+    /// longer true) is a precondition failure (14). Both hold for a compare and for a write. A
+    /// drift that a write exists to record (in the policy or the spec) fails only a compare. A
+    /// write that succeeds never overwrites the locked ID, and it leaves a lock that compares
+    /// without a difference.
     #[test]
     fn a_write_fills_gaps_and_never_overrides(first in variant(), second in variant()) {
         let cfg = config();
@@ -236,9 +244,10 @@ proptest! {
             || first.immutables != second.immutables;
         let refused = downgrade || replaced || mismatch;
 
-        // A compare refuses what changed before it hashes: a downgrade, a replaced object or
-        // drift is 14 whatever the material; then another material is 10 (review properties.rs
-        // F2: a compare answering 14 for a pure mismatch, or 10 for a downgrade, passed).
+        // A compare refuses a change before it compares the hashes. A downgrade, a replaced
+        // object or a drift is 14 whatever the material is, and only after that is different
+        // material 10 (review properties.rs F2: before, a compare that returned 14 for a pure
+        // mismatch, or 10 for a downgrade, passed this test).
         let compared = compare(&t, &r, &lock, &facts(), LockWrite::Compare, &mut Notes::default());
         let want = if downgrade || replaced || drift { 14 } else if mismatch { 10 } else { 0 };
         prop_assert_eq!(exit(&compared), want, "compare: {:?}", compared);
@@ -254,9 +263,10 @@ proptest! {
         prop_assert_eq!(&lock.objects["k"].ids["rfc7093m4"], &locked_id);
     }
 
-    /// Material links only through a shared scheme. On a second token: disjoint schemes are
-    /// refused (14) and other material under a shared scheme is a mismatch (10), in both modes;
-    /// otherwise the write adds the missing schemes and keeps every locked ID.
+    /// Material is linked only through a shared scheme. On a second token, disjoint schemes are
+    /// refused (14), and different material under a shared scheme is a mismatch (10), for a
+    /// compare and for a write. Otherwise, the write adds the missing schemes and keeps every
+    /// locked ID.
     #[test]
     fn material_links_only_through_a_shared_scheme(
         first in aes_schemes(),
@@ -278,7 +288,8 @@ proptest! {
         };
         for write in [LockWrite::Compare, LockWrite::Record] {
             let got = reconcile(&t2, &r, &mut lock.clone(), &facts(), write, &mut Notes::default());
-            // A first realisation on t2 is not recorded yet, so a clean compare is 14 too.
+            // A first realisation on t2 is not recorded yet, so a compare without a difference
+            // also exits with 14.
             let want = if want == 0 && write == LockWrite::Compare { 14 } else { want };
             prop_assert_eq!(exit(&got), want, "{:?} {:?}: {:?}", write, second, got);
         }
@@ -290,8 +301,8 @@ proptest! {
         }
     }
 
-    /// The attestation encodings are injective: the same bytes cut into fields at different
-    /// places never give the same ID (each field is length-prefixed).
+    /// The attestation encodings are injective: the same bytes, cut into fields at different
+    /// places, never give the same ID, because each field has a length prefix.
     #[test]
     fn attestation_ids_are_injective(bytes in proptest::collection::vec(any::<u8>(), 0..48), a in any::<Index>(), b in any::<Index>()) {
         let (i, j) = (a.index(bytes.len() + 1), b.index(bytes.len() + 1));
@@ -305,11 +316,12 @@ proptest! {
         prop_assert_ne!(piv(i), id::tpm_certify_id(&bytes[..i], &bytes[i..]), "domain-separated");
     }
 
-    /// The commitment label `<label>/<scheme>/<keyType>/<bits>` determines its parts: two
-    /// different (label, scheme, key type, length) never share a label, whatever `/` the label
-    /// holds, for every length that loads. A length of 0 never loads (`valueLen 0` is refused),
-    /// so the `0` an absent `valueLen` writes stands for that alone; a key always has a
-    /// `keyType` (refused at load without one), so the empty name never reaches a label.
+    /// The commitment label `<label>/<scheme>/<keyType>/<bits>` determines its parts. Two
+    /// different tuples of (label, scheme, key type, length) never share a commitment label,
+    /// whatever `/` characters the label contains, for every length that loads. A length of 0
+    /// never loads (`valueLen 0` is refused), so the `0` that an absent `valueLen` writes stands
+    /// only for an absent length. A key always has a `keyType` (the load refuses a key without
+    /// one), so the empty name never reaches a label.
     #[test]
     fn commitment_labels_are_injective(
         l1 in "[a-z/]{0,12}", l2 in "[a-z/]{0,12}",
@@ -333,7 +345,7 @@ proptest! {
         prop_assert_ne!(commits[c1].label(&l1, &object(k1, v1)), commits[c2].label(&l2, &object(k2, v2)));
     }
 
-    /// `is_sri` accepts exactly what `sri` writes: 32 bytes, padded standard base64.
+    /// `is_sri` accepts exactly what `sri` writes: 32 bytes as padded standard base64.
     #[test]
     fn sri_round_trips(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
         use base64::Engine;
@@ -342,11 +354,12 @@ proptest! {
         prop_assert_eq!(id::is_sri(&raw), bytes.len() == 32);
     }
 
-    /// Public-key parsers take token bytes: they never panic, and a canonical SPKI is a fixed
-    /// point. The input is valid material as a token gives it (`valid_material`: a certificate,
-    /// an SPKI, a point raw or wrapped, of every curve), as it is or with bytes changed, or any
-    /// bytes at all: random bytes alone almost never parse, so the fixed point went unchecked for
-    /// the Weierstrass curves (review properties.rs F1). Material taken as it is must parse.
+    /// The public-key parsers accept bytes from a token. They never panic, and a canonical SPKI
+    /// is a fixed point. The input is valid material in the form that a token returns it
+    /// (`valid_material`: a certificate, an SPKI, or a raw or wrapped point, of every curve),
+    /// unchanged or with bytes changed, or arbitrary bytes. Random bytes alone almost never
+    /// parse, so before, the fixed point was not checked for the Weierstrass curves (review
+    /// properties.rs F1). Unchanged material must parse.
     #[test]
     fn key_parsers_never_panic(input in key_material(), exponent in proptest::collection::vec(any::<u8>(), 0..8)) {
         let (bytes, valid) = &input;
@@ -374,8 +387,9 @@ proptest! {
         }
     }
 
-    /// The loaders never panic on a damaged keys.toml or keys.lock: it loads, or it is refused as
-    /// invalid (17), or keys.toml as naming an object type cakeys does not manage (15).
+    /// The loaders never panic on a damaged keys.toml or keys.lock. The file loads, or it is
+    /// refused as invalid (17), or a keys.toml is refused because it names an object type that
+    /// cakeys does not manage (15).
     #[test]
     fn loaders_refuse_damaged_files_without_panicking(edits in proptest::collection::vec((any::<Index>(), any::<char>()), 1..4)) {
         let damage = |text: &str| {
@@ -396,15 +410,16 @@ proptest! {
 const FIXTURE_LOCK: &str = include_str!("../../cli/tests/fixtures/keys.lock");
 const FIXTURE_CONFIG: &str = include_str!("../../cli/tests/fixtures/keys.toml");
 
-/// The fixtures themselves load: the damaged copies start from valid files.
+/// The fixtures themselves load, so the damaged copies start from valid files.
 #[test]
 fn fixtures_load() {
     parse_lock(FIXTURE_LOCK, Path::new("keys.lock")).unwrap();
     parse_config_with(FIXTURE_CONFIG, Path::new("keys.toml"), &|_| Some("/x".into())).unwrap();
 }
 
-/// The parser property's valid seeds reach every parser's fixed point (review properties.rs
-/// F1): each curve reads a point of its own, each certificate its key, each SPKI itself.
+/// The valid seeds of the parser property reach the fixed point of every parser (review
+/// properties.rs F1): each curve reads a point of its own, each certificate gives its key, and
+/// each SPKI gives itself.
 #[test]
 fn the_parser_seeds_reach_every_fixed_point() {
     let material = valid_material();
@@ -412,6 +427,6 @@ fn the_parser_seeds_reach_every_fixed_point() {
         assert!(material.iter().any(|m| curve.spki_from_point(m).is_ok()), "no point of {curve:?}");
     }
     assert_eq!(material.iter().filter(|m| id::cert_spki(m).is_ok()).count(), 4, "the four certificates");
-    // The certificates' four SPKIs and the five keys'.
+    // The four SPKIs of the certificates and the five SPKIs of the keys.
     assert_eq!(material.iter().filter(|m| id::spki_canonical(m).is_ok()).count(), 9);
 }

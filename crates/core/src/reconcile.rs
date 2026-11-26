@@ -1,7 +1,8 @@
-//! The lock rules: compare what a token holds (a [`Resolved`]) with what the lock records, and
-//! record what the lock lacks. Pure — no token access — so every rule is unit-testable. What a
-//! run has to say besides its verdict (drift it tolerates, provenance changes, unchecked
-//! schemes) goes into [`Notes`], which the caller prints whether or not the run succeeded.
+//! The lock rules. This module compares what a token holds (a [`Resolved`]) with what the lock
+//! records, and it adds to the lock what the lock does not record yet. The module never accesses
+//! a token, so a unit test can exercise every rule. The messages that a run prints in addition to
+//! its result (drift that the run accepts, changes of provenance, and schemes that it did not
+//! check) go into [`Notes`], and the caller prints them whether or not the run succeeded.
 
 use crate::config::{
     AttestationRecord, AttrValue, Binding, Immutables, KeyOrigin, Lock, LockRealisation, Mode, ModuleInfo, Observation,
@@ -10,12 +11,12 @@ use crate::config::{
 use crate::id::{self, Scheme};
 use crate::plan::Target;
 use crate::types::ObjectClass as Class;
-use crate::{KmError, Result};
+use crate::{Check, KmError, Reason, Result};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-/// What a token holds for one (spec, token) pair, as a run computed it: the object found, its
-/// IDs and what was observed of it. `lock` and `check` print it as JSON.
+/// What a run found on a token for one (spec, token) pair: the object that it found, the IDs
+/// that it computed, and what it observed of the object. `lock` and `check` print it as JSON.
 #[derive(Debug, Serialize)]
 pub struct Resolved {
     /// The object's name.
@@ -24,46 +25,52 @@ pub struct Resolved {
     pub spec: String,
     /// The token's name.
     pub token: String,
-    /// RFC 7512 URI of the object found.
+    /// The RFC 7512 URI of the object that the run found.
     pub uri: String,
-    /// The identity mode the IDs were computed in.
+    /// The identity mode in which the run computed the IDs.
     pub mode: Mode,
-    /// Adopted through its public key object only (`publicOnly`).
+    /// True when the run adopted the object through its public key object only (`publicOnly`).
     #[serde(rename = "publicOnly")]
     pub public_only: bool,
-    /// SRI digest of the spec (object type and policy attributes).
+    /// The SRI digest of the spec (the object type and the policy attributes).
     #[serde(rename = "specDigest")]
     pub spec_digest: String,
-    /// The IDs computed, scheme name -> SRI hash.
+    /// The IDs that the run computed, as a map from the scheme name to the SRI hash.
     pub ids: BTreeMap<String, String>,
-    /// Private keys: how the private object was bound to `ids` (proven when `pop-sign`).
+    /// For a private key: how the run bound the private object to `ids`. The binding is proven
+    /// when it is `pop-sign`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binding: Option<Binding>,
-    /// What the check establishes against a token that may lie: a fresh proof, a replayable
-    /// fingerprint, or public bytes (`plan::assurance`; derived, never in the lock).
+    /// What the check establishes when the token may return false data: a fresh proof, a
+    /// fingerprint that a token could replay, or public bytes. `plan::assurance` derives this
+    /// value, and the lock never records it.
     pub assurance: crate::plan::Assurance,
-    /// The observed policy vector and immutables of the object found (§4.2 of docs/DESIGN.md).
+    /// The policy attributes that the run observed on the object (§4.2 of docs/DESIGN.md).
     pub policy: BTreeMap<String, AttrValue>,
-    /// Attributes fixed when the object was made.
+    /// The attributes that were fixed when the object was created.
     #[serde(skip_serializing_if = "Immutables::is_empty")]
     pub immutables: Immutables,
-    /// Label the commitment schemes in `ids` were computed with (none for public-material IDs).
+    /// The label with which the run computed the commitment schemes in `ids`. It is `None` when
+    /// all the IDs come from public material.
     #[serde(rename = "commitmentLabel", skip_serializing_if = "Option::is_none")]
     pub commitment_label: Option<String>,
-    /// The attestation this realisation computed (§3.7), when its spec opted in: `kind` names
-    /// the evidence, `root` the anchor it verified to, `id` the per-device attestation ID. Never
-    /// in `ids`, which holds only the portable schemes shared across tokens.
+    /// The attestation that the run computed for this realisation (§3.7), when the spec opted in.
+    /// `kind` names the type of evidence, `root` names the anchor to which the evidence was
+    /// verified, and `id` is the attestation ID of this device. The attestation is never in
+    /// `ids`, because `ids` holds only the portable schemes that are the same on every token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attestation: Option<AttestationRecord>,
-    /// A transport key's canonical SPKI (`Target::transport`), for the lock's `publicKey`.
+    /// The canonical SPKI of a transport key (`Target::transport`), which the lock records as
+    /// `publicKey`.
     #[serde(skip)]
     pub public_key: Option<Vec<u8>>,
 }
 
-/// What a run has to say besides its verdict, in order. A command line's notes
-/// ([`Notes::streaming`]) go to stderr as they are said, so a run killed part-way has said
-/// everything up to there, in the order it happened (review 2026-11-23 C-7); a library caller's
-/// and a test's are kept ([`Notes::lines`]).
+/// The messages that a run prints in addition to its result, in order. A command-line tool uses
+/// [`Notes::streaming`], which prints each message to stderr when it is added. A run that is
+/// killed partway through has therefore already printed every earlier message, in order (review
+/// 2026-11-23 C-7). A library caller or a test keeps the messages and reads them with
+/// [`Notes::lines`].
 #[derive(Debug, Default)]
 pub struct Notes {
     lines: Vec<String>,
@@ -72,7 +79,7 @@ pub struct Notes {
 }
 
 impl Notes {
-    /// Notes that are printed to stderr as each is said, and kept as well.
+    /// Creates notes that print each message to stderr when it is added, and that also keep it.
     #[must_use]
     pub fn streaming() -> Notes {
         Notes { streaming: true, ..Notes::default() }
@@ -85,17 +92,18 @@ impl Notes {
         self.lines.push(line);
     }
 
-    /// A line as is (`created …`, `updated …`).
+    /// Adds a line without a prefix (`created …`, `updated …`).
     pub fn say(&mut self, line: impl Into<String>) {
         self.push(line.into());
     }
 
-    /// A `note:` line: something worth knowing that changes no verdict.
+    /// Adds a `note:` line: information that does not change the result of the run.
     pub fn note(&mut self, msg: impl std::fmt::Display) {
         self.push(format!("note: {msg}"));
     }
 
-    /// A `warning:` line: drift or a change the run tolerates, but should be looked at.
+    /// Adds a `warning:` line: drift or a change that the run accepts, but that a person should
+    /// review.
     pub fn warn(&mut self, msg: impl std::fmt::Display) {
         self.push(format!("warning: {msg}"));
     }
@@ -106,44 +114,48 @@ impl Notes {
         &self.lines
     }
 
-    /// The run wrote the lock (created or changed it), at `path`: said, and a run that otherwise
-    /// succeeds exits [`LOCK_WRITTEN`](crate::LOCK_WRITTEN), not 0.
+    /// Records that the run wrote (created or changed) the lock at `path`, and adds an `updated`
+    /// line. The run then exits with [`LOCK_WRITTEN`](crate::LOCK_WRITTEN) (22) instead of 0, even
+    /// if a later step of the run fails.
     pub fn lock_written(&mut self, path: &std::path::Path) {
         self.lock_written = true;
         self.say(format!("updated {}", path.display()));
     }
 
-    /// Whether [`Self::lock_written`] was said.
+    /// Returns whether the run called [`Self::lock_written`].
     #[must_use]
     pub fn wrote_lock(&self) -> bool {
         self.lock_written
     }
 }
 
-/// Whether a run records what the lock lacks (`lock`, `delete` by default) or only compares
-/// (`lock --dry-run`, `create --no-update-lock`, and always for `check`).
+/// Whether a run adds to the lock what the lock does not record yet (`lock`, and `delete` by
+/// default) or only compares with the lock (`lock --dry-run`, `create --no-update-lock`, and every
+/// `check`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockWrite {
     /// Only compare with the lock.
     Compare,
-    /// Compare, then record what the lock lacks.
+    /// Compare with the lock, then add to the lock what it does not record yet.
     Record,
 }
 
-/// What this run observed of the object and of the token: recorded on `lock`, compared
-/// (warnings only) with what the lock recorded.
+/// What this run observed of the object and of the token. `lock` records these facts. Every run
+/// compares them with what the lock recorded, but a difference only produces a warning.
 pub struct Facts {
-    /// What was seen of the object (its URI, the session).
+    /// What the run saw of the object (its URI and the session).
     pub observed: Observed,
-    /// What the run saw of the module and token, recorded as an `observations` entry.
+    /// What the run saw of the module and the token, recorded as an `observations` entry.
     pub observation: Observation,
-    /// Where an imported object came from (docs/CAMIGRATE.md D7), for the realisation camigrate records
-    /// right after the import; `None` for every other run, which keeps what the lock recorded.
+    /// Where an imported object came from (docs/CAMIGRATE.md D7). camigrate sets it for the
+    /// realisation that it records right after the import. It is `None` for every other run, and
+    /// such a run keeps the origin that the lock already records.
     pub origin: Option<Origin>,
 }
 
-/// The label to compute `t`'s commitments with: the one the lock records for the object, else the
-/// default for objects the lock does not know yet.
+/// Returns the label with which to compute the commitments of `t`. That is the label that the
+/// lock records for the object, or the default label (`id::DEFAULT_COMMITMENT_LABEL`) when the
+/// lock records none.
 #[must_use]
 pub fn commitment_label(t: &Target, lock: &Lock) -> String {
     lock.objects
@@ -152,16 +164,17 @@ pub fn commitment_label(t: &Target, lock: &Lock) -> String {
         .unwrap_or_else(|| id::DEFAULT_COMMITMENT_LABEL.to_owned())
 }
 
-/// Compare `r` with the lock, then, with `LockWrite::Record`, record what the lock lacks (only
-/// ever filling gaps). Whether the lock changed.
+/// Compares `r` with the lock. With `LockWrite::Record`, it then adds to the lock what the lock
+/// does not record yet (see `record`). Returns whether the lock changed.
 ///
 /// # Errors
 ///
-/// Whatever `compare` rejects: `HashMismatch` when the token's material hashes to another ID
-/// than the lock pins, `FirstUse` when it pins none to compare with under `LockWrite::Compare`,
-/// `PreconditionFailed` for a realisation that moved (type, downgrade, replaced object,
-/// attestation anchor); and `PreconditionFailed` for an import (`facts.origin`) of an object the
-/// lock pins no IDs for.
+/// Returns every error that `compare` returns: `HashMismatch` when the token's material hashes to
+/// a different ID than the one that the lock pins, `FirstUse` when the lock pins no ID to compare
+/// with and the write is `LockWrite::Compare`, and `PreconditionFailed` for a realisation that
+/// changed (its type, a downgrade, a replaced object, or the attestation anchor). Also returns
+/// `PreconditionFailed` for an import (`facts.origin` is set) of an object for which the lock pins
+/// no IDs, unless the key's origin is a file.
 pub fn reconcile(
     t: &Target,
     r: &Resolved,
@@ -170,21 +183,22 @@ pub fn reconcile(
     write: LockWrite,
     notes: &mut Notes,
 ) -> Result<bool> {
-    // An import is checked against the IDs its source recorded: without them it would be a first
-    // use, recording whatever the target holds (docs/CAMIGRATE.md D6). A pair whose material is
-    // born in a file is that first use (docs/FILE.md F3).
+    // An import is checked against the IDs that the lock recorded for its source. Without those
+    // IDs, the import would be a first use, and the lock would record whatever the target token
+    // holds (docs/CAMIGRATE.md D6). A pair whose material is created from a file is allowed to be
+    // that first use (docs/FILE.md F3).
     if facts.origin.is_some()
         && t.on_token.key_origin() != KeyOrigin::File
         && lock.objects.get(t.object_name).is_none_or(|o| o.ids.is_empty())
     {
-        return Err(KmError::PreconditionFailed(
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::LockImportIds,
             format!(
                 "{t}: an import needs the IDs the lock pins for object '{}', and it pins none; lock it on \
              its source first",
                 t.object_name
-            )
-            .into(),
-        ));
+            ),
+        )));
     }
     compare(t, r, lock, facts, write, notes)?;
     match write {
@@ -193,17 +207,19 @@ pub fn reconcile(
     }
 }
 
-/// Every rule a realisation must pass against the lock, in the order that decides the exit code.
-/// With `LockWrite::Record`, a changed spec or policy and a first use are what the write is for,
-/// so they pass here (`record` says what it accepted); type changes, downgrades, a replaced
-/// object, an attestation anchor change and a hash mismatch fail either way.
+/// Applies every rule that a realisation must pass against the lock. The rules run in a fixed
+/// order, and the first rule that fails decides the exit code. With `LockWrite::Record`, a changed
+/// spec, a changed policy and a first use pass here, because the write exists to record them, and
+/// `record` reports what it accepted. A type change, a downgrade, a replaced object, a change of
+/// the attestation anchor and a hash mismatch fail with either `LockWrite` value.
 ///
 /// # Errors
 ///
-/// `HashMismatch` (10) when the token's material hashes to another ID than the lock pins;
-/// `FirstUse` (18) when it pins none and the write is off; `PreconditionFailed` (14) for a
-/// type change, a downgrade, a replaced object, an attestation anchor change, or matching
-/// material whose realisation the lock does not record.
+/// Returns `HashMismatch` (10) when the token's material hashes to a different ID than the
+/// one that the lock pins. Returns `FirstUse` (18) when the lock pins no ID and the write is
+/// `LockWrite::Compare`. Returns `PreconditionFailed` (14) for a type change, a downgrade, a
+/// replaced object, a change of the attestation anchor, or matching material whose realisation
+/// the lock does not record, and, with `LockWrite::Compare`, for a changed spec or policy.
 pub fn compare(
     t: &Target,
     r: &Resolved,
@@ -213,29 +229,31 @@ pub fn compare(
     notes: &mut Notes,
 ) -> Result<()> {
     let update = write == LockWrite::Record;
-    // The lock pins the type its IDs were computed for: a different type is different material,
-    // so say so instead of reporting a hash mismatch (also when updating). A `modulusBits`
-    // declared since is a gap `record_object` fills, not another type (review 2026-11-23 A-5).
+    // The lock pins the object type for which its IDs were computed. A different type means
+    // different material, so the run reports the type change instead of a hash mismatch, also
+    // when it writes the lock. A `modulusBits` value that keys.toml declares after the lock was
+    // written is not a different type: `record_object` adds it to the lock (review 2026-11-23 A-5).
     if let Some(locked) = lock.objects.get(t.object_name).and_then(|o| o.object_type.as_ref())
         && !locked.same_type(t.object.cfg())
     {
-        return Err(KmError::PreconditionFailed(
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::LockType,
             format!(
                 "the type of object '{}' in keys.toml changed since it was locked: locked {}, now {}; \
              different material needs a new object name",
                 t.object_name,
                 locked,
                 t.object.cfg()
-            )
-            .into(),
-        ));
+            ),
+        )));
     }
     if let Some(prev) = lock.realisation(t.spec_name, t.token_name) {
         if !update {
             spec_unchanged(t, r, prev)?;
         }
-        // A spec pointed at another object (a keys.toml change `lock` re-records) realises that
-        // object afresh: what the old one proved, or was made as, says nothing of the new one.
+        // When keys.toml points a spec at another object (a change that `lock` records again), the
+        // realisation of the new object starts fresh. What the old object proved, and how it was
+        // created, do not apply to the new object, so the downgrade check is skipped.
         if prev.object == t.object_name {
             no_downgrade(t, r, prev, update, notes)?;
         }
@@ -255,25 +273,27 @@ pub fn compare(
     compare_ids(t, r, lock, update, notes)
 }
 
-/// Like a lockfile out of date: keys.toml changed what this realisation is (another object,
-/// locator, publicOnly or policy), so the lock must be re-recorded after review.
+/// Fails when keys.toml changed what this realisation is (another object, another locator,
+/// `publicOnly`, or the policy), because a person must then review the change and record the
+/// lock again.
 fn spec_unchanged(t: &Target, r: &Resolved, prev: &LockRealisation) -> Result<()> {
     let diff = spec_diff(t, r, prev);
     if diff.is_empty() {
         return Ok(());
     }
-    Err(KmError::PreconditionFailed(
+    Err(KmError::PreconditionFailed(Reason::check(
+        Check::LockSpec,
         format!(
             "spec '{}' changed in keys.toml since it was realised on '{}' ({}); review the change, then `lock`",
             t.spec_name,
             t.token_name,
             diff.join(", ")
-        )
-        .into(),
-    ))
+        ),
+    )))
 }
 
-/// What keys.toml now says of this realisation that the lock does not.
+/// Lists the differences between what keys.toml now declares for this realisation and what the
+/// lock records.
 fn spec_diff(t: &Target, r: &Resolved, prev: &LockRealisation) -> Vec<String> {
     let mut diff = Vec::new();
     if prev.object != t.object_name {
@@ -291,15 +311,15 @@ fn spec_diff(t: &Target, r: &Resolved, prev: &LockRealisation) -> Vec<String> {
     diff
 }
 
-/// What the realisation proved when it was locked, it must still prove — also when `lock`
-/// writes the lock: its mode, binding, attestation and schemes, and the immutables fixed when the
-/// object was made.
-/// The token object another spec already realised (the same object, token and locator, both
-/// through the private object or both `publicOnly`: the same PKCS#11 object) holds this spec
-/// to what that one established, as its own earlier realisation would: a second spec is no way
-/// to record it without its attestation, its proof or its mode, when writing too (review
-/// 2026-11-23 A-2). Another locator is another object of the same material, which may differ
-/// (keys.toml's `shared-a` signs, `shared-b` does not).
+/// Fails when another spec already realised the same PKCS#11 object on this token and this
+/// realisation is weaker. The same PKCS#11 object means the same object name, token and locator,
+/// with both realisations either through the private object or both `publicOnly`. This spec must
+/// meet what the other realisation established, as it would have to meet its own earlier
+/// realisation. Otherwise, a second spec could record the object without the attestation, the
+/// proof or the mode of the first one. The rule applies also when the run writes the lock
+/// (review 2026-11-23 A-2). A different locator selects a different object with the same
+/// material, and that object may have different attributes (in
+/// `crates/cli/tests/fixtures/keys.toml`, `shared-a` can sign and `shared-b` cannot).
 fn same_object_no_weaker(t: &Target, r: &Resolved, lock: &Lock, update: bool) -> Result<()> {
     let others = lock
         .realisations
@@ -310,66 +330,73 @@ fn same_object_no_weaker(t: &Target, r: &Resolved, lock: &Lock, update: bool) ->
             prev.object == t.object_name && prev.locator == t.on_token.locator && prev.public_only == r.public_only
         });
     for (spec, prev) in others {
-        // What this one adds (an attestation the other lacks) is that realisation's to record.
+        // The notes are discarded. When this realisation has something that the other one lacks,
+        // such as an attestation, that is not an error, and this realisation's own record holds it.
         no_downgrade(t, r, prev, update, &mut Notes::default()).map_err(|e| match e {
-            KmError::PreconditionFailed(m) => KmError::PreconditionFailed(
+            KmError::PreconditionFailed(m) => KmError::PreconditionFailed(Reason::check(
+                Check::LockSameObject,
                 format!(
                     "{m} (as spec '{spec}' realised the same object on '{}' under {}; a weaker realisation \
                      needs a new object name)",
                     t.token_name, prev.locator
-                )
-                .into(),
-            ),
+                ),
+            )),
             other => other,
         })?;
     }
     Ok(())
 }
 
+/// Fails when this realisation proves less than it proved when it was locked. That covers its
+/// mode, its binding, its attestation and its schemes, and the immutables that were fixed when
+/// the object was created. The rule applies also when `lock` writes the lock.
 fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, notes: &mut Notes) -> Result<()> {
     if r.mode.rank() > prev.mode.rank() {
-        return Err(KmError::PreconditionFailed(
-            format!("identity downgrade for {}: locked mode '{}', now only '{}'", t, prev.mode, r.mode).into(),
-        ));
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::LockMode,
+            format!("identity downgrade for {}: locked mode '{}', now only '{}'", t, prev.mode, r.mode),
+        )));
     }
     if let (Some(was), Some(now)) = (prev.binding, r.binding)
         && now.rank() > was.rank()
     {
-        return Err(KmError::PreconditionFailed(
-            format!("binding downgrade for {t}: locked binding '{was}', now only '{now}'").into(),
-        ));
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::LockBinding,
+            format!("binding downgrade for {t}: locked binding '{was}', now only '{now}'"),
+        )));
     }
-    // The attestation is compared, even when lock writes the lock (§3.7). A different anchor means
-    // a different device (or a re-provisioned TPM) signed the provenance; a different ID
-    // under the same anchor means the attested object changed (re-imported, other
-    // attributes or policy). Both are changes to review, never to re-record — and a lost
-    // attestation is a scheme downgrade.
+    // The attestation is compared even when `lock` writes the lock (§3.7). A different anchor
+    // means that a different device (or a re-provisioned TPM) signed the provenance. A different
+    // ID under the same anchor means that the attested object changed: it was imported again, or
+    // its attributes or its policy changed. A person must review both changes, so the run refuses
+    // them instead of recording them. A lost attestation is a downgrade of the schemes.
     match (&prev.attestation, &r.attestation) {
         (Some(was), Some(now)) if was.kind != now.kind || was.root != now.root => {
-            return Err(KmError::PreconditionFailed(
+            return Err(KmError::PreconditionFailed(Reason::check(
+                Check::LockAttestationAnchor,
                 format!(
                     "attestation anchor for {} changed since it was realised ({} root {}, now {} root {}); \
                  the material needs a new object name",
                     t, was.kind, was.root, now.kind, now.root
-                )
-                .into(),
-            ));
+                ),
+            )));
         }
         (Some(was), Some(now)) if was.id != now.id => {
             return Err(KmError::HashMismatch {
                 what: format!("{} ({} attestation)", t, was.kind),
                 expected: was.id.clone(),
                 got: now.id.clone(),
+                check: Check::LockAttestationId,
             });
         }
         (Some(was), None) => {
-            return Err(KmError::PreconditionFailed(
+            return Err(KmError::PreconditionFailed(Reason::check(
+                Check::LockAttestationKept,
                 format!(
                     "identity downgrade for {}: it was realised with a {} attestation, which it no longer computes",
                     t, was.kind
-                )
-                .into(),
-            ));
+                ),
+            )));
         }
         (None, Some(now)) if !update => {
             notes.note(format_args!(
@@ -381,34 +408,38 @@ fn no_downgrade(t: &Target, r: &Resolved, prev: &LockRealisation, update: bool, 
     }
     let lost: Vec<&String> = prev.schemes.iter().filter(|s| !r.ids.contains_key(*s)).collect();
     if !lost.is_empty() {
-        return Err(KmError::PreconditionFailed(
-            format!("identity downgrade for {t}: it was realised with {lost:?}, which it no longer computes").into(),
-        ));
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::LockSchemesKept,
+            format!("identity downgrade for {t}: it was realised with {lost:?}, which it no longer computes"),
+        )));
     }
-    // Fixed at creation: weaker now means the object was replaced (also when updating).
+    // The immutables are fixed when the object is created, so a weaker value now means that the
+    // object was replaced. This fails also when the run writes the lock.
     let weakened = r.immutables.weakened_since(&prev.immutables);
     if !weakened.is_empty() {
-        return Err(KmError::PreconditionFailed(
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::LockImmutables,
             format!(
                 "{} was replaced since it was realised: {} no longer true; a new object needs a new name",
                 t,
                 weakened.join(", ")
-            )
-            .into(),
-        ));
+            ),
+        )));
     }
     Ok(())
 }
 
-/// The token's object changed (policy set since, or another object with the same material):
-/// review, like a changed spec.
+/// Fails when the object on the token changed since it was locked: a policy attribute was set
+/// since then, or another object with the same material took its place. A person must review
+/// this change, as for a changed spec. Also notes the policy attributes that the token now
+/// reports and that the lock does not record.
 fn object_unchanged(t: &Target, r: &Resolved, prev: &LockRealisation, notes: &mut Notes) -> Result<()> {
     let diff = object_diff(r, prev);
     if !diff.is_empty() {
-        return Err(KmError::PreconditionFailed(
-            format!("{} changed on the token since it was realised ({}); review, then `lock`", t, diff.join(", "))
-                .into(),
-        ));
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::LockAttributes,
+            format!("{} changed on the token since it was realised ({}); review, then `lock`", t, diff.join(", ")),
+        )));
     }
     let new: Vec<&String> = r.policy.keys().filter(|n| !prev.policy.contains_key(*n)).collect();
     if !new.is_empty() {
@@ -417,7 +448,8 @@ fn object_unchanged(t: &Target, r: &Resolved, prev: &LockRealisation, notes: &mu
     Ok(())
 }
 
-/// What the token's object now shows that the lock recorded otherwise.
+/// Lists the policy attributes and the immutables that now differ between the object on the
+/// token and the lock's record.
 fn object_diff(r: &Resolved, prev: &LockRealisation) -> Vec<String> {
     let mut diff: Vec<String> = prev
         .policy
@@ -433,12 +465,16 @@ fn object_diff(r: &Resolved, prev: &LockRealisation) -> Vec<String> {
     diff
 }
 
-/// The IDs against the object's locked ones: a mismatch is 10, a first use when only comparing
-/// 18; then the realisation itself must be locked (14). Notes what is not checked.
+/// Compares the IDs that the run computed with the IDs that the lock records for the object. It
+/// fails with exit 14 when no computed scheme is among the locked schemes, with exit 10 on a
+/// mismatch, and with exit 18 on a first use when the run only compares. The lock must then also
+/// record the realisation itself, or the comparison fails with exit 14. A note or a warning names
+/// each locked scheme that the run did not check.
 fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut Notes) -> Result<()> {
     let locked = lock.objects.get(t.object_name).map(|o| &o.ids);
-    // A deprecated computation still verifies — its identities are pinned — but the lock should
-    // move to the replacement (docs/DESIGN.md §3.1); a lock write never adds a new one.
+    // A scheme with a deprecated computation still verifies, because the lock pins its IDs, but
+    // the lock should move to the replacement scheme (docs/DESIGN.md §3.1). A write of the lock
+    // never adds a new ID of a deprecated scheme.
     for scheme in
         locked.iter().flat_map(|ids| ids.keys()).filter(|s| Scheme::from_name(s).is_some_and(Scheme::is_deprecated))
     {
@@ -447,12 +483,15 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
             t.object_name
         ));
     }
-    // Material is only linked through a shared scheme: never attach IDs to an object when none of
-    // them can be compared with what is already locked (e.g. a CMAC-only and a KW-only spec).
+    // Only a scheme that both the run and the lock have can show that the material is the same.
+    // So the run never adds IDs to an object when none of them can be compared with an ID that
+    // the lock already records (for example, a spec that computes only `cmac` for an object that
+    // is locked only by `kw`).
     if let Some(ids) = locked.filter(|ids| !ids.is_empty())
         && !r.ids.keys().any(|s| ids.contains_key(s))
     {
-        return Err(KmError::PreconditionFailed(
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::LockSharedScheme,
             format!(
                 "{} computes {:?} but '{}' is locked only by {:?}: nothing shows it is the same \
              material; lock a spec that computes both first",
@@ -460,9 +499,8 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
                 r.ids.keys().collect::<Vec<_>>(),
                 t.object_name,
                 ids.keys().collect::<Vec<_>>()
-            )
-            .into(),
-        ));
+            ),
+        )));
     }
     let mut matched = false;
     let mut unlocked = Vec::new();
@@ -470,35 +508,51 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
         match locked.and_then(|ids| ids.get(scheme)) {
             Some(want) if want == got => matched = true,
             Some(want) => {
-                return Err(KmError::HashMismatch { what: t.to_string(), expected: want.clone(), got: got.clone() });
+                return Err(KmError::HashMismatch {
+                    what: t.to_string(),
+                    expected: want.clone(),
+                    got: got.clone(),
+                    check: Check::IdentityMaterial,
+                });
             }
-            // Recorded by `record` (a deprecated one is not).
+            // `record` adds this ID to the lock later, unless its scheme is deprecated.
             None if update => {}
             None => unlocked.push((scheme, got)),
         }
     }
-    // A scheme not yet in the lock (e.g. one a newer cakeys computes) is fine once another
-    // scheme proved the identity; with nothing to compare it is first use and fails like a FOD.
+    // A scheme that the lock does not record yet (for example, one that a newer cakeys computes)
+    // is accepted when another scheme matched. When no scheme matched, the run is a first use. It
+    // fails with `FirstUse`, which reports the computed ID, as a Nix fixed-output derivation
+    // reports the hash that it got.
     if let Some((_, got)) = unlocked.first().filter(|_| !matched) {
         return Err(KmError::FirstUse { what: t.to_string(), got: (*got).clone() });
     }
-    // The material matches, but the lock does not say this spec is realised on this token: the
-    // lock describes where objects live, not only what they are.
+    // The material matches, but the lock does not record that this spec is realised on this
+    // token. The lock records where each object is, not only what it is, so the comparison fails.
     if !update && lock.realisation(t.spec_name, t.token_name).is_none() {
-        return Err(KmError::PreconditionFailed(
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::LockRealised,
             format!(
                 "{} matches the locked identity, but the lock records no realisation of spec '{}' on \
              token '{}'; review, then `lock`",
                 t, t.spec_name, t.token_name
-            )
-            .into(),
-        ));
+            ),
+        )));
     }
     for (scheme, _) in &unlocked {
-        notes.note(format_args!("{t} also has a {scheme} identity the lock does not record; `lock` adds it"));
+        // `record_object` does not add a deprecated scheme, so the note does not promise it.
+        if Scheme::from_name(scheme).is_some_and(Scheme::is_deprecated) {
+            notes.note(format_args!(
+                "{t} also has a {scheme} identity the lock does not record; `lock` does not add it: that \
+                 computation is deprecated (docs/DESIGN.md §3.1)"
+            ));
+        } else {
+            notes.note(format_args!("{t} also has a {scheme} identity the lock does not record; `lock` adds it"));
+        }
     }
-    // Locked schemes not checked now: unknown to this cakeys (e.g. from a newer one), or not
-    // computable for this spec on this token.
+    // These locked schemes were not checked by this run. Either this version of cakeys does not
+    // know them (for example, a newer version recorded them), or they cannot be computed for this
+    // spec on this token.
     for scheme in locked.into_iter().flat_map(|ids| ids.keys()).filter(|s| !r.ids.contains_key(*s)) {
         if Scheme::from_name(scheme).is_some() {
             notes.note(format_args!(
@@ -514,8 +568,9 @@ fn compare_ids(t: &Target, r: &Resolved, lock: &Lock, update: bool, notes: &mut 
     Ok(())
 }
 
-/// Record what the object's lock entry lacks: its type, commitment label, the IDs `r` computed
-/// (never a deprecated one), and a transport key's public key. Whether it changed.
+/// Adds to the object's lock entry what it does not record yet: the object type (or a missing
+/// `modulusBits` value), the commitment label, the IDs that `r` computed (except an ID of a
+/// deprecated scheme), and the public key of a transport key. Returns whether the entry changed.
 fn record_object(t: &Target, r: &Resolved, entry: &mut crate::config::LockObject, notes: &mut Notes) -> bool {
     let mut changed = false;
     match &mut entry.object_type {
@@ -529,8 +584,9 @@ fn record_object(t: &Target, r: &Resolved, entry: &mut crate::config::LockObject
         }
         Some(_) => {}
     }
-    // A recorded label stays: the IDs the lock holds were computed under it, and a run computes
-    // with it (`commitment_label`), so only a gap is filled.
+    // A label that the lock records is never replaced, because the IDs in the lock were computed
+    // with it and every run computes with it (`commitment_label`). The label is added only when
+    // the entry has none.
     if let Some(label) = &r.commitment_label
         && entry.commitment_label.is_none()
     {
@@ -549,8 +605,10 @@ fn record_object(t: &Target, r: &Resolved, entry: &mut crate::config::LockObject
             changed = true;
         }
     }
-    // A transport key's public key, for exports from the lock alone. The SPKI hashes to the
-    // rfc7093m4 just compared, which the load check holds a recorded one to: only a gap to fill.
+    // The public key of a transport key is recorded so that an export can read it from the lock
+    // alone. The SPKI hashes to the `rfc7093m4` ID that was just compared, and the check on load
+    // requires that a recorded public key matches that ID. So the key is added only when the
+    // entry has none.
     if let Some(spki) = &r.public_key
         && entry.public_key.is_none()
     {
@@ -561,17 +619,19 @@ fn record_object(t: &Target, r: &Resolved, entry: &mut crate::config::LockObject
     changed
 }
 
-/// Record `r` in the lock: the object's type, commitment label and IDs it lacks, this
-/// realisation, and the pairs. Never overwrites an ID. Whether the lock changed.
+/// Records `r` in the lock: the object type, the commitment label and the IDs that the object
+/// entry does not have yet, this realisation, and the pairs. It never overwrites an ID. Returns
+/// whether the lock changed.
 ///
-/// A realisation already in the lock is replaced, and every difference `compare` would have
-/// refused without the write is said, one line each: the lock's diff is the review, so nothing
-/// enters it unannounced. What keys.toml changed is a note; what changed on the token, which
-/// nobody edited, is a warning.
+/// A realisation that the lock already records is replaced. Each difference that `compare` would
+/// have refused without the write is reported on its own line. A person reviews the lock's diff,
+/// so every change in the lock must be reported. A change in keys.toml is reported as a note. A
+/// change on the token, which nobody edited in a file, is reported as a warning.
 fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut Notes) -> Result<bool> {
     let mut changed = false;
-    // One object per material (checked again on load): refuse to record the same material
-    // under a second name.
+    // The lock holds one object per material within a class, and the check on load enforces this
+    // again. So the run refuses to record the same material under a second object name. Two
+    // certificates may share an `rfc7093m4` ID, because both can certify the same key.
     let class = t.object.class;
     for (name, o) in lock
         .objects
@@ -583,19 +643,24 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
             .iter()
             .find(|(s, v)| !(class == Class::Certificate && *s == Scheme::Rfc7093m4.name()) && o.ids.get(*s) == Some(v))
         {
-            return Err(KmError::PreconditionFailed(
-                format!("{t} is the same material as object '{name}' ({s}); use that object instead of a second name")
-                    .into(),
-            ));
+            return Err(KmError::PreconditionFailed(Reason::check(
+                Check::LockOneName,
+                format!("{t} is the same material as object '{name}' ({s}); use that object instead of a second name"),
+            )));
         }
     }
-    changed |= record_object(t, r, lock.objects.entry(t.object_name.into()).or_default(), notes);
+    let entry = lock.objects.entry(t.object_name.into()).or_default();
+    changed |= record_object(t, r, entry, notes);
+    // The schemes that the object's IDs now hold. A deprecated scheme that `record_object` did not
+    // record is left out, because a realisation names only schemes among its object's IDs, and a
+    // lock that names another one does not load (`Lock::check`).
+    let schemes = r.ids.keys().filter(|s| entry.ids.contains_key(*s)).cloned().collect();
     let real = LockRealisation {
         object: t.object_name.to_owned(),
         locator: t.on_token.locator.clone(),
         spec_digest: r.spec_digest.clone(),
         mode: r.mode,
-        schemes: r.ids.keys().cloned().collect(),
+        schemes,
         public_only: r.public_only,
         binding: r.binding,
         attestation: r.attestation.clone(),
@@ -603,8 +668,9 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
         immutables: r.immutables.clone(),
         observation: Some(facts.observation.digest()),
         observed: Some(facts.observed.clone()),
-        // The object's history: an import's `origin`, else what the lock recorded for this same
-        // object (another object under the spec has another history).
+        // The object's history is the import's `origin` for an import. Otherwise, it is what the
+        // lock recorded for this same object. When the spec now points at another object, that
+        // object has a different history, so nothing is kept.
         provenance: match &facts.origin {
             Some(o) => Some(Provenance { origin: Some(o.clone()) }),
             None => lock
@@ -617,7 +683,9 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
         for d in spec_diff(t, r, prev) {
             notes.note(format_args!("re-recorded {t}: {d} (keys.toml)"));
         }
-        // Another object's attributes differ from the old one's by nature, not by a change.
+        // When the spec now points at another object, its attributes differ from the old object's
+        // attributes because it is a different object. That is not a change on the token, so no
+        // warning is printed.
         for d in object_diff(r, prev).into_iter().filter(|_| prev.object == t.object_name) {
             notes.warn(format_args!("re-recorded {t}: {d} (changed on the token)"));
         }
@@ -625,9 +693,10 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
             notes.note(format_args!("re-recorded {t}: {n} {now}, which the lock did not record"));
         }
     }
-    // Keys are not recomputed on load, so an entry edited by hand may sit under this key: what
-    // the run saw replaces it — but for the answers earlier runs and the probe recorded, which
-    // are kept beside this run's (its own win).
+    // The load does not compute the keys of the observations again, so an entry under this key
+    // may have been edited by hand. What this run saw replaces that entry, except for the
+    // capability answers that earlier runs and the probe recorded. Those answers are kept next
+    // to this run's answers, and this run's answer wins when both have the same key.
     if let Some(key) = &real.observation {
         let mut seen = facts.observation.clone();
         if let Some(prev) = lock.observations.get(key) {
@@ -646,7 +715,8 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
         changed = true;
     }
     changed |= lock.drop_unreferenced_observations();
-    // Partners in this file are recomputed; listed ones from other fragments are kept.
+    // The pairs among the objects of this lock file are computed again. A listed pair that names
+    // an object in another lock fragment is kept.
     let pairs = lock.computed_pairs();
     let present: Vec<String> = lock.objects.keys().cloned().collect();
     for (name, o) in &mut lock.objects {
@@ -660,8 +730,10 @@ fn record(t: &Target, r: &Resolved, lock: &mut Lock, facts: &Facts, notes: &mut 
     Ok(changed)
 }
 
-/// `observed` and the observation never change a verdict: identity is enforced by the CA-IDs, so
-/// a different module build or token only warns. `lock` re-binds them.
+/// Reports how `observed` and the observation of this run differ from what the lock recorded.
+/// These differences never change the result, because the CA-IDs enforce the identity, so a
+/// different module build or a different token only produces a warning. `lock` records the new
+/// values.
 fn warn_observed(t: &Target, prev: &LockRealisation, lock: &Lock, now: &Facts, notes: &mut Notes) {
     if prev.observed.as_ref().is_some_and(|o| o.session == Session::User) && now.observed.session != Session::User {
         notes.warn(format_args!(
@@ -721,8 +793,9 @@ fn warn_observed(t: &Target, prev: &LockRealisation, lock: &Lock, now: &Facts, n
     }
 }
 
-/// A different module build warns, another file of the same build is a note, and the same file
-/// with other content (replaced in place) warns.
+/// Compares the module that the lock recorded with the module of this run. A different module
+/// build produces a warning, a different file of the same build produces a note, and the same
+/// file with different content (the file was replaced in place) produces a warning.
 fn warn_module(t: &Target, m: &ModuleInfo, nm: &ModuleInfo, notes: &mut Notes) {
     if !m.same_build_identity(nm) {
         notes.warn(format_args!(
@@ -734,8 +807,9 @@ fn warn_module(t: &Target, m: &ModuleInfo, nm: &ModuleInfo, notes: &mut Notes) {
     } else if let (Some(was), Some(now)) = (&m.hash, &nm.hash)
         && was != now
     {
-        // Same file name, other content: replaced in place, which a path outside the Nix store
-        // cannot show.
+        // The file has the same path but different content, so it was replaced in place. For a
+        // path outside the Nix store, only the hash shows this, because the path does not change
+        // with the content.
         notes.warn(format_args!("{t} was realised with module file {} of hash {was}, now {now}", m.path));
     }
 }
@@ -806,8 +880,9 @@ mod tests {
         Lock { version: crate::config::LOCK_VERSION, ..Default::default() }
     }
 
-    /// First use fails like a FOD (18) when only comparing; recording fills the lock,
-    /// after which the same realisation compares clean and records nothing new.
+    /// A first use fails with `FirstUse` (18) when the run only compares. Recording fills the
+    /// lock, and afterwards the same realisation compares without an error and records nothing
+    /// new.
     #[test]
     fn first_use_then_record_then_compare() {
         let cfg = config();
@@ -825,8 +900,56 @@ mod tests {
         assert!(notes.lines().is_empty(), "{:?}", notes.lines());
     }
 
-    /// Drift the write is for (a changed spec, policy) fails only a compare; a downgrade, a
-    /// replaced object, a mismatch and an attestation change fail a write too.
+    /// A deprecated scheme (docs/DESIGN.md §3.1) is never newly recorded. A first write and a
+    /// second write record the other scheme that the realisation computes, add a note that the
+    /// deprecated identity was not recorded, and leave a lock that loads again. An identity that
+    /// the lock recorded under the scheme before it was deprecated still verifies, with a
+    /// warning, and another value under it is still a mismatch (10). `Scheme::DEPRECATED` is
+    /// empty, so the test marks `certhash` deprecated on its own thread (`DEPRECATED_IN_TEST`).
+    #[test]
+    fn a_deprecated_scheme_is_never_newly_recorded() {
+        let cfg = config();
+        let t = Target::new(&cfg, "s", "t").unwrap();
+        let ids = |cert: &str| [("rfc7093m4".to_owned(), SRI_A.to_owned()), ("certhash".to_owned(), cert.to_owned())];
+        let both = Resolved { ids: ids(SRI_B).into(), ..resolved(&t) };
+        let said = |notes: &Notes, what: &str| notes.lines().iter().any(|l| l.contains(what));
+        let mut before = empty_lock();
+        reconcile(&t, &both, &mut before, &facts("1"), LockWrite::Record, &mut Notes::default()).unwrap();
+        assert_eq!(before.objects["k"].ids.len(), 2, "recorded before the deprecation");
+
+        id::DEPRECATED_IN_TEST.with(|d| d.set(Some(Scheme::Certhash)));
+        let mut lock = empty_lock();
+        for write in ["first", "second"] {
+            let mut notes = Notes::default();
+            reconcile(&t, &both, &mut lock, &facts("1"), LockWrite::Record, &mut notes).unwrap();
+            let recorded: Vec<&String> = lock.objects["k"].ids.keys().collect();
+            assert_eq!(recorded, ["rfc7093m4"], "the {write} write");
+            assert!(said(&notes, "not recorded: that computation is deprecated"), "{:?}", notes.lines());
+            let text = toml::to_string_pretty(&lock).unwrap();
+            if let Err(e) = crate::config::parse_lock(&text, std::path::Path::new("keys.lock")) {
+                panic!("the lock after the {write} write does not load: {e}");
+            }
+        }
+        // A compare against that lock passes by rfc7093m4, and its note does not say that `lock`
+        // adds the deprecated identity.
+        let mut notes = Notes::default();
+        compare(&t, &both, &lock, &facts("1"), LockWrite::Compare, &mut notes).unwrap();
+        assert!(said(&notes, "`lock` does not add it"), "{:?}", notes.lines());
+        assert!(!said(&notes, "`lock` adds it"), "{:?}", notes.lines());
+        for write in [LockWrite::Compare, LockWrite::Record] {
+            let mut notes = Notes::default();
+            compare(&t, &both, &before, &facts("1"), write, &mut notes).unwrap();
+            assert!(said(&notes, "uses a deprecated computation"), "{:?}", notes.lines());
+            let other = Resolved { ids: ids(SRI_A).into(), ..resolved(&t) };
+            let e = compare(&t, &other, &before, &facts("1"), write, &mut Notes::default()).unwrap_err();
+            assert_eq!(e.exit_code(), 10, "{e}");
+        }
+        id::DEPRECATED_IN_TEST.with(|d| d.set(None));
+    }
+
+    /// A changed spec and a changed policy, which a write exists to record, fail only a compare. A
+    /// downgrade, a replaced object and a hash mismatch fail a write too. An attestation change
+    /// also fails a write; `attestation_changes_are_never_rerecorded` tests it.
     #[test]
     fn what_a_write_may_and_may_not_override() {
         let cfg = config();
@@ -863,8 +986,9 @@ mod tests {
         }
     }
 
-    /// What a write accepts, it says: a changed spec is a note, a policy attribute that changed on
-    /// the token a warning, and an unchanged realisation says nothing.
+    /// A write reports each change that it accepts. A changed spec produces a note, a policy
+    /// attribute that changed on the token produces a warning, and a policy attribute that the
+    /// lock did not record produces a note. A write of an unchanged realisation reports nothing.
     #[test]
     fn a_write_says_what_it_rerecorded() {
         let cfg = config();
@@ -892,8 +1016,9 @@ mod tests {
         assert!(again.lines().is_empty(), "{:?}", again.lines());
     }
 
-    /// A pinned attestation is compared even when writing: another anchor is a different device
-    /// (14), another ID under the same anchor a changed object (10), none at all a downgrade (14).
+    /// A pinned attestation is compared even when the run writes the lock. A different anchor
+    /// means a different device (exit 14), a different ID under the same anchor means a changed
+    /// object (exit 10), and a missing attestation is a downgrade (exit 14).
     #[test]
     fn attestation_changes_are_never_rerecorded() {
         let cfg = config();
@@ -913,10 +1038,12 @@ mod tests {
         );
     }
 
-    /// A second spec of the same token object (the same locator) cannot record it weaker than the
-    /// first did, when writing too: without the attestation, or by `token-asserted`. As strong,
-    /// it records. A spec with another locator realises another object of the same material,
-    /// which may differ (review 2026-11-23 A-2).
+    /// A second spec of the same token object (with the same locator) cannot record the object
+    /// with less than the first spec established, even when the run writes the lock. Here, less
+    /// means without the attestation, or with the `token-asserted` binding. A second spec that is
+    /// as strong as the first one is recorded. A spec with a different locator realises a
+    /// different object with the same material, and that object may differ (review 2026-11-23
+    /// A-2).
     #[test]
     fn a_second_spec_of_the_same_object_cannot_record_it_weaker() {
         let cfg: Config = toml::from_str(
@@ -948,13 +1075,16 @@ mod tests {
                 if m.contains("attestation") && m.contains("as spec 's' realised the same object")),
             "{unattested}"
         );
+        crate::testing::assert_fires(&unattested, Check::LockSameObject);
         let asserted = record(&s2, &Resolved { binding: Some(Binding::TokenAsserted), ..attested(&s2) }).unwrap_err();
         assert!(matches!(&asserted, KmError::PreconditionFailed(m) if m.contains("binding downgrade")), "{asserted}");
+        crate::testing::assert_fires(&asserted, Check::LockSameObject);
         record(&s2, &attested(&s2)).unwrap();
         record(&copy, &Resolved { binding: Some(Binding::TokenAsserted), ..plain(&copy) }).unwrap();
     }
 
-    /// Provenance never changes a verdict: a different module build is a warning in the notes.
+    /// Provenance never changes the result: a different module build only adds a warning to the
+    /// notes.
     #[test]
     fn provenance_changes_only_warn() {
         let cfg = config();
@@ -970,8 +1100,8 @@ mod tests {
         );
     }
 
-    /// An import records where the material came from (docs/CAMIGRATE.md D7); a later plain `lock` of
-    /// the same object keeps it, and the lock still loads.
+    /// An import records where the material came from (docs/CAMIGRATE.md D7). A later `lock` of
+    /// the same object without an import keeps that origin, and the lock still loads.
     #[test]
     fn an_import_records_its_origin_and_a_realise_keeps_it() {
         let cfg = config();
@@ -984,7 +1114,8 @@ mod tests {
             declared: false,
         };
         let imported = Facts { origin: Some(origin.clone()), ..facts("1") };
-        // Never a first use: without the IDs the source recorded nothing would check the material.
+        // An import is never a first use. Without the IDs that the lock recorded for the source,
+        // nothing would check the material.
         let first = reconcile(&t, &resolved(&t), &mut lock, &imported, LockWrite::Record, &mut Notes::default());
         assert!(matches!(first, Err(KmError::PreconditionFailed(m)) if m.contains("an import needs the IDs")));
         assert!(lock.realisations.is_empty() && lock.objects.is_empty());
@@ -1005,8 +1136,9 @@ mod tests {
         crate::config::parse_lock(&text, std::path::Path::new("keys.lock")).unwrap();
     }
 
-    /// One entry per distinct observation (review A3): a re-record under another module build
-    /// names a new entry and drops the one nothing names any more, and the object's history
+    /// The lock holds one entry per distinct observation (review A3). When a run records the
+    /// realisation again under another module build, the realisation names a new entry, and the
+    /// run drops the old entry because no realisation names it any more. The object's history
     /// (`provenance.origin`) stays with the realisation.
     #[test]
     fn observations_are_pruned_and_origin_kept() {
@@ -1034,7 +1166,7 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(lock.observations.keys().collect::<Vec<_>>(), [&second]);
         assert_eq!(lock.realisation("s", "t").unwrap().provenance, Some(origin));
-        // An entry edited under its key is replaced by what the run saw.
+        // When an entry was edited by hand under its key, the run replaces it with what it saw.
         lock.observations.get_mut(&second).unwrap().mechanisms.clear();
         assert!(
             reconcile(&t, &resolved(&t), &mut lock, &facts("2"), LockWrite::Record, &mut Notes::default()).unwrap()
@@ -1042,8 +1174,9 @@ mod tests {
         assert_eq!(lock.observations[&second], facts("2").observation);
     }
 
-    /// What the token answered accumulates under one entry: the answers are no part of its key,
-    /// and a run that records some keeps those earlier runs recorded (its own win).
+    /// The token's capability answers accumulate under one observation entry. The answers are not
+    /// part of the entry's key, and a run that records answers keeps the answers that earlier runs
+    /// recorded. When both have an answer for the same capability, the later run's answer wins.
     #[test]
     fn answers_accumulate_under_one_observation() {
         let cfg = config();
@@ -1068,7 +1201,7 @@ mod tests {
         );
         record(&mut lock, &with(&[("prove.pop-sign.CKK_EC.secp256r1", "yes")]));
         record(&mut lock, &with(&[("generate.CKK_EC.secp256r1", "yes")]));
-        // A run that recorded nothing new keeps what is there, and writes nothing.
+        // A run that records no answers keeps the existing answers and does not change the lock.
         assert!(!record(&mut lock, &facts("1")));
         let [entry] = lock.observations.values().collect::<Vec<_>>()[..] else { panic!("one entry") };
         let keys: Vec<&str> = entry.capabilities.keys().map(String::as_str).collect();
@@ -1080,8 +1213,9 @@ mod tests {
         );
     }
 
-    /// The module file's hash: other content at the same path warns (replaced in place, which a
-    /// path outside the Nix store cannot show); another path is a note, as a Nix rebuild.
+    /// The hash of the module file: different content at the same path produces a warning,
+    /// because the file was replaced in place, and for a path outside the Nix store only the hash
+    /// shows that. A different path produces a note, as after a Nix rebuild.
     #[test]
     fn a_module_replaced_in_place_warns() {
         let cfg = config();
@@ -1108,10 +1242,11 @@ mod tests {
         assert!(!moved.is_empty() && moved.iter().all(|l| l.starts_with("note: ")), "{moved:?}");
     }
 
-    /// What a compare says without failing: an attestation the lock does not record yet (a
-    /// note: `lock` adds it), a public session where the realisation was made in a user one,
-    /// mechanisms the token no longer offers, and observation keys of a newer cakeys (warnings).
-    /// A type that changed since it was locked fails, writing or not.
+    /// A compare reports these differences without failing: an attestation that the lock does
+    /// not record yet (a note, because `lock` adds it), and three warnings: a public session where
+    /// the realisation was made in a user session, mechanisms that the token no longer offers,
+    /// and observation keys from a newer cakeys. A type that changed since the object was locked
+    /// fails, whether the run writes the lock or not.
     #[test]
     fn a_compare_reports_what_changed_around_the_realisation() {
         let cfg = config();
@@ -1147,9 +1282,10 @@ mod tests {
         }
     }
 
-    /// A `modulusBits` declared after the lock recorded the type describes the same key: the
-    /// changed spec is reviewed and `lock` records the size; another declared size is still
-    /// another type (review 2026-11-23 A-5).
+    /// A `modulusBits` value that keys.toml declares after the lock recorded the type describes the
+    /// same key. A compare fails because the spec changed, and `lock` then records the size. A
+    /// declared size that differs from the recorded size is still a different type (review
+    /// 2026-11-23 A-5).
     #[test]
     fn a_declared_modulus_size_is_not_a_new_type() {
         let rsa = |bits: &str| -> Config {
@@ -1182,9 +1318,10 @@ mod tests {
         }
     }
 
-    /// A second look at the same or a stronger realisation passes, writing or not: the same
-    /// attestation, a stronger mode. A weaker mode is a downgrade (14). What the lock lacks is
-    /// said when only comparing; a write records it without the note.
+    /// A second run on the same realisation, or on a stronger one, passes whether it writes the
+    /// lock or not. Here, the stronger realisation has the same attestation or a stronger mode. A
+    /// weaker mode is a downgrade (exit 14). When the run only compares, it notes what the lock
+    /// does not record yet. A write records it without the note.
     #[test]
     fn the_same_or_more_passes_and_less_is_a_downgrade() {
         let cfg = config();
@@ -1218,11 +1355,13 @@ mod tests {
         assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("locked mode 'commitment'")), "{e}");
     }
 
-    /// A spec pointed at another object is a keys.toml change: 14 when only comparing, re-recorded
-    /// with a note by a write. The old object's record judges nothing of the new one, so a new
-    /// object that was imported where the old was generated, is unattested where the old was
-    /// attested, and is bound more weakly, is neither a downgrade nor a change on the token (it
-    /// was all three, and `lock` refused the retarget until the lock was edited by hand).
+    /// Pointing a spec at another object is a change in keys.toml. It fails with exit 14 when the
+    /// run only compares, and a write records it again with a note. The lock's record of the old
+    /// object is not compared with the new object. So a new object that was imported where the
+    /// old one was generated, that has no attestation where the old one had one, and that has a
+    /// weaker binding is neither a downgrade nor a change on the token. Earlier, the run reported
+    /// all three, and `lock` refused to point the spec at the new object until someone edited
+    /// the lock by hand.
     #[test]
     fn a_retargeted_spec_is_judged_as_its_new_object() {
         let config = |object: &str| -> Config {
@@ -1268,8 +1407,9 @@ mod tests {
         assert!(matches!(&e, KmError::PreconditionFailed(m) if m.contains("downgrade")), "{e}");
     }
 
-    /// The lock's object entry: the commitment label it records is the one used from then on
-    /// (the default until then) and is written once; a line said is a line in the notes.
+    /// Every later run uses the commitment label that the lock's object entry records. Before the
+    /// lock records one, runs use the default label. The lock writes the label only once. The
+    /// test also checks that a line added with `Notes::say` appears in `Notes::lines`.
     #[test]
     fn the_recorded_label_is_the_label_used() {
         let cfg = config();
@@ -1291,8 +1431,8 @@ mod tests {
         assert_eq!(notes.lines(), ["created k"]);
     }
 
-    /// keys.toml with a second private key and two certificates beside `k`, each with a spec
-    /// of its own name on `t`.
+    /// Returns a keys.toml configuration with a second private key and two certificates in
+    /// addition to `k`. Each object has a spec of the same name on the token `t`.
     fn family() -> Config {
         let mut text = "[tokens.t]\ntokenLabel = \"t\"\n\n".to_owned();
         for (name, ty) in [
@@ -1312,10 +1452,11 @@ mod tests {
         toml::from_str(&text).unwrap()
     }
 
-    /// One object per material within a class, held when recording: the same key under a second
-    /// name is refused (14), as is the same certificate; a key and its certificates share the
-    /// public key, are recorded in either order, and are listed as each other's pairs. Pairs
-    /// from another lock fragment are kept; one in this file that shares no key is dropped.
+    /// When a run records, the lock holds one object per material within a class. The same key
+    /// under a second name is refused (exit 14), and so is the same certificate. A key and its
+    /// certificates share the public key, can be recorded in either order, and are listed as each
+    /// other's pairs. A pair from another lock fragment is kept, and a pair in this file that
+    /// shares no key is dropped.
     #[test]
     fn material_is_recorded_once_and_paired_by_its_public_key() {
         let cfg = family();
@@ -1364,8 +1505,8 @@ mod tests {
         assert_eq!(pairs(&lock, "k"), ["c", "c2", "elsewhere"]);
     }
 
-    /// Objects of this file that share the key and are not listed as pairs are named when
-    /// comparing; a write lists them instead.
+    /// When a run compares, a note names the objects in this file that share the key and are not
+    /// listed as pairs. A write lists them as pairs instead.
     #[test]
     fn unlisted_pairs_are_named_when_comparing() {
         let cfg = family();

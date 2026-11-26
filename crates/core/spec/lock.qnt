@@ -116,7 +116,12 @@ module lock {
   pure def lockedIds(l: Lock, object: str): str -> int =
     if (l.objects.keys().contains(object)) l.objects.get(object).ids else Map()
 
-  /// The verdict of a check: 0 to go on, else the exit code and the rule that decided it.
+  /// The verdict of a check: 0 to go on, else the exit code and the rule that decided it. A
+  /// refusing rule's name is the name of the Rust check that refuses there without its `lock.`
+  /// prefix (`mode` is `lock.mode`, crates/core/src/check.rs), except `mismatch`, which is
+  /// `identity.material`, and `first-use`, which is the `FirstUse` error and names no check.
+  /// lock_mbt.rs maps each refusal by its check, and its `LEFT_OUT` lists the Rust's lock checks
+  /// that this model does not have.
   type Check = { code: int, rule: str }
   pure val PASS: Check = { code: 0, rule: "" }
   pure def refuse(code: int, rule: str): Check = { code: code, rule: rule }
@@ -139,16 +144,16 @@ module lock {
       val attestation = match p.attestation {
         | Unattested => PASS
         | Attested(was) => match i.attestation {
-          | Unattested => refuse(14, "attestation-lost")
+          | Unattested => refuse(14, "attestation-kept")
           | Attested(now) =>
-            if (was.anchor != now.anchor) refuse(14, "anchor")
+            if (was.anchor != now.anchor) refuse(14, "attestation-anchor")
             else if (was.id != now.id) refuse(10, "attestation-id")
             else PASS
         }
       }
       attestation
-        .andThen(refuseIf(p.schemes.exists(s => not(i.schemes.contains(s))), 14, "schemes-lost"))
-        .andThen(refuseIf(weakened(p.immutables, i.immutables), 14, "replaced"))
+        .andThen(refuseIf(p.schemes.exists(s => not(i.schemes.contains(s))), 14, "schemes-kept"))
+        .andThen(refuseIf(weakened(p.immutables, i.immutables), 14, "immutables"))
     }
 
   /// `object_diff`: a policy attribute the lock recorded that reads otherwise (or not at all),
@@ -164,7 +169,7 @@ module lock {
     val update = i.write == Record
     refuseIf(not(update) and p.specDigest != i.specDigest, 14, "spec")
       .andThen(noDowngrade(p, i))
-      .andThen(refuseIf(not(update) and objectChanged(p, i), 14, "object"))
+      .andThen(refuseIf(not(update) and objectChanged(p, i), 14, "attributes"))
   }
 
   /// `compare_ids`: material links only through a shared scheme, never overrides a locked ID,
@@ -173,10 +178,10 @@ module lock {
     val update = i.write == Record
     val locked = lockedIds(l, objectOf(i.spec))
     val shared = i.schemes.filter(s => locked.keys().contains(s))
-    if (locked.keys() != Set() and shared == Set()) refuse(14, "unlinked")
+    if (locked.keys() != Set() and shared == Set()) refuse(14, "shared-scheme")
     else if (shared.exists(s => locked.get(s) != i.material)) refuse(10, "mismatch")
     else if (not(update) and shared == Set()) refuse(18, "first-use")
-    else if (not(update) and not(hasRealisation(l, i.spec, i.token))) refuse(14, "unrealised")
+    else if (not(update) and not(hasRealisation(l, i.spec, i.token))) refuse(14, "realised")
     else PASS
   }
 
@@ -197,7 +202,7 @@ module lock {
       isSecret(o) == isSecret(object),
       i.schemes.exists(s => l.objects.get(o).ids.keys().contains(s) and l.objects.get(o).ids.get(s) == i.material),
     })
-    if (other) refuse(14, "second-name") else PASS
+    if (other) refuse(14, "one-name") else PASS
   }
 
   /// `record`: fill the object's gaps (type, label, IDs; never an ID it has) and replace this
@@ -285,7 +290,7 @@ module lock {
     seen' = Map(),
   }
 
-  /// One cakeys run on one target: `lock` (Record) or `verify` (Compare).
+  /// One cakeys run on one target: `lock` (Record) or `check` (Compare).
   action realise = {
     nondet target = TARGETS.oneOf()
     nondet change = CHANGES.oneOf()
@@ -412,17 +417,17 @@ module lock {
   val decidedBySpec = rule == "spec"
   val decidedByMode = rule == "mode"
   val decidedByBinding = rule == "binding"
-  val decidedByAnchor = rule == "anchor"
+  val decidedByAttestationAnchor = rule == "attestation-anchor"
   val decidedByAttestationId = rule == "attestation-id"
-  val decidedByAttestationLost = rule == "attestation-lost"
-  val decidedBySchemesLost = rule == "schemes-lost"
-  val decidedByReplaced = rule == "replaced"
-  val decidedByObject = rule == "object"
-  val decidedByUnlinked = rule == "unlinked"
+  val decidedByAttestationKept = rule == "attestation-kept"
+  val decidedBySchemesKept = rule == "schemes-kept"
+  val decidedByImmutables = rule == "immutables"
+  val decidedByAttributes = rule == "attributes"
+  val decidedBySharedScheme = rule == "shared-scheme"
   val decidedByMismatch = rule == "mismatch"
   val decidedByFirstUse = rule == "first-use"
-  val decidedByUnrealised = rule == "unrealised"
-  val decidedBySecondName = rule == "second-name"
+  val decidedByRealised = rule == "realised"
+  val decidedByOneName = rule == "one-name"
   val decidedByCompared = rule == "compared"
   val decidedByRecorded = rule == "recorded"
   val decidedByUnchanged = rule == "unchanged"

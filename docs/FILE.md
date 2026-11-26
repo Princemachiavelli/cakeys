@@ -91,13 +91,14 @@ Load rules (17):
 - An object with `migrate.file` has no `create` pair.
 - `publicOnly` pairs are never `file`, as they are never `import`.
 - A private or secret key's `migrate.file` may not be under `/nix/store`, which is
-  world-readable; nor may any other file holding a secret (`migrate.passphraseFile`, a token's
+  world-readable, nor a data object's unless every spec of it declares `CKA_PRIVATE = false`
+  (undeclared is private: review 2026-11-24 §9.2); nor may any other file holding a secret (`migrate.passphraseFile`, a token's
   `pinFile` and `soCredentialFile`). The path is resolved first (symlinks and `..`), so a link
   into the store is refused and a sibling such as `/nix/store-keys` is not. A literal path is
   checked at load (17). A `$NAME` path is checked when camigrate resolves it, and every secret
   file again when it is read, with the same exit code. The Nix library must pass the path as a
   string, never as a Nix path, which it would copy into the store. A certificate, public key
-  or public data object from the store is fine. `CAKEYS_ALLOW_NIX_STORE_KEYS=1` lifts the
+  or data object every spec declares public from the store is fine. `CAKEYS_ALLOW_NIX_STORE_KEYS=1` lifts the
   rule for throwaway keys a Nix build makes and uses (a test, a VM image), never a
   deployment's; it also makes no run count as inside a Nix build sandbox, so the sandbox
   refusals (a lock write, camigrate's admin operations, D8) are lifted with it.
@@ -120,22 +121,24 @@ thing that notices.
 **F3. The file's identity is the object's first use.** When the lock pins nothing for the
 object, the file sets its identity. The first `file` pair imported records the identity
 through `ops::lock_import`, with `LockWrite::Record`, the same path `cakeys lock` uses for an
-adopted key. It exits 0; 18 stays `check`'s alone. Once the lock pins the identity, the file
-is checked against the lock on the host before anything is written (10). That check covers
-every pair not realised yet, on any token and in any later run. A pair already realised is
-verified on its token and its file is not read again, so a file replaced on disk is caught
-only when it is next imported somewhere. Reading it on every re-run would need
-`--allow-host-plaintext` on every re-run. New material needs a new object name, as
-[CONFIG.md](CONFIG.md) already says for any object.
+adopted key. It exits 22, the lock written; 18 stays `check`'s alone. Once the lock pins the
+identity, the file is checked against the lock on the host before anything is written
+(10). That check covers every pair not realised yet, on any token and in any later run. A
+pair already realised is verified on its token and its file is not read again, so a file
+replaced on disk is caught only when it is next imported somewhere. Reading it on every
+re-run would need `--allow-host-plaintext` on every re-run. New material needs a new object
+name, as [CONFIG.md](CONFIG.md) already says for any object.
 
 - A private key is identified by `rfc7093m4` of the SPKI derived from the file's key, which
   is computed already (`plaintext::spki_of_pkcs8`). After the import, the token's own public
   half has to hash to the same value.
 - A secret key's commitments (`cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`, HMAC) are computed on the
   host from the plaintext, under the object's commitment label. The token then has to compute
-  the same ones. That is new code in `cakeys_core::id`: the host side of each scheme the spec's
-  usage bits choose (DESIGN §3.1), using RustCrypto's `aes`, `cmac`, `hmac` and `des`. It gives
-  a secret key the same check before writing that a private key already gets.
+  the same ones. Built in `cakeys_pkcs11::ops::check_identity` (review 2026-11-24 D-5): the host
+  side of each scheme, using RustCrypto's `aes`, `cmac`, `hmac` and `des`. Once a first token
+  has pinned a secret key, its file is checked against those commitments before any later
+  import writes it, as a private key's is. On its first use the lock pins nothing to check yet,
+  and the first token's own commitments pin it.
 - Certificates, public keys and data objects are identified as today (`certhash`, the SPKI's
   `rfc7093m4`, `valuehash`), computed on the host from the bytes before `C_CreateObject`.
 
@@ -271,7 +274,7 @@ legacy formats come from the tool that writes them in the field.
 - **Population.** One P-256 PEM key plus certificate populates two SoftHSM tokens. The first
   pair records the identity, the second verifies against it, and `cakeys check` then passes on
   both.
-- **Re-run.** A second `import --token` writes nothing and exits 0.
+- **Re-run.** A second `import --to` writes nothing and exits 0.
 - **Changed file.** Another key under a pinned object gives 10, with nothing written on the
   token, checked by listing its objects.
 - **Formats.** Each row of F4 round-trips to the same `rfc7093m4`: PKCS#8, PKCS#1, SEC1 with
@@ -283,8 +286,9 @@ legacy formats come from the tool that writes them in the field.
 - **Secret keys.** An AES-256 raw file whose host commitments match the token's. The same key
   as hex and as base64, with and without `encoding`, imports as that key; an encoding said
   wrongly is 17 (`every_spelling_of_a_secret_key_imports_as_the_same_key`).
-- **Private data objects.** One with `CKA_PRIVATE = true` imports only behind
-  `--allow-host-plaintext`, and its `valuehash` is read back under the login.
+- **Private data objects.** One with `CKA_PRIVATE = true`, or whose spec does not declare it
+  public, imports only behind `--allow-host-plaintext`, and its `valuehash` is read back under
+  the login (`undeclared_data_objects_count_as_private`).
 - **The file is left alone.** After a run, success or failure, the source file's bytes and mode
   are unchanged.
 - **Load rules.** Each F2 rule's 17, including `create` beside `file`, a `/nix/store` key path,
@@ -337,8 +341,11 @@ Where each part lives:
     (`absent`, `crates/pkcs11/src/ops/mod.rs`).
 
 Found by running it: SoftHSM makes a data object private unless told otherwise [run]. So a
-data object whose spec declares no `CKA_PRIVATE` is now created with `CKA_PRIVATE = false`
-(`public::template`). This applies to moves between tokens too.
+data object whose spec declares no `CKA_PRIVATE` is created with `CKA_PRIVATE = false` when it
+moves between tokens, which it does only where the source's lock records it public
+(`templates::object`). From its own file such an object is not known to be public before it is
+made, so its import needs `--allow-host-plaintext` and is recorded as `raw`, exposure `file`;
+it is made as above (review 2026-11-24 D-7).
 
 Tests:
 
@@ -357,12 +364,6 @@ Tests:
 
 Not built:
 
-- **Host-side commitments for secret keys (F3, F-d).**
-  - What happens instead: the first token's commitments pin a secret key. Every later token is
-    checked after it creates the key, and what it made is removed on a mismatch, as for any
-    import.
-  - Why that is enough for now: every token here that takes a secret key can delete one. A
-    host-side check matters for a token that cannot.
 - **A property test over formats.** The unit tests use fixed fixtures; the `key_file` fuzz
   target feeds the reader arbitrary bytes, not keys re-encoded across formats.
 - **The NixOS populate unit (F-e).**

@@ -1,28 +1,41 @@
-//! caprobe against the software tokens the Nix check phase sets up (nix/package-common.nix): `SoftHSM`
-//! and kryoptic, whose committed module profiles must be what a fresh probe observes, and
-//! `SoftHSM` behind p11-kit forwarding, whose layer profile must be what the forwarder hides.
-//! Each test skips when its suite's variables are unset (the `*_REQUIRE` variables make that a
-//! failure), as `cakeys`' suites do; their headers describe the environment.
+//! Tests of caprobe against the software tokens that the Nix check phase sets up
+//! (nix/package-common.nix). For `SoftHSM` and kryoptic, the committed module profiles must be
+//! what a new probe observes. For `SoftHSM` behind p11-kit forwarding, the layer profile must be
+//! what the forwarder hides. Each test skips when its suite's variables are unset (the
+//! `*_REQUIRE` variables turn the skip into a failure), as the suites of `cakeys` do. The headers
+//! of those suites describe the environment.
 
 #[path = "../../cli/tests/common/mod.rs"]
 mod common;
 
 use common::*;
 
-/// The committed module profile is probe output (docs/CAPROBE.md): a fresh probe of
-/// the reference token conforms to it, regenerating it changes no byte, and the write probes
-/// are refused on a token keys.toml does not mark scratch.
+/// The committed module profile is probe output (docs/CAPROBE.md). A new probe of the reference
+/// token conforms to it, regenerating it changes no byte, and the write probes are refused on a
+/// token that keys.toml does not mark as scratch.
 fn committed_profile_is_what_the_probe_observes(r: &Reference, test: &str) {
     let Some(module) = suite_var(r.module_var, r.require_var, test) else { return };
-    // Through an unpatched cryptoki the advertisement is short; the probe refuses to judge.
+    // Through an unpatched cryptoki, the advertisement is shorter than the committed one, so the
+    // test skips instead of comparing (or fails when the suite is required).
     if !hmac_types_fixed(r.require_var) {
         return;
     }
     let w = Workdir::new(test);
     w.write_config(&reference_tokens(&module, &w.dir));
     let (name, path) = r.profile;
-    assert_profile_conforms(|args| w.km(args), "ref", name, path, &w.dir.join("profile.toml"));
-    // Against the other reference's profile, the drift is printed row by row and refused (15).
+    let scratch = w.dir.join("profile.toml");
+    assert_profile_conforms(|args| w.km(args), "ref", name, path, &scratch);
+    // `regenerate` takes a full profile name. A family name is refused before any token is
+    // touched, with or without --accept, and nothing is written (review 2026-11-24 E-8; caprobe's
+    // `regenerating_is_the_one_probe_every_regeneration_runs` explains why).
+    let family = name.split('/').next().unwrap();
+    let before = std::fs::read(&scratch).unwrap();
+    let o = w.km(&["regenerate", family, "--token", "ref", "--out", scratch.to_str().unwrap(), "--accept"]);
+    assert_eq!(code(&o), 17, "{}", stderr(&o));
+    assert_eq!(std::fs::read(&scratch).unwrap(), before);
+    assert!(!w.dir.join("profile.toml.new").exists());
+    // Compared with the other reference token's profile, the drift is printed row by row and
+    // the run exits with 15.
     let other = if r.provider == "softhsm" { KRYOPTIC.profile.0 } else { SOFTHSM.profile.0 };
     let drift = w.km(&["probe", "--token", "ref", "--diff", other]);
     assert_eq!(code(&drift), 15, "{}", stderr(&drift));
@@ -42,7 +55,8 @@ fn kryoptic_committed_profile_is_what_the_probe_observes() {
     committed_profile_is_what_the_probe_observes(&KRYOPTIC, "kryoptic-profile");
 }
 
-/// The p11-kit suite's tokens, when its variables are set.
+/// Returns a work directory with the p11-kit suite's tokens, when the suite's variables are
+/// set.
 fn p11kit(test: &str) -> Option<Workdir> {
     let client = suite_var("CAKEYS_P11KIT_CLIENT", "CAKEYS_P11KIT_REQUIRE", test)?;
     let direct = std::env::var("CAKEYS_TEST_MODULE").expect("CAKEYS_TEST_MODULE (SoftHSM) for the direct path");
@@ -70,21 +84,24 @@ fn p11kit_forwards_a_filtered_view() {
     for m in ["CKM_EC_KEY_PAIR_GEN", "CKM_RSA_PKCS_KEY_PAIR_GEN", "CKM_AES_CMAC", "CKM_AES_ECB", "CKM_SHA256_HMAC"] {
         assert!(has(&fwd, m) && has(&direct, m), "{m} is forwarded");
     }
-    // The RPC drops what it cannot marshal (if a p11-kit update forwards one, revisit the docs).
+    // The RPC drops the mechanisms that it cannot marshal. If a p11-kit update forwards one of
+    // them, update the docs.
     for m in FORWARDING_DROPS {
         assert!(has(&direct, m) && !has(&fwd, m), "{m}: SoftHSM has it, p11-kit hides it");
     }
-    // Naming the provider behind the proxy applies its behaviour.
+    // When the configuration names the provider behind the proxy, that provider's behavior
+    // applies.
     assert_eq!(caps(&w, "fwd-softhsm")["provider"], "softhsm");
-    // The server exports only the token in its URI; the same SoftHSM's other token is invisible.
+    // The server exports only the token in its URI, so the other token of the same SoftHSM is
+    // not visible.
     let other = w.km(&["caps", "--token", "fwd-other"]);
     assert_eq!(code(&other), 16, "{}", stderr(&other));
 }
 
-/// The p11-kit layer profile against the forwarder itself (docs/CAPROBE.md): probed
-/// through p11-kit, `SoftHSM` advertises exactly what its committed profile advertises minus
-/// what profiles/layers/p11-kit.toml subtracts — the client filters `C_GetMechanismList` — and
-/// the probe sees p11-kit's identity, not the module's.
+/// Checks the p11-kit layer profile against the forwarder itself (docs/CAPROBE.md). When it is
+/// probed through p11-kit, `SoftHSM` advertises exactly what its committed profile advertises,
+/// minus what profiles/layers/p11-kit.toml subtracts, because the client filters
+/// `C_GetMechanismList`. The probe sees p11-kit's identity, not the module's.
 #[test]
 fn the_forwarder_subtracts_exactly_its_layer() {
     let Some(w) = p11kit("probe_forwarded") else { return };
@@ -107,17 +124,18 @@ fn the_forwarder_subtracts_exactly_its_layer() {
     let expected: std::collections::BTreeSet<String> = module.difference(&layer).cloned().collect();
     assert_eq!(forwarded, expected, "p11-kit forwards a different list than its layer profile says");
     assert_eq!(probed["match"]["manufacturer"].as_str(), Some("PKCS#11 Kit"));
-    // `--name` names the generated profile; the default is `<provider>/<version>`, the version
-    // p11-kit reports of itself (1.1), not its release.
+    // `--name` names the generated profile. The default is `<provider>/<version>`, where the
+    // version is the one that p11-kit reports about itself (1.1), not its release.
     let out = w.km(&["probe", "--token", "fwd", "--name", "mine/1.0"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let renamed: toml::Value = toml::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
     assert_eq!((renamed["profile"].as_str(), probed["profile"].as_str()), (Some("mine/1.0"), Some("p11-kit/1.1")));
 }
 
-/// `--module TOKEN=PATH` replaces a token's module for the run: the reference token's, by a
-/// path that loads nothing, is unavailable (16) naming that path; an override not of that form
-/// is invalid (17), as in every tool (`module_overrides`).
+/// `--module TOKEN=PATH` replaces a token's module for the run. When the reference token's
+/// module is replaced by a path that loads nothing, the run exits with 16 (unavailable) and names
+/// that path. An override that does not have that form is invalid (17), as in every tool
+/// (`module_overrides`).
 #[test]
 fn a_module_override_replaces_the_tokens_module() {
     let test = "module-override";
@@ -131,13 +149,19 @@ fn a_module_override_replaces_the_tokens_module() {
     assert!(code(&o) == 17 && stderr(&o).contains("expects TOKEN=PATH"), "{}", stderr(&o));
 }
 
-/// The write probes' scratch guard (docs/CAPROBE.md), on the reference token named
-/// `provider = "ykcs11"`: a provider that creates only as Security Officer probes one slot,
-/// named by `scratchId`, with the admin credential; without either it is refused (17), as is a
-/// `scratchId` on a provider that creates as the user, and a token with no PIN. A slot is probed
-/// only empty or holding the probe's own certificate, which every slot run leaves there: never
-/// one with a real certificate, a key with none, or ykcs11's placeholder, which every key
-/// ykcs11 generates has, a real one too (review 2026-11-23 D-1: that placeholder used to pass).
+/// Tests the scratch guard of the write probes (docs/CAPROBE.md) on the reference token,
+/// configured with `provider = "ykcs11"`. A provider that creates objects only as Security
+/// Officer probes one slot, which `scratchId` names, with the admin credential. Without either
+/// of those, the probe is refused (17). A `scratchId` on a provider that creates objects as the
+/// user is also refused, and so is a token with no PIN.
+///
+/// A slot is probed only when it is empty, or when it holds the probe's own certificate over the
+/// key in the slot, which every slot run leaves there. The guard refuses a slot with a real
+/// certificate, a slot with a key and no certificate, and a slot with ykcs11's placeholder
+/// certificate, which every key that ykcs11 generates has, including a real key (review
+/// 2026-11-23 D-1: that placeholder used to pass). It also refuses a marked slot that holds
+/// another key (review 2026-11-24 E-6: a key put into a probed slot kept the mark, because the
+/// mark named a certificate, not the key).
 fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
     use cryptoki::object::Attribute as A;
     let Some(module) = suite_var(r.module_var, r.require_var, test) else { return };
@@ -166,7 +190,7 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
             token("empty", &yk("05")),
             token("taken", &yk("06")),
             token("key-only", &yk("16")),
-            token("marked", &yk("17")),
+            token("old-mark", &yk("17")),
             token("placeholder", &yk("18")),
         ]
         .concat(),
@@ -181,8 +205,10 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
     refused("user-slot", "scratchId names a slot for providers that create only as Security Officer");
     refused("no-pin", "has no PIN configured");
 
-    // A real certificate in slot 06, the probe's own in slot 94 (CKA_ID 17), ykcs11's placeholder
-    // in slot 95 (CKA_ID 18), and in slot 93 (CKA_ID 16) a key with no certificate.
+    // The fixture puts a real certificate in slot 06, ykcs11's placeholder in slot 95 (CKA_ID
+    // 18), a key with no certificate in slot 93 (CKA_ID 16), and in slot 94 (CKA_ID 17) the
+    // fixed certificate that the probe once used as its mark. That certificate is not over any
+    // key in the slot.
     let fixture = |name: &str| {
         let pem = std::fs::read_to_string(format!("{}/../ykcs11/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR")));
         x509_cert::der::pem::decode_vec(pem.unwrap().as_bytes()).unwrap().1
@@ -206,11 +232,12 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
         .unwrap();
     }
     drop(s);
-    for (name, id) in [("taken", "06"), ("key-only", "16"), ("placeholder", "18")] {
+    for (name, id) in [("taken", "06"), ("key-only", "16"), ("old-mark", "17"), ("placeholder", "18")] {
         refused(name, &format!("scratchId {id} holds objects caprobe did not leave there"));
     }
-    // Never overwritten: the slot holds its one certificate, as it was (review reference.rs F1:
-    // the exit alone passed a probe that cleared the slot and then refused).
+    // The slot was never overwritten: it holds its one certificate, as before (review
+    // reference.rs F1: a check of the exit code alone passed a probe that cleared the slot and
+    // then refused).
     let s = open_session(&module, "kmtest", "1234");
     let held: Vec<Vec<u8>> = s
         .find_objects(&[cryptoki::object::Attribute::Id(vec![0x06])])
@@ -223,31 +250,89 @@ fn the_scratch_guard_names_one_slot(r: &Reference, test: &str) {
         .collect();
     assert_eq!(held, [slot], "slot 06 was changed by a refused probe");
     drop(s);
-    // Two write probes on one token: each in a slot of its own, and these modules destroy what
-    // the probe makes, so the second meets nothing the first left (review reference.rs F3;
-    // `assert_profile_conforms` holds tpm2-pkcs11 to one).
-    for name in ["empty", "marked"] {
-        let o = w.km(&["probe", "--token", name, "--write-probes", "--rsa-max-bits", "4096"]);
-        assert_eq!(code(&o), 0, "{name}: {}", stderr(&o));
+    a_mark_vouches_for_its_key(&w, &module);
+}
+
+/// Runs two write probes on the empty slot 05 of [`the_scratch_guard_names_one_slot`], and then
+/// puts another key into the slot.
+fn a_mark_vouches_for_its_key(w: &Workdir, module: &str) {
+    use cryptoki::object::Attribute as A;
+    // Two write probes run on one slot. These modules destroy what the probe makes, so the
+    // second probe finds only what the first one left there, its key and its mark, and the guard
+    // accepts the slot (review reference.rs F3). `assert_profile_conforms` runs only one probe,
+    // because tpm2-pkcs11 cannot destroy everything that it makes.
+    for _ in 0..2 {
+        let o = w.km(&["probe", "--token", "empty", "--write-probes", "--rsa-max-bits", "4096"]);
+        assert_eq!(code(&o), 0, "{}", stderr(&o));
         assert!(
             stderr(&o).contains("in a scratch slot: no secret-key, wrap, export or delete probes"),
             "{}",
             stderr(&o)
         );
     }
-    // Each run leaves its slot marked as the probe's, which the next run's guard accepts (as it
-    // did "marked"): a run interrupted before it refuses that slot until it is emptied.
-    let s = open_session(&module, "kmtest", "1234");
-    let certs = s
-        .find_objects(&[A::Class(cryptoki::object::ObjectClass::CERTIFICATE), A::Id(vec![0x05])])
-        .unwrap()
-        .into_iter()
-        .map(|h| match &s.get_attributes(h, &[cryptoki::object::AttributeType::Value]).unwrap()[..] {
-            [A::Value(v)] => v.clone(),
+    // Each run leaves its slot marked as the probe's slot: a certificate over the slot's own
+    // key, or over the probe's own P-256 test key where the SO generates no key (SoftHSM,
+    // kryoptic).
+    let session = open_session(module, "kmtest", "1234");
+    // This closure returns the CKA_VALUE of each object of `class` in slot 05, sorted. The values
+    // are sorted because C_FindObjects returns objects in no fixed order: SoftHSM on Linux
+    // returned the same three certificates in a different order before and after a refused run.
+    let in_slot = |s: &TestSession, class| {
+        let mut values = s
+            .find_objects(&[A::Class(class), A::Id(vec![0x05])])
+            .unwrap()
+            .into_iter()
+            .map(|h| match &s.get_attributes(h, &[cryptoki::object::AttributeType::Value]).unwrap()[..] {
+                [A::Value(v)] => v.clone(),
+                other => panic!("slot 05: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        values.sort();
+        values
+    };
+    let public = |s: &TestSession| {
+        let keys = s.find_objects(&[A::Class(cryptoki::object::ObjectClass::PUBLIC_KEY), A::Id(vec![0x05])]).unwrap();
+        keys.first().map(|h| match &s.get_attributes(*h, &[cryptoki::object::AttributeType::EcPoint]).unwrap()[..] {
+            [A::EcPoint(p)] => cakeys_core::id::Curve::P256.spki_from_point(p).unwrap(),
             other => panic!("slot 05: {other:?}"),
         })
-        .collect::<Vec<_>>();
-    assert!(certs.contains(&probes), "slot 05 was left unmarked: {} certificates", certs.len());
+    };
+    let certs = in_slot(&session, cryptoki::object::ObjectClass::CERTIFICATE);
+    let own = include_bytes!("../fixtures/import/certificate.der");
+    let spki = public(&session).unwrap_or_else(|| cakeys_core::id::cert_spki(own).unwrap());
+    assert!(
+        certs.iter().any(|c| cakeys_core::id::cert_spki(c).is_ok_and(|k| k == spki)),
+        "slot 05 was left without a mark over its key: {} certificates",
+        certs.len()
+    );
+    // The test puts another key into the marked slot without a certificate, as
+    // `ykman piv keys generate` does. The mark is now over a key that is no longer in the slot,
+    // so the guard refuses the slot and leaves it unchanged.
+    for class in [cryptoki::object::ObjectClass::PUBLIC_KEY, cryptoki::object::ObjectClass::PRIVATE_KEY] {
+        for h in session.find_objects(&[A::Class(class), A::Id(vec![0x05])]).unwrap() {
+            session.destroy_object(h).unwrap();
+        }
+    }
+    let p256 = vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    session
+        .generate_key_pair(
+            &cryptoki::mechanism::Mechanism::EccKeyPairGen,
+            &[A::Token(true), A::Id(vec![0x05]), A::EcParams(p256), A::Verify(true)],
+            &[A::Token(true), A::Id(vec![0x05]), A::Private(true), A::Sensitive(true), A::Sign(true)],
+        )
+        .unwrap();
+    let foreign = public(&session).unwrap();
+    drop(session);
+    let o = w.km(&["probe", "--token", "empty", "--write-probes", "--rsa-max-bits", "4096"]);
+    // The probe is refused (17) before any write, and the slot is as it was, so the refusal
+    // came from the guard and not from a failed write.
+    assert_eq!(code(&o), 17, "{}", stderr(&o));
+    let session = open_session(module, "kmtest", "1234");
+    assert_eq!(
+        (public(&session), in_slot(&session, cryptoki::object::ObjectClass::CERTIFICATE)),
+        (Some(foreign), certs),
+        "a refused probe changed slot 05"
+    );
 }
 
 #[test]

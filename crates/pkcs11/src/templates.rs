@@ -1,11 +1,12 @@
-//! The templates cakeys builds, from what is known before the call: the run sends these, as the
-//! provider adjusts them ([`Provider::template`]), and a plan asks the provider about the same
-//! ones before anything runs ([`crate::ops::check_import`], [`crate::gate::check`], camigrate's
-//! plan), so a refusal comes before anything is made.
+//! The templates that cakeys builds from what is known before the call. The run sends these
+//! templates, as the provider adjusts them ([`Provider::template`]). A plan asks the provider
+//! about the same templates before anything runs ([`crate::ops::check_import`],
+//! [`crate::gate::check`], camigrate's plan), so that a refusal comes before anything is made.
 //!
-//! The object's material is the caller's: a secret value or a private key's components are added
-//! after the provider's adjustment, never shown to it; a public object's value and a public key's
-//! material are in the template at the run, and absent from a plan's, which has not read them.
+//! The caller supplies the object's material. A secret value or a private key's components are
+//! added after the provider's adjustment, and they are never shown to the provider. A public
+//! object's value and a public key's material are in the template at the run, but they are absent
+//! from a plan's template, because the plan has not read them.
 //!
 //! [`Provider::template`]: crate::Provider::template
 
@@ -16,16 +17,17 @@ use cakeys_core::id::Commit;
 use cakeys_core::types::ObjectClass as Class;
 use cakeys_core::{KmError, Result};
 use cryptoki::mechanism::MechanismType;
-use cryptoki::object::{Attribute, CertificateType, KeyType, ObjectClass};
+use cryptoki::object::{Attribute, AttributeType, CertificateType, KeyType, ObjectClass};
 use std::collections::BTreeMap;
 
-/// Template attributes for declared policy values (a spec's `attributes`), each mechanism name
-/// mapped by `mechanism(attribute, name)`: the open token's list at the run
-/// (`Token::policy_template`), the profile baseline in a plan ([`known_policy`]).
+/// Returns the template attributes for declared policy values (a spec's `attributes`). Each
+/// mechanism name is mapped by `mechanism(attribute, name)`. At the run, that function uses the
+/// open token's list (`Token::policy_template`). In a plan, it uses the profile baseline
+/// ([`known_policy`]).
 ///
 /// # Errors
 ///
-/// `Validation` for an attribute cakeys cannot set; whatever `mechanism` refuses.
+/// `Validation` for an attribute that cakeys cannot set. Any error that `mechanism` returns.
 pub fn policy(
     attrs: &BTreeMap<String, AttrValue>,
     mechanism: &dyn Fn(&str, &str) -> Result<MechanismType>,
@@ -42,18 +44,20 @@ pub fn policy(
         .collect()
 }
 
-/// [`policy`] with no token: each mechanism name mapped by the profile baseline's dictionary of
-/// the PKCS#11 names. `None` when a name is none it knows (a vendor's, which only the token's own
-/// list maps): the plan cannot build what the run will send.
+/// Works as [`policy`] without a token. Each mechanism name is mapped by the profile baseline's
+/// dictionary of the PKCS#11 names. Returns `None` when the baseline does not know a name (for
+/// example, a vendor's mechanism, which only the token's own list maps), because then the plan
+/// cannot build what the run will send.
 ///
 /// # Errors
 ///
-/// As [`policy`]; the baseline's parse error (a commit-time bug).
+/// The same errors as [`policy`], and the baseline's parse error, which is a bug in the commit.
 pub fn known_policy(attrs: &BTreeMap<String, AttrValue>) -> Result<Option<Vec<Attribute>>> {
     let baseline =
         cakeys_profile::Set::active().and_then(|s| s.baseline()).map_err(|e| KmError::Validation(e.into()))?;
-    // Whether the mapper met a name it does not know: the one failure that means "cannot
-    // decide", told apart from any other `policy` refuses by this flag, not by the error's kind.
+    // This flag records whether the mapper found a name that it does not know. That is the only
+    // failure that means "cannot decide". The flag, and not the kind of the error, distinguishes
+    // it from every other error that `policy` returns.
     let unknown = std::cell::Cell::new(false);
     let by_name = |name: &str, n: &str| {
         baseline.mechanisms.get(n).and_then(|id| MechanismType::try_from(*id).ok()).ok_or_else(|| {
@@ -68,16 +72,18 @@ pub fn known_policy(attrs: &BTreeMap<String, AttrValue>) -> Result<Option<Vec<At
     }
 }
 
-/// `CKA_TOKEN` and the locator: what every token object's template starts with.
+/// Returns `CKA_TOKEN` and the locator attributes, with which every token object's template
+/// starts.
 fn token_object(on: Declared<'_>) -> Result<Vec<Attribute>> {
     let mut t = vec![Attribute::Token(true)];
     t.extend(locator_attrs(on.locator)?);
     Ok(t)
 }
 
-/// A public key's defaults, beside the spec's public `policy`: `CKA_VERIFY`, and public (`CKA_PRIVATE
-/// = false`), each unless the public half's template declares it (a template may not carry a
-/// type twice; [`public_declares`]).
+/// Adds a public key's defaults next to the spec's public `policy`: `CKA_VERIFY = true` and
+/// `CKA_PRIVATE = false`. Each default is added only when the public half's template does not
+/// declare the attribute, because a template may not contain an attribute type twice
+/// ([`public_declares`]).
 fn public_defaults(on: Declared<'_>, t: &mut Vec<Attribute>) {
     if !public_declares(on.spec, "CKA_VERIFY") {
         t.push(Attribute::Verify(true));
@@ -87,25 +93,28 @@ fn public_defaults(on: Declared<'_>, t: &mut Vec<Attribute>) {
     }
 }
 
-/// Whether a key pair's public half declares the attribute `name`: its `publicAttributes`, the
-/// only ones its template carries. The private key's `attributes` are the private key's: one
-/// declaring `CKA_PRIVATE = true` leaves the public half public (templates.rs F1).
+/// Returns whether a key pair's public half declares the attribute `name` in its
+/// `publicAttributes`, which are the only declared attributes that its template contains. The
+/// spec's `attributes` apply only to the private key, so a private key that declares
+/// `CKA_PRIVATE = true` leaves the public half public (templates.rs F1).
 #[must_use]
 pub fn public_declares(spec: &SpecCfg, name: &str) -> bool {
     spec.public_attributes.contains_key(name)
 }
 
-/// The key `on` generates, from cakeys' templates: a pair's private template (`CKA_TOKEN`, the
-/// locator, the spec's `policy`), or a secret key's whole one.
+/// Returns cakeys' template for the key that `on` generates. For a key pair, this is the private
+/// key's template (`CKA_TOKEN`, the locator and the spec's `policy`). For a secret key, this is
+/// the complete template.
 ///
 /// # Errors
 ///
-/// `Validation` for a secret key without its size (`valueLen`); whatever the key type refuses.
+/// `Validation` for a secret key without its size (`valueLen`). Any error from the key type.
 pub fn generation_key(on: Declared<'_>, policy: Vec<Attribute>) -> Result<Vec<Attribute>> {
     let mut t = token_object(on)?;
     match key_type_of(on.object)? {
         KeyType::RSA | KeyType::EC | KeyType::EC_EDWARDS => {}
-        // The key type fixes the length: a template with CKA_VALUE_LEN is inconsistent.
+        // The key type fixes the length, so a template with `CKA_VALUE_LEN` would be
+        // inconsistent.
         KeyType::DES3 => t.extend([Attribute::Class(ObjectClass::SECRET_KEY), Attribute::KeyType(KeyType::DES3)]),
         kt => {
             let len =
@@ -121,12 +130,13 @@ pub fn generation_key(on: Declared<'_>, policy: Vec<Attribute>) -> Result<Vec<At
     Ok(t)
 }
 
-/// A key pair's public template: the size or the curve (`ec_params`, else the curve's OID), the
-/// spec's `public_policy`, the public defaults. `None` for a secret key.
+/// Returns a key pair's public template: the size or the curve (`ec_params`, or otherwise the
+/// curve's OID), the spec's `public_policy`, and the public defaults. Returns `None` for a secret
+/// key.
 ///
 /// # Errors
 ///
-/// `Validation` for an RSA key without `modulusBits`; whatever the key type or curve refuses.
+/// `Validation` for an RSA key without `modulusBits`. Any error from the key type or the curve.
 pub fn generation_public(
     on: Declared<'_>,
     public_policy: Vec<Attribute>,
@@ -149,12 +159,13 @@ pub fn generation_public(
     Ok(Some(t))
 }
 
-/// A private or secret key imported under `on` (by `C_CreateObject` or `C_UnwrapKey`): its class
-/// and key type, `CKA_TOKEN`, the locator and `policy`. Its value is the caller's, after.
+/// Returns the template of a private or secret key that is imported under `on` (by
+/// `C_CreateObject` or `C_UnwrapKey`): its class and key type, `CKA_TOKEN`, the locator and
+/// `policy`. The caller adds the key's value afterwards.
 ///
 /// # Errors
 ///
-/// Whatever the key type or the locator refuses.
+/// Any error from the key type or the locator.
 pub fn import_key(on: Declared<'_>, policy: Vec<Attribute>) -> Result<Vec<Attribute>> {
     let mut t = vec![
         Attribute::Token(true),
@@ -166,13 +177,14 @@ pub fn import_key(on: Declared<'_>, policy: Vec<Attribute>) -> Result<Vec<Attrib
     Ok(t)
 }
 
-/// The public key object made beside an imported private key, as a generation makes its public
-/// half: the key's `material` (`token::public_key_attrs`; `None` in a plan), the spec's
-/// `public_policy`, the public defaults.
+/// Returns the template of the public key object that is made next to an imported private key,
+/// in the same way as a generation makes its public half. The template contains the key's
+/// `material` (`token::public_key_attrs`, or `None` in a plan), the spec's `public_policy`, and
+/// the public defaults.
 ///
 /// # Errors
 ///
-/// Whatever the locator refuses.
+/// Any error from the locator.
 pub fn public_half(
     on: Declared<'_>,
     public_policy: Vec<Attribute>,
@@ -186,14 +198,16 @@ pub fn public_half(
     Ok(t)
 }
 
-/// A certificate, data object or public key object created from its value: `CKA_TOKEN`, the
-/// locator, `policy`, then its class and `material` (`token::public_object_attrs`; in a plan,
-/// `None`: the class, and a certificate's type). A data object no spec declares private is said
-/// public: a token's default may make it private (`SoftHSM` does \[run\]).
+/// Returns the template of a certificate, a data object or a public key object that is created
+/// from its value: `CKA_TOKEN`, the locator, `policy`, and then its class and `material`
+/// (`token::public_object_attrs`). In a plan, `material` is `None`, and the template contains the
+/// class and, for a certificate, its type. A data object whose spec does not declare
+/// `CKA_PRIVATE` is declared public, because a token's default may make it private (`SoftHSM`
+/// does \[run\]).
 ///
 /// # Errors
 ///
-/// Whatever the locator refuses.
+/// Any error from the locator.
 pub fn object(on: Declared<'_>, policy: Vec<Attribute>, material: Option<Vec<Attribute>>) -> Result<Vec<Attribute>> {
     let mut t = token_object(on)?;
     t.extend(policy);
@@ -204,7 +218,8 @@ pub fn object(on: Declared<'_>, policy: Vec<Attribute>, material: Option<Vec<Att
     Ok(t)
 }
 
-/// A public object's class, and a certificate's type: what a plan knows of it before its value.
+/// Returns a public object's class and, for a certificate, its type. This is what a plan knows
+/// about the object before it reads its value.
 fn kind(object: &ObjectCfg) -> Vec<Attribute> {
     let mut t = vec![Attribute::Class(crate::token::class_of(object))];
     if object.class == Class::Certificate {
@@ -213,11 +228,89 @@ fn kind(object: &ObjectCfg) -> Vec<Attribute> {
     t
 }
 
-/// A session key's template, without its value (the host's KEK, the `kw` input) or its public
-/// material (the transport key's modulus and exponent), which the caller adds. wrap-rebind's
-/// copy is [`rebind_copy`]: this is its part that does not depend on the key.
+/// A session key's template, which only [`session`] and [`rebind_copy`] build (review 2026-11-24
+/// B-8). It holds the key that it is for, and attributes that keep the key off the token
+/// (`CKA_TOKEN = false`) and as sealed as its purpose requires. No caller can build it in another
+/// way or loosen it afterwards: the provider's adjustment is checked (`Provider::adjusted`), and
+/// material is added only through [`Self::with_material`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTemplate {
+    key: SessionKey,
+    attrs: Vec<Attribute>,
+}
+
+impl SessionTemplate {
+    /// Returns the session key that the template is for.
+    #[must_use]
+    pub fn key(&self) -> SessionKey {
+        self.key
+    }
+
+    /// Returns the template's attributes.
+    #[must_use]
+    pub fn attributes(&self) -> &[Attribute] {
+        &self.attrs
+    }
+
+    /// Returns the template's `CKA_TOKEN`, `CKA_SENSITIVE` and `CKA_EXTRACTABLE`, when it sets
+    /// them. These attributes decide whether the key outlives the session and whether it can be
+    /// read from the token.
+    #[must_use]
+    pub fn sealing(&self) -> [Option<bool>; 3] {
+        let flag = |want: AttributeType| {
+            self.attrs.iter().find_map(|a| match a {
+                Attribute::Token(b) | Attribute::Sensitive(b) | Attribute::Extractable(b)
+                    if a.attribute_type() == want =>
+                {
+                    Some(*b)
+                }
+                _ => None,
+            })
+        };
+        [flag(AttributeType::Token), flag(AttributeType::Sensitive), flag(AttributeType::Extractable)]
+    }
+
+    /// Returns the same template with the key's public material `more` (for example, a
+    /// transport key's modulus and exponent) added to its attributes.
+    ///
+    /// # Errors
+    ///
+    /// `Validation` for an attribute that the template already has, or for a security attribute
+    /// (`provider::SECURITY`), because `more` may only add material and may not change what the
+    /// template seals.
+    pub fn with_material(mut self, more: impl IntoIterator<Item = Attribute>) -> Result<SessionTemplate> {
+        for a in more {
+            let t = a.attribute_type();
+            if self.attrs.iter().any(|b| b.attribute_type() == t) || crate::provider::SECURITY.iter().any(|s| s.0 == t)
+            {
+                return Err(KmError::Validation(
+                    format!("the session key {:?}'s template takes {t:?} from cakeys alone, not as material", self.key)
+                        .into(),
+                ));
+            }
+            self.attrs.push(a);
+        }
+        Ok(self)
+    }
+}
+
+impl From<SessionTemplate> for Vec<Attribute> {
+    fn from(t: SessionTemplate) -> Self {
+        t.attrs
+    }
+}
+
+/// Returns a session key's template, without its value (for the host's KEK and the `kw` input)
+/// and without its public material (the transport key's modulus and exponent), which the caller
+/// adds. The template of wrap-rebind's copy comes from [`rebind_copy`], and this function returns
+/// only the part of it that does not depend on the key.
 #[must_use]
-pub fn session(key: SessionKey) -> Vec<Attribute> {
+pub fn session(key: SessionKey) -> SessionTemplate {
+    SessionTemplate { key, attrs: session_attributes(key) }
+}
+
+/// Returns the attributes of the template that [`session`] returns.
+fn session_attributes(key: SessionKey) -> Vec<Attribute> {
     let secret = |kt| vec![Attribute::Class(ObjectClass::SECRET_KEY), Attribute::KeyType(kt), Attribute::Token(false)];
     match key {
         SessionKey::ProofSecret { sealed, .. } => {
@@ -242,8 +335,8 @@ pub fn session(key: SessionKey) -> Vec<Attribute> {
             Attribute::Sensitive(true),
             Attribute::Extractable(false),
         ],
-        // The fixed key is public, so it is created extractable; the key under commitment only
-        // has to allow CKA_WRAP.
+        // The fixed key is public, so it is created extractable. The key under commitment only
+        // has to allow `CKA_WRAP`.
         SessionKey::KwInput => {
             let mut t = secret(KeyType::GENERIC_SECRET);
             t.extend([Attribute::Sensitive(false), Attribute::Extractable(true)]);
@@ -261,8 +354,8 @@ pub fn session(key: SessionKey) -> Vec<Attribute> {
             Attribute::Wrap(true),
             Attribute::Encrypt(true),
         ],
-        // It leaves only wrapped to the transport key: never readable, whatever the module's
-        // default.
+        // This key leaves the token only when it is wrapped to the transport key. It is never
+        // readable, whatever the module's default is.
         SessionKey::ExportKek => {
             let mut t = secret(KeyType::AES);
             t.extend([
@@ -281,14 +374,14 @@ pub fn session(key: SessionKey) -> Vec<Attribute> {
     }
 }
 
-/// wrap-rebind's copy of `object`'s key: a session key of its type that allows each use the
-/// `commits` compute with, sealed.
+/// Returns the template of wrap-rebind's copy of the key of `object`. The copy is a sealed session
+/// key of the same type, and it allows each operation with which the `commits` are computed.
 ///
 /// # Errors
 ///
-/// Whatever the key type refuses.
-pub fn rebind_copy(object: Object<'_>, commits: &[Commit]) -> Result<Vec<Attribute>> {
-    let mut t = session(SessionKey::RebindCopy);
+/// Any error from the key type.
+pub fn rebind_copy(object: Object<'_>, commits: &[Commit]) -> Result<SessionTemplate> {
+    let mut t = session_attributes(SessionKey::RebindCopy);
     t.push(Attribute::KeyType(key_type_of(object)?));
     for c in commits {
         let usage = match c {
@@ -297,12 +390,12 @@ pub fn rebind_copy(object: Object<'_>, commits: &[Commit]) -> Result<Vec<Attribu
             Commit::KcvEcbDecrypt(_) => Attribute::Decrypt(true),
             Commit::Kw => Attribute::Wrap(true),
         };
-        // A template may not carry an attribute twice.
+        // A template may not contain an attribute twice.
         if !t.contains(&usage) {
             t.push(usage);
         }
     }
-    Ok(t)
+    Ok(SessionTemplate { key: SessionKey::RebindCopy, attrs: t })
 }
 
 #[cfg(test)]
@@ -323,10 +416,10 @@ mod tests {
         }
     }
 
-    /// The public half's defaults follow its own template's declarations (templates.rs F1): a
-    /// private key declared `CKA_PRIVATE = true` leaves its public half public and verifying,
-    /// generated or imported; only `publicAttributes` naming the attribute removes the default,
-    /// so no type is there twice.
+    /// The public half's defaults follow the declarations of its own template (templates.rs F1).
+    /// A private key that declares `CKA_PRIVATE = true` leaves its public half public and able to
+    /// verify, whether the key is generated or imported. Only `publicAttributes` that name the
+    /// attribute remove the default, so no attribute type is in the template twice.
     #[test]
     fn the_public_half_takes_its_defaults_from_its_own_declarations() {
         let object = ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(Class::PrivateKey, Some(Kt::Ec)) };
@@ -348,9 +441,9 @@ mod tests {
         }
     }
 
-    /// A plan's policy template: a mechanism name the baseline does not know is "cannot decide"
-    /// (`None`), anything else `policy` refuses is the refusal, whatever its kind (templates.rs
-    /// F2: no error stands in for the unknown name).
+    /// In a plan's policy template, a mechanism name that the baseline does not know means
+    /// "cannot decide" (`None`). Every other error from `policy` is the refusal, whatever its kind
+    /// (templates.rs F2: no other error is mistaken for the unknown name).
     #[test]
     fn only_an_unknown_mechanism_name_leaves_the_plan_undecided() {
         cakeys_profile::Set::activate_embedded().unwrap();
@@ -369,5 +462,47 @@ mod tests {
         ] {
             assert!(matches!(known_policy(&refused), Err(KmError::Validation(_))), "{refused:?}");
         }
+    }
+
+    /// The sealing of each session key is fixed by this test (review 2026-11-24 B-8: before it,
+    /// flipping any of the flags passed every test). No session key is on the token. A key that
+    /// must not leave the token is sensitive and not extractable (a sealed proof secret,
+    /// wrap-rebind's KEK and copy, the host's KEK, and the import KEK). The export KEK is
+    /// sensitive but extractable, so it leaves only when wrapped to the transport key. A key is
+    /// readable only when it is public by design (the `kw` input, and an unsealed proof secret,
+    /// which the module refused to seal). A transport public key sets neither flag.
+    #[test]
+    fn each_session_key_is_sealed_as_its_purpose_says() {
+        use cakeys_core::config::Binding;
+        let proof = |sealed| SessionKey::ProofSecret { binding: Binding::PopUnwrap, sealed };
+        let (sealed, readable, wrappable, public) = (
+            [Some(false), Some(true), Some(false)],
+            [Some(false), Some(false), Some(true)],
+            [Some(false), Some(true), Some(true)],
+            [Some(false), None, None],
+        );
+        let pinned = [
+            (proof(true), sealed),
+            (proof(false), readable),
+            (SessionKey::RebindKek, sealed),
+            (SessionKey::RebindCopy, sealed),
+            (SessionKey::KwInput, readable),
+            (SessionKey::HostKek, sealed),
+            (SessionKey::TransportKey, public),
+            (SessionKey::ExportKek, wrappable),
+            (SessionKey::ImportKek, sealed),
+        ];
+        for (key, want) in pinned {
+            let t = session(key);
+            assert_eq!((t.key(), t.sealing()), (key, want), "{key:?} as [CKA_TOKEN, CKA_SENSITIVE, CKA_EXTRACTABLE]");
+        }
+        let aes = ObjectCfg { value_len: Some(32), ..ObjectCfg::new(Class::SecretKey, Some(Kt::Aes)) };
+        let copy = rebind_copy(Object::new(&aes).unwrap(), &[Commit::Kw]).unwrap();
+        assert_eq!((copy.key(), copy.sealing()), (SessionKey::RebindCopy, sealed), "wrap-rebind's copy");
+        // Adding material does not unseal the key.
+        let loaded = session(SessionKey::HostKek).with_material([Attribute::ValueLen(32.into())]).unwrap();
+        assert_eq!(loaded.sealing(), sealed);
+        assert!(session(SessionKey::HostKek).with_material([Attribute::Extractable(true)]).is_err());
+        assert!(session(SessionKey::TransportKey).with_material([Attribute::Wrap(false)]).is_err(), "already there");
     }
 }

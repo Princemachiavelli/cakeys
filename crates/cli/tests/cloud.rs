@@ -1,37 +1,50 @@
-//! Opt-in end-to-end tests against the cloud HSMs `scripts/cloud/` keeps (`docs/CLOUD_HSM.md`):
-//! cakeys and camigrate driven through `aws.sh cakeys|camigrate` and `gcp.sh cakeys`, exactly as
-//! by hand. They never create or destroy infrastructure — bring it up first, park or destroy it
-//! after — and are skipped unless asked for, and always inside a Nix build:
+//! Opt-in end-to-end tests against the cloud HSMs that `scripts/cloud/` maintains
+//! (`docs/CLOUD_HSM.md`). The tests run cakeys and camigrate through `aws.sh cakeys|camigrate`
+//! and `gcp.sh cakeys`, exactly as a person would by hand. They never create or destroy
+//! infrastructure: bring it up first, and park or destroy it afterward. They are skipped
+//! ([`test_skip::skip`]) unless they are asked for, and they are always skipped inside a Nix
+//! build. `CAKEYS_CLOUD_REQUIRE` makes a skip fail. The tests are asked for as follows:
 //!
-//! - `CAKEYS_TEST_AWS`: `FIPS`, `NON_FIPS` or `FIPS,NON_FIPS`, the clusters to test, each up
-//!   and activated (`CAKEYS_AWS_MODE=<mode> scripts/cloud/aws.sh create`, then `activate`); the
-//!   AWS credentials the scripts use. The HSMs bill by the hour ($1.81/h each in us-west-1)
-//!   whether or not a test runs; a run takes about ten minutes per cluster.
-//! - `CAKEYS_TEST_GCP=1`: the Cloud KMS key ring `scripts/cloud/gcp.sh create` made, with no
-//!   live version left (`gcp.sh status`), and `CAKEYS_GCP_PROJECT`. A run adds one HSM key version
-//!   to each of five keys and destroys it within minutes: cents.
+//! - `CAKEYS_TEST_AWS`: `FIPS`, `NON_FIPS` or `FIPS,NON_FIPS`, the clusters to test. Each cluster
+//!   must be up and activated (`CAKEYS_AWS_MODE=<mode> scripts/cloud/aws.sh create`, then
+//!   `activate`), and the AWS credentials that the scripts use must be available. The HSMs are
+//!   billed by the hour ($1.81/h each in us-west-1) whether or not a test runs, and a run takes
+//!   about ten minutes per cluster.
+//! - `CAKEYS_TEST_GCP=1`: the Cloud KMS key ring that `scripts/cloud/gcp.sh create` made must
+//!   have no live version left (`gcp.sh status`), and `CAKEYS_GCP_PROJECT` must be set. A run adds
+//!   one HSM key version to each of five keys and destroys it within minutes, which costs cents.
 //!
-//! `aws.sh` copies Nix store paths to its runner, so the tools are Nix builds: `CAKEYS` and
-//! `CAMIGRATE` name built binaries (`.#cakeys` without its check phase, as `aws.sh` builds them
-//! when they are unset). `cargo test` builds nothing the scripts use.
+//! `aws.sh` copies Nix store paths to its runner, so the tools must be Nix builds: `CAKEYS` and
+//! `CAMIGRATE` name built binaries (`.#cakeys` without its check phase, which is how `aws.sh`
+//! builds them when the variables are unset). `cargo test` builds nothing that the scripts use.
 //!
-//! Each run takes labels and a lock of its own (`CAKEYS_AWS_CONFIG`/`CAKEYS_AWS_LOCK`,
-//! `CAKEYS_GCP_LOCK`), so it never meets another run's keys or the hand-kept lock, and deletes
-//! everything it created, also when an assertion fails.
+//! Each run uses labels and a lock of its own (`CAKEYS_AWS_CONFIG`/`CAKEYS_AWS_LOCK`,
+//! `CAKEYS_GCP_LOCK`), so it never meets another run's keys or the lock that is kept by hand.
+//! Each run deletes everything that it created, also when an assertion fails.
+
+#[path = "../../test-skip.rs"]
+mod test_skip;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// Unsupported: what cakeys refuses before creating anything (docs/CAKEYS.md, exit codes).
+/// The variable that makes a skip here fail. crates/test-skip.rs treats this as a cloud suite, so
+/// a run that requires every other suite does not require this one.
+const REQUIRE: &str = "CAKEYS_CLOUD_REQUIRE";
+
+/// The exit code for unsupported (docs/CAKEYS.md, exit codes), with which cakeys refuses a request
+/// before it creates anything.
 const UNSUPPORTED: i32 = 15;
-/// Done, and the lock written (docs/CAKEYS.md): every run here that records something.
+/// The exit code for a run that succeeded and wrote the lock (docs/CAKEYS.md). Every run here
+/// that records something exits with it.
 const LOCK_WRITTEN: i32 = 22;
 
 fn scripts() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/cloud")
 }
 
-/// `script` with `args` and `env`, its output; stderr carries cakeys' notes and errors.
+/// Runs `script` with `args` and `env`, and returns its output. stderr holds cakeys' notes and
+/// errors.
 fn run(script: &str, env: &[(&str, &str)], args: &[&str]) -> Output {
     let out = Command::new(scripts().join(script)).envs(env.iter().copied()).args(args).output().unwrap();
     eprintln!(
@@ -55,26 +68,30 @@ fn text(o: &Output) -> String {
     format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
 }
 
-/// A run's own name: what its labels and lock carry.
+/// Returns a name for this run, which its labels and its lock carry.
 fn run_id() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     format!("ct{secs}")
 }
 
-/// What was asked of a test run: `None` (skip) unless the variable is set, never in a Nix build.
+/// Returns the value of `var`, which says what the test run asks for. It returns `None` (the test
+/// is skipped) when the variable is unset, and always inside a Nix build, which cannot reach any
+/// cloud (review 2026-11-24 C-7: inside a Nix build, it used to return without a message).
 fn asked(var: &str) -> Option<String> {
-    // A Nix build sets NIX_BUILD_TOP; `nix develop` does too, with IN_NIX_SHELL.
+    // A Nix build sets NIX_BUILD_TOP. `nix develop` sets it too, but it also sets IN_NIX_SHELL.
     if std::env::var_os("NIX_BUILD_TOP").is_some() && std::env::var_os("IN_NIX_SHELL").is_none() {
+        test_skip::skip(var, REQUIRE, "inside a Nix build, which reaches no cloud");
         return None;
     }
     let v = std::env::var(var).ok().filter(|v| !v.is_empty());
     if v.is_none() {
-        eprintln!("skipping: {var} not set (crates/cli/tests/cloud.rs)");
+        test_skip::skip(var, REQUIRE, &format!("{var} not set (crates/cli/tests/cloud.rs)"));
     }
     v
 }
 
-/// Run `body`, then `cleanup` whatever `body` did, then fail as `body` failed.
+/// Runs `body`, then runs `cleanup` whatever `body` did, and then, if `body` panicked, resumes
+/// that panic.
 fn with_cleanup(body: impl FnOnce(), cleanup: impl FnOnce()) {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
     cleanup();
@@ -83,13 +100,13 @@ fn with_cleanup(body: impl FnOnce(), cleanup: impl FnOnce()) {
     }
 }
 
-/// AWS `CloudHSM`, per cluster: every key kind of `scripts/cloud/aws/cakeys.toml` created and
-/// proven, Ed25519 (the aws-cloudhsm provider's stand-ins) on a non-FIPS cluster and refused
-/// before creating on a FIPS one, and keys moved each way between `SoftHSM` and `CloudHSM` (and
-/// Ed25519 out of a non-FIPS one) by
-/// camigrate (`CKM_RSA_AES_KEY_WRAP`, `CloudHSM`'s only RFC 5649). The clusters run at once:
-/// each has its own runner, lock and `SoftHSM` token, and every one runs to its end before the
-/// first failure is reported.
+/// AWS `CloudHSM`, per cluster. Every key kind of `scripts/cloud/aws/cakeys.toml` is created and
+/// proven. Ed25519 (through the aws-cloudhsm provider's stand-ins) is created on a non-FIPS
+/// cluster, and it is refused before anything is created on a FIPS cluster. camigrate moves keys
+/// in each direction between `SoftHSM` and `CloudHSM`, and it moves Ed25519 out of a non-FIPS
+/// cluster (with `CKM_RSA_AES_KEY_WRAP`, the only RFC 5649 mechanism of `CloudHSM`). The clusters
+/// run in parallel: each has its own runner, lock and `SoftHSM` token, and every cluster runs to
+/// its end before the first failure is reported.
 #[test]
 fn aws_cloudhsm_end_to_end() {
     let Some(modes) = asked("CAKEYS_TEST_AWS") else { return };
@@ -118,7 +135,8 @@ fn aws_cluster(mode: &str) {
         "no ACTIVE {mode} cluster with an HSM: CAKEYS_AWS_MODE={mode} scripts/cloud/aws.sh create, then activate"
     );
 
-    // The mode too: the clusters run at once, each with a directory of its own here.
+    // The ID also includes the mode, because the clusters run in parallel, and each needs a
+    // directory of its own here.
     let id = format!("{}-{}", run_id(), mode.to_lowercase().replace('_', ""));
     let dir = std::env::temp_dir().join(format!("cakeys-cloud-{id}"));
     std::fs::create_dir_all(&dir).unwrap();
@@ -131,7 +149,8 @@ fn aws_cluster(mode: &str) {
     let cakeys = |args: &[&str]| run("aws.sh", &env, &[&["cakeys"], args].concat());
     let camigrate = |args: &[&str]| run("aws.sh", &env, &[&["camigrate"], args].concat());
 
-    // The transport keys first: each token's sealed imports wrap to its own.
+    // Create the transport keys first, because each token's sealed imports are wrapped to that
+    // token's own transport key.
     let mut keys = vec![
         ("transport", "cloudhsm"),
         ("softhsm-transport", "softhsm"),
@@ -150,16 +169,18 @@ fn aws_cluster(mode: &str) {
     let created = std::cell::RefCell::new(Vec::new());
     with_cleanup(
         || {
-            // Each named for the cleanup before its run: one that fails part way may have made
-            // (and billed) a key all the same (review cloud.rs F2). Deleting one never made is 0.
+            // Each key is added to the cleanup list before its run, because a run that fails part
+            // way may still have made (and billed) a key (review cloud.rs F2). A delete of a key
+            // that was never made exits 0.
             for (spec, token) in &keys {
                 created.borrow_mut().push((*spec, *token));
-                // The run's lock is its own, new: started by its first writing run.
+                // The run's lock is its own new lock, which the run's first writing command starts.
                 let o = cakeys(&["--new-lock", "create", "--spec", spec, "--token", token]);
                 assert_eq!(code(&o), Some(LOCK_WRITTEN), "{mode}: create {spec} on {token}: {}", text(&o));
             }
             if mode == "FIPS" {
-                // The FIPS profile adds no Ed25519 stand-in: refused before anything is made.
+                // The FIPS profile adds no Ed25519 stand-in, so the create is refused before
+                // anything is made.
                 let o = cakeys(&["--new-lock", "create", "--spec", "ed25519", "--token", "cloudhsm"]);
                 assert_eq!(code(&o), Some(UNSUPPORTED), "{mode}: ed25519: {}", text(&o));
                 assert!(text(&o).contains("CKM_EC_EDWARDS_KEY_PAIR_GEN"), "{}", text(&o));
@@ -170,7 +191,8 @@ fn aws_cluster(mode: &str) {
             }
             let mut moves = vec![("movable", "softhsm", "cloudhsm"), ("outbound", "cloudhsm", "softhsm")];
             if mode == "NON_FIPS" {
-                // Ed25519 moves out; in, the profile's migration.refuses blocks it in the plan.
+                // Ed25519 moves out of CloudHSM. A move of Ed25519 into CloudHSM is blocked in the
+                // plan by the profile's `migration.refuses`.
                 moves.push(("ed25519", "cloudhsm", "softhsm"));
                 created.borrow_mut().push(("ed-in", "softhsm"));
                 let o = cakeys(&["create", "--spec", "ed-in", "--token", "softhsm"]);
@@ -189,7 +211,8 @@ fn aws_cluster(mode: &str) {
             }
         },
         || {
-            // The transport keys last: what was created first goes last.
+            // Delete in the reverse order of creation, so that the transport keys, which were
+            // created first, are deleted last.
             for (spec, token) in created.borrow().iter().rev() {
                 let o = cakeys(&["--new-lock", "delete", "--spec", spec, "--token", token]);
                 if !matches!(code(&o), Some(0 | LOCK_WRITTEN)) {
@@ -201,9 +224,9 @@ fn aws_cluster(mode: &str) {
     );
 }
 
-/// Google Cloud KMS: the keys scripts/cloud/gcp/cakeys.toml pre-creates take a version each,
-/// proven where Cloud KMS lets them be, then destroyed; what the kmsp11 provider cannot make
-/// (an AES key, a key to prove by unwrapping) is refused before anything exists.
+/// Google Cloud KMS: each key that scripts/cloud/gcp/cakeys.toml pre-creates gets one version,
+/// which is proven where Cloud KMS allows it and then destroyed. What the kmsp11 provider cannot
+/// make (an AES key, a key to prove by unwrapping) is refused before anything exists.
 #[test]
 fn gcp_cloud_kms_end_to_end() {
     if asked("CAKEYS_TEST_GCP").is_none() {
@@ -222,7 +245,7 @@ fn gcp_cloud_kms_end_to_end() {
     with_cleanup(
         || {
             for spec in ["rsa-pop-unwrap", "aes"] {
-                // The run's lock is its own, new: started by its first writing run.
+                // The run's lock is its own new lock, which the run's first writing command starts.
                 let o = cakeys(&["--new-lock", "create", "--spec", spec, "--token", "gcp"]);
                 assert_eq!(code(&o), Some(UNSUPPORTED), "{spec}: {}", text(&o));
             }

@@ -1,21 +1,24 @@
 //! The object matrix (docs/PLAN.md A4; docs/OPEN.md, "A matrix of what can be created, and at
-//! what assurance"): what cakeys makes of objects it did not create. A fixed grid of objects is
-//! created on a token straight through cryptoki, generated or imported as a legacy key would
-//! arrive; each is declared exactly as it is (its usage bits, sensitivity, extractability,
-//! per-use PIN and allowed mechanisms) and realised. The outcome per object — the mode, schemes
-//! and binding recorded, or the exit code, or the token refusing to hold such an object — is
-//! spec-coverage/objects/<token>.toml, generated and pinned:
-//! `CAKEYS_UPDATE_OBJECTS=$PWD/spec-coverage/objects` rewrites it there
-//! (`scripts/local-tests.sh -E 'test(object_matrix)'`).
-//! What each refused row printed is in the test's directory, `report.txt`.
+//! what assurance"): what cakeys makes of objects that it did not create. The test creates a
+//! fixed grid of objects on a token directly through cryptoki, either generated or imported in
+//! the way that a legacy key would arrive. It declares each object exactly as it is (its usage
+//! bits, sensitivity, extractability, per-use PIN and allowed mechanisms) and realises it. The
+//! outcome for each object (the recorded mode, schemes and binding, or the exit code, or the
+//! token's refusal to hold such an object) is in spec-coverage/objects/<token>.toml, which is
+//! generated and committed. `CAKEYS_UPDATE_OBJECTS=$PWD/spec-coverage/objects` regenerates the
+//! table there (`scripts/local-tests.sh -E 'test(object_matrix)'`): next to the committed table as
+//! `.new`, or over it with `CAKEYS_ACCEPT=1` (`cakeys_profile::regenerate`, docs/DEVELOPMENT.md,
+//! "Golden files"). What each refused row printed is in `report.txt` in the test's directory.
 //!
-//! Four families, in this order: generated keys and imported secret keys ([`Row`]); imported
-//! private keys, by where their public half is ([`Import`]); certificates ([`Cert`]); data
-//! objects ([`Data`]).
+//! The grid has four families, in this order: generated keys and imported secret keys ([`Row`]);
+//! imported private keys, by where their public half is ([`Import`]); certificates ([`Cert`]);
+//! and data objects ([`Data`]).
 //!
-//! Run by the reference suite (tests/reference/matrix.rs: `SoftHSM`, kryoptic) and on
-//! tpm2-pkcs11 over a software TPM (tests/tpm2.rs), each with [`check`].
+//! The reference suite (tests/reference/matrix.rs: `SoftHSM`, kryoptic) and the tpm2-pkcs11 suite
+//! over a software TPM (tests/tpm2.rs) run it, each with [`check`].
 #![expect(unreachable_pub, reason = "its crate is a test binary: pub and pub(crate) say the same")]
+
+pub mod properties;
 
 use crate::common::*;
 use cryptoki::mechanism::{Mechanism, MechanismType};
@@ -56,8 +59,9 @@ impl Kind {
         matches!(self, Kind::Aes | Kind::Des3 | Kind::Generic | Kind::HmacSha256)
     }
 
-    /// The usage bits a row may set: for a secret key the ones a commitment uses, then the ones
-    /// no commitment can (an unwrap-only or derive-only key); for a private key its operations.
+    /// Returns the usage bits that a row may set. For a secret key, these are the bits that a
+    /// commitment uses, followed by the bits that no commitment can use (an unwrap-only or
+    /// derive-only key). For a private key, these are its operations.
     fn usage(self) -> &'static [&'static str] {
         match self {
             Kind::Aes => &["CKA_SIGN", "CKA_ENCRYPT", "CKA_DECRYPT", "CKA_WRAP"],
@@ -68,8 +72,8 @@ impl Kind {
         }
     }
 
-    /// The `CKA_ALLOWED_MECHANISMS` a row may carry (besides none): one the identity uses, one
-    /// it does not.
+    /// Returns the `CKA_ALLOWED_MECHANISMS` values that a row may hold (in addition to none): one
+    /// mechanism that the identity uses, and one that it does not use.
     fn allowed(self) -> &'static [&'static str] {
         match self {
             Kind::Aes => &["CKM_AES_CMAC", "CKM_AES_ECB", "CKM_AES_GCM"],
@@ -81,7 +85,7 @@ impl Kind {
         }
     }
 
-    /// The keys.toml object of this kind.
+    /// Returns the keys.toml object of this kind.
     fn object(self) -> &'static str {
         match self {
             Kind::Aes => "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_AES\"\nvalueLen = 32",
@@ -98,9 +102,9 @@ impl Kind {
 /// How the object came to be on the token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Origin {
-    /// `C_GenerateKey` or `C_GenerateKeyPair`: `CKA_LOCAL` true.
+    /// `C_GenerateKey` or `C_GenerateKeyPair`, so `CKA_LOCAL` is true.
     Generated,
-    /// `C_CreateObject` with a value: `CKA_LOCAL` false, as an imported legacy key.
+    /// `C_CreateObject` with a value, so `CKA_LOCAL` is false, as for an imported legacy key.
     Imported,
 }
 
@@ -109,7 +113,7 @@ enum Origin {
 struct Row {
     kind: Kind,
     origin: Origin,
-    /// The usage bits set; the kind's others are false.
+    /// The usage bits that are set. The kind's other usage bits are false.
     usage: Vec<&'static str>,
     extractable: bool,
     sensitive: bool,
@@ -118,7 +122,7 @@ struct Row {
 }
 
 impl Row {
-    /// The row's key in the table: every dimension, in a fixed order.
+    /// Returns the row's key in the table: every dimension, in a fixed order.
     fn key(&self) -> String {
         let origin = match self.origin {
             Origin::Generated => "generated",
@@ -144,7 +148,8 @@ impl Row {
         key
     }
 
-    /// The spec's declared attributes: exactly what the object carries.
+    /// Returns the spec's declared attributes, which are exactly the attributes that the object
+    /// holds.
     fn attributes(&self) -> String {
         declared(self.kind, &self.usage, self.extractable, self.sensitive, self.always_authenticate, self.allowed)
     }
@@ -154,8 +159,8 @@ impl Row {
     }
 }
 
-/// A key spec's declared attributes: the kind's usage bits as `usage` sets them, the protection,
-/// the per-use PIN and the allowed mechanism.
+/// Returns a key spec's declared attributes: the kind's usage bits as `usage` sets them, the
+/// protection, the per-use PIN and the allowed mechanism.
 fn declared(
     kind: Kind,
     usage: &[&str],
@@ -176,9 +181,9 @@ fn declared(
     attrs.join(", ")
 }
 
-/// A private key's binding, as its spec's author would choose it from what the key may do:
-/// signing first (the default), then deriving (EC) or decrypting (RSA), else the token's word
-/// (DESIGN.md §3.6). Secret keys have none.
+/// Returns a private key's binding, as its spec's author would choose it from what the key may
+/// do: signing first (the default), then deriving (EC) or decrypting (RSA), and otherwise
+/// `token-asserted` (DESIGN.md §3.6). Secret keys have no binding.
 fn binding(kind: Kind, usage: &[&str]) -> &'static str {
     let may = |bit| usage.contains(&bit);
     match kind {
@@ -189,16 +194,16 @@ fn binding(kind: Kind, usage: &[&str]) -> &'static str {
     }
 }
 
-/// Every subset of `bits`, in a fixed order.
+/// Returns every subset of `bits`, in a fixed order.
 fn subsets(bits: &[&'static str]) -> Vec<Vec<&'static str>> {
     (0..1u32 << bits.len())
         .map(|mask| bits.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, b)| *b).collect())
         .collect()
 }
 
-/// Where an imported private key's public half is, if anywhere. Imports carry the private
-/// material only (`pkcs11-tool --write-object --type privkey`, a PKCS#12 import, a migration
-/// tool); the public half is whatever else the importer wrote under the same label.
+/// Where an imported private key's public half is, if anywhere. An import writes only the private
+/// material (`pkcs11-tool --write-object --type privkey`, a PKCS#12 import, a migration tool), and
+/// the public half is whatever else the importer wrote under the same label.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PublicHalf {
     /// A public key object.
@@ -222,7 +227,7 @@ impl PublicHalf {
     }
 }
 
-/// An imported private key: `C_CreateObject` of fixed fixture material (`CKA_LOCAL` false).
+/// An imported private key: `C_CreateObject` of fixed fixture material (`CKA_LOCAL` is false).
 #[derive(Clone, Debug)]
 struct Import {
     kind: Kind,
@@ -256,17 +261,18 @@ impl Import {
 
 const ADOPT_CERT: &[u8] = include_bytes!("../fixtures/adopt-cert.der");
 
-/// The certificates the grid holds: a fixture's DER, or a value no parser accepts.
+/// The certificates that the grid holds: a fixture's DER, or a value that no parser accepts.
 const CERTS: &[(&str, &[u8])] = &[
     ("rsa-2048", ADOPT_CERT),
     ("ec-p256", include_bytes!("../fixtures/tpm-import-p256-cert.der")),
     ("ec-p384", include_bytes!("../fixtures/adopt-cert-p384.der")),
     ("ed25519", include_bytes!("../fixtures/adopt-cert-ed25519.der")),
-    // Truncated: a damaged or non-DER value.
+    // A truncated certificate stands for a damaged or non-DER value.
     ("malformed", ADOPT_CERT.split_at(100).0),
 ];
 
-/// A certificate object, public or private, its `CKA_PRIVATE` declared in the spec or not.
+/// A certificate object, public or private, whose `CKA_PRIVATE` the spec declares or does not
+/// declare.
 #[derive(Clone, Debug)]
 struct Cert {
     which: usize,
@@ -274,7 +280,8 @@ struct Cert {
     declared: bool,
 }
 
-/// A data object of `len` bytes, public or private, its `CKA_PRIVATE` declared or not.
+/// A data object of `len` bytes, public or private, whose `CKA_PRIVATE` the spec declares or does
+/// not declare.
 #[derive(Clone, Debug)]
 struct Data {
     len: usize,
@@ -282,7 +289,7 @@ struct Data {
     declared: bool,
 }
 
-/// The `CKA_PRIVATE` part of a certificate's or data object's row key.
+/// Returns the `CKA_PRIVATE` part of a certificate's or data object's row key.
 fn privacy(private: bool, declared: bool) -> String {
     format!("{}{}", if private { "private" } else { "public" }, if declared { "" } else { " undeclared" })
 }
@@ -297,7 +304,7 @@ enum Item {
 }
 
 impl Item {
-    /// The row's key in the table.
+    /// Returns the row's key in the table.
     fn key(&self) -> String {
         match self {
             Item::Key(r) => r.key(),
@@ -307,7 +314,7 @@ impl Item {
         }
     }
 
-    /// The keys.toml object.
+    /// Returns the keys.toml object.
     fn object(&self) -> String {
         match self {
             Item::Key(Row { kind, .. }) | Item::Import(Import { kind, .. }) => kind.object().to_owned(),
@@ -316,7 +323,7 @@ impl Item {
         }
     }
 
-    /// The spec's declared attributes.
+    /// Returns the spec's declared attributes.
     fn attributes(&self) -> String {
         match self {
             Item::Key(r) => r.attributes(),
@@ -331,7 +338,7 @@ impl Item {
         }
     }
 
-    /// The rest of the spec's token entry: a private key's binding.
+    /// Returns the rest of the spec's token entry: a private key's binding.
     fn binding(&self) -> &'static str {
         match self {
             Item::Key(r) => r.binding(),
@@ -341,14 +348,16 @@ impl Item {
     }
 }
 
-/// The grid. Secret keys: every subset of the commitment bits, plus unwrap-only and derive-only
-/// (the keys DESIGN.md §3.4 refuses); every extractable × sensitive; generated and imported.
-/// Private keys: every subset of their operations, with and without a per-use PIN; generated.
-/// Each also unrestricted and under each allowed-mechanism variant.
+/// Returns the grid. For secret keys: every subset of the commitment bits, plus unwrap-only and
+/// derive-only keys (the keys that DESIGN.md §3.4 refuses); every combination of extractable and
+/// sensitive; generated and imported. For private keys: every subset of their operations, with and
+/// without a per-use PIN; generated only. Each of these also appears unrestricted and under each
+/// allowed-mechanism variant.
 ///
-/// Then imported private keys: each place the public half can be, every subset of operations,
-/// sensitive or not (a legacy import often is not), unrestricted or under each allowed variant.
-/// Then certificates and data objects: public or private, the privacy declared or not.
+/// Then imported private keys: each place where the public half can be, every subset of
+/// operations, sensitive or not (a legacy import often is not sensitive), unrestricted or under
+/// each allowed variant. Then certificates and data objects: public or private, with the privacy
+/// declared or not.
 fn grid() -> Vec<Item> {
     let mut items: Vec<Item> = keys().into_iter().map(Item::Key).collect();
     for kind in [Kind::Ec, Kind::Rsa, Kind::Ed25519] {
@@ -386,7 +395,7 @@ fn grid() -> Vec<Item> {
     items
 }
 
-/// The first family: generated keys, and imported secret keys.
+/// Returns the first family: generated keys, and imported secret keys.
 fn keys() -> Vec<Row> {
     let mut rows = Vec::new();
     for kind in [Kind::Aes, Kind::Des3, Kind::Generic, Kind::HmacSha256, Kind::Ec, Kind::Rsa, Kind::Ed25519] {
@@ -428,7 +437,7 @@ fn keys() -> Vec<Row> {
     rows
 }
 
-/// The mechanism of a `CKM_` name the grid uses.
+/// Returns the mechanism of a `CKM_` name that the grid uses.
 fn mechanism(name: &str) -> MechanismType {
     match name {
         "CKM_AES_CMAC" => MechanismType::AES_CMAC,
@@ -448,7 +457,7 @@ fn mechanism(name: &str) -> MechanismType {
     }
 }
 
-/// The attribute of a usage bit's name, set to `on`.
+/// Returns the attribute of a usage bit's name, set to `on`.
 fn usage_attribute(name: &str, on: bool) -> Attribute {
     match name {
         "CKA_SIGN" => Attribute::Sign(on),
@@ -461,20 +470,21 @@ fn usage_attribute(name: &str, on: bool) -> Attribute {
     }
 }
 
-/// Every usage bit `kind` has, and the two a secret key's grid adds, set as `set` says.
+/// Returns every usage bit that `kind` has, and the two bits that a secret key's grid adds, each
+/// set as `set` says.
 fn usage_attributes(kind: Kind, set: &[&str]) -> Vec<Attribute> {
     let mut names: Vec<&str> = kind.usage().to_vec();
     if kind.secret() {
         names.extend(["CKA_UNWRAP", "CKA_DERIVE"]);
     }
-    // Each bit once, wherever a kind's own list already has it (review object_matrix F4: a bare
-    // `dedup` removed only neighbours).
+    // Keep each bit once, even where a kind's own list already has it (review object_matrix F4: a
+    // bare `dedup` removed only adjacent duplicates).
     names.sort_unstable();
     names.dedup();
     names.into_iter().map(|n| usage_attribute(n, set.contains(&n))).collect()
 }
 
-/// A failed call's return value's name.
+/// Returns the name of a failed call's return value.
 fn failed(e: cryptoki::error::Error) -> String {
     match e {
         cryptoki::error::Error::Pkcs11(rv, _) => format!("{rv:?}"),
@@ -482,15 +492,16 @@ fn failed(e: cryptoki::error::Error) -> String {
     }
 }
 
-/// Create `item`'s object on the token, labelled `label`, or say why the token would not.
+/// Creates `item`'s object on the token, labelled `label`, or returns why the token would not
+/// create it.
 fn create_item(s: &Session, item: &Item, label: &str) -> Result<(), String> {
     match item {
         Item::Key(r) => create(s, r, label),
         Item::Import(r) => create_import(s, r, label),
         Item::Cert(c) => {
             let der = CERTS[c.which].1;
-            // The subject from the intact certificate: the token requires one, and a parser need not
-            // be the token's to accept the value.
+            // Take the subject from the intact certificate, because the token requires a subject,
+            // and the token's parser does not have to accept the value.
             let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(ADOPT_CERT).unwrap();
             let subject = x509_cert::der::Encode::to_der(cert.tbs_certificate().subject()).unwrap();
             s.create_object(&[
@@ -521,10 +532,10 @@ fn create_item(s: &Session, item: &Item, label: &str) -> Result<(), String> {
     }
 }
 
-/// The fixtures the imported private keys are made of.
+/// The directory of the fixtures from which the imported private keys are made.
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
-/// Create an imported private key and its public half, if the row has one.
+/// Creates an imported private key and its public half, if the row has one.
 fn create_import(s: &Session, row: &Import, label: &str) -> Result<(), String> {
     use cryptoki::object::ObjectClass as C;
     let (key_type, mut private, public, cert): (KeyType, Vec<Attribute>, Vec<Attribute>, Vec<u8>) = match row.kind {
@@ -608,8 +619,8 @@ fn create_import(s: &Session, row: &Import, label: &str) -> Result<(), String> {
     }
 }
 
-/// Create `row`'s object on the token, labelled `label`, or say why the token would not
-/// (the return value's name).
+/// Creates `row`'s object on the token, labelled `label`, or returns why the token would not
+/// create it (the name of the return value).
 fn create(s: &Session, row: &Row, label: &str) -> Result<(), String> {
     let mut private = vec![
         Attribute::Token(true),
@@ -629,7 +640,8 @@ fn create(s: &Session, row: &Row, label: &str) -> Result<(), String> {
         Kind::Aes => (KeyType::AES, 32, Mechanism::AesKeyGen),
         Kind::Des3 => (KeyType::DES3, 24, Mechanism::Des3KeyGen),
         Kind::Generic => (KeyType::GENERIC_SECRET, 32, Mechanism::GenericSecretKeyGen),
-        // PKCS#11 3.0's own generation for the type (SoftHSM 2.7 has none: not created there).
+        // PKCS#11 3.0's own generation mechanism for the type (SoftHSM 2.7 has none, so the key is
+        // not created there).
         Kind::HmacSha256 => (KeyType::SHA256_HMAC, 32, Mechanism::Sha256KeyGen),
         Kind::Ec | Kind::Rsa | Kind::Ed25519 => {
             let public = vec![
@@ -661,7 +673,7 @@ fn create(s: &Session, row: &Row, label: &str) -> Result<(), String> {
             s.generate_key(&keygen, &secret).map(|_| ()).map_err(failed)
         }
         Origin::Imported => {
-            // The token's own randomness: a key nothing relies on.
+            // Use the token's own random values, because nothing relies on this key.
             let value = s.generate_random_vec(u32::try_from(len).unwrap()).map_err(failed)?;
             secret.push(Attribute::Value(value));
             s.create_object(&secret).map(|_| ()).map_err(failed)
@@ -669,12 +681,14 @@ fn create(s: &Session, row: &Row, label: &str) -> Result<(), String> {
     }
 }
 
-/// What realising a row gave: what the lock recorded, or the exit code. With `immutables`, also
-/// the provenance the lock pins (the immutables that are true): what tells an imported private
-/// key from a generated one, whose identity is the same.
+/// Returns the result of realising a row: what the lock recorded, or the exit code. With
+/// `immutables`, it also returns the provenance that the lock pins (the immutables that are
+/// true), which distinguishes an imported private key from a generated one with the same
+/// identity.
 fn outcome(w: &Workdir, spec: &str, token: &str, immutables: bool) -> Result<String, (i32, String)> {
     let o = w.km(&["lock", "--spec", spec, "--token", token]);
-    // 22: recorded, so the lock was written; 0: the lock already held it.
+    // 22 means that the row was recorded, so the lock was written. 0 means that the lock already
+    // held it.
     if !matches!(code(&o), 0 | 22) {
         return Err((code(&o), stderr(&o)));
     }
@@ -686,7 +700,8 @@ fn outcome(w: &Workdir, spec: &str, token: &str, immutables: bool) -> Result<Str
         let _ = write!(got, " {b}");
     }
     if immutables {
-        // `none`: pinned, all false; `?`: the lock pins none at all.
+        // `none` means that the immutables are pinned and all false. `?` means that the lock pins
+        // no immutables at all.
         let shown = r.get("immutables").and_then(toml::Value::as_table).map_or_else(
             || "?".to_owned(),
             |pinned| {
@@ -705,34 +720,39 @@ fn outcome(w: &Workdir, spec: &str, token: &str, immutables: bool) -> Result<Str
 
 /// A token the matrix runs on.
 pub struct Target<'a> {
-    /// The table's name: spec-coverage/objects/<name>.toml.
+    /// The table's name, as in spec-coverage/objects/<name>.toml.
     pub name: &'a str,
-    /// The keys.toml token the specs realise on, and the tokens header that defines it for a
-    /// realisation's directory.
+    /// The keys.toml token on which the specs realise, and the tokens header that defines it for
+    /// a realisation's directory.
     pub token: &'a str,
     pub tokens: &'a (dyn Fn(&Path) -> String + Sync),
-    /// A logged-in session on it, to create the grid's objects in.
+    /// A function that opens a logged-in session on the token, in which the grid's objects are
+    /// created.
     pub session: &'a dyn Fn() -> TestSession,
-    /// Objects created per session. A module that keeps what it made loaded until it is
-    /// finalized (tpm2-pkcs11, within the resource manager's limit per connection) needs a
-    /// fresh one every few, or its later creations fail for want of room, not for what they are.
+    /// The number of objects created per session. A module that keeps the objects that it made
+    /// loaded until it is finalized (tpm2-pkcs11, within the resource manager's limit per
+    /// connection) needs a new session every few objects. Otherwise, its later creations fail for
+    /// lack of room, and not because of what the objects are.
     pub batch: usize,
-    /// The test's directory: `report.txt` goes there.
+    /// The test's directory, where `report.txt` is written.
     pub dir: &'a Path,
-    /// Realisations at once (a module that serialises its device gains nothing from more).
+    /// The number of realisations that run in parallel (a module that serialises access to its
+    /// device gains nothing from more).
     pub workers: usize,
 }
 
-/// Create the grid on `t`, lock every object, and compare the table with the committed one
-/// (or rewrite it, under `CAKEYS_UPDATE_OBJECTS`).
+/// Creates the grid on `t`, locks every object, and compares the table with the committed one
+/// (or regenerates it, under `CAKEYS_UPDATE_OBJECTS`).
 ///
 /// # Panics
 ///
-/// When the table differs from the committed one.
+/// Panics when the table violates a property ([`properties::assert_kept`]), or when it differs
+/// from the committed one.
 pub fn check(t: &Target<'_>) {
     let rows = grid();
-    // Create every object first, `t.batch` to a session. The old session is finalized before
-    // the next opens: two contexts on one module in one process finalize under each other.
+    // Create every object first, `t.batch` objects per session. The old session is finalized
+    // before the next one opens, because when two contexts on one module are open in one process,
+    // the finalization of one finalizes the other too.
     let created: Vec<Result<(), String>> = {
         let mut s: Option<TestSession> = None;
         let mut created = Vec::with_capacity(rows.len());
@@ -748,7 +768,8 @@ pub fn check(t: &Target<'_>) {
     let results: Mutex<Vec<Option<String>>> = Mutex::new(vec![None; rows.len()]);
     let report: Mutex<Vec<(usize, String)>> = Mutex::new(Vec::new());
     let next = AtomicUsize::new(0);
-    // What the workers need of `t`: its session opener is not theirs to share.
+    // Copy what the workers need from `t`, because the workers must not share its session
+    // opener.
     let (token, tokens) = (t.token, t.tokens);
     std::thread::scope(|scope| {
         for _ in 0..t.workers {
@@ -776,8 +797,8 @@ pub fn check(t: &Target<'_>) {
                                 format!("exit {code}")
                             }
                         };
-                        // What the row said is in the report: its directory goes (review
-                        // object_matrix F3: some 1,500 of them stayed per token and run).
+                        // What the row printed is in the report, so its directory is removed
+                        // (review object_matrix F3: about 1,500 of them stayed per token and run).
                         let _ = std::fs::remove_dir_all(&w.dir);
                         got
                     };
@@ -812,16 +833,22 @@ pub fn check(t: &Target<'_>) {
     }
     std::fs::write(t.dir.join("report.txt"), said).unwrap();
     let file = format!("{}.toml", t.name);
-    // The directory to rewrite the table in: the repository's, from wherever the test runs
-    // (scripts/local-tests.sh runs a copy of the tree).
+    // Whatever the committed table says, a table that violates a property is wrong (review
+    // 2026-11-24 C-8). A regenerated table is written first, so that it can be read.
+    let keeps = || properties::assert_kept(t.name, &text, &t.dir.join("report.txt"));
+    // The directory in which to rewrite the table: the repository's directory, from wherever the
+    // test runs (scripts/local-tests.sh runs a copy of the tree).
     if let Some(dir) = std::env::var_os("CAKEYS_UPDATE_OBJECTS") {
         std::fs::create_dir_all(&dir).unwrap();
         let rewritten = Path::new(&dir).join(&file);
-        std::fs::write(&rewritten, &text).unwrap();
-        // Said in the log: a run with the variable set compares nothing (review object_matrix F2).
-        eprintln!("rewrote {}, not compared (CAKEYS_UPDATE_OBJECTS is set)", rewritten.display());
+        let written = cakeys_profile::regenerate::write(&rewritten, &text, cakeys_profile::regenerate::accepted());
+        // Print in the log that a run with the variable set compares nothing (review
+        // object_matrix F2).
+        eprintln!("{}, not compared (CAKEYS_UPDATE_OBJECTS is set)", written.unwrap());
+        keeps();
         return;
     }
+    keeps();
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec-coverage/objects").join(&file);
     let committed = std::fs::read_to_string(&path).unwrap_or_default();
     assert!(

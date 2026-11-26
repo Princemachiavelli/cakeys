@@ -133,4 +133,13 @@ if [ -n "${CAKEYS_LOCAL_TESTS_THEN:-}" ]; then
   bash "$CAKEYS_LOCAL_TESTS_THEN" "$features" "$@"
   exit
 fi
-cargo nextest run --workspace --features "$features" --no-fail-fast "$@"
+junit=$CARGO_TARGET_DIR/nextest/default/junit.xml
+rm -f "$junit"
+code=0
+cargo nextest run --workspace --features "$features" --no-fail-fast --no-tests=fail "$@" || code=$?
+# What ran and what skipped, per test binary, as the check phase reports it (nix/test-count.py,
+# docs/DEVELOPMENT.md "Testing"): a binary that ran other tests than its source has fails the
+# run; a run narrowed by arguments only reports.
+python3 -I nix/test-count.py . --junit "$junit" --skips "$CAKEYS_SKIP_LOG" ${1:+--partial} \
+  -- --workspace --features "$features" || [ "$code" -ne 0 ] || code=1
+exit "$code"

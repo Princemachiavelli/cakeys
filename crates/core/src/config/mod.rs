@@ -1,6 +1,8 @@
-//! `keys.toml` (input) and `keys.lock` (input, updated in place).
+//! The configuration file `keys.toml` (an input) and the lock file `keys.lock` (an input that runs
+//! update in place).
 //!
-//! Our own keys are camelCase (Nix-friendly); PKCS#11 names (`CKA_*`, `CKO_*`, `CKK_*`) are verbatim.
+//! The keys that cakeys defines are camelCase, which suits Nix. PKCS#11 names (`CKA_*`, `CKO_*`,
+//! `CKK_*`) are written exactly as PKCS#11 spells them.
 
 use crate::error::{KmError, Result};
 use crate::types::{KeyType, ObjectClass};
@@ -35,22 +37,26 @@ pub use token::*;
 pub struct Config {
     /// The PKCS#11 tokens, by name (`[tokens.<name>]`).
     pub tokens: BTreeMap<String, TokenCfg>,
-    /// The objects, by name (`[objects.<name>]`): each one's intrinsic type.
+    /// The objects, by name (`[objects.<name>]`), with the intrinsic type of each object.
     pub objects: BTreeMap<String, ObjectCfg>,
-    /// What only camigrate reads of an object (`[objects.<o>.migrate]`), by object name: kept
-    /// apart from [`ObjectCfg`], which is the type the lock pins, so a per-machine path is never
-    /// part of it. Objects without the table have no entry.
+    /// The settings of an object that only camigrate reads (`[objects.<o>.migrate]`), by object
+    /// name. They are kept separate from [`ObjectCfg`], which is the type that the lock pins, so
+    /// that a path that differs between machines is never part of that type. An object without
+    /// the table has no entry.
     pub object_migrate: BTreeMap<String, ObjectMigrateCfg>,
-    /// The specs, by name (`[specs.<name>]`): an object's policy and the tokens it is realised on.
+    /// The specs, by name (`[specs.<name>]`): an object's policy and the tokens on which it is
+    /// realised.
     pub specs: BTreeMap<String, SpecCfg>,
-    /// Directories of module profiles to load beside the ones this build embeds
-    /// (docs/CAPROBE.md): a new vendor's profile, and with it its provider by family name,
-    /// without a rebuild. They only add: one may not replace an embedded profile, a layer or the
-    /// baseline. `$NAME` references read the environment, as for `pinFile`.
+    /// Directories of module profiles to load in addition to the profiles that this build
+    /// embeds (docs/CAPROBE.md). They add a new vendor's profile, and with it the vendor's
+    /// provider by family name, without a rebuild. They can only add profiles: a profile in them
+    /// may not replace an embedded profile, a layer or the baseline. A `$NAME` reference reads the
+    /// environment, as for `pinFile`.
     pub profile_dirs: Vec<PathBuf>,
 }
 
-/// keys.toml as written: [`Config`] before an object's `migrate` table is split from its type.
+/// keys.toml as written: the [`Config`] before each object's `migrate` table is separated from
+/// its type.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
@@ -64,9 +70,9 @@ struct RawConfig {
     profile_dirs: Vec<PathBuf>,
 }
 
-/// One `[objects.<name>]` table: the object's type ([`ObjectCfg`]'s fields) and its `migrate`
-/// table. The fields are spelled out rather than flattened: serde's `flatten` would lose
-/// `deny_unknown_fields`.
+/// One `[objects.<name>]` table: the object's type (the fields of [`ObjectCfg`]) and its
+/// `migrate` table. The fields are written out instead of flattened, because serde's `flatten`
+/// would disable `deny_unknown_fields`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ObjectEntry {
@@ -110,8 +116,9 @@ impl std::fmt::Display for Encoding {
     }
 }
 
-/// A secret file's path with its `$NAME` reference resolved, and refused when that is in the
-/// world-readable Nix store ([`secret_in_store`]): what load could not see of a `$NAME` path.
+/// Returns a secret file's path with its `$NAME` reference resolved, and refuses it when the path
+/// is in the Nix store, which everyone can read ([`secret_in_store`]). This is the check that the
+/// load could not make for a `$NAME` path.
 fn secret_path(path: Option<&Path>, what: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<PathBuf>> {
     let Some(path) = path else { return Ok(None) };
     let path = PathBuf::from(env_ref(&path.to_string_lossy(), what, env)?);
@@ -129,7 +136,7 @@ impl std::ops::Deref for Object<'_> {
     }
 }
 
-/// Inline-table form, as keys.toml writes it.
+/// Formats the object type as a TOML inline table, in the form that keys.toml uses.
 impl std::fmt::Display for ObjectCfg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut fields = vec![format!("class = \"{}\"", self.class)];
@@ -157,7 +164,8 @@ impl std::fmt::Display for KeyOrigin {
     }
 }
 
-/// Inline-table form, as keys.toml writes it: `{ CKA_LABEL = "k", CKA_ID = "01" }`.
+/// Formats the locator as a TOML inline table, in the form that keys.toml uses:
+/// `{ CKA_LABEL = "k", CKA_ID = "01" }`.
 impl std::fmt::Display for Locator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut fields = Vec::new();
@@ -171,38 +179,43 @@ impl std::fmt::Display for Locator {
     }
 }
 
-/// Read and check keys.toml; `$NAME` path references read the process environment.
+/// Reads and checks keys.toml. A `$NAME` path reference reads the process environment.
 ///
 /// # Errors
 ///
-/// Whatever [`load_config_with`] rejects: `Io` if the file cannot be read; `Validation` for
-/// a schema violation, a malformed or unset `$NAME` path reference, an admin credential
-/// without a user PIN to return to, or a spec that references an unknown object.
+/// Returns every error of [`load_config_with`]: `Io` if the file cannot be read, and `Validation`
+/// for a schema violation, a malformed `$NAME` path reference (or an unset one that the load
+/// resolves), an admin credential without a user PIN with which to log in again, or a spec that
+/// refers to an unknown object.
 pub fn load_config(path: &Path) -> Result<Config> {
     load_config_with(path, &|name| std::env::var(name).ok())
 }
 
-/// [`load_config`], with `env` looking up the variables `$NAME` path references name.
+/// Works as [`load_config`], with `env` to look up the variables that `$NAME` path references
+/// name.
 ///
 /// # Errors
 ///
-/// `Io` if the file cannot be read; `Validation` for a schema violation, a malformed or unset
-/// `$NAME` path reference, an admin credential without a user PIN to return to, or a spec that
-/// references an object keys.toml does not define.
+/// Returns `Io` if the file cannot be read. Returns `Validation` for a schema violation, a
+/// malformed `$NAME` path reference (or an unset one that the load resolves), an admin credential
+/// without a user PIN with which to log in again, or a spec that refers to an object that
+/// keys.toml does not define.
 pub fn load_config_with(path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
     let text = std::fs::read_to_string(path).map_err(KmError::io(format_args!("reading {}", path.display())))?;
     parse_config_with(&text, path, env)
 }
 
-/// [`load_config_with`] on text already read; `path` only names it in messages.
+/// Works as [`load_config_with`] on text that was already read. `path` is used only to name the
+/// file in messages.
 ///
 /// # Errors
 ///
-/// `Validation`, as [`load_config_with`].
+/// Returns `Validation`, as [`load_config_with`] does.
 pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
     let invalid = |e: &dyn std::fmt::Display| KmError::Validation(format!("{}: {e}", path.display()).into());
-    // A `$NAME` reference's error, named by the file as every other load error is: one resolved
-    // at load is keys.toml's own, so unset is invalid here (17).
+    // The error of a `$NAME` reference starts with the file's name, as every other load error
+    // does. A reference that the load resolves belongs to keys.toml itself, so an unset variable
+    // is invalid here (17).
     let env_ref = |value: &str, what: &str, env: &dyn Fn(&str) -> Option<String>| {
         env_ref(value, what, env).map_err(|e| {
             match e {
@@ -214,25 +227,28 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
     };
     let mut cfg: Config = toml::from_str(text).map_err(|e| invalid(&e))?;
     check_names(&cfg).map_err(|e| invalid(&e))?;
-    // These paths were TOML strings, so UTF-8: `to_string_lossy` replaces nothing.
+    // These paths were TOML strings, so they are valid UTF-8, and `to_string_lossy` replaces no
+    // characters.
     for dir in &mut cfg.profile_dirs {
         *dir = PathBuf::from(env_ref(&dir.to_string_lossy(), "profileDirs", env)?);
     }
     for (name, o) in &mut cfg.objects {
         o.canonicalize();
-        // Every object's type, used by a spec or not (review V5); a plan reads it again.
+        // The type of every object is checked, whether a spec uses the object or not (review
+        // V5). A plan reads the type again.
         o.kind().map_err(|e| e.prefixed(format_args!("{}: object '{name}'", path.display())))?;
         check_value_len(o).map_err(|e| invalid(&format_args!("object '{name}': {e}")))?;
     }
     for (name, t) in &mut cfg.tokens {
-        // The module resolves when the token is opened ([`TokenCfg::module_path`]): `--module`
-        // may replace it, and a run never needs another token's module. Only its form is checked.
+        // The module path resolves when the token is opened ([`TokenCfg::module_path`]), because
+        // `--module` may replace it and a run never needs the module of another token. Only the
+        // form of the reference is checked here.
         if let Some(m) = &t.module {
             env_ref(m, &format!("token '{name}': module"), &|_| Some(String::new()))?;
         }
-        // So are the PIN's and the admin credential's files ([`TokenCfg::pin_path`],
-        // [`TokenCfg::so_credential_path`]): a check that opens no token (`validate`, a Nix build
-        // sandbox) needs no PIN variable.
+        // The files of the PIN and of the admin credential also resolve when they are used
+        // ([`TokenCfg::pin_path`], [`TokenCfg::so_credential_path`]), so that a check that opens
+        // no token (`validate`, or a Nix build sandbox) needs no PIN variable.
         for (what, file) in [("pinFile", &t.pin_file), ("soCredentialFile", &t.so_credential_file)] {
             if let Some(f) = file {
                 env_ref(&f.to_string_lossy(), &format!("token '{name}': {what}"), &|_| Some(String::new()))?;
@@ -240,8 +256,8 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
         }
         check_token(t).map_err(|e| invalid(&format_args!("token '{name}': {e}")))?;
     }
-    // An object's file resolves when camigrate reads it ([`Config::object_file`]); only its form
-    // is checked here, as a module path's.
+    // An object's file resolves when camigrate reads it ([`Config::object_file`]). Only the form
+    // of the reference is checked here, as for a module path.
     for (name, m) in &cfg.object_migrate {
         for (what, value) in [("file", &m.file), ("passphraseFile", &m.passphrase_file)] {
             if let Some(v) = value {
@@ -250,7 +266,7 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
         }
     }
     check_secret_files(&cfg).map_err(|e| invalid(&e))?;
-    // A spec's object reference must name something, also when no token ever uses the spec.
+    // The object to which a spec refers must exist, even when no token uses the spec.
     for (spec, s) in &cfg.specs {
         if !cfg.objects.contains_key(&s.object) {
             return Err(invalid(&format_args!("spec '{spec}' references unknown object '{}'", s.object)));
@@ -271,8 +287,9 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
     check_origins(&cfg).map_err(|e| invalid(&e))?;
     check_transport_keys(&cfg).map_err(|e| invalid(&e))?;
     check_scratch_slots(&cfg).map_err(|e| invalid(&e))?;
-    // What loads is usable (review D1): every pair names a token keys.toml defines and plans
-    // (`plan_mode`), so no verb meets a spec that loaded and is refused at every use.
+    // A configuration that loads must be usable (review D1). Every pair must name a token that
+    // keys.toml defines and must pass the plan (`plan_mode`), so that no verb meets a spec that
+    // loaded but is refused at every use.
     for (spec, s) in &cfg.specs {
         for token in s.tokens.keys() {
             crate::plan::Target::new(&cfg, spec, token).and_then(|t| crate::plan::plan_mode(&t)).map_err(
@@ -287,14 +304,16 @@ pub fn parse_config_with(text: &str, path: &Path, env: &dyn Fn(&str) -> Option<S
 }
 
 impl Config {
-    /// The file `object`'s material is born in (`[objects.<o>.migrate] file`, docs/FILE.md), its
-    /// `$NAME` reference resolved by `env` now; `None` when the object names none. Resolved at
-    /// use, as a module path is, so hosts that only check load keys.toml without the variable.
+    /// Returns the file from which the material of `object` is created (`[objects.<o>.migrate]
+    /// file`, docs/FILE.md), with its `$NAME` reference resolved by `env` at this call. Returns
+    /// `None` when the object names no file. The path is resolved when it is used, as a module
+    /// path is, so that hosts that only run checks can load keys.toml without the variable.
     ///
     /// # Errors
     ///
-    /// `Unavailable` (16) for an unset `$NAME`; `Validation` (17) for a secret file that resolves into
-    /// `/nix/store` ([`Self::secret_material`], `secret_in_store`): the store is world-readable.
+    /// Returns `Unavailable` (16) for an unset `$NAME`. Returns `Validation` (17) for a secret
+    /// file that resolves into `/nix/store` ([`Self::secret_material`], `secret_in_store`),
+    /// because everyone can read the store.
     pub fn object_file(&self, object: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<PathBuf>> {
         let Some(file) = self.object_migrate.get(object).and_then(|m| m.file.as_deref()) else { return Ok(None) };
         let what = format!("object '{object}': migrate.file");
@@ -307,13 +326,14 @@ impl Config {
         Ok(Some(path))
     }
 
-    /// The file holding the passphrase of `object`'s encrypted key file (`migrate.passphraseFile`),
-    /// `$NAME` resolved by `env`; `None` when it names none.
+    /// Returns the file that holds the passphrase of the encrypted key file of `object`
+    /// (`migrate.passphraseFile`), with `$NAME` resolved by `env`. Returns `None` when the object
+    /// names no such file.
     ///
     /// # Errors
     ///
-    /// `Unavailable` (16) for an unset `$NAME`; `Validation` (17) for a path that resolves into
-    /// `/nix/store`: a passphrase is a secret whatever it decrypts.
+    /// Returns `Unavailable` (16) for an unset `$NAME`. Returns `Validation` (17) for a path that
+    /// resolves into `/nix/store`, because a passphrase is a secret, whatever it decrypts.
     pub fn object_passphrase_file(
         &self,
         object: &str,
@@ -330,16 +350,70 @@ impl Config {
         Ok(Some(path))
     }
 
-    /// Whether `object`'s material is secret at rest: a private or secret key, or a data object a
-    /// spec declares `CKA_PRIVATE = true`.
+    /// Returns whether the material of `object` is secret at rest: a private or secret key, or a
+    /// data object unless every spec of it declares `CKA_PRIVATE = false`. A data object without
+    /// a declaration is private (review 2026-11-24 §9.2, D-7), and so is a data object that no
+    /// spec names.
     #[must_use]
     pub fn secret_material(&self, object: &str) -> bool {
         match self.objects.get(object).map(|o| o.class) {
             Some(ObjectClass::PrivateKey | ObjectClass::SecretKey) => true,
             Some(ObjectClass::Data) => {
-                self.specs.values().any(|s| s.object == object && s.flag("CKA_PRIVATE") == Some(true))
+                let mut specs = self.specs.values().filter(|s| s.object == object).peekable();
+                specs.peek().is_none() || specs.any(|s| s.restricted(crate::known::Restriction::Private))
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A class or key type that cakeys does not manage is invalid when keys.toml loads (17), and
+    /// not only when a run first asks a token for it.
+    #[test]
+    fn unknown_classes_and_key_types_are_invalid_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("keys.toml");
+        for object in ["class = \"CKO_OTP_KEY\"", "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_DES2\""] {
+            std::fs::write(&p, format!("[objects.o]\n{object}\n")).unwrap();
+            let err = load_config(&p).unwrap_err();
+            assert!(matches!(err, KmError::Validation(_)), "{err}");
+        }
+    }
+
+    /// A data object's material is secret at rest unless every spec of it declares `CKA_PRIVATE =
+    /// false`. A data object for which no spec declares the attribute is private (review
+    /// 2026-11-24 §9.2, D-7), and so is a data object that any spec declares private.
+    #[test]
+    fn a_data_object_is_secret_unless_every_spec_says_public() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("keys.toml");
+        let object = |name: &str| format!("[objects.{name}]\nclass = \"CKO_DATA\"\n\n");
+        let spec = |name: &str, object: &str, private: Option<bool>| {
+            let attrs = private.map_or_else(String::new, |p| format!("attributes = {{ CKA_PRIVATE = {p} }}\n"));
+            format!("[specs.{name}]\nobject = \"{object}\"\n{attrs}tokens = {{}}\n\n")
+        };
+        let text = [
+            object("unsaid"),
+            spec("unsaid", "unsaid", None),
+            object("public"),
+            spec("public", "public", Some(false)),
+            object("mixed"),
+            spec("mixed-public", "mixed", Some(false)),
+            spec("mixed-unsaid", "mixed", None),
+            object("private"),
+            spec("private", "private", Some(true)),
+            object("specless"),
+        ]
+        .concat();
+        std::fs::write(&p, text).unwrap();
+        let cfg = load_config(&p).unwrap();
+        let secret: Vec<(&str, bool)> =
+            ["unsaid", "public", "mixed", "private", "specless"].map(|o| (o, cfg.secret_material(o))).to_vec();
+        let want = [("unsaid", true), ("public", false), ("mixed", true), ("private", true), ("specless", true)];
+        assert_eq!(secret, want);
     }
 }

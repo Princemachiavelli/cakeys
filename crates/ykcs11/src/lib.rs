@@ -1,12 +1,13 @@
-//! Yubico ykcs11 (`YubiKey` PIV). Two quirks are handled generically elsewhere: its
-//! `CKA_PUBLIC_KEY_INFO` reports length 0 and then `CKR_ARGUMENTS_BAD` (tolerated by the
-//! token layer for every module), and its fixed per-slot `CKA_LABEL`/`CKA_ID` set.
+//! The provider for Yubico ykcs11 (`YubiKey` PIV). Two quirks are handled generically elsewhere.
+//! Its `CKA_PUBLIC_KEY_INFO` reports a length of 0 and then fails with `CKR_ARGUMENTS_BAD`, which
+//! the token layer tolerates for every module. Its set of `CKA_LABEL` and `CKA_ID` values is fixed
+//! for each slot.
 //!
-//! What lives here is the `piv-attestation` commitment (docs/DESIGN.md §3.7): the provider
-//! finds the module-exposed attestation certificates, the private `attest` module checks what
-//! the chain asserts and computes the canonical digest, and the chain walk is
-//! `cakeys_core::chain`'s — verified against both a fixture chain and Yubico's own published
-//! roots and intermediates.
+//! This crate contains the `piv-attestation` commitment (docs/DESIGN.md §3.7). The provider finds
+//! the attestation certificates that the module exposes, the private `attest` module checks what
+//! the chain asserts and computes the canonical digest, and `cakeys_core::chain` walks the chain.
+//! The chain walk is tested against both a fixture chain and Yubico's own published roots and
+//! intermediates.
 
 mod attest;
 
@@ -15,11 +16,8 @@ use cakeys_core::chain::{Cert, pem_certs};
 use cakeys_core::config::Locator;
 use cakeys_core::id::Scheme;
 use cakeys_core::types::ObjectClass as Class;
-use cakeys_core::{KmError, Result};
-use cakeys_pkcs11::Token;
-use cakeys_pkcs11::provider::{
-    AttestCtx, AttestationCap, Attested, Create, Destroy, PlaintextKind, PlaintextVia, Provider,
-};
+use cakeys_core::{Check, KmError, Reason, Result};
+use cakeys_pkcs11::provider::{AttestCtx, AttestationCap, Attested, PlaintextKind, PlaintextVia, Provider};
 use cakeys_pkcs11::token::{ModuleInfo, read_attribute};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass};
 use std::sync::LazyLock;
@@ -27,43 +25,47 @@ use std::sync::LazyLock;
 /// The ykcs11 provider (see the crate's documentation).
 pub struct Ykcs11;
 
-/// Anchors: Yubico's pinned PIV roots. The intermediate pool (the untrusted store) is only
-/// needed when a chain uses it, so both are parsed lazily, once per process.
+/// The trust anchors, which are Yubico's pinned PIV roots. The intermediate pool (the untrusted
+/// store) is needed only when a chain uses it, so both are parsed lazily, once per process.
 static ANCHORS: LazyLock<Vec<Cert>> = LazyLock::new(|| {
     let mut a = pem_certs(include_str!("../roots/yubico-piv-ca-1.pem")).expect("embedded Yubico PIV root parses");
     a.extend(pem_certs(include_str!("../roots/yubico-ca-1.pem")).expect("embedded Yubico attestation root parses"));
     a
 });
 
-/// The pooled intermediates a PIV chain may use: Yubico's published pool narrowed to the PIV
-/// CAs and the generic intermediates above them (`attest::piv_pool`).
+/// The pooled intermediates that a PIV chain may use: Yubico's published pool, narrowed to the
+/// PIV CAs and the generic intermediates above them (`attest::piv_pool`).
 static INTERMEDIATES: LazyLock<Vec<Cert>> = LazyLock::new(|| {
     piv_pool(pem_certs(include_str!("../roots/yubico-intermediate.pem")).expect("embedded Yubico intermediates parse"))
 });
 
-/// Entry points for the fuzz targets (`fuzz/fuzz_targets/piv_chain.rs`): the PIV attestation
-/// chain on arbitrary certificates, read or refused with an error, never a panic.
+/// Entry points for the fuzz targets (`fuzz/fuzz_targets/piv_chain.rs`). They run the PIV
+/// attestation chain on arbitrary certificates, which must be read or refused with an error, and
+/// never cause a panic.
 #[cfg(any(test, feature = "fuzzing", kani))]
 pub mod fuzzing {
-    /// `bytes` as a slot attestation certificate and the device certificate that signed it: a
-    /// big-endian two-byte length, the slot's DER, then the device's; verified as `check`
-    /// verifies a chain, dates included, to Yubico's pinned roots and to the test fixture's.
+    /// Reads `bytes` as a slot attestation certificate and the device certificate that signed
+    /// it: a big-endian two-byte length, the slot certificate's DER, and then the device
+    /// certificate's DER. It verifies them as `check` verifies a chain, including the dates,
+    /// against Yubico's pinned roots and the test fixture's root.
     ///
     /// # Errors
     ///
-    /// Whatever the chain's verification refuses.
+    /// Any error from the chain's verification.
     pub fn piv_attestation(bytes: &[u8]) -> cakeys_core::Result<()> {
         super::attest::fuzz_piv_attestation(bytes, &super::ANCHORS, &super::INTERMEDIATES)
     }
 }
 
 impl Ykcs11 {
-    /// ykcs11 generates into the slot the template's `CKA_ID` names and gives each slot fixed
-    /// labels, so a key to create is located by `CKA_ID` alone.
+    /// Checks the locator of a key to create. ykcs11 generates into the slot that the template's
+    /// `CKA_ID` names and gives each slot fixed labels, so a key to create is located by
+    /// `CKA_ID` alone.
     ///
     /// # Errors
     ///
-    /// `Validation` for a locator with a label, or whose `CKA_ID` names no PIV slot.
+    /// `Validation` for a locator with a label, or for a locator whose `CKA_ID` names no PIV
+    /// slot.
     fn check_create(loc: &Locator) -> Result<()> {
         if loc.label.is_some() {
             return Err(KmError::Validation(
@@ -85,9 +87,10 @@ impl Ykcs11 {
         }
     }
 
-    /// ykcs11's `C_DestroyObject` writes an empty certificate to the slot and hides the slot's
-    /// objects for the rest of the session; the key stays and is listed again by the next one
-    /// (verified on a `YubiKey` 5, firmware 5.7.4, ykcs11 2.7.3).
+    /// Returns the message for a key that ykcs11 does not destroy. ykcs11's `C_DestroyObject`
+    /// writes an empty certificate to the slot and hides the slot's objects for the rest of the
+    /// session. The key stays, and the next session lists it again (verified on a `YubiKey` 5,
+    /// firmware 5.7.4, ykcs11 2.7.3).
     #[must_use]
     fn keeps_destroyed_keys(loc: &Locator) -> String {
         let slot = loc.id.as_deref().and_then(piv_slot).map_or("<slot>".to_owned(), |s| format!("{s:02x}"));
@@ -103,9 +106,9 @@ impl Provider for Ykcs11 {
         "ykcs11"
     }
 
-    /// Yubico's PIV module by its `C_GetInfo` description as well: `yubihsm_pkcs11` (`YubiHSM` 2)
-    /// reports the same manufacturer, "Yubico (www.yubico.com)" \[run\], and is no PIV token
-    /// (ykcs11 lib.rs F1).
+    /// Recognizes Yubico's PIV module by its `C_GetInfo` description as well as by its
+    /// manufacturer, because `yubihsm_pkcs11` (`YubiHSM` 2) reports the same manufacturer,
+    /// "Yubico (www.yubico.com)" \[run\], and is not a PIV token (ykcs11 lib.rs F1).
     fn matches(&self, m: &ModuleInfo) -> bool {
         m.manufacturer == "Yubico (www.yubico.com)" && m.description.starts_with("PKCS#11 PIV Library")
     }
@@ -115,48 +118,49 @@ impl Provider for Ykcs11 {
         true
     }
 
-    /// A key comes in by `C_CreateObject` as SO into its PIV slot.
+    /// A key is imported by `C_CreateObject`, as the SO, into its PIV slot.
     fn plaintext_import(&self) -> PlaintextVia {
         PlaintextVia::CreateObject(PlaintextKind::PivImport)
     }
 
-    /// A key, generated or imported, goes into the PIV slot its locator's `CKA_ID` names, by
-    /// that alone: never f9's attestation key (`CKA_ID` 19), which cannot be restored.
+    /// A key, whether generated or imported, goes into the PIV slot that its locator's `CKA_ID`
+    /// names, and the `CKA_ID` alone decides the slot. A key never goes into slot f9, which holds
+    /// the attestation key (`CKA_ID` 19), because that key cannot be restored.
     fn placement(&self, loc: &Locator) -> Result<()> {
         Self::check_create(loc)
     }
 
-    /// A key goes where its locator says (by `CKA_ID` alone, a PIV slot), as SO.
-    fn create(&self, tok: &Token, req: &Create<'_>) -> Result<Option<cakeys_pkcs11::token::CreateNote>> {
-        self.placement(req.locator)?;
-        tok.create_declared(req)
-    }
-
-    /// A key is never claimed deleted (ykcs11 keeps it; the advice names `ykman`); anything else is, as SO.
-    fn destroy(&self, tok: &Token, req: &Destroy<'_>) -> Result<usize> {
-        if req.object.class.is_key() {
-            let advice = Self::keeps_destroyed_keys(req.locator);
-            return Err(KmError::Unsupported(
-                format!("deleting {} on '{}': {advice}", req.object.class, tok.name).into(),
-            ));
+    /// A key is never reported as deleted, because ykcs11 keeps it (the advice names `ykman`).
+    /// Any other object is removed. The core code asks this before any SO login (review
+    /// 2026-11-24 B-2).
+    fn deletion(&self, class: Class, loc: &Locator) -> Result<()> {
+        if class.is_key() {
+            return Err(KmError::Unsupported(Self::keeps_destroyed_keys(loc).into()));
         }
-        tok.destroy_plain(req)
+        Ok(())
     }
 
-    /// ykcs11 reports `CKA_DERIVE` false on every private key, from a fixed per-slot table
-    /// (`pvtkey_objects`, ykcs11/objects.c) \[src\], while its `C_DeriveKey` derives with any EC
-    /// or X25519 key in any slot \[src\]\[run\]. A spec-compliant module reports what the key does.
+    /// The repaired pairs are `CKA_DERIVE` of EC and X25519 private keys ([`Self::policy_flag`]).
+    fn repairs(&self) -> &'static [(AttributeType, KeyType)] {
+        &[(AttributeType::Derive, KeyType::EC), (AttributeType::Derive, KeyType::EC_MONTGOMERY)]
+    }
+
+    /// ykcs11 reports `CKA_DERIVE` as false on every private key, from a fixed table for each
+    /// slot (`pvtkey_objects`, ykcs11/objects.c) \[src\], although its `C_DeriveKey` derives with
+    /// any EC or X25519 key in any slot \[src\]\[run\]. A spec-compliant module reports what the
+    /// key does, so the repair reports true.
     fn policy_flag(&self, attr: AttributeType, reported: bool, private_key_type: &dyn Fn() -> Option<KeyType>) -> bool {
         reported
             || (attr == AttributeType::Derive
                 && matches!(private_key_type(), Some(KeyType::EC | KeyType::EC_MONTGOMERY)))
     }
 
-    /// The device's on-demand attestation certificate of the slot (`CN=YubiKey PIV Attestation
-    /// <slot>`), which shares the `CKA_ID` of any key there \[run\]. ykcs11's placeholder
-    /// (`CN=YubiKey PIV Slot <slot>`, serial 0, self-issued) is no companion: ykcs11 writes it
-    /// for every key it generates (`token_generate_key`, ykcs11/token.c) \[src\], so a real key
-    /// `cakeys create` made carries it as much as a probe's (review 2026-11-23 D-1).
+    /// The only companion is the device's on-demand attestation certificate of the slot
+    /// (`CN=YubiKey PIV Attestation <slot>`), which shares the `CKA_ID` of any key in the slot
+    /// \[run\]. ykcs11's placeholder (`CN=YubiKey PIV Slot <slot>`, serial 0, self-issued) is not a
+    /// companion, because ykcs11 writes it for every key that it generates
+    /// (`token_generate_key`, ykcs11/token.c) \[src\]. So a real key that `cakeys create` made has
+    /// the placeholder just as a probe's key does (review 2026-11-23 D-1).
     fn scratch_companion(&self, id: &[u8], cert: &[u8]) -> bool {
         use x509_cert::der::Decode;
         let [id] = id else { return false };
@@ -168,21 +172,22 @@ impl Provider for Ykcs11 {
     fn attestation(&self) -> Option<AttestationCap> {
         Some(AttestationCap {
             scheme: Scheme::PivAttestation,
-            // PIV attests the asymmetric keys generated on the device; secret keys, data
-            // objects and certificates have none.
+            // PIV attests the asymmetric keys that were generated on the device. Secret keys,
+            // data objects and certificates have no attestation.
             classes: &[Class::PrivateKey, Class::PublicKey],
-            // An imported key has no attestation certificate, and its slot keeps it.
+            // An imported key has no attestation certificate, and its slot keeps the key.
             imported: false,
             attest,
         })
     }
 }
 
-/// The slot's PIV attestation of `ctx.key`, verified to Yubico's roots ([`AttestationCap::attest`]).
+/// Returns the slot's PIV attestation of `ctx.key`, verified against Yubico's roots
+/// ([`AttestationCap::attest`]).
 fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
-    // The slot's attestation certificate shares the key's CKA_ID and carries the slot in
-    // its label; ykcs11 mints it when it lists the slot's objects, needing no login (seen
-    // on a YubiKey 5, firmware 5.7.4).
+    // The slot's attestation certificate shares the key's `CKA_ID` and carries the slot in its
+    // label. ykcs11 creates it when it lists the slot's objects, without a login (observed on a
+    // YubiKey 5, firmware 5.7.4).
     let Some(Attribute::Id(id)) = read_attribute("CKA_ID", ctx.session.get_attributes(ctx.key, &[AttributeType::Id]))?
     else {
         return Err(KmError::Unsupported("the key object exposes no CKA_ID to find its attestation by".into()));
@@ -195,8 +200,8 @@ fn attest(ctx: &AttestCtx<'_>) -> Result<Attested> {
     Ok(Attested { scheme: Scheme::PivAttestation, id: a.id, root: a.root, warning, caveat: None })
 }
 
-/// The PIV key slot ykcs11 places a `CKA_ID` in (hex, one byte): 01-04 are 9a/9c/9d/9e, 05-18 the
-/// retired slots 82-95 (ykcs11's fixed object table).
+/// Returns the PIV key slot in which ykcs11 places a `CKA_ID` (hex, one byte). 01-04 are the
+/// slots 9a/9c/9d/9e, and 05-18 are the retired slots 82-95 (ykcs11's fixed object table).
 fn piv_slot(id: &str) -> Option<u8> {
     let [n] = cakeys_core::hex::decode(id)?[..] else { return None };
     match n {
@@ -206,8 +211,9 @@ fn piv_slot(id: &str) -> Option<u8> {
     }
 }
 
-/// The slot's attestation certificate DER: exactly one certificate object under the key's
-/// `CKA_ID` whose label carries the slot suffix after `ATTESTATION_LABEL`.
+/// Returns the DER of the slot's attestation certificate. There must be exactly one certificate
+/// object under the key's `CKA_ID` whose label carries the slot suffix after
+/// `ATTESTATION_LABEL`.
 fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
     let label_prefix = format!("{ATTESTATION_LABEL} ");
     let found = ctx
@@ -217,8 +223,8 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
     let mut certs = Vec::new();
     for h in found {
         let label = read_attribute("CKA_LABEL", ctx.session.get_attributes(h, &[AttributeType::Label]))?;
-        // The f9 device certificate shares the prefix but not the key's CKA_ID; require a
-        // non-empty slot suffix so the two can never be confused.
+        // The f9 device certificate shares the prefix but not the key's `CKA_ID`. Require a
+        // non-empty slot suffix, so that the two can never be confused.
         if let Some(Attribute::Label(l)) = label
             && String::from_utf8_lossy(&l).strip_prefix(&label_prefix).is_some_and(|slot| !slot.is_empty())
         {
@@ -235,11 +241,14 @@ fn find_attestation_cert(ctx: &AttestCtx<'_>, id: &[u8]) -> Result<Vec<u8>> {
             )
             .into(),
         )),
-        n => Err(KmError::Ambiguous(format!("{n} attestation certificates share the key's CKA_ID").into())),
+        n => Err(KmError::Ambiguous(Reason::check(
+            Check::AttestPivUnique,
+            format!("{n} attestation certificates share the key's CKA_ID"),
+        ))),
     }
 }
 
-/// The DER (`CKA_VALUE`) of the certificate object `h`, named `what` in its errors.
+/// Returns the DER (`CKA_VALUE`) of the certificate object `h`. The errors name it `what`.
 fn certificate_value(ctx: &AttestCtx<'_>, h: cryptoki::object::ObjectHandle, what: &str) -> Result<Vec<u8>> {
     match read_attribute(what, ctx.session.get_attributes(h, &[AttributeType::Value]))? {
         Some(Attribute::Value(der)) => Ok(der),
@@ -247,8 +256,8 @@ fn certificate_value(ctx: &AttestCtx<'_>, h: cryptoki::object::ObjectHandle, wha
     }
 }
 
-/// The f9 device attestation certificate (bare label, no slot suffix): the key that signed the
-/// slot certificate, itself signed by a pinned Yubico root.
+/// Returns the f9 device attestation certificate (with the bare label and no slot suffix). It
+/// holds the key that signed the slot certificate, and a pinned Yubico root signed it.
 fn find_device_cert(ctx: &AttestCtx<'_>) -> Result<Vec<u8>> {
     let found = ctx
         .session
@@ -270,7 +279,10 @@ fn find_device_cert(ctx: &AttestCtx<'_>) -> Result<Vec<u8>> {
             )
             .into(),
         )),
-        n => Err(KmError::Ambiguous(format!("{n} objects carry the f9 device certificate label").into())),
+        n => Err(KmError::Ambiguous(Reason::check(
+            Check::AttestPivUnique,
+            format!("{n} objects carry the f9 device certificate label"),
+        ))),
     }
 }
 
@@ -278,15 +290,16 @@ fn find_device_cert(ctx: &AttestCtx<'_>) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    /// ykcs11 claims its own module and no other Yubico one: the `C_GetInfo` strings
-    /// yubico-piv-tool 2.7.3's `libykcs11.so` and yubihsm-shell 2.8.0's `yubihsm_pkcs11.so` carry
-    /// \[run\], padded as `CK_INFO`'s fixed fields are.
+    /// ykcs11 claims its own module and no other Yubico module. The test uses the `C_GetInfo`
+    /// strings of yubico-piv-tool 2.7.3's `libykcs11.so` and yubihsm-shell 2.8.0's
+    /// `yubihsm_pkcs11.so` \[run\], which are padded as the fixed fields of `CK_INFO` are.
     #[test]
     fn only_the_piv_module_is_ykcs11() {
         let module = |manufacturer: &str, description: &str| ModuleInfo {
             path: String::new(),
             hash: None,
-            // Unpadded, as `token::module_info` hands them over (review 2026-11-23 B-26).
+            // The strings are unpadded, as `token::module_info` passes them (review 2026-11-23
+            // B-26).
             description: description.into(),
             manufacturer: manufacturer.into(),
             version: String::new(),
@@ -297,8 +310,9 @@ mod tests {
         assert!(!Ykcs11.matches(&module("SoftHSM", "Implementation of PKCS11")));
     }
 
-    /// ykcs11's fixed `CKA_ID` table: 01-04 the four PIV slots, 05-18 the twenty retired slots;
-    /// 19 (f9, the device attestation key) and anything else is no key slot to generate into.
+    /// ykcs11's fixed `CKA_ID` table: 01-04 are the four PIV slots, and 05-18 are the twenty
+    /// retired slots. 19 (f9, the device attestation key) and any other value are not key slots
+    /// into which a key can be generated.
     #[test]
     fn cka_ids_map_to_piv_slots() {
         assert_eq!(piv_slot("01"), Some(0x9a));
@@ -313,8 +327,8 @@ mod tests {
         assert!(Ykcs11::check_create(&loc(None, Some("01"))).is_ok());
         assert!(matches!(Ykcs11::check_create(&loc(Some("x"), Some("01"))), Err(KmError::Validation(_))));
         assert!(matches!(Ykcs11::check_create(&loc(None, Some("19"))), Err(KmError::Validation(_))));
-        // The same rule is the provider's static placement, which the gate and imports ask
-        // (review 2026-11-23 B-3): never f9 (19), never by label.
+        // The same rule is the provider's static placement, which the gate and imports check
+        // (review 2026-11-23 B-3): never slot f9 (19), and never by label.
         assert!(Ykcs11.placement(&loc(None, Some("18"))).is_ok());
         for bad in [loc(None, Some("19")), loc(Some("k"), None), loc(Some("k"), Some("05")), loc(None, None)] {
             assert!(matches!(Ykcs11.placement(&bad), Err(KmError::Validation(_))), "{bad:?}");
@@ -322,16 +336,17 @@ mod tests {
         assert!(Ykcs11::keeps_destroyed_keys(&loc(None, Some("18"))).contains("ykman piv keys delete 95"));
     }
 
-    /// The DER of a one-certificate PEM fixture.
+    /// Returns the DER of a PEM fixture that holds one certificate.
     fn der(pem: &str) -> Vec<u8> {
         x509_cert::der::pem::decode_vec(pem.as_bytes()).unwrap().1
     }
 
-    /// Beside the probe's own certificate in its scratch slot, only the device's attestation of
-    /// that slot may sit (exported from slot 95 of the `YubiKey` here). ykcs11's placeholder is
-    /// never one: every key ykcs11 generates has it, a real key's too (review 2026-11-23 D-1:
-    /// it used to mark a slot as scratch). Nor is a real certificate, another slot's
-    /// attestation, or no PIV slot at all (f9's `CKA_ID`, a two-byte ID).
+    /// Next to the probe's own certificate in its scratch slot, only the device's attestation of
+    /// that slot may be present (the fixture was exported from slot 95 of the `YubiKey` here).
+    /// ykcs11's placeholder is never a companion, because every key that ykcs11 generates has
+    /// one, including a real key (review 2026-11-23 D-1: the placeholder used to mark a slot as
+    /// scratch). A real certificate, another slot's attestation, and an ID that is not a PIV slot
+    /// (f9's `CKA_ID`, or a two-byte ID) are not companions either.
     #[test]
     fn only_the_slots_attestation_sits_beside_the_probes_certificate() {
         let placeholder = der(include_str!("../tests/fixtures/placeholder95.pem"));

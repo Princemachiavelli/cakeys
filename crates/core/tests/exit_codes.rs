@@ -1,6 +1,7 @@
-//! What the docs say an error exits with is what it exits with: `read_lock`'s doc said 18 for
-//! the 14 it returns (review D2). Every `` `Variant` (NN) `` in the workspace's sources names a
-//! `KmError` variant and the code [`KmError::exit_code`] gives it.
+//! These tests check that the exit code that the documentation gives for an error is the code
+//! with which the error exits. The doc comment of `read_lock` once said 18 for an error that
+//! exits with 14 (review D2). Every `` `Variant` (NN) `` in the workspace's sources must name a
+//! `KmError` variant and the code that [`KmError::exit_code`] returns for it.
 
 use cakeys_core::KmError;
 use std::path::{Path, PathBuf};
@@ -56,15 +57,29 @@ fn documented_exit_codes_are_the_ones_returned() {
     assert!(checked > 30, "only {checked} documented codes found: the scan no longer reads the docs");
 }
 
-/// `EXIT_CODES`, the table every `--help` renders, holds every code an error exits with, the
-/// lock-written code, 0 and 2, and no other; docs/CAKEYS.md's exit-code table lists the same.
+/// `EXIT_CODES`, the table that every `--help` prints, holds every code with which an error
+/// exits, the lock-written code, 0, 1 and 2, and no other code. The exit-code table of
+/// docs/CAKEYS.md lists the same codes. Each row must describe its code with the same words as
+/// `EXIT_CODES`: the words up to the first `:`, or all the words when there is no `:`, ignoring
+/// backticks (review 2026-11-24 C-13: rows 1, 17 and 21 used other words).
 #[test]
 fn the_exit_code_table_lists_every_code() {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     let doc = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/CAKEYS.md");
     let doc = std::fs::read_to_string(&doc).unwrap_or_else(|e| panic!("{}: {e}", doc.display()));
-    let table: BTreeSet<u8> =
-        doc.lines().filter_map(|l| l.strip_prefix("| ")?.split_once(" |").and_then(|(n, _)| n.parse().ok())).collect();
+    let rows: BTreeMap<u8, &str> = doc
+        .lines()
+        .filter_map(|l| {
+            let (n, rest) = l.strip_prefix("| ")?.split_once(" |")?;
+            Some((n.parse().ok()?, rest.split(" |").next()?.trim()))
+        })
+        .collect();
+    let table: BTreeSet<u8> = rows.keys().copied().collect();
+    let name = |means: &str| means.replace('`', "").split(':').next().unwrap_or_default().trim().to_owned();
+    for (code, means) in cakeys_core::EXIT_CODES {
+        let row = rows.get(&code).map_or_else(String::new, |r| name(r));
+        assert_eq!(row, name(means), "docs/CAKEYS.md's exit {code} (left) is not EXIT_CODES' (right)");
+    }
     let errors: Vec<u8> = KmError::every_variant().iter().map(|(_, e)| e.exit_code()).filter(|c| *c >= 10).collect();
     let mut codes: BTreeSet<u8> = errors.iter().copied().collect();
     assert_eq!(codes.len(), errors.len(), "two variants share a code");

@@ -2,7 +2,7 @@
 
 mod common;
 
-/// Verbs and flags no integration test uses yet, each with why.
+/// The verbs and flags that no integration test uses yet, each with the reason.
 const UNTESTED: &[(&str, &str)] = &[];
 
 #[test]

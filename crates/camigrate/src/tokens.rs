@@ -1,31 +1,35 @@
-//! Export and import against tokens and the lock (docs/CAMIGRATE.md): each side's capabilities, the
-//! objects a source holds, and the transport key. The decisions are [`crate::plan`]'s; each
-//! side's capabilities come from the token's resolved capability profiles (docs/CAPROBE.md
-//! phase 2) when one is committed for its provider, else a spec-compliant module's
+//! The parts of export and import that read the tokens and the lock (docs/CAMIGRATE.md): the
+//! capabilities of each side, the objects that a source holds, and the transport key. The
+//! decisions themselves are made in [`crate::plan`]. The capabilities of each side come from the
+//! token's resolved capability profiles (docs/CAPROBE.md phase 2) when a profile is committed for
+//! its provider. Otherwise, they are the capabilities of a spec-compliant module
 //! (`Side::pkcs11`).
 
 use crate::plan::{Allow, FileFormat, Material, Plan, To, plan};
 use crate::side::{Accept, PlaintextImport, Probed, ProbedWays, Side};
 use crate::transport::Transport;
-use cakeys_core::config::{AttrValue, Lock, Observation, TokenCfg, TokenObservation};
+use crate::trust::{self, BoundTransport, Claimed};
+use cakeys_core::config::{Config, Lock, Observation, TokenCfg, TokenObservation};
 use cakeys_core::migrate::{Method, OaepHash};
 use cakeys_core::types::{KeyType, ObjectClass};
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::resolution::{self, Resolved, moduleless_info};
 use cakeys_pkcs11::{Registry, Token};
-use cakeys_profile::{Capability, KeyKind, Move, On, PlaintextKind, Profile, Way};
-use std::collections::{BTreeMap, BTreeSet};
+use cakeys_profile::{By, Capability, KeyKind, Move, On, PlaintextKind, Profile, Way};
+use std::collections::BTreeSet;
 use std::str::FromStr;
 
-/// A token's capabilities, from the open token: its resolved capability profile over its
-/// usable mechanisms, the layers' subtractions included; a spec-compliant module's
-/// (`Side::pkcs11`) when no module profile is committed for it.
+/// Returns a token's capabilities, taken from the open token. They are the token's resolved
+/// capability profile, applied to its usable mechanisms, with the subtractions of the layers
+/// included. When no module profile is committed for the token, they are the capabilities of a
+/// spec-compliant module (`Side::pkcs11`).
 ///
 /// # Errors
 ///
-/// The mapping error when a committed profile's migration rows name something the baseline
-/// does not know: a commit-time bug in the profile, named with its profile.
+/// `Validation` (17) when the migration rows of a committed profile name something that the
+/// baseline does not know. Such a row is a bug in the committed profile, and the error names the
+/// profile.
 pub(crate) fn side(tok: &Token) -> Result<Side> {
     match &tok.profiles.module {
         Some(p) => side_of(p, &tok.profiles, &tok.name, tok.provider.name(), &tok.mechanism_names()),
@@ -33,10 +37,11 @@ pub(crate) fn side(tok: &Token) -> Result<Side> {
     }
 }
 
-/// A token's capabilities from the lock alone, for a token this host cannot open: the token's
-/// observation (review A3) — its provider, mechanisms, and the profiles that resolve from the
-/// module and token it recorded. `None` when the observation records no provider, or one this
-/// build does not link.
+/// Returns a token's capabilities from the lock alone, for a token that this host cannot open.
+/// They come from the token's observation in the lock (review A3): its provider, its mechanisms,
+/// and the profiles that resolve from the module and the token that the observation recorded.
+/// Returns `None` when the observation records no provider, no module or no token, or a provider
+/// that this build does not link.
 #[must_use]
 pub(crate) fn side_from_lock(
     token: &str,
@@ -45,15 +50,16 @@ pub(crate) fn side_from_lock(
     notes: &mut Notes,
 ) -> Option<Result<Side>> {
     let provider = observed.provider.clone()?;
-    // The lock records the module and the token it ran against: resolve what the profiles say
-    // about exactly that (the forwarder, the binding layer), like an open would.
+    // The lock records the module and the token that the observation ran against. Resolve the
+    // profiles for exactly that module and token (including the forwarder and the binding
+    // layer), as opening the token would.
     let (module, token_info) = (observed.module.as_ref()?, observed.token.as_ref()?);
     let cfg = TokenCfg { provider: Some(provider.clone()), ..lockless_token_cfg() };
     let mut resolved = match resolved(token, resolution::resolve(&cfg, module, Some(token_info), &provider)) {
         Ok(r) => r,
         Err(e) => return Some(Err(e)),
     };
-    // What this token answered decides before the profile of its kind.
+    // The answers that this token recorded take precedence over the profile of its kind.
     resolved.with_answers(token, observed);
     warn_hidden(token, &resolved, notes);
     if resolved.module.is_none() {
@@ -66,14 +72,16 @@ pub(crate) fn side_from_lock(
     Some(side_of(resolved.module.as_ref()?, &resolved, token, &provider, &observed.mechanisms))
 }
 
-/// A resolution of `token`'s profiles that failed is invalid (17), as a token open maps it:
-/// never read as "no provider", which would blame the lock or the build instead.
+/// Maps a failed resolution of `token`'s profiles to `Validation` (17), as opening a token maps
+/// it. The failure is never treated as "no provider", because that would blame the lock or the
+/// build instead.
 fn resolved(token: &str, r: std::result::Result<Resolved, String>) -> Result<Resolved> {
     r.map_err(|e| KmError::Validation(format!("resolving the profiles of '{token}': {e}").into()))
 }
 
-/// A token behind a passthrough that hides its module (a `requires-provider` layer) is planned
-/// as a spec-compliant module until keys.toml names that module's provider: say so loudly.
+/// Warns that a token is planned as a spec-compliant module. This happens to a token behind a
+/// passthrough that hides its module (a `requires-provider` layer), until keys.toml names the
+/// provider of that module.
 fn warn_hidden(token: &str, resolved: &Resolved, notes: &mut Notes) {
     if let Some(why) = &resolved.hidden {
         notes.warn(format_args!(
@@ -82,8 +90,9 @@ fn warn_hidden(token: &str, resolved: &Resolved, notes: &mut Notes) {
     }
 }
 
-/// A target's capabilities from its transport file: its provider's profile over the mechanisms
-/// the file lists (`None`: a provider this build does not link).
+/// Returns a target's capabilities from its transport file: its provider's profile, applied to
+/// the mechanisms that the file lists. Returns `None` for a provider that this build does not
+/// link.
 #[must_use]
 pub(crate) fn side_from_transport(t: &Transport, registry: &Registry) -> Option<Result<Side>> {
     let resolved =
@@ -100,14 +109,14 @@ pub(crate) fn side_from_transport(t: &Transport, registry: &Registry) -> Option<
     }
 }
 
-/// The per-module unwrap-template rules, as data (docs/CAMIGRATE.md D6): what `sealed::import`
-/// drops from a target's unwrap template (`SoftHSM`: `CKA_VALUE_LEN`).
+/// Returns the attributes that `sealed::import` drops from a target's unwrap template, as the
+/// module profile lists them (docs/CAMIGRATE.md D6). For `SoftHSM`, this is `CKA_VALUE_LEN`.
 #[must_use]
 pub(crate) fn unwrap_refusals(tok: &Token) -> Vec<String> {
     refusals_of(tok.profiles.module.as_ref())
 }
 
-/// [`unwrap_refusals`] of a module profile, for a [`Side`] too.
+/// Returns the [`unwrap_refusals`] of a module profile. [`side_of`] uses it for a [`Side`] too.
 fn refusals_of(module: Option<&Profile>) -> Vec<String> {
     let mut out: Vec<String> = module.iter().flat_map(|p| p.unwrap_refuse().into_iter().flatten()).collect();
     out.sort_unstable();
@@ -115,18 +124,19 @@ fn refusals_of(module: Option<&Profile>) -> Vec<String> {
     out
 }
 
-/// Build a [`Side`] from a module profile over a resolved stack: the spec-compliant base,
-/// with the profile's migration rows (and its wrap hashes) applied, the layers' mechanism and
-/// key-type subtractions honoured.
+/// Builds a [`Side`] from a module profile and a resolved stack. It starts from a spec-compliant
+/// module, applies the profile's migration rows and its wrap hashes, and removes the mechanisms
+/// and the key types that the layers subtract.
 ///
 /// # Errors
 ///
-/// The mapping error when a row names a class, key type, curve or hash the baseline does not
-/// know, naming the profile and the row.
+/// `Validation` (17) when a row names a class, a key type, a curve or a hash that the baseline
+/// does not know. The error names the profile and the row.
 fn side_of(module: &Profile, stack: &Resolved, token: &str, provider: &str, mechanisms: &[String]) -> Result<Side> {
     let who = |what: &str| KmError::Validation(format!("module profile {}: {what}", module.profile).into());
     let mut side = Side::pkcs11(token, provider, mechanisms.iter().cloned());
-    // What the stack subtracts: the advertisement's broken rows and every layer's drops.
+    // Remove what the stack subtracts: the mechanisms that the module advertises but that are
+    // broken, and the mechanisms that each layer drops.
     side.mechanisms.retain(|m| !stack.subtracted_mechanisms().contains(m.as_str()));
     let m = module.migration.as_ref();
     for (way, field) in [
@@ -139,7 +149,8 @@ fn side_of(module: &Profile, stack: &Resolved, token: &str, provider: &str, mech
             *field = answer;
         }
     }
-    // Never probed keeps the spec-compliant default; probed and empty means no OAEP method.
+    // When the profile never probed the OAEP hashes, the spec-compliant default stays. When the
+    // profile probed them and found none, the side has no OAEP method.
     if let Some(oaep) = &module.wrap_oaep() {
         side.oaep = oaep.iter().map(|h| oaep_hash(h).map_err(|e| who(&e))).collect::<Result<_>>()?;
     }
@@ -168,10 +179,11 @@ fn side_of(module: &Profile, stack: &Resolved, token: &str, provider: &str, mech
     Ok(side)
 }
 
-/// What the providers of a move's two sides refuse of the templates its run will send
-/// (`Provider::template`), asked before anything runs: the source's ([`source_refusal`]), then
-/// the target's ([`target_refusal`]). `Err` names the first refusal; `Ok(Some(note))` when the
-/// plan cannot build what the run will send, and only the run asks.
+/// Asks the providers of a move's two sides, before anything runs, whether they refuse a template
+/// that the run will send (`Provider::template`). It asks the source first ([`source_refusal`]),
+/// and then the target ([`target_refusal`]). It returns `Err` with the first refusal. It returns
+/// `Ok(Some(note))` when the plan cannot build what the run will send, so that only the run can
+/// ask.
 pub(crate) fn template_refusal(
     dst: &Target,
     method: &Method,
@@ -184,7 +196,8 @@ pub(crate) fn template_refusal(
     target_refusal(dst, method, target, registry)
 }
 
-/// The provider of `side` asked about one template.
+/// Asks the provider of `side` whether it accepts the template `t` for the request `req`. A side
+/// whose provider the registry does not name accepts every template.
 fn ask(
     side: &Side,
     registry: &Registry,
@@ -199,10 +212,12 @@ fn ask(
     }
 }
 
-/// The source's part of [`template_refusal`], and all a plan asks where nothing lands on a token
-/// here (a transport file, a key file): the session keys its export makes, under the export's
-/// own conditions ([`shares_kek`], [`side_rfc5649`]): the host's KEK for a key handed over (to
-/// a target, or written to a file), the transport key and the shared KEK for a sealed one.
+/// The source's part of [`template_refusal`]. It is also everything that a plan asks when nothing
+/// is created on a token here (for a transport file or a key file). It asks about the session keys
+/// that the export creates, under the same conditions as the export ([`shares_kek`],
+/// [`side_rfc5649`]). For a key that the source hands to the host (for a target or for a file),
+/// that is the host's KEK. For a sealed key, that is the transport key and, when the export uses
+/// one, the shared KEK.
 ///
 /// [`shares_kek`]: crate::sealed::shares_kek
 /// [`side_rfc5649`]: crate::sealed::side_rfc5649
@@ -215,7 +230,7 @@ pub(crate) fn source_refusal(
     use crate::sealed::{shares_kek, side_rfc5649};
     use cakeys_pkcs11::templates::session;
     use cakeys_pkcs11::{SessionKey, Template};
-    let session_key = |key| ask(source, registry, &Template::Session(key), session(key));
+    let session_key = |key| ask(source, registry, &Template::Session(key), session(key).into());
     match method {
         Method::HostPkcs8
         | Method::HostRaw
@@ -234,12 +249,13 @@ pub(crate) fn source_refusal(
     }
 }
 
-/// The target's part of [`template_refusal`], and what an import's dry run asks of the open
-/// target: the object `method` creates under `dst` (a key by `C_CreateObject` or `C_UnwrapKey`,
-/// a public object), an imported private key's public half where the target makes one, the KEK
-/// a composed unwrap makes there ([`side_rfc5649`]), and the session keys of the proof and
-/// commitments its record makes. A public object's value and a public key's material are not
-/// read yet, so absent.
+/// The target's part of [`template_refusal`]. An import's dry run also asks it of the open target.
+/// It asks about the object that `method` creates under `dst` (a key, by `C_CreateObject` or
+/// `C_UnwrapKey`, or a public object), about the public half of an imported private key when the
+/// target creates one, about the KEK that a composed unwrap creates on the target
+/// ([`side_rfc5649`]), and about the session keys of the proof and of the commitments that the
+/// record of the object creates. The templates leave out a public object's value and a public
+/// key's material, because those are not read yet.
 ///
 /// [`side_rfc5649`]: crate::sealed::side_rfc5649
 pub(crate) fn target_refusal(
@@ -273,16 +289,18 @@ pub(crate) fn target_refusal(
             };
             ask(Template::Import(on, Via::Unwrap), import_key(on, unwrapped))?;
             if matches!(method, Method::RsaOaepAesKwp(_)) && side_rfc5649(target) {
-                ask(Template::Session(SessionKey::ImportKek), Ok(session(SessionKey::ImportKek)))?;
+                ask(Template::Session(SessionKey::ImportKek), Ok(session(SessionKey::ImportKek).into()))?;
             }
             if private {
                 ask(Template::PublicHalf(on), public_half(on, public_policy, None))?;
             }
         }
-        // `tpm2_ptool` imports outside PKCS#11; a provider's own method is its own.
+        // `tpm2_ptool` imports outside PKCS#11, and a vendor method belongs to its provider, so
+        // no template is asked about.
         Method::Tpm2Ptool | Method::Vendor { .. } => {}
-        // Through the host, from a token or a file: a private or secret key by C_CreateObject,
-        // anything else created as a public object is (a private data object from its file).
+        // A host method, from a token or from a file: a private or secret key is created by
+        // `C_CreateObject`. Any other object, such as a private data object from its file, is
+        // created as a public object is.
         method if key && *method != Method::Public => {
             ask(Template::Import(on, Via::CreateObject), import_key(on, policy))?;
             if private && target.public_keys {
@@ -291,25 +309,40 @@ pub(crate) fn target_refusal(
         }
         _ => ask(Template::Object(on), object(on, policy, None))?,
     }
-    // What the target's `lock` makes once the object is there: its proof's and commitments' keys.
+    // Ask about the session keys that the target's `lock` creates once the object is there: the
+    // keys of its proof and of its commitments.
     let mode = ops::plan_mode(dst).map_err(|e| format!("{dst}: {e}"))?;
     let has = |m: cryptoki::mechanism::MechanismType| Some(target.has(&m.to_string()));
     let seals = ops::ecdh_seals(target.derive_sealed, Some(target.has("CKM_SHA256_HMAC")));
-    for (key, t) in ops::session_templates(dst, mode, &has, seals).map_err(|e| format!("{dst}: {e}"))? {
-        ask(Template::Session(key), Ok(t))?;
+    for t in ops::session_templates(dst, mode, &has, seals).map_err(|e| format!("{dst}: {e}"))? {
+        ask(Template::Session(t.key()), Ok(t.into()))?;
     }
     Ok(None)
 }
 
-/// The probed rows of `module` (`docs/archive/CAPROBE_MIGRATION.md`), by way, each as the objects it
-/// covers. A row of a key type a layer subtracts answers no: the binding cannot name it. A yes
-/// by a mechanism the stack no longer offers (`via`, `usable` the mechanisms left: p11-kit hides
-/// `SoftHSM`'s RFC 5649 key wraps) is left out, as is a row naming a key type, class or curve
-/// this build does not know: unknown, so the claims and the mechanisms decide.
+/// Returns the probed rows of `module` (`docs/archive/CAPROBE_MIGRATION.md`), grouped by way, each
+/// with the objects that it covers. A row of a key type that a layer subtracts answers no, because
+/// the binding cannot name that key type. A yes by a mechanism (`via`) that the stack no longer
+/// offers is left out. `usable` holds the mechanisms that remain; for example, p11-kit hides
+/// `SoftHSM`'s RFC 5649 key wraps. A row that names a key type, a class or a curve that this build
+/// does not know is also left out. A row that is left out is unknown, so the claims and the
+/// mechanisms decide.
 fn probed_of(module: &Profile, stack: &Resolved, usable: &BTreeSet<String>) -> ProbedWays {
     let subtracted = stack.subtracted_key_types();
     let mut ways = ProbedWays::default();
-    for (c, row) in &module.capabilities {
+    // A capability that the probe could not decide answers as an unknown no (phase1-design
+    // §9.1). It is never left out, because the claims would then decide it. Such a capability is
+    // an `[untested]` entry keyed by the capability.
+    let undecided: Vec<(Capability, Option<&cakeys_profile::Row>)> = module
+        .untested
+        .iter()
+        .filter(|(_, u)| u.why.undecided())
+        .filter_map(|(k, _)| Capability::parse(k).ok())
+        .map(|c| (c, None))
+        .collect();
+    let entries = module.capabilities.iter().map(|(c, r)| (c.clone(), Some(r))).chain(undecided);
+    for (c, row) in entries {
+        let c = &c;
         let (rows, class, key) = match c {
             Capability::Import { key_type, on } => (&mut ways.import, None, Some((key_type, on))),
             Capability::Create { class, key } => {
@@ -323,17 +356,23 @@ fn probed_of(module: &Profile, stack: &Resolved, usable: &BTreeSet<String>) -> P
             _ => continue,
         };
         let Some((covers, gone)) = covers_of(class, key, &subtracted) else { continue };
-        let hidden = row.via.as_ref().is_some_and(|v| v.starts_with("CKM_") && !usable.contains(v));
-        if row.answer.yes() && hidden {
+        let unknown = module.unknown(c);
+        let yes = row.is_some_and(|r| r.answer.yes()) && unknown.is_none();
+        let via = row.and_then(|r| r.via.clone());
+        let hidden = via.as_ref().is_some_and(|v| v.starts_with("CKM_") && !usable.contains(v));
+        if yes && hidden {
             continue;
         }
-        rows.push(Probed { covers, yes: row.answer.yes() && !gone, via: row.via.clone() });
+        let unverified = row.is_some_and(|r| r.by == Some(By::Unverified));
+        rows.push(Probed { covers, yes: yes && !gone, via, unknown, unverified });
     }
     ways
 }
 
-/// What a probed row covers: its class (a key's, by its key type, unless named) narrowed to its
-/// key type and curve, RSA size or length; and whether a layer subtracts that key type.
+/// Returns what a probed row covers, and whether a layer subtracts the row's key type. The row
+/// covers its class, narrowed to its key type and to its curve, RSA size or length. When the row
+/// names no class, the class follows from the key type: a private key for EC, Edwards and RSA,
+/// and a secret key otherwise.
 fn covers_of(class: Option<&str>, key: Option<(&KeyKind, &On)>, subtracted: &BTreeSet<&str>) -> Option<(Accept, bool)> {
     let Some((key_type, on)) = key else {
         return Some((Accept::class(ObjectClass::from_str(class?).ok()?), false));
@@ -355,9 +394,9 @@ fn covers_of(class: Option<&str>, key: Option<(&KeyKind, &On)>, subtracted: &BTr
     Some((covers, subtracted.contains(key_type.name())))
 }
 
-/// One migration accept row, as the planner's [`Accept`], or [`None`] when a layer subtracts
-/// every key type the row names: the binding cannot name them, so they are not imported
-/// through it either.
+/// Converts one migration accept row to the planner's [`Accept`]. Returns [`None`] when a layer
+/// subtracts every key type that the row names. The binding cannot name those key types, so they
+/// are not imported through it either.
 fn accept_of(row: &cakeys_profile::AcceptRow, stack: &Resolved) -> std::result::Result<Option<Accept>, String> {
     let class = ObjectClass::from_str(&row.class).map_err(|e| format!("{}: {e}", row.class))?;
     let key_types: std::result::Result<Vec<KeyType>, String> = row
@@ -395,7 +434,7 @@ fn accept_of(row: &cakeys_profile::AcceptRow, stack: &Resolved) -> std::result::
     }))
 }
 
-/// `SHA-1`/`SHA-256` as [`OaepHash`]es.
+/// Converts the name `SHA-1` or `SHA-256` to an [`OaepHash`].
 fn oaep_hash(name: &str) -> std::result::Result<OaepHash, String> {
     match name {
         "SHA-1" => Ok(OaepHash::Sha1),
@@ -404,18 +443,21 @@ fn oaep_hash(name: &str) -> std::result::Result<OaepHash, String> {
     }
 }
 
-/// A minimal token config for resolution from records: nothing extra, the provider pinned.
+/// Returns a minimal token configuration for resolving profiles from records. It sets nothing
+/// beyond an empty label, and the caller supplies the provider.
 fn lockless_token_cfg() -> TokenCfg {
     TokenCfg::labelled(String::new())
 }
 
-/// The objects realised on `token` (only `object`, if given), with what the planner needs from
-/// the lock: the object's type and one realisation's recorded policy and immutables.
+/// Returns the objects realised on `token` (only those in `objects`, when it is not empty), with
+/// what the planner needs from the lock: the object's type, and the policy and the immutable
+/// attributes that one realisation records.
 ///
 /// # Errors
 ///
-/// `PreconditionFailed` when `object` has no realisation on `token`, or the lock records no
-/// type for it: the plan is made from what the lock pins, so lock it first.
+/// `PreconditionFailed` (14) when an object in `objects` has no realisation on `token`, when the
+/// lock records no type for an object, or when the lock records no realisation on `token` at
+/// all. The plan is made from what the lock pins, so an object must be locked first.
 pub(crate) fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Result<Vec<Material<'a>>> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
@@ -425,125 +467,131 @@ pub(crate) fn materials<'a>(lock: &'a Lock, token: &str, objects: &[&str]) -> Re
             continue;
         }
         let ty = lock.objects.get(&r.object).and_then(|o| o.object_type.as_ref()).ok_or_else(|| {
-            KmError::PreconditionFailed(format!("the lock records no type for object '{}'", r.object).into())
+            KmError::PreconditionFailed(Reason::check(
+                Check::ImportLocked,
+                format!("the lock records no type for object '{}'", r.object),
+            ))
         })?;
         out.push(Material { object: &r.object, ty, policy: &r.policy, immutables: &r.immutables });
     }
     if let Some(o) = objects.iter().find(|o| !seen.contains(**o)) {
-        return Err(KmError::PreconditionFailed(
-            format!("object '{o}' has no realisation on token '{token}' in the lock; lock it there first").into(),
-        ));
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::LockRealised,
+            format!("object '{o}' has no realisation on token '{token}' in the lock; lock it there first"),
+        )));
     }
     if out.is_empty() {
-        return Err(KmError::PreconditionFailed(
-            format!("the lock records no realisation on token '{token}': nothing to plan").into(),
-        ));
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::LockRealised,
+            format!("the lock records no realisation on token '{token}': nothing to plan"),
+        )));
     }
     Ok(out)
 }
 
-/// The transport key's public half (`camigrate transport`, docs/CAMIGRATE.md D3). The spec must name an
-/// RSA private key that may unwrap and never leaves the token, and its realisation must verify
-/// against the lock: the locked identity is what makes the public key trustworthy to a source.
-///
-/// # Errors
-///
-/// `Validation` for anything but an RSA private key; `PreconditionFailed` when the realisation
-/// does not allow `CKA_UNWRAP` or is extractable; whatever `verify` refuses.
-pub(crate) fn transport(t: &Target, tok: &Token, lock: &Lock, notes: &mut Notes) -> Result<Transport> {
-    if t.object.class != ObjectClass::PrivateKey || t.object.key_type != Some(KeyType::Rsa) {
-        return Err(KmError::Validation(
-            format!("{t}: a transport key is an RSA private key (docs/CAMIGRATE.md D3), not a {}", t.object.class)
-                .into(),
-        ));
-    }
-    ops::verify(t, tok, lock, notes)?;
-    let none = BTreeMap::new();
-    let policy = lock.realisation(t.spec_name, t.token_name).map_or(&none, |r| &r.policy);
-    if let Some(why) = transport_fault(true, policy) {
-        return Err(KmError::PreconditionFailed(format!("{t}: a transport key {why}").into()));
-    }
-    warn_decrypting(t, lock, notes);
-    let h = tok
-        .find_key(&t.object, &t.on_token.locator, false)?
-        .ok_or_else(|| KmError::NotFound(format!("{t}: the transport key").into()))?;
-    let spki = tok.spki(h, &t.on_token.locator)?;
-    Transport::new(&tok.name, tok.provider.name(), t.object_name, &spki, &tok.mechanism_names())
-}
-
-/// Where `export` or `migrate` sends the material: the one destination of the run, its plan
-/// and its checks (review 2026-11-23 C-23: lib.rs had a second enum, converted to this one).
+/// Where `export` or `migrate` sends the material. It is the one destination of the run, of its
+/// plan and of its checks. Before review 2026-11-23 C-23, lib.rs had a second enum, which was
+/// converted to this one.
 pub(crate) enum Dest<'a> {
-    /// A token in keys.toml, by `migrate`.
+    /// A token in keys.toml, for `migrate`.
     Token(&'a str),
-    /// A bundle sealed to a token's transport key, by `export --to`: planned against that
-    /// token; it lands later, under the pair its import picks.
+    /// A bundle sealed to a token's transport key, for `export --to`. The plan is made against
+    /// that token. The objects reach the token later, under the pair that the import selects.
     Bundle(&'a str),
-    /// A target this host cannot reach, by its transport file (`export --to-transport-file`),
-    /// read once: the plan checks against the lock the very key the export seals to.
-    Transport(&'a std::path::Path, Transport),
-    /// A key file, by `export --to-key-file`.
+    /// A target that this host cannot reach, given by its transport file
+    /// (`export --to-transport-file`) and by the token that the operator named for it (`--to`).
+    /// The file is read once. The plan binds to that token's transport key as the lock pins it,
+    /// which is the same key that the export seals to.
+    Transport(&'a std::path::Path, &'a str, Claimed<Transport>),
+    /// A key file, for `export --to-key-file`.
     File(FileFormat),
 }
 
 impl<'a> Dest<'a> {
-    /// `--to-transport-file <path>`: the file read and parsed, once for the run.
-    pub(crate) fn transport(path: &'a std::path::Path) -> Result<Dest<'a>> {
+    /// Builds the destination of `--to <to> --to-transport-file <path>`. It reads and parses the
+    /// file once for the run, and it refuses the file unless the file belongs to `to` (review
+    /// 2026-11-24 D-1).
+    ///
+    /// # Errors
+    ///
+    /// `Io` for a file that cannot be read. `Validation` (17) for a file that does not parse or
+    /// that belongs to another token.
+    pub(crate) fn transport(path: &'a std::path::Path, to: &'a str) -> Result<Dest<'a>> {
         let text = std::fs::read_to_string(path).map_err(KmError::io(format_args!("reading {}", path.display())))?;
-        Ok(Dest::Transport(path, Transport::parse(&text, path)?))
+        let file = Transport::parse(&text, path)?;
+        file.check_target(path, to)?;
+        Ok(Dest::Transport(path, to, file))
     }
 
-    /// The token the plan is made against: the target of a move, or a bundle's.
-    pub(crate) fn token(&self) -> Option<&'a str> {
+    /// Returns the token that the operator named, against which the plan is made. This is the
+    /// target of a move, or the token that a bundle is made for, directly or through its
+    /// transport file. A key file has no such token. Before review 2026-11-24 D-4, a bundle for a
+    /// transport file was planned against no token.
+    pub(crate) fn to(&self) -> Option<&'a str> {
         match self {
-            Dest::Token(name) | Dest::Bundle(name) => Some(name),
-            Dest::Transport(..) | Dest::File(_) => None,
+            Dest::Token(name) | Dest::Bundle(name) | Dest::Transport(_, name, _) => Some(name),
+            Dest::File(_) => None,
         }
     }
 
-    /// A bundle, for a token or a transport file: nothing lands until it is imported.
+    /// Returns whether the destination is a bundle, for a token or for a transport file. Nothing
+    /// reaches a token until the bundle is imported.
     pub(crate) fn bundle(&self) -> bool {
         matches!(self, Dest::Bundle(_) | Dest::Transport(..))
     }
+
+    /// The name that a plan shows for the destination: the token that [`Self::to`] names, or the
+    /// file format of a key file.
+    pub(crate) fn name(&self) -> String {
+        match (self.to(), self) {
+            (Some(to), _) => to.to_owned(),
+            (None, Dest::File(f)) => format!("{f:?} file").to_lowercase(),
+            (None, _) => unreachable!("only a key file names no token"),
+        }
+    }
 }
 
-/// What to plan moving.
+/// The request for a plan: what to move, from where, to where, and what is allowed.
 pub(crate) struct Request<'a> {
-    /// Only these objects; default (empty): every object realised on `from`.
+    /// Only these objects. When the list is empty, every object realised on `from`.
     pub objects: &'a [&'a str],
     /// The source token.
     pub from: &'a str,
     pub dest: &'a Dest<'a>,
-    /// Allow the `host` and `file` paths: plaintext in this process's memory (docs/CAMIGRATE.md D2).
+    /// Whether the `host` and `file` paths are allowed. They put plaintext in this process's
+    /// memory (docs/CAMIGRATE.md D2).
     pub host_plaintext: bool,
-    /// The target's transport key, by its spec, when several are realised there (docs/CAMIGRATE.md D3).
-    pub transport_key: Option<&'a str>,
-    /// The source holds a copy of that transport key its SO marked `CKA_TRUSTED` (docs/CAMIGRATE.md D2,
-    /// `enforced`).
+    /// keys.toml, which names each target's transport key (`transportWith`).
+    pub cfg: &'a Config,
+    /// The spec of the target's transport key, which overrides the target's `transportWith`
+    /// (`--transport-spec`, docs/CAMIGRATE.md D3).
+    pub transport_spec: Option<&'a str>,
+    /// Whether the source holds a copy of that transport key that its SO marked `CKA_TRUSTED`
+    /// (docs/CAMIGRATE.md D2, `enforced`).
     pub trusted_transport: bool,
 }
 
-/// Where a side's capabilities came from, as a plan says it.
+/// Where a side's capabilities came from, as a plan reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Known {
+pub(crate) enum KnownFrom {
     /// The open token.
     Token,
     /// What the lock recorded of a token that did not open.
     Lock,
     /// A transport file.
     TransportFile,
-    /// A key file has no side.
+    /// Nowhere, because a key file has no side.
     Nowhere,
 }
 
-impl Known {
-    /// The word a plan prints.
+impl KnownFrom {
+    /// Returns the word that a plan prints.
     pub(crate) fn name(self) -> &'static str {
         match self {
-            Known::Token => "token",
-            Known::Lock => "lock",
-            Known::TransportFile => "transport file",
-            Known::Nowhere => "-",
+            KnownFrom::Token => "token",
+            KnownFrom::Lock => "lock",
+            KnownFrom::TransportFile => "transport file",
+            KnownFrom::Nowhere => "-",
         }
     }
 }
@@ -553,51 +601,98 @@ pub(crate) struct Moves {
     /// The destination's name: the target token, or the file format.
     pub to: String,
     /// Where each side's capabilities came from.
-    pub source_from: Known,
-    pub target_from: Known,
+    pub source_from: KnownFrom,
+    pub target_from: KnownFrom,
     pub plans: Vec<Plan>,
-    /// The source's capabilities, to check the templates its export will send.
+    /// The source's capabilities, used to check the templates that its export will send.
     pub source: Side,
-    /// The target's capabilities (none for a file), to check what its `lock` will need.
+    /// The target's capabilities (`None` for a file), used to check what its `lock` will need.
     pub target: Option<Side>,
 }
 
+/// Which plans a run takes. This decides the run's verdict ([`Moves::verdict`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Take {
+    /// Every plan: for named objects, or for a `migrate`.
+    Every,
+    /// The plans that are ready, with the others left out: an export to a bundle without names.
+    WhatCanGo,
+    /// The one key that a key file holds.
+    One,
+}
+
+impl Take {
+    /// Returns what a run of `objects` to `dest` takes. An empty `objects` means every object
+    /// realised on the source.
+    pub(crate) fn of(objects: &[&str], dest: &Dest) -> Take {
+        match dest {
+            Dest::File(_) => Take::One,
+            _ if objects.is_empty() && dest.bundle() => Take::WhatCanGo,
+            _ => Take::Every,
+        }
+    }
+}
+
 impl Moves {
-    /// Whether every object can move as invoked.
+    /// Returns the run's verdict over its plans. The dry run and the real run use the same verdict
+    /// (docs/CAMIGRATE.md D9). The verdict passes when every plan is ready ([`Take::Every`]), when
+    /// at least one plan is ready and the others are left out ([`Take::WhatCanGo`]), or when the
+    /// one plan is ready ([`Take::One`]). Before review 2026-11-24 D-6, the dry run said ready when
+    /// there was no plan, and the real run refused.
     ///
     /// # Errors
     ///
-    /// `Unsupported` (15) when any plan is blocked.
-    pub(crate) fn ready(&self) -> Result<()> {
-        let blocked: Vec<String> =
-            self.plans.iter().filter(|p| !p.ready).map(|p| format!("{}: {}", p.object, p.reasons.join("; "))).collect();
-        if blocked.is_empty() {
+    /// The refusal of the first blocked plan ([`Plan::refused`]), or else `Unsupported` (15). The
+    /// message gives the reason for each blocked plan, or says that nothing on `from` can move.
+    /// `Validation` (17) for a key file when no key is planned.
+    pub(crate) fn verdict(&self, take: Take, from: &str) -> Result<()> {
+        if take == Take::WhatCanGo && self.plans.iter().any(|p| p.ready) {
             return Ok(());
         }
-        // With why: the run itself prints no plan, only `--dry-run` does.
-        Err(KmError::Unsupported(
-            format!(
+        let blocked: Vec<String> =
+            self.plans.iter().filter(|p| !p.ready).map(|p| format!("{}: {}", p.object, p.reasons.join("; "))).collect();
+        match (take, blocked.is_empty()) {
+            // Each plan gives its own reason, in the plan's rows or in the export's warnings, so
+            // this message does not repeat the reasons.
+            (Take::WhatCanGo, _) => Err(self.refusal(format!("nothing on '{from}' can go into a bundle"))),
+            (Take::One, true) if self.plans.is_empty() => Err(KmError::Validation(
+                format!("a key file holds one key, and nothing on '{from}' is planned: name the one to export").into(),
+            )),
+            (_, true) => Ok(()),
+            // The message includes each reason, because the real run prints no plan. Only
+            // `--dry-run` prints one.
+            (_, false) => Err(self.refusal(format!(
                 "{} of {} objects cannot move as invoked ({})",
                 blocked.len(),
                 self.plans.len(),
                 blocked.join(" | ")
-            )
-            .into(),
-        ))
+            ))),
+        }
+    }
+
+    /// Returns `text` as the error of the first blocked plan's refusal ([`Plan::refused`]). That is
+    /// the error that the real run would end with when it reached the refusal. When no plan is
+    /// blocked, it returns `Unsupported` (15).
+    fn refusal(&self, text: String) -> KmError {
+        match self.plans.iter().find(|p| !p.ready) {
+            Some(p) => p.refusal(text),
+            None => KmError::Unsupported(text.into()),
+        }
     }
 }
 
-/// Plan each object's move as `req` asks, from what the lock pins. `source` is the source token
-/// as the caller opened it, once per run; `open` opens a target token, as the caller's run will
-/// use it (read-only to plan, read-write for a `migrate` that writes there). A side that does not
-/// open is planned from what the lock recorded there. The source and target tokens, when they
-/// opened, are handed back for the run to use (review lib.rs F5: the target was opened again).
+/// Plans the move of each object as `req` asks, from what the lock pins. `source` is the source
+/// token as the caller opened it, once per run. `open` opens a target token with the access that
+/// the caller's run will use: read-only for a plan, and read-write for a `migrate` that writes
+/// there. A side that does not open is planned from what the lock recorded for it. The source and
+/// target tokens that opened are returned for the run to use. Before review lib.rs F5, the run
+/// opened the target again.
 ///
 /// # Errors
 ///
-/// [`materials`]' refusals; a side that neither opens nor is recorded in the lock (the open's
-/// error); `Unsupported` for a transport file of a provider this build does not link, and
-/// `Validation` when its profile does not map.
+/// The refusals of [`materials`]. The open's error for a side that neither opens nor is recorded
+/// in the lock. `Unsupported` (15) for a transport file of a provider that this build does not
+/// link, and `Validation` (17) when the provider's profile does not map.
 pub(crate) fn plan_moves(
     lock: &Lock,
     registry: &Registry,
@@ -610,50 +705,54 @@ pub(crate) fn plan_moves(
     let (source, source_from, source_token) = side_or_lock(req.from, source, lock, registry, notes)?;
     let allow = Allow { host_plaintext: req.host_plaintext, trusted_transport: req.trusted_transport };
     let mut target_token = None;
-    let (target, target_from, to_name) = match req.dest {
+    let (target, target_from) = match req.dest {
         Dest::Token(name) | Dest::Bundle(name) => {
             let opened = open(name, notes);
             let (side, from, token) = side_or_lock(name, opened, lock, registry, notes)?;
             target_token = token;
-            (Some(side), from, (*name).to_owned())
+            (Some(side), from)
         }
-        Dest::Transport(path, t) => {
+        Dest::Transport(path, to, t) => {
             let shown = path.display();
+            // The plan uses what the transport file says about its target. The import on that
+            // target checks it again.
+            let t = t.unverified();
+            debug_assert_eq!(t.token, *to, "Dest::transport checked it");
             let side = side_from_transport(t, registry)
                 .ok_or_else(|| {
                     KmError::Unsupported(format!("{shown}: provider '{}' is not in this build", t.provider).into())
                 })?
                 .map_err(|e| KmError::Validation(format!("{shown}: {e}").into()))?;
-            (Some(side), Known::TransportFile, t.token.clone())
+            (Some(side), KnownFrom::TransportFile)
         }
-        Dest::File(f) => (None, Known::Nowhere, format!("{f:?} file").to_lowercase()),
+        Dest::File(_) => (None, KnownFrom::Nowhere),
     };
+    let to_name = req.dest.name();
     let to = match (&target, req.dest) {
         (Some(side), _) => To::Token(side),
         (None, Dest::File(f)) => To::File(*f),
         (None, _) => unreachable!("only a file has no side"),
     };
     let mut plans: Vec<Plan> = materials.iter().map(|m| plan(m, &source, &to, allow)).collect();
-    // A sealed move needs the transport key it wraps to: realised on a target token, or pinned by
-    // this lock when it comes as a file (D3: the lock is the authenticated channel).
+    // A sealed move needs the transport key that it wraps to. That key is the key that the lock
+    // binds to the named target and that is realised there, or, when the key comes in a transport
+    // file, the key that this lock pins. The lock is the authenticated channel for the key (D3;
+    // `trust::BoundTransport`).
     let sealed = |p: &Plan| matches!(p.method, Some(Method::RsaOaepAesKwp(_) | Method::RsaOaep(_)));
     let missing = match req.dest {
-        Dest::Token(name) | Dest::Bundle(name) => match transport_spec(lock, name, req.transport_key) {
-            Err(why) => Some(why),
-            // Not open here: the export seals to the public key the lock recorded, or cannot.
-            Ok(spec) if target_from == Known::Lock => {
-                let object = lock.realisation(spec, name).map(|r| r.object.as_str());
-                object.and_then(|o| lock.objects.get(o)).and_then(|o| o.public_key.as_ref()).is_none().then(|| {
-                    format!(
-                        "'{name}' is not open, and the lock records no public key for its transport key '{spec}': \
-                         lock it there again with migrate.transportWith naming it"
-                    )
-                })
+        Dest::Token(name) | Dest::Bundle(name) => {
+            match trust::planned(BoundTransport::from_lock(req.cfg, lock, name, req.transport_spec))? {
+                Err(why) => Some(why),
+                // The target is not open here, so the export can seal only to the public key that
+                // the lock recorded. When the lock records none, the sealed plans are blocked.
+                Ok(bound) if target_from == KnownFrom::Lock && bound.spki().is_none() => {
+                    Some(format!("'{name}' is not open, and {}", trust::reason(bound.no_public_key())))
+                }
+                Ok(_) => None,
             }
-            Ok(_) => None,
-        },
-        Dest::Transport(path, t) => {
-            pinned(lock, t, req.transport_key).err().map(|e| format!("{}: {e}", path.display()))
+        }
+        Dest::Transport(path, to, t) => {
+            trust::planned(BoundTransport::from_file(t, path, req.cfg, lock, to, req.transport_spec))?.err()
         }
         Dest::File(_) => None,
     };
@@ -665,20 +764,21 @@ pub(crate) fn plan_moves(
     Ok((Moves { to: to_name, source_from, target_from, plans, source, target }, source_token, target_token))
 }
 
-/// A token's capabilities: from the token `opened`, else from what the lock recorded there,
-/// with the token when it opened. A passthrough with no provider named behind it is planned as
-/// a spec-compliant module, loudly.
+/// Returns a token's capabilities, from the token `opened` when it opened, or else from what the
+/// lock recorded for the token. It also returns where the capabilities came from, and the token
+/// when it opened. A passthrough with no provider named behind it is planned as a spec-compliant
+/// module, with a warning.
 fn side_or_lock(
     name: &str,
     opened: Result<Token>,
     lock: &Lock,
     registry: &Registry,
     notes: &mut Notes,
-) -> Result<(Side, Known, Option<Token>)> {
+) -> Result<(Side, KnownFrom, Option<Token>)> {
     let e = match opened {
         Ok(tok) => {
             warn_hidden(name, &tok.profiles, notes);
-            return Ok((side(&tok)?, Known::Token, Some(tok)));
+            return Ok((side(&tok)?, KnownFrom::Token, Some(tok)));
         }
         Err(e) => e,
     };
@@ -696,127 +796,9 @@ fn side_or_lock(
     match side_from_lock(name, observed, registry, notes) {
         Some(side) => {
             notes.note(format_args!("capabilities of '{name}' come from the lock: the token did not open ({e})"));
-            Ok((side?, Known::Lock, None))
+            Ok((side?, KnownFrom::Lock, None))
         }
         None => Err(e),
-    }
-}
-
-/// The spec of the transport key realised on `token` (docs/CAMIGRATE.md D3): the one `chosen` names —
-/// `--transport-spec`, else the token's `transportWith` — never one picked by what it can do. The
-/// lock must record it there as an RSA private key that may unwrap and never leaves the token.
-///
-/// # Errors
-///
-/// Why there is no such key.
-pub(crate) fn transport_spec<'a>(
-    lock: &'a Lock,
-    token: &str,
-    chosen: Option<&str>,
-) -> std::result::Result<&'a str, String> {
-    let Some(chosen) = chosen else {
-        return Err(format!(
-            "no transport key is named for '{token}' (docs/CAMIGRATE.md D3): set transportWith in [tokens.{token}.migrate] to the \
-             spec of an RSA key there that may unwrap and never leaves the token, lock it, or pass --transport-spec"
-        ));
-    };
-    let Some((spec, r)) =
-        lock.realisations.get_key_value(chosen).and_then(|(spec, by_token)| Some((spec, by_token.get(token)?)))
-    else {
-        return Err(format!("transport key '{chosen}' is not realised on '{token}' in the lock: lock it there first"));
-    };
-    let rsa = lock
-        .objects
-        .get(&r.object)
-        .and_then(|o| o.object_type.as_ref())
-        .is_some_and(|t| t.class == ObjectClass::PrivateKey && t.key_type == Some(KeyType::Rsa));
-    match transport_fault(rsa, &r.policy) {
-        Some(why) => {
-            Err(format!("'{chosen}' on '{token}' is no transport key: a transport key {why}, as the lock records it"))
-        }
-        None => Ok(spec.as_str()),
-    }
-}
-
-/// Why a key the lock records (`rsa`: an RSA private key; its realisation's `policy`) is no
-/// transport key (docs/CAMIGRATE.md D3): one rule for [`transport`] and [`transport_spec`]
-/// (review D8). keys.toml's own check (`check_transport_keys`) holds the declarations instead.
-fn transport_fault(rsa: bool, policy: &BTreeMap<String, AttrValue>) -> Option<&'static str> {
-    let is_true = |n: &str| policy.get(n) == Some(&AttrValue::Bool(true));
-    if !rsa {
-        Some("must be an RSA private key")
-    } else if !is_true("CKA_UNWRAP") {
-        Some("must allow CKA_UNWRAP")
-    } else if is_true("CKA_EXTRACTABLE") {
-        Some("must never leave the token (CKA_EXTRACTABLE = false)")
-    } else {
-        None
-    }
-}
-
-/// The public key to seal to for the transport key `t`, from the lock alone (`publicKey`, held
-/// to the locked identity on load): no target needs to be open. `None` when the lock has none
-/// yet (realised before `transportWith` named it). A transport key that may also decrypt is
-/// warned about: whoever holds the target's PIN could decrypt what is sealed to it.
-///
-/// # Errors
-///
-/// `Validation` when the recorded key is no SPKI.
-pub(crate) fn locked_transport(
-    t: &Target,
-    lock: &Lock,
-    notes: &mut Notes,
-) -> Result<Option<crate::sealed::TransportKey>> {
-    use base64::Engine as _;
-    warn_decrypting(t, lock, notes);
-    let Some(o) = lock.objects.get(t.object_name) else { return Ok(None) };
-    let (Some(k), Some(id)) = (&o.public_key, o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name())) else {
-        return Ok(None);
-    };
-    let spki = base64::engine::general_purpose::STANDARD
-        .decode(k)
-        .map_err(|e| KmError::Validation(format!("{t}: the lock's publicKey: {e}").into()))?;
-    crate::sealed::check_transport_size(&spki)?;
-    Ok(Some(crate::sealed::TransportKey { object: t.object_name.to_owned(), rfc7093m4: id.clone(), spki }))
-}
-
-/// A transport key whose recorded policy also decrypts: the target's PIN holder could
-/// `C_Decrypt` a bundle's wrapped key-encryption key out of the token.
-fn warn_decrypting(t: &Target, lock: &Lock, notes: &mut Notes) {
-    let policy = lock.realisation(t.spec_name, t.token_name).map(|r| &r.policy);
-    if policy.and_then(|p| p.get("CKA_DECRYPT")) == Some(&AttrValue::Bool(true)) {
-        notes.warn(format_args!(
-            "{t} also decrypts (CKA_DECRYPT): whoever holds the target's PIN can decrypt what is sealed to it \
-             out of the token; a transport key that only unwraps proves possession with binding = \"pop-unwrap\""
-        ));
-    }
-}
-
-/// A transport file's key is its token's transport key as the lock pins it (docs/CAMIGRATE.md D3:
-/// the lock is the authenticated channel): the spec `chosen` names (`--transport-spec`, else the
-/// file's token's `transportWith`) is realised on the file's token as a transport key
-/// ([`transport_spec`]), on the file's object, whose locked identity is the file's key. Any
-/// other key the lock pins (another token's transport key, a certificate's subject key) is
-/// refused, since whoever swapped the file may hold it (review 2026-11-23 C-1).
-///
-/// # Errors
-///
-/// Why it is not.
-pub(crate) fn pinned(lock: &Lock, t: &Transport, chosen: Option<&str>) -> std::result::Result<(), String> {
-    let spec = transport_spec(lock, &t.token, chosen)?;
-    let realised = lock.realisation(spec, &t.token).map(|r| r.object.as_str());
-    if realised != Some(t.object.as_str()) {
-        return Err(format!(
-            "its object '{}' is not the transport key of '{}': the lock realises '{spec}' there as '{}'",
-            t.object,
-            t.token,
-            realised.unwrap_or("nothing")
-        ));
-    }
-    match lock.objects.get(&t.object).and_then(|o| o.ids.get(cakeys_core::id::Scheme::Rfc7093m4.name())) {
-        Some(id) if *id == t.rfc7093m4 => Ok(()),
-        Some(id) => Err(format!("its key {} is not the {id} the lock pins for '{}'", t.rfc7093m4, t.object)),
-        None => Err(format!("the lock pins no key for its object '{}', so nothing vouches for it", t.object)),
     }
 }
 
@@ -828,9 +810,39 @@ mod tests {
         Profile::from_toml(&format!("profile = \"m/1\"\nmode = \"observed\"\n{migration}")).unwrap()
     }
 
-    /// A resolution that fails is the token's own error (17, naming it and why), never read as
-    /// "no provider" (review tokens.rs F1: a transport file's then said its provider was not
-    /// in this build).
+    /// Checks that a capability that the probe could not decide is unknown. Such a capability is
+    /// a legacy no whose evidence is a device failure, or an `[untested]` entry that the device or
+    /// cakeys left undecided. It is never read as the module's own no, and it is never skipped.
+    /// The plan refuses it (15) and names the re-probe that is needed (phase1-design §9.1; review
+    /// 2026-11-24 E-3, P3's note). Before the fix, the device's no was read as the module's no,
+    /// and the `[untested]` entry was skipped, so the claims planned the move as ready.
+    #[test]
+    fn an_undecided_row_refuses_naming_the_reprobe() {
+        use cakeys_core::config::ObjectCfg;
+        let p = profile(
+            "[capabilities]\n\"unwrap.CKK_EC.secp256r1\" = { answer = \"no\", evidence = \"CKR_DEVICE_ERROR\" }\n\
+             \"unwrap.CKK_RSA.2048\" = { answer = \"no\", by = \"module\", evidence = \"CKR_MECHANISM_INVALID\" }\n\
+             [untested]\n\"export.sealed.CKK_EC.secp384r1\" = { why = \"device\", note = \"CKR_HOST_MEMORY\" }\n",
+        );
+        let ways = probed_of(&p, &Resolved::default(), &BTreeSet::new());
+        let ec = |curve: &str| ObjectCfg {
+            curve: Some(curve.to_owned()),
+            ..ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Ec))
+        };
+        let rsa = ObjectCfg { modulus_bits: Some(2048), ..ObjectCfg::new(ObjectClass::PrivateKey, Some(KeyType::Rsa)) };
+        let said = |r: Option<&Probed>| r.map(|r| (r.yes, r.said("unwrap.*")));
+        let device = said(ProbedWays::of(&ways.unwrap, &ec("secp256r1")));
+        assert!(device.as_ref().is_some_and(|(yes, why)| !yes && why.contains("re-probe it (T2")), "{device:?}");
+        let undecided = said(ProbedWays::of(&ways.export_sealed, &ec("secp384r1")));
+        assert!(undecided.as_ref().is_some_and(|(yes, why)| !yes && why.contains("re-probe it (T2")), "{undecided:?}");
+        // A no that the module itself gave is reported as that row's no.
+        assert_eq!(said(ProbedWays::of(&ways.unwrap, &rsa)), Some((false, "its unwrap.* row says no".to_owned())));
+    }
+
+    /// Checks that a failed resolution is the token's own error (17), and that the error names the
+    /// token and the reason. It is never read as "no provider". Review tokens.rs F1 found that a
+    /// transport file whose resolution failed was reported as a provider that is not in this
+    /// build.
     #[test]
     fn a_failed_resolution_is_invalid_not_absent() {
         let e = resolved("far", Err("two families claim one manufacturer".into())).unwrap_err();
@@ -839,8 +851,9 @@ mod tests {
         assert!(resolved("far", Ok(Resolved::default())).is_ok());
     }
 
-    /// A module profile's migration rows become the planner's side: how plaintext gets in, the
-    /// sizes a row leaves open on one end, and a row whose key types a layer subtracts dropped.
+    /// Checks that a module profile's migration rows become the planner's side: how plaintext is
+    /// imported, the sizes of a row that is open at one end, and the removal of a row whose key
+    /// types a layer subtracts.
     #[test]
     fn migration_rows_become_the_planners_side() {
         let stack = Resolved::default();
@@ -859,15 +872,16 @@ mod tests {
         assert_eq!(got.plaintext_import, Some(PlaintextImport::CreateObject));
         let bits: Vec<_> = got.public_import.iter().map(|a| a.modulus_bits).collect();
         assert_eq!(bits, [Some((0, 4096)), Some((2048, u32::MAX)), None]);
-        // The unpatched binding layer cannot name the SHA-384 HMAC key type: that row goes.
+        // The unpatched binding layer cannot name the SHA-384 HMAC key type, so that row is
+        // removed.
         let layer = cakeys_profile::Set::embedded().unwrap().find("cryptoki/0.12").unwrap().clone();
         let unpatched = Resolved { layers: vec![layer], ..Resolved::default() };
         assert_eq!(side(&p, &unpatched).unwrap().public_import.len(), 2);
     }
 
-    /// A row the baseline does not know is refused (17) with the profile named. An OAEP hash no
-    /// probe tries loads (a newer cakeys's, review D4) and offers no wrap; a row with no hash
-    /// does not load.
+    /// Checks that a row that the baseline does not know is refused (17), and that the error names
+    /// the profile. An OAEP hash that no probe tries (one from a newer cakeys, review D4) loads,
+    /// and it offers no wrap. A row with no hash does not load.
     #[test]
     fn rows_the_baseline_does_not_know_are_refused() {
         let head = "profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n";
@@ -887,7 +901,8 @@ mod tests {
         }
     }
 
-    /// A provider that records what each template is for, and refuses one purpose.
+    /// A test provider that records the purpose of each template that it is asked about. It
+    /// refuses each purpose that starts with the prefix in its second field.
     struct Asked(std::sync::Arc<std::sync::Mutex<Vec<String>>>, &'static str);
 
     impl cakeys_pkcs11::Provider for Asked {
@@ -913,9 +928,10 @@ mod tests {
         }
     }
 
-    /// A move's plan asks the providers about what its run sends, under the run's conditions: the
-    /// source's session keys, the target's object, public half, KEK and the record's proof secret;
-    /// and a refusal is the plan's.
+    /// Checks that a move's plan asks the providers about the templates that its run sends, under
+    /// the run's conditions: the source's session keys, and the target's object, public half, KEK
+    /// and proof secret of the record. It also checks that a provider's refusal becomes the
+    /// plan's refusal.
     #[test]
     fn a_plan_asks_the_providers_what_the_move_sends() {
         cakeys_profile::Set::activate_embedded().unwrap();
@@ -951,23 +967,26 @@ mod tests {
                 "ProofSecret { binding: PopEcdh, sealed: true }"
             ]
         );
-        // No RFC 5649 on either side: no KEK is made, so none is asked about; no HMAC on the
-        // target: the proof derives into a readable secret.
+        // With no RFC 5649 on either side, no KEK is made, so the providers are not asked about
+        // one. With no HMAC on the target, the proof derives into a readable secret
+        // (`sealed: false`).
         let (_, asked) = ask(composed.clone(), &side(&[]), &side(&[]), "-");
         assert_eq!(
             asked,
             ["TransportKey", "import Unwrap", "public half", "ProofSecret { binding: PopEcdh, sealed: false }"]
         );
-        // The host path: the source's KEK, the target's import; PIV makes no public half.
+        // On the host path, the providers are asked about the source's KEK and the target's
+        // import. PIV creates no public half.
         let piv = Side { public_keys: false, ..side(&kwp) };
         let (_, asked) = ask(Method::PivImport, &side(&kwp), &piv, "-");
         assert_eq!(asked, ["HostKek", "import CreateObject", "ProofSecret { binding: PopEcdh, sealed: true }"]);
-        // A refusal blocks the plan, naming the provider and the token.
+        // A refusal blocks the plan, and the reason names the provider and the token.
         let (out, asked) = ask(composed, &side(&kwp), &side(&kwp), "import");
         let why = out.unwrap_err();
         assert!(why.contains("provider 'asked' on 't'") && why.contains("asked refuses"), "{why}");
         assert_eq!(asked.last().map(String::as_str), Some("import Unwrap"), "the first refusal ends it");
-        // A key file written on the host: the source's KEK alone, refused there.
+        // For a key file written on the host, only the source's KEK is asked about, and the
+        // provider refuses it there.
         let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let registry = Registry::new().with(Asked(std::sync::Arc::clone(&asked), "HostKek"));
         let out = source_refusal(&Method::Pkcs12, cakeys_core::migrate::Exposure::File, &side(&kwp), &registry);

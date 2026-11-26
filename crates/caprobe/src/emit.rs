@@ -1,14 +1,15 @@
-//! The capability-profile emitter (docs/CAPROBE.md): a profile as the committed TOML. Only
-//! `caprobe` writes profiles; `cakeys` reads them (`cakeys_profile`).
+//! The capability-profile emitter (docs/CAPROBE.md) writes a profile as the committed TOML. Only
+//! `caprobe` writes profiles, and `cakeys` reads them (`cakeys_profile`).
 
 use cakeys_profile::profile::{AcceptRow, MatchInfo, Mode, Profile, Reported};
 use cakeys_profile::{Capability, Row};
 use std::collections::BTreeMap;
 
-/// A TOML basic-string body for `s`: quotes, backslashes and control characters escaped.
-/// Module-supplied text must land in the file as parseable TOML that reads back identically —
-/// a fixed-width field a module pads with NULs (tpm2-pkcs11's token model, \[run\]) would
-/// otherwise make the committed profile unparsable.
+/// Returns the body of a TOML basic string for `s`, with quotes, backslashes and control
+/// characters escaped. Text that a module supplies must reach the file as TOML that parses and
+/// reads back identically. Without the escapes, a fixed-width field that a module pads with NUL
+/// bytes (the token model of tpm2-pkcs11, \[run\]) would make the committed profile
+/// unparsable.
 fn toml_str(s: &str) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(s.len());
@@ -25,9 +26,10 @@ fn toml_str(s: &str) -> String {
     out
 }
 
-/// A TOML array `key = [...]` of escaped strings, laid out the way the repo's formatter (taplo,
-/// treefmt.nix: 120 columns) lays it out, so a generated profile survives `nix fmt` byte for byte:
-/// on one line when it fits, else one item per line with a trailing comma.
+/// Returns a TOML array `key = [...]` of escaped strings, laid out as the repository's formatter
+/// (taplo in treefmt.nix, at 120 columns) lays it out, so that `nix fmt` leaves a generated
+/// profile unchanged byte for byte. The array is on one line when it fits, and otherwise it has
+/// one item on each line with a trailing comma.
 fn toml_array(key: &str, items: &[String]) -> String {
     let items: Vec<String> = items.iter().map(|x| format!("\"{}\"", toml_str(x))).collect();
     let line = format!("{key} = [{}]", items.join(", "));
@@ -44,8 +46,8 @@ fn toml_array(key: &str, items: &[String]) -> String {
     out
 }
 
-/// One `[[migration.*]]` row for [`profile`]: every field it parses, bits included (emit.rs
-/// F1: a `public-accepts` row lost its bounds).
+/// Writes one `[[migration.*]]` row for [`profile`], with every field that the parser reads,
+/// including the bit bounds (emit.rs F1: a `public-accepts` row lost its bounds).
 fn accept_toml(s: &mut String, what: &str, row: &AcceptRow) {
     use std::fmt::Write as _;
     let _ = writeln!(s, "\n[[migration.{what}]]");
@@ -65,7 +67,7 @@ fn accept_toml(s: &mut String, what: &str, row: &AcceptRow) {
     let _ = writeln!(s);
 }
 
-/// The `[match]` section for [`profile`], when it has any key.
+/// Writes the `[match]` section for [`profile`], when the section has any key.
 fn match_toml(m: &MatchInfo, s: &mut String) {
     use std::fmt::Write as _;
     if m.manufacturer.is_none() && m.module_version.is_none() && m.model.is_none() && m.firmware.is_none() {
@@ -86,7 +88,8 @@ fn match_toml(m: &MatchInfo, s: &mut String) {
     }
 }
 
-/// The `[capabilities]` section for [`profile`]: one inline row per capability, in its order.
+/// Writes the `[capabilities]` section for [`profile`]: one inline row for each capability, in
+/// the order of the capabilities.
 fn capabilities_toml(rows: &BTreeMap<Capability, Row>, s: &mut String) {
     use std::fmt::Write as _;
     if rows.is_empty() {
@@ -95,6 +98,9 @@ fn capabilities_toml(rows: &BTreeMap<Capability, Row>, s: &mut String) {
     let _ = writeln!(s, "\n[capabilities]");
     for (c, r) in rows {
         let _ = write!(s, "\"{}\" = {{ answer = \"{}\"", toml_str(&c.to_string()), r.answer.name());
+        if let Some(by) = r.by {
+            let _ = write!(s, ", by = \"{}\"", by.name());
+        }
         if let Some(v) = &r.via {
             let _ = write!(s, ", via = \"{}\"", toml_str(v));
         }
@@ -105,7 +111,8 @@ fn capabilities_toml(rows: &BTreeMap<Capability, Row>, s: &mut String) {
     }
 }
 
-/// The `[reported.<key type>]` sections for [`profile`]: the sizes the module reports.
+/// Writes the `[reported.<key type>]` sections for [`profile`]: the key sizes that the module
+/// reports.
 fn reported_toml(reported: &BTreeMap<String, Reported>, s: &mut String) {
     use std::fmt::Write as _;
     for (kt, r) in reported {
@@ -119,8 +126,8 @@ fn reported_toml(reported: &BTreeMap<String, Reported>, s: &mut String) {
     }
 }
 
-/// The subtract section for [`profile`], only when non-empty: a note alone is a section too
-/// (emit.rs F1).
+/// Writes the subtract section for [`profile`], only when the section is not empty. A section
+/// with only a note is not empty (emit.rs F1).
 fn filters_toml(p: &Profile, s: &mut String) {
     use std::fmt::Write as _;
     if !p.subtract.mechanisms.is_empty() || !p.subtract.key_types.is_empty() || p.subtract.note.is_some() {
@@ -137,25 +144,27 @@ fn filters_toml(p: &Profile, s: &mut String) {
     }
 }
 
-/// Emit the profile as TOML, the committed format with only its non-empty sections: what
-/// the probe writes, `--out` prints, and the committed module profiles are regenerated
-/// from — never edited by hand (docs/CAPROBE.md: the conformance test re-probes the
-/// reference tokens and compares on every build). The two sections the probe does not
-/// generate are preserved by it across regenerations: `[migration]`, this repo's claims
-/// (docs/CAMIGRATE.md evidence), and `[manual]`, what people found by hand.
+/// Returns the profile as TOML in the committed format, with only its non-empty sections. This
+/// is the text that the probe writes, that `--out` prints, and that the committed module
+/// profiles are regenerated as. profiles/LEDGER.toml says for each file whether a build
+/// re-probes it and how it is regenerated. The header names the ledger and claims neither of
+/// those things (review 2026-11-24 E-7). The emitter also writes the two sections that the
+/// probe does not generate, so that they are kept across regenerations: `[migration]`, which
+/// holds this repository's claims (the docs/CAMIGRATE.md evidence), and `[manual]`, which holds
+/// what people found by hand.
 #[must_use]
 pub(crate) fn profile(p: &Profile) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "# Generated by `caprobe probe` (docs/CAPROBE.md). Never edit: regenerate\n\
-             # with `caprobe probe --token <t> --write-probes --rsa-max-bits 4096 --diff <profile>\n\
-             # --out <this file>` (scripts/regen-profiles.sh: the sizes the tests probe); the\n\
-             # conformance test re-probes and compares on every build. A profile is what the\n\
-             # probe measured: this module on this token's hardware, together. Only [migration],\n\
-             # the move.* capabilities and [manual] are not probe output: this repo's claims and\n\
-             # hand findings, preserved across regenerations."
+        "# Generated by `caprobe probe` (docs/CAPROBE.md): what the probe measured, this module\n\
+             # on this token's hardware together. Regenerate it with `caprobe regenerate`, not by hand.\n\
+             # profiles/LEDGER.toml names the command and whether a build re-probes this file; if\n\
+             # none does, the run it was last probed in and every hand edit since, which\n\
+             # nix/ledger.py holds to the file and to the code on its path. Only [migration], the\n\
+             # move.* capabilities and [manual] are not probe output: this repo's claims and hand\n\
+             # findings, preserved across regenerations."
     );
     let _ = writeln!(s, "profile = \"{}\"", toml_str(&p.profile));
     let _ = writeln!(
@@ -227,7 +236,7 @@ pub(crate) fn profile(p: &Profile) -> String {
     s
 }
 
-/// `[untested]`: each advertised mechanism the probe did not measure, and why.
+/// Writes `[untested]`: each advertised mechanism that the probe did not measure, and why.
 fn untested_toml(p: &Profile, s: &mut String) {
     use std::fmt::Write as _;
     if p.untested.is_empty() {
@@ -240,7 +249,8 @@ fn untested_toml(p: &Profile, s: &mut String) {
     }
 }
 
-/// `[mechanism-info]` and `[claims]`: what the module reports of itself, never compared.
+/// Writes `[mechanism-info]` and `[claims]`: what the module reports about itself. These
+/// sections are never compared.
 fn reported_claims_toml(p: &Profile, s: &mut String) {
     use std::fmt::Write as _;
     if !p.mechanism_info.is_empty() {
@@ -269,10 +279,11 @@ fn reported_claims_toml(p: &Profile, s: &mut String) {
 mod tests {
     use super::*;
 
-    /// Every committed module profile is what the emitter writes for it, byte for byte, the
-    /// hardware ones included, which no test re-probes; the hand-written layers and hardware
-    /// profile, with their comments, read back the same once emitted. A change to how rows are
-    /// typed, ordered or written that would rewrite one fails here, not at the next
+    /// Every committed module profile is byte for byte what the emitter writes for it. This
+    /// includes the profiles of hardware modules, which no test re-probes. The hand-written
+    /// layers and hardware profiles have comments, so for them the test checks only that they
+    /// parse to the same profile after they are emitted. A change to how rows are typed,
+    /// ordered or written that would rewrite a profile fails here, not at the next
     /// regeneration.
     #[test]
     fn every_committed_profile_is_what_the_emitter_writes() {
@@ -303,11 +314,39 @@ mod tests {
         assert_eq!(differ, [] as [String; 0]);
     }
 
-    /// The closing check (`docs/archive/CAPROBE_PROFILE_COVERAGE.md`, Part 0): a committed module profile
-    /// that records `[untested]` names nothing the module does not advertise, nothing a row
-    /// measures and nothing it was found to refuse; and the profiles regenerated for it each have
-    /// the table (an advertised mechanism with neither a row nor an entry is a mechanism no one
-    /// recorded). The profiles it does not yet cover are listed in docs/OPEN.md.
+    /// The header that every profile carries makes no claim about the file (review 2026-11-24
+    /// E-7, E-8). It does not claim a re-probe, which only some profiles get, and it does not
+    /// list regeneration flags, which belong to the command that it names
+    /// (`caprobe regenerate`). The header names the ledger, which says both things for each
+    /// file, and the ledger has an entry for every committed module profile.
+    #[test]
+    fn the_header_names_the_ledger_and_claims_nothing_else() {
+        let text = super::profile(&Profile::from_toml("profile = \"m/1\"\nmode = \"observed\"\n").unwrap());
+        let header: Vec<&str> = text.lines().take_while(|l| l.starts_with('#')).collect();
+        let header = header.join("\n");
+        assert!(header.contains("profiles/LEDGER.toml") && header.contains("`caprobe regenerate`"), "{header}");
+        let claims =
+            ["Never edit", "every build", "re-probes and compares", "conformance test", "--rsa-max-bits", "--out"];
+        for claim in claims {
+            assert!(!header.contains(claim), "the header says `{claim}`:\n{header}");
+        }
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        let ledger = std::fs::read_to_string(root.join("profiles/LEDGER.toml")).unwrap();
+        for family in std::fs::read_dir(root.join("profiles/modules")).unwrap() {
+            for entry in std::fs::read_dir(family.unwrap().path()).unwrap() {
+                let path = entry.unwrap().path();
+                let rel = path.strip_prefix(root).unwrap().display().to_string();
+                assert!(ledger.contains(&format!("path = \"{rel}\"")), "profiles/LEDGER.toml has no entry for {rel}");
+            }
+        }
+    }
+
+    /// The closing check (`docs/archive/CAPROBE_PROFILE_COVERAGE.md`, Part 0). The `[untested]`
+    /// table of a committed module profile names no mechanism that the module does not
+    /// advertise, that a row measures, or that the module was found to refuse. The profiles
+    /// that were regenerated for the coverage plan each have the table, because an advertised
+    /// mechanism with neither a row nor an entry is a mechanism that no one recorded.
+    /// docs/OPEN.md lists the profiles that the check does not yet cover.
     #[test]
     fn untested_entries_are_consistent_and_the_regenerated_profiles_have_them() {
         let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../profiles/modules"));
@@ -330,16 +369,16 @@ mod tests {
     #[test]
     fn emitting_and_parsing_round_trips_module_supplied_text() {
         let mut profile = Profile::from_toml("profile = \"t\"\nmode = \"observed\"\n").unwrap();
-        // Every character a module's fixed-width fields or error messages can carry: the NUL
-        // padding of a C string, embedded quotes, a backslash, and a control byte — none of
-        // which may corrupt the committed TOML (tpm2-pkcs11's NUL-padded token model once
-        // made the embedded set unparsable [run]).
+        // This text has every kind of character that a module's fixed-width fields or error
+        // messages can carry: the NUL padding of a C string, embedded quotes, a backslash, and a
+        // control byte. None of them may corrupt the committed TOML (the NUL-padded token model
+        // of tpm2-pkcs11 once made the embedded set unparsable [run]).
         let nasty = "SW\u{0}\u{0}\u{0}TPM \"model's\" \\ \u{1}firm\u{0}ware \u{7f}";
         profile.notes.insert("token".into(), nasty.to_owned());
         let text = super::profile(&profile);
         let back = Profile::from_toml(&text).unwrap();
         assert_eq!(back.notes.get("token"), Some(&nasty.to_owned()));
-        // And the emitter never writes a raw control byte, whatever the text.
+        // The emitter never writes a raw control byte, whatever the text is.
         assert!(!text.bytes().any(|b| b < 0x20 && b != b'\n' && b != b'\t'));
     }
 
@@ -365,21 +404,24 @@ mod tests {
         let emitted = super::profile(&profile);
         assert!(emitted.contains("\"decrypt.rsa-oaep.SHA-1\" = { answer = \"no\", evidence = \"CKR_ARGUMENTS_BAD\" }"));
         assert_eq!(Profile::from_toml(&emitted).unwrap(), profile);
-        // A hand finding without its evidence is no finding; a row naming no capability, none.
+        // A hand finding without its evidence is not a finding, and a row that names no
+        // capability is not a row.
         assert!(Profile::from_toml("profile = \"t\"\nmode = \"observed\"\n[manual.x]\nfinding = \"y\"\n").is_err());
         let unknown = "profile = \"t\"\nmode = \"observed\"\n[capabilities]\n\"wrap.SHA-1\" = { answer = \"yes\" }\n";
         assert!(Profile::from_toml(unknown).unwrap_err().contains("names no capability"));
     }
 
-    /// A layer and a hand-kept module profile round-trip with every row they can carry: a
-    /// layer's subtractions and note, the flags, each plaintext-import kind, and restrictions.
+    /// A layer and a hand-kept module profile round-trip with every row that they can carry: a
+    /// layer's subtractions and note, the flags, each kind of plaintext import, and the
+    /// restrictions.
     #[test]
     fn layers_flags_and_restrictions_round_trip() {
         let layer = "profile = \"l/1\"\nmode = \"delta\"\nrequires-provider = true\n\n\
                      [subtract]\nmechanisms = [\"CKM_EDDSA\"]\nkey-types = [\"CKK_SHA512_HMAC\"]\nnote = \"dropped by the layer\"\n";
         let layer = Profile::from_toml(layer).unwrap();
         assert_eq!(Profile::from_toml(&super::profile(&layer)).unwrap(), layer);
-        // A provider's stand-ins the probe found working: `add`, beside the advertisement.
+        // The `add` list holds a provider's stand-ins that the probe found working, beside the
+        // advertisement.
         let added = Profile::from_toml(
             "profile = \"m/1\"\nmode = \"observed\"\nadvertise = [\"CKM_EC_KEY_PAIR_GEN\"]\n\
              add = [\"CKM_EC_EDWARDS_KEY_PAIR_GEN\", \"CKM_EDDSA\"]\n",
@@ -398,8 +440,9 @@ mod tests {
 
     #[test]
     fn arrays_are_laid_out_as_the_formatter_would() {
-        // taplo at 120 columns (treefmt.nix): a generated profile must survive `nix fmt`
-        // unchanged, or the conformance test's byte comparison fails after formatting.
+        // The layout matches taplo at 120 columns (treefmt.nix). `nix fmt` must leave a
+        // generated profile unchanged, or the byte comparison of the conformance test fails
+        // after formatting.
         assert_eq!(toml_array("oaep", &["SHA-1".into()]), "oaep = [\"SHA-1\"]");
         let long: Vec<String> = (0..12).map(|i| format!("CKM_MECHANISM_{i:02}")).collect();
         let text = toml_array("advertise", &long);
@@ -408,10 +451,11 @@ mod tests {
         assert!(text.lines().all(|l| l.len() <= 120));
     }
 
-    /// Every optional field the parser reads, each set alone (beside nothing that would make
-    /// the emitter write its section anyway), takes the fuzz target's round trip: a field the
-    /// emitter writes only beside another is lost (emit.rs F1: a `[subtract]` note alone, a
-    /// `public-accepts` row's bits). A field added to the parser belongs here.
+    /// Every optional field that the parser reads passes the fuzz target's round trip when it is
+    /// set alone, with no other field that would make the emitter write its section anyway. A
+    /// field that the emitter writes only beside another field is lost (emit.rs F1: a
+    /// `[subtract]` note alone, and the bits of a `public-accepts` row). A field that is added to
+    /// the parser must be added to this test.
     #[test]
     fn every_optional_field_alone_round_trips() {
         let head = "profile = \"m/1\"\nmode = \"observed\"\n";
@@ -437,6 +481,9 @@ mod tests {
             "[subtract]\nkey-types = [\"CKK_EC\"]\n",
             "[subtract]\nnote = \"why\"\n",
             "[capabilities]\n\"derive.ecdh.sealed\" = { answer = \"no\" }\n",
+            // The provenance fields (review 2026-11-24 E-2 to E-4).
+            "[capabilities]\n\"derive.ecdh.sealed\" = { answer = \"no\", by = \"module\" }\n",
+            "[untested]\n\"derive.ecdh.sealed\" = { why = \"device\", note = \"CKR_GENERAL_ERROR\" }\n",
             "[reported.\"CKK_RSA\"]\nmin-bits = 1024\n",
             "[reported.\"CKK_RSA\"]\nmax-bits = 4096\n",
             "[migration]\n",
@@ -447,7 +494,7 @@ mod tests {
             "[[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_RSA\"\nnote = \"by firmware\"\n",
             "[notes]\ntoken = \"t\"\n",
             "[manual.x]\nfinding = \"y\"\nevidence = \"[run] z\"\n",
-            // Added with the coverage plan (review 2026-11-23 D-20).
+            // The fields that were added with the coverage plan (review 2026-11-23 D-20).
             "[untested]\n\"CKM_SHA256\" = { why = \"scope\" }\n",
             "[untested]\n\"CKM_SHA256\" = { why = \"scope\", note = \"on the host\" }\n",
             "[mechanism-info]\n\"CKM_AES_CBC\" = { min = 16, max = 32, flags = [] }\n",
@@ -467,7 +514,8 @@ mod tests {
         }
     }
 
-    /// Probed with every answer no survives the emitter as that, not as never probed.
+    /// A profile in which every probed answer is no keeps that meaning after the emitter writes
+    /// it, and does not turn into a profile that was never probed.
     #[test]
     fn probed_empty_is_not_unprobed() {
         let none = Profile::from_toml(

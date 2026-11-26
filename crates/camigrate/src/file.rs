@@ -1,10 +1,11 @@
-//! Passphrase-protected key files (docs/CAMIGRATE.md D2 `file`, D4; phase 4b): for a target cakeys
-//! cannot reach, one private key leaves as a PKCS#8 `EncryptedPrivateKeyInfo` (`pkcs8-pbes2`,
-//! PEM) or as PKCS#12 with its certificate (`pkcs12`, what Java, Windows and cloud key vaults
-//! import). Plaintext-equivalent at rest, guarded only by the passphrase: only behind
-//! `--allow-host-plaintext` and a `--passphrase-file`. Both encrypt the key with PBES2:
-//! PBKDF2-HMAC-SHA256 and AES-256-CBC; PKCS#12's integrity is an HMAC-SHA256 under its own KDF.
-//! Every plaintext buffer is zeroized; nothing here formats a key or the passphrase.
+//! Passphrase-protected key files (docs/CAMIGRATE.md D2 `file`, D4; phase 4b). For a target that
+//! cakeys cannot reach, one private key leaves as a PKCS#8 `EncryptedPrivateKeyInfo`
+//! (`pkcs8-pbes2`, PEM) or as PKCS#12 with its certificate (`pkcs12`, the format that Java,
+//! Windows and cloud key vaults import). Such a file is equivalent to plaintext at rest, because
+//! only the passphrase protects it, so it is written only with `--allow-host-plaintext` and a
+//! `--passphrase-file`. Both formats encrypt the key with PBES2, using PBKDF2-HMAC-SHA256 and
+//! AES-256-CBC. PKCS#12's integrity check is an HMAC-SHA256 under its own KDF. Every plaintext
+//! buffer is zeroized, and no code here formats a key or the passphrase into a string.
 
 use cakeys_core::{KmError, Result};
 use der::asn1::{ContextSpecific, ObjectIdentifier, OctetString};
@@ -18,31 +19,35 @@ use pkcs12::{CertBag, DigestInfo, MacData, Pfx, SafeBag};
 use x509_cert::spki::AlgorithmIdentifierOwned;
 use zeroize::Zeroizing;
 
-/// PBKDF2-HMAC-SHA256 iterations for the key (OWASP's 2023 recommendation).
+/// The number of PBKDF2-HMAC-SHA256 iterations for the key (OWASP's 2023 recommendation).
 pub(crate) const PBKDF2_ITERATIONS: u32 = 600_000;
-/// PKCS#12 KDF iterations for the MAC key: as many as for the key. Both derive from the one
-/// passphrase, so the cheaper of the two is what a guess costs.
+/// The number of PKCS#12 KDF iterations for the MAC key, which is the same as for the key. Both
+/// keys derive from the same passphrase, so the cheaper of the two KDFs sets the cost of a guess.
 const MAC_ITERATIONS: i32 = 600_000;
-/// The most KDF iterations a key file read here may ask for: a file is input, and its count is
-/// otherwise how long this process hangs.
+/// The largest number of KDF iterations that a key file read here may ask for. A file is
+/// untrusted input, and without this limit, its iteration count would decide how long this
+/// process hangs.
 const MAX_ITERATIONS: u32 = 10_000_000;
-/// The most encrypted containers a PKCS#12 read here may hold: each runs a KDF of up to
-/// [`MAX_ITERATIONS`], so this bounds a file's work beside its MAC's and its key's. OpenSSL
-/// writes one (the certificates).
+/// The largest number of encrypted containers that a PKCS#12 read here may hold. Each container
+/// runs a KDF of up to [`MAX_ITERATIONS`], so this limit bounds a file's total work, in addition
+/// to the limits on the MAC's KDF and the key's KDF. OpenSSL writes one encrypted container (for
+/// the certificates).
 const MAX_ENCRYPTED_CONTAINERS: usize = 2;
 const ID_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
 const ID_ENCRYPTED_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.6");
 const ID_SHA256: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1");
 const ID_LOCAL_KEY_ID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.21");
-/// PKCS#12's `keyBag` (RFC 7292 §4.2.1): a key not encrypted, which `openssl pkcs12 -keypbe NONE`
-/// writes. Refused by name.
+/// PKCS#12's `keyBag` (RFC 7292 §4.2.1): a key that is not encrypted, which
+/// `openssl pkcs12 -keypbe NONE` writes. It is refused with a message that names it.
 const ID_KEY_BAG: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.12.10.1.1");
-/// What a PKCS#12 written before OpenSSL 3, or with `-legacy`, is refused with: how to re-export it.
+/// The message that refuses a PKCS#12 written before OpenSSL 3 or with `-legacy`. It says how to
+/// re-export the file.
 const LEGACY_P12: &str = "a PKCS#12 from before OpenSSL 3 or `-legacy`; re-export it: \
                           openssl pkcs12 -in old.p12 -legacy -nodes | openssl pkcs12 -export -out new.p12";
 
-/// What a key file held: the private key (PKCS#8), and the certificates a PKCS#12 carried (the
-/// first is the key's, as exporters write it). `keyfile` names the format.
+/// The content of a key file: the private key (PKCS#8), and the certificates that a PKCS#12
+/// carried. The first certificate is the key's, because exporters write it first. `keyfile`
+/// records the format.
 pub(crate) struct Read {
     pub pkcs8: Zeroizing<Vec<u8>>,
     pub certificates: Vec<Vec<u8>>,
@@ -52,11 +57,11 @@ fn bad(what: impl std::fmt::Display) -> KmError {
     KmError::Validation(format!("the key file: {what}").into())
 }
 
-/// Why a key file was not opened, by [`decrypt`].
+/// The reason why [`decrypt`] did not open a key file.
 pub(crate) enum Unopened {
-    /// The passphrase does not open it, or it is damaged.
+    /// The passphrase does not open the file, or the file is damaged.
     Wrong,
-    /// It names more KDF work than this process will do, or a scheme other than PBES2.
+    /// The file names more KDF work than this process will do, or a scheme other than PBES2.
     Refused(KmError),
 }
 
@@ -66,7 +71,7 @@ fn random<const N: usize>() -> Result<[u8; N]> {
     Ok(b)
 }
 
-/// `pkcs8` encrypted under `pass`: the DER of an `EncryptedPrivateKeyInfo`.
+/// Encrypts `pkcs8` under `pass`, and returns the DER of an `EncryptedPrivateKeyInfo`.
 fn encrypt(pkcs8: &[u8], pass: &str) -> Result<Vec<u8>> {
     let params =
         pbes2::Parameters::generate_pbkdf2_sha256_aes256cbc(PBKDF2_ITERATIONS, &random::<16>()?, random::<16>()?)
@@ -78,23 +83,24 @@ fn encrypt(pkcs8: &[u8], pass: &str) -> Result<Vec<u8>> {
     Ok(doc.as_bytes().to_vec())
 }
 
-/// `pkcs8-pbes2`: the key as a PEM `ENCRYPTED PRIVATE KEY`.
+/// Writes the `pkcs8-pbes2` format: the key as a PEM `ENCRYPTED PRIVATE KEY`.
 ///
 /// # Errors
 ///
-/// `Unavailable` when the random number generator or the encryption fails.
+/// `Unavailable` (16) when the random number generator or the encryption fails.
 pub(crate) fn write_pkcs8(pkcs8: &[u8], pass: &str) -> Result<String> {
     let der = encrypt(pkcs8, pass)?;
     der::pem::encode_string("ENCRYPTED PRIVATE KEY", der::pem::LineEnding::LF, &der)
         .map_err(|e| KmError::Unavailable(format!("PEM encoding: {e}").into()))
 }
 
-/// `pkcs12`: the key (PBES2, as `write_pkcs8`) beside its `certificate`, both tagged with
-/// `local_key_id` so importers pair them, under an HMAC-SHA256 MAC. DER.
+/// Writes the `pkcs12` format as DER: the key (encrypted with PBES2, as in `write_pkcs8`) next to
+/// its `certificate`, under an HMAC-SHA256 MAC. Both are tagged with `local_key_id`, so that
+/// importers pair them.
 ///
 /// # Errors
 ///
-/// `Unavailable` when the random number generator, the encryption or the encoding fails.
+/// `Unavailable` (16) when the random number generator, the encryption or the encoding fails.
 pub(crate) fn write_pkcs12(pkcs8: &[u8], certificate: &[u8], pass: &str, local_key_id: &[u8]) -> Result<Vec<u8>> {
     let enc = |e: der::Error| KmError::Unavailable(format!("PKCS#12 encoding: {e}").into());
     let attrs = || -> Result<x509_cert::attr::Attributes> {
@@ -142,7 +148,8 @@ pub(crate) fn write_pkcs12(pkcs8: &[u8], certificate: &[u8], pass: &str, local_k
     pfx.to_der().map_err(enc)
 }
 
-/// HMAC-SHA256 of `data` under the PKCS#12 MAC key of `pass` and `salt`.
+/// Returns the HMAC-SHA256 of `data` under the PKCS#12 MAC key that derives from `pass` and
+/// `salt`.
 fn mac(pass: &str, salt: &[u8], iterations: i32, data: &[u8]) -> Result<Vec<u8>> {
     let key = Zeroizing::new(
         derive_key_utf8::<sha2::Sha256>(pass, salt, Pkcs12KeyType::Mac, iterations, 32)
@@ -154,20 +161,22 @@ fn mac(pass: &str, salt: &[u8], iterations: i32, data: &[u8]) -> Result<Vec<u8>>
     Ok(m.finalize().into_bytes().to_vec())
 }
 
-/// Read a key file: a PEM `ENCRYPTED PRIVATE KEY` (`pkcs8-pbes2`) or a DER PKCS#12 (`pkcs12`,
-/// its MAC checked first), decrypted under `pass`.
+/// Reads a key file and decrypts it under `pass`. The file is a PEM `ENCRYPTED PRIVATE KEY`
+/// (`pkcs8-pbes2`) or a DER PKCS#12 (`pkcs12`), whose MAC is checked first.
 ///
 /// # Errors
 ///
-/// `Validation` (17) for a file that is neither (a PEM file holding anything but one
-/// `ENCRYPTED PRIVATE KEY` block), a PKCS#12 without a MAC or with another MAC digest than
-/// SHA-256, without exactly one key, with more than [`MAX_ENCRYPTED_CONTAINERS`] encrypted
-/// containers or a legacy-encrypted one, with a certificate bag that is not X.509, with an
-/// iteration count out of range, or for a wrong passphrase (the MAC, or the
-/// padding check): bad input, never the "other material than the lock pins" that 10 means.
+/// `Validation` (17) in these cases: a file that is neither format (including a PEM file that
+/// holds anything other than one `ENCRYPTED PRIVATE KEY` block); a PKCS#12 without a MAC, with a
+/// MAC digest other than SHA-256, without exactly one key, with more than
+/// [`MAX_ENCRYPTED_CONTAINERS`] encrypted containers or with a legacy-encrypted container, or
+/// with a certificate bag that is not X.509; an iteration count out of range; or a wrong
+/// passphrase (detected by the MAC or by the padding check). These errors are bad input, and
+/// never the "other material than the lock pins" that exit code 10 means.
 pub(crate) fn read(bytes: &[u8], pass: &str) -> Result<Read> {
-    // PEM wherever its block starts, as an object's own file is read (`keyfile::pem_blocks`):
-    // after a byte-order mark, a blank line or OpenSSL's `Bag Attributes` text too.
+    // The file is read as PEM wherever its block starts, in the same way as an object's own file
+    // (`keyfile::pem_blocks`), including after a byte-order mark, a blank line or OpenSSL's
+    // `Bag Attributes` text.
     if let Some(text) = crate::keyfile::pem_text(bytes) {
         let blocks = crate::keyfile::pem_blocks(text)
             .map_err(|e| bad(e.into_msg().map_or_else(String::new, cakeys_core::Msg::into_text)))?;
@@ -195,7 +204,8 @@ pub(crate) fn read(bytes: &[u8], pass: &str) -> Result<Read> {
     }
     let (mut pkcs8, mut certificates) = (None, Vec::new());
     let infos = Vec::<ContentInfo>::from_der(&auth_safe).map_err(bad)?;
-    // Each encrypted container runs a KDF of its own: bounded per file, not only per KDF.
+    // Each encrypted container runs its own KDF, so the work is bounded for each file, not only
+    // for each KDF.
     let encrypted = infos.iter().filter(|i| i.content_type == ID_ENCRYPTED_DATA).count();
     if encrypted > MAX_ENCRYPTED_CONTAINERS {
         return Err(bad(format!(
@@ -206,12 +216,13 @@ pub(crate) fn read(bytes: &[u8], pass: &str) -> Result<Read> {
     for info in infos {
         let bags = if info.content_type == ID_ENCRYPTED_DATA { encrypted_octets(&info, pass)? } else { octets(&info)? };
         for bag in Vec::<SafeBag>::from_der(&bags).map_err(bad)? {
-            // A key bag's value is the key itself: wiped as the containers are.
+            // A key bag's value is the key itself, so it is zeroized like the containers.
             let value = Zeroizing::new(
                 ContextSpecific::<Any>::from_der(&bag.bag_value).map_err(bad)?.value.to_der().map_err(bad)?,
             );
             if bag.bag_id == ID_KEY_BAG {
-                // Said as what it is, not as a file without a key (review 2026-11-23 C-22).
+                // The message names the unencrypted key bag, instead of reporting a file without a
+                // key (review 2026-11-23 C-22).
                 return Err(bad(
                     "a PKCS#12 whose key is not encrypted (a keyBag, `-keypbe NONE`); re-export it with a key \
                      encryption: `openssl pkcs12 -in old.p12 -nodes | openssl pkcs12 -export -out new.p12`",
@@ -235,12 +246,13 @@ pub(crate) fn read(bytes: &[u8], pass: &str) -> Result<Read> {
     Ok(Read { pkcs8, certificates })
 }
 
-/// What a wrong passphrase, or a damaged file, is refused with.
+/// Returns the refusal for a wrong passphrase or a damaged file.
 fn wrong() -> KmError {
     bad("it does not open under this passphrase (a wrong passphrase, or a damaged file)")
 }
 
-/// The PKCS#8 an `EncryptedPrivateKeyInfo` holds under `pass`, or why not (17).
+/// Returns the PKCS#8 that an `EncryptedPrivateKeyInfo` holds under `pass`, or the reason why it
+/// cannot (17).
 pub(crate) fn decrypt_pkcs8(der: &[u8], pass: &str) -> Result<Zeroizing<Vec<u8>>> {
     decrypt(der, pass).map_err(|e| match e {
         Unopened::Wrong => wrong(),
@@ -248,9 +260,9 @@ pub(crate) fn decrypt_pkcs8(der: &[u8], pass: &str) -> Result<Zeroizing<Vec<u8>>
     })
 }
 
-/// The content of a `data` `ContentInfo`: its octets. Any other type than this and
-/// `encryptedData` ([`encrypted_octets`]) is not read. Wiped when dropped, as a key bag in it
-/// may be.
+/// Returns the content of a `data` `ContentInfo`: its octets. No content type other than `data`
+/// and `encryptedData` ([`encrypted_octets`]) is read. The octets are zeroized when they are
+/// dropped, because they may hold a key bag.
 fn octets(info: &ContentInfo) -> Result<Zeroizing<Vec<u8>>> {
     if info.content_type != ID_DATA {
         return Err(bad(format!("a PKCS#12 container of type {}, not data", info.content_type)));
@@ -258,9 +270,10 @@ fn octets(info: &ContentInfo) -> Result<Zeroizing<Vec<u8>>> {
     Ok(Zeroizing::new(info.content.decode_as::<OctetString>().map_err(bad)?.as_bytes().to_vec()))
 }
 
-/// The content of an `encryptedData` `ContentInfo` under `pass`: where OpenSSL 3 puts the
-/// certificate bags by default, PBES2-encrypted like the key. A legacy scheme (RC2, 3DES) is
-/// refused with the re-export hint. Wiped when dropped: what is decrypted may hold a key.
+/// Returns the content of an `encryptedData` `ContentInfo`, decrypted under `pass`. OpenSSL 3
+/// puts the certificate bags there by default, encrypted with PBES2 like the key. A legacy scheme
+/// (RC2, 3DES) is refused with the re-export hint. The content is zeroized when it is dropped,
+/// because the decrypted content may hold a key.
 fn encrypted_octets(info: &ContentInfo, pass: &str) -> Result<Zeroizing<Vec<u8>>> {
     let data = info.content.decode_as::<pkcs12::cms::encrypted_data::EncryptedData>().map_err(bad)?;
     let content = &data.enc_content_info;
@@ -277,8 +290,9 @@ fn encrypted_octets(info: &ContentInfo, pass: &str) -> Result<Zeroizing<Vec<u8>>
     scheme.decrypt(pass, ciphertext.as_bytes()).map(Zeroizing::new).map_err(|_| wrong())
 }
 
-/// Why a PBES2 key file is not opened on its KDF parameters alone: more work than this process
-/// will do (a file is input, and its count is otherwise how long this process hangs).
+/// Returns why a PBES2 key file is not opened, judged on its KDF parameters alone: they ask for
+/// more work than this process will do. A file is untrusted input, and without this check, its
+/// parameters would decide how long this process hangs.
 fn kdf_refused(params: &pbes2::Parameters) -> Option<String> {
     if let Some(k) = params.kdf.pbkdf2()
         && too_many(k.iteration_count)
@@ -293,24 +307,25 @@ fn kdf_refused(params: &pbes2::Parameters) -> Option<String> {
     None
 }
 
-/// Whether a key file's KDF iteration count is more than this process will run.
+/// Returns whether a key file's KDF iteration count is more than this process will run.
 fn too_many(iterations: u32) -> bool {
     iterations > MAX_ITERATIONS
 }
 
-/// Whether a key file's scrypt parameters ask for more than this process will spend: scrypt
-/// holds 128 × N × r bytes, so N × r is capped at 2²³ (1 GiB; OpenSSL's default is 2¹⁷), and p,
-/// which multiplies the time, at 16.
+/// Returns whether a key file's scrypt parameters ask for more than this process will spend.
+/// scrypt holds 128 × N × r bytes, so N × r is capped at 2²³ (1 GiB; OpenSSL's default is 2¹⁷).
+/// p multiplies the time, so it is capped at 16.
 fn too_much_scrypt(n: u64, r: u64, p: u64) -> bool {
     n.saturating_mul(r) > 1 << 23 || p > 16
 }
 
-/// The PKCS#8 in an `EncryptedPrivateKeyInfo` under `pass`: `Wrong` when it does not decrypt (a
-/// wrong passphrase fails the padding check) or is no such structure; `Refused` for a scheme
-/// other than PBES2 (a key bag of a legacy PKCS#12) or more KDF work than this process does.
+/// Returns the PKCS#8 in an `EncryptedPrivateKeyInfo`, decrypted under `pass`. The error is
+/// `Wrong` when the structure does not decrypt (a wrong passphrase fails the padding check) or is
+/// not an `EncryptedPrivateKeyInfo`. The error is `Refused` for a scheme other than PBES2 (as in a
+/// key bag of a legacy PKCS#12) or for more KDF work than this process does.
 fn decrypt(der: &[u8], pass: &str) -> std::result::Result<Zeroizing<Vec<u8>>, Unopened> {
     let info = EncryptedPrivateKeyInfoRef::try_from(der).map_err(|_| Unopened::Wrong)?;
-    // The file names its own KDF cost: bounded, like the PKCS#12 MAC's.
+    // The file names its own KDF cost, so the cost is bounded, like the cost of the PKCS#12 MAC.
     let Some(params) = info.encryption_algorithm.pbes2() else { return Err(Unopened::Refused(bad(LEGACY_P12))) };
     if let Some(why) = kdf_refused(params) {
         return Err(Unopened::Refused(bad(why)));
@@ -327,8 +342,8 @@ mod tests {
         der::pem::decode_vec(include_bytes!("../../cli/tests/fixtures/tpm-import-p256.pem")).unwrap().1
     }
 
-    /// Both formats round-trip under the passphrase, a wrong one is 17, and the PKCS#12 carries
-    /// the certificate.
+    /// Checks that both formats read back under the passphrase, that a wrong passphrase is
+    /// refused (17), and that the PKCS#12 carries the certificate.
     #[test]
     fn key_files_round_trip_and_refuse_another_passphrase() {
         let key = p256_pkcs8();
@@ -345,15 +360,15 @@ mod tests {
         assert!(matches!(read(b"not a key file", "x"), Err(KmError::Validation(_))));
     }
 
-    /// Each file is encrypted under its own salt and IV, and a PKCS#12 changed after it was
-    /// written fails its MAC, under the right passphrase too.
+    /// Checks that each file is encrypted under its own salt and IV, and that a PKCS#12 that was
+    /// changed after it was written fails its MAC, even under the right passphrase.
     #[test]
     fn key_files_are_salted_and_authenticated() {
         let key = p256_pkcs8();
         assert_ne!(write_pkcs8(&key, "pass phrase").unwrap(), write_pkcs8(&key, "pass phrase").unwrap());
         let cert = include_bytes!("../../cli/tests/fixtures/adopt-cert.der");
         let p12 = write_pkcs12(&key, cert, "pass phrase", b"id").unwrap();
-        // A byte of the certificate, inside the authenticated content.
+        // Change a byte of the certificate, which is inside the authenticated content.
         let at = p12.windows(cert.len()).position(|w| w == cert).unwrap() + cert.len() / 2;
         let mut tampered = p12.clone();
         tampered[at] ^= 1;
@@ -365,8 +380,9 @@ mod tests {
         ContentInfo { content_type: ID_DATA, content: Any::encode_from(&OctetString::new(bytes).unwrap()).unwrap() }
     }
 
-    /// A PKCS#12 of `auth_safe`, under a MAC by the digest and iterations of `mac_by` (computed
-    /// when the reader would get as far as checking it).
+    /// Returns a PKCS#12 of `auth_safe`, under a MAC with the digest and the iterations of
+    /// `mac_by`. The MAC is computed only when the reader would get as far as checking it, and is
+    /// otherwise 32 zero bytes.
     fn pfx(auth_safe: ContentInfo, mac_by: Option<(ObjectIdentifier, i32)>) -> Vec<u8> {
         let mac_data = mac_by.map(|(oid, iterations)| {
             let digest = match octets(&auth_safe) {
@@ -395,8 +411,8 @@ mod tests {
         }
     }
 
-    /// A file is input: what this tool would not have written is refused (17) by name, before
-    /// any key in it is used.
+    /// Checks that a file that this tool would not have written is refused (17) with a message
+    /// that names the problem, before any key in it is used, because a file is untrusted input.
     #[test]
     fn key_files_of_another_shape_are_refused() {
         let key_bag = SafeBag {
@@ -427,11 +443,13 @@ mod tests {
         assert!(read(&pfx(safe(vec![key_bag.clone()]), sha256), "pass").is_ok());
         assert!(refusal(b"-----BEGIN ENCRYPTED PRIVATE KEY-----\nnot base64\n").starts_with("the key file: "));
 
-        // A key file naming more KDF iterations than this process will run is not opened: it is
-        // turned away on the count alone (running them would take this test minutes). The bound
-        // first, so a wrong one fails here rather than running the count.
+        // A key file that names more KDF iterations than this process will run is not opened. It
+        // is refused on the count alone, because running the iterations would take this test
+        // minutes. The bound is checked first, so that a wrong bound fails here instead of running
+        // the iterations.
         assert!(too_many(MAX_ITERATIONS + 1) && !too_many(MAX_ITERATIONS) && !too_many(PBKDF2_ITERATIONS));
-        // scrypt's memory, likewise: OpenSSL's default passes, 16 GiB or a p of thousands does not.
+        // scrypt's memory is bounded in the same way: OpenSSL's default passes, and 16 GiB or a p
+        // of thousands does not.
         assert!(!too_much_scrypt(1 << 14, 8, 1) && !too_much_scrypt(1 << 20, 8, 1));
         assert!(too_much_scrypt(1 << 24, 8, 1) && too_much_scrypt(1 << 14, 8, 4096) && too_much_scrypt(u64::MAX, 8, 1));
         let params = pbes2::Parameters::generate_pbkdf2_sha256_aes256cbc(MAX_ITERATIONS + 1, &[0; 16], [0; 16]);
@@ -441,7 +459,8 @@ mod tests {
         };
         assert!(matches!(decrypt(&slow.to_der().unwrap(), "pass"), Err(Unopened::Refused(_))));
 
-        // Every certificate is read, in the file's order: the key's first, as exporters write it.
+        // Every certificate is read in the file's order, with the key's certificate first, as
+        // exporters write it.
         let cert_bag = |der: &[u8]| SafeBag {
             bag_id: pkcs12::PKCS_12_CERT_BAG_OID,
             bag_value: CertBag { cert_id: pkcs12::PKCS_12_X509_CERT_OID, cert_value: OctetString::new(der).unwrap() }
@@ -452,8 +471,8 @@ mod tests {
         let chain = pfx(safe(vec![cert_bag(b"leaf"), cert_bag(b"issuer"), key_bag.clone()]), sha256);
         assert_eq!(read(&chain, "pass").unwrap().certificates, [b"leaf".to_vec(), b"issuer".to_vec()]);
 
-        // A certificate bag of another type than X.509 (an SDSI certificate) is refused by name,
-        // not read as DER (review file.rs F3).
+        // A certificate bag of a type other than X.509 (an SDSI certificate) is refused with a
+        // message that names the type, and it is not read as DER (review file.rs F3).
         let sdsi = SafeBag {
             bag_value: CertBag {
                 cert_id: ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.22.2"),
@@ -466,17 +485,17 @@ mod tests {
         let got = refusal(&pfx(safe(vec![sdsi, key_bag]), sha256));
         assert!(got.contains("not an X.509 certificate"), "{got}");
 
-        // Every encrypted container runs a KDF: past MAX_ENCRYPTED_CONTAINERS the file is
-        // refused before any of them runs (review file.rs F2).
+        // Every encrypted container runs a KDF, so a file with more than MAX_ENCRYPTED_CONTAINERS
+        // is refused before any KDF runs (review file.rs F2).
         let encrypted = ContentInfo { content_type: ID_ENCRYPTED_DATA, ..data(vec![]) };
         let many = vec![encrypted; MAX_ENCRYPTED_CONTAINERS + 1];
         let got = refusal(&pfx(data(many.to_der().unwrap()), sha256));
         assert!(got.contains("3 encrypted containers"), "{got}");
     }
 
-    /// An encrypted PKCS#8 PEM reads wherever its block starts: after a byte-order mark, a blank
-    /// line or OpenSSL's `Bag Attributes` text (review file.rs F4). Another PEM, or several
-    /// blocks, is refused by name.
+    /// Checks that an encrypted PKCS#8 PEM is read wherever its block starts: after a byte-order
+    /// mark, a blank line or OpenSSL's `Bag Attributes` text (review file.rs F4). Another kind of
+    /// PEM, or several blocks, is refused with a message that names it.
     #[test]
     fn an_encrypted_pem_reads_wherever_its_block_starts() {
         let key = p256_pkcs8();

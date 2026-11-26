@@ -1,10 +1,12 @@
 //! The reference-token suite: end-to-end tests of the CLI against one software PKCS#11 token
-//! (token `ref`, plus `ref-anon`, the same token without a PIN). Each reference binary
-//! (`tests/softhsm.rs`) includes it.
+//! (the token `ref`, plus `ref-anon`, which is the same token without a PIN). Each reference
+//! binary (such as `tests/softhsm.rs`) includes it.
 //!
-//! A verb's own tests are in its file (`check`, `create`, `delete` with `gc`, `validate`); what
-//! `lock` and `check` share is by concern (`identity`, `proofs`, `adoption`, `drift`,
-//! `lockfile`, `tokens`). This file holds the harness and the fixtures several of them use.
+//! The tests of a single verb are in that verb's file (`check`, `create`, `delete` with `gc`,
+//! `validate`). The tests of what `lock` and `check` share are grouped by concern (`identity`,
+//! `proofs`, `adoption`, `drift`, `lockfile`, `tokens`). The tests of the rows that every
+//! per-object verb prints are in `rows`. This file holds the harness and the fixtures that
+//! several of those files use.
 
 #![expect(clippy::type_complexity, reason = "table-driven cases")]
 
@@ -26,26 +28,29 @@ mod delete;
 mod drift;
 mod identity;
 mod lockfile;
-mod matrix;
 mod proofs;
+mod rows;
 mod tokens;
 mod validate;
 
-/// The reference's suite for test `name` (its tokens: [`reference_tokens`]), or `None` (skipped).
-fn env(name: &str) -> Option<Suite> {
+/// Returns the reference suite for test `name` (with the tokens of [`reference_tokens`]), or
+/// `None` when the test is skipped.
+pub(crate) fn env(name: &str) -> Option<Suite> {
     let module = suite_var(REF.module_var, REF.require_var, name)?;
-    // Through p11-fault, the variable names the module behind it, and the token loads the shim.
+    // Through p11-fault, the variable names the module behind the shim, and the token loads the
+    // shim.
     let module = if REF.through_fault_shim { fault_shim() } else { module };
     Some(Suite::new(name, module, reference_tokens))
 }
 
 impl Suite {
-    /// Replace the lock with a hand-written one, keeping the realisations already recorded and the
-    /// observations they name (the part under test is `objects`).
+    /// Replaces the lock with one written by hand, but keeps the realisations that are already
+    /// recorded and the observations that they name. The part under test is `objects`.
     fn write_lock_keeping_realisations(&self, text: &str) {
         let mut lock: toml::Table = toml::from_str(text).unwrap();
         let now = self.lock();
-        // The realisations name entries of the observation table: they go together.
+        // The realisations name entries of the observation table, so the two tables are kept
+        // together.
         for table in ["realisations", "observations"] {
             if let Some(t) = now.get(table) {
                 lock.insert(table.into(), t.clone());
@@ -69,14 +74,14 @@ tokens.ref = { locator = { CKA_LABEL = "ec-lifecycle" }, origin = "create" }
 
 const ADOPT_CERT: &[u8] = include_bytes!("../fixtures/adopt-cert.der");
 
-/// openssl-computed hashes of the EC and Edwards fixture certificates (see
+/// Hashes of the EC and Edwards fixture certificates, computed with openssl (see
 /// `adoption::ADOPT_CERTHASH`).
 const P384_CERTHASH: &str = "sha256-N9KvOrT63A5pe2lyZhomsSGisv5jxm7uGH0BBaDvT8w=";
 const P384_PUBKEYHASH: &str = "sha256-vOGGK+vjgXw92IhWaKP7ud6cGe6qS9UCctpXq6zZmZo=";
 const ED25519_CERTHASH: &str = "sha256-vLKP3eF+jeIMpcIz0K9c8oiCVsbvDve+uBUYho+aOmU=";
 const ED25519_PUBKEYHASH: &str = "sha256-LmLQD9g76Y3XJI3Wu72BFxjm/HLImLgqJazAeCNi4lY=";
 
-/// Plant a secret key with a known value (the host oracle knows it).
+/// Plants a secret key with a known value, so that the host oracle knows the value.
 fn plant_secret(s: &Session, label: &str, kt: cryptoki::object::KeyType, value: &[u8], attrs: &[Attribute]) {
     let mut t = vec![
         Attribute::Class(ObjectClass::SECRET_KEY),
@@ -91,10 +96,11 @@ fn plant_secret(s: &Session, label: &str, kt: cryptoki::object::KeyType, value: 
     s.create_object(&t).unwrap();
 }
 
-/// A private key swapped under its locator is a conflict (13), reached by one of two routes: where
-/// the private key exposes no public key (`SoftHSM` EC and Edwards keys), the proof of possession
-/// fails; where it carries its own `CKA_PUBLIC_KEY_INFO` (kryoptic), the cross-check against the
-/// locked material refuses it before any proof runs.
+/// Asserts that a private key that was swapped under its locator is a conflict (13). The conflict
+/// is found in one of two ways. When the private key exposes no public key (`SoftHSM` EC and
+/// Edwards keys), the proof of possession fails. When the private key holds its own
+/// `CKA_PUBLIC_KEY_INFO` (kryoptic), the cross-check against the locked material refuses it before
+/// any proof runs.
 fn assert_swapped_key_conflict(o: &Output) {
     let err = stderr(o);
     assert_eq!(code(o), 13, "{err}");
@@ -102,7 +108,8 @@ fn assert_swapped_key_conflict(o: &Output) {
 }
 
 impl Suite {
-    /// This test's copy of the module configuration with `mechanism` hidden, for [`Workdir::km_env`].
+    /// Writes this test's copy of the module configuration with `mechanism` hidden, and returns
+    /// the variable name and the file path for [`Workdir::km_env`].
     fn hiding(&self, mechanism: &str) -> (&'static str, std::path::PathBuf) {
         let conf = std::fs::read_to_string(std::env::var(REF.conf_var).unwrap()).unwrap();
         let hidden = self.dir.join(format!("no-{mechanism}.conf"));

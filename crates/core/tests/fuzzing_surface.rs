@@ -1,7 +1,8 @@
-//! The fuzz targets' entry points never reach a product (review D8): every `mod fuzzing` in the
-//! workspace is built only for the tests, the `fuzzing` feature and Kani, and only the fuzz crate
-//! (`fuzz/`, a workspace of its own) turns that feature on. ykcs11's trusts the test fixture's
-//! root, a test key.
+//! The entry points of the fuzz targets are never built into a product (review D8). Every
+//! `mod fuzzing` in the workspace is built only for the tests, for the `fuzzing` feature and for
+//! Kani, and only the fuzz crate (`fuzz/`, which is a separate workspace) enables that feature.
+//! The `fuzzing` module of ykcs11, for example, trusts the root certificate of the test fixture,
+//! which is a test key.
 
 use std::path::{Path, PathBuf};
 
@@ -31,7 +32,7 @@ fn every_fuzzing_module_is_gated() {
         let text = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         for (i, line) in lines.iter().enumerate() {
-            // `mod fuzzing`, at any visibility.
+            // A `mod fuzzing` declaration, with any visibility.
             let t = line.trim_start();
             let after_pub = t.strip_prefix("pub").map(|r| r.split_once(' ').map_or(r, |(_, rest)| rest));
             if after_pub.unwrap_or(t).starts_with("mod fuzzing") {
@@ -46,7 +47,8 @@ fn every_fuzzing_module_is_gated() {
             }
         }
     }
-    // core, caprobe, camigrate, tpm2-pkcs11 (and its attestation's), ykcs11.
+    // The six modules: in core, caprobe, camigrate, tpm2-pkcs11 (two: the crate's and its
+    // attestation module's), and ykcs11.
     assert_eq!(modules, 6, "the scan found the modules it guards");
 }
 
@@ -66,8 +68,9 @@ fn no_workspace_manifest_turns_fuzzing_on() {
     }
 }
 
-/// Every `features` list under `v`, and every feature list of `[features]`, naming `fuzzing`
-/// (or `<crate>/fuzzing`) other than its own definition.
+/// Collects into `on` the path of every array under `v` that names the feature `fuzzing` (or
+/// `<crate>/fuzzing`). That covers every `features` list of a dependency and every feature list
+/// of `[features]`. The definition `fuzzing = []` names no feature, so it is not collected.
 fn walk_features(v: &toml::Value, here: &str, on: &mut Vec<String>) {
     match v {
         toml::Value::Array(items) => {

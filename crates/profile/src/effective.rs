@@ -1,40 +1,43 @@
-//! The effective capability of a stack (docs/CAPROBE.md D3): one module profile, the delta
-//! layers between cakeys and it, and the baseline that names and groups everything. Every
-//! verdict cites the profile that decided, so a "no" names the layer that subtracted and an
-//! "unknown" says why it cannot say (D5's conservative answers).
+//! The effective capability of a stack (docs/CAPROBE.md D3). A stack consists of one module
+//! profile, the delta layers between cakeys and the module, and the baseline that names and
+//! groups every member. Every verdict names the profile that decided it. A "no" therefore names
+//! the layer that removed the capability, and an "unknown" says why the profiles cannot decide
+//! (the conservative answers of D5).
 
 use crate::baseline::Baseline;
 use crate::capability::{Capability, On};
 use crate::names::KeyKind;
 use crate::profile::{Profile, Why};
 
-/// The capability of generating `key_type` on `on`.
+/// Returns the capability row for the generation of `key_type` on `on`.
 fn generate(key_type: &str, on: On) -> Capability {
     Capability::Generate { key_type: KeyKind::from(key_type), on }
 }
 
-/// A query's answer: yes (with who said so), no (with who and why), or unknown (why it
-/// cannot say). No and unknown are different exits (15 and 16), so a check can tell a hard
-/// refusal from a question the profiles do not cover.
+/// The answer to a query: yes (with the profile that decided it), no (with the profile and the
+/// reason), or unknown (with the reason why the profiles cannot decide). No and unknown cause
+/// different exit codes (15 and 16), so a check can tell a definite refusal apart from a question
+/// that the profiles do not cover.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    /// It can.
+    /// The stack can do it.
     Yes {
-        /// The profile that said so.
+        /// The profile that decided the answer.
         by: String,
-        /// Its note on the row, when it has one.
+        /// The profile's note on the row, when it has one.
         note: Option<String>,
     },
-    /// It cannot (15).
+    /// The stack cannot do it (exit 15).
     No {
-        /// The profile that said so: the layer that subtracted, or the module's.
+        /// The profile that decided the answer: the layer that removed the capability, or the
+        /// module's profile.
         by: String,
-        /// Why, when the profile says.
+        /// The reason, when the profile gives one.
         note: Option<String>,
     },
-    /// The profiles cannot say (16).
+    /// The profiles cannot decide (exit 16).
     Unknown {
-        /// Why not.
+        /// The reason why the profiles cannot decide.
         why: String,
     },
 }
@@ -72,8 +75,8 @@ impl std::fmt::Display for Verdict {
 }
 
 /// One resolved stack: the baseline, the module profile if one was selected, and the delta
-/// layers on top of it. `supports(x) = ⋀ layers`: any layer's subtraction decides no, else the
-/// module's observed set does.
+/// layers on top of the module. A capability is supported only if every layer allows it. A
+/// subtraction in any layer decides no, and otherwise the module's observed set decides.
 pub struct Effective<'a> {
     baseline: &'a Baseline,
     module: Option<&'a Profile>,
@@ -81,9 +84,9 @@ pub struct Effective<'a> {
 }
 
 impl<'a> Effective<'a> {
-    /// Compose a stack from its parts. The baseline comes from the loaded set, the module
-    /// profile is optional (a layer-only or class-only query needs none), and the layers are
-    /// applied in the order given.
+    /// Composes a stack from its parts. The baseline comes from the loaded set. The module
+    /// profile is optional, because a query about layers only or about a class needs no module
+    /// profile. The layers are applied in the order given.
     #[must_use]
     pub fn new(baseline: &'a Baseline, module: Option<&'a Profile>, layers: &'a [&'a Profile]) -> Effective<'a> {
         Effective { baseline, module, layers }
@@ -95,10 +98,10 @@ impl<'a> Effective<'a> {
         self.baseline
     }
 
-    /// Whether a mechanism is usable. Layers subtract first (a dropped mechanism is no for
-    /// every module behind them), then the module's deltas against its advertisement decide;
-    /// a profile without an `advertise` list (the probe, phase 3) answers unknown, except for
-    /// what its `add` records as usable.
+    /// Returns whether a mechanism is usable. The layers subtract first: a mechanism that a layer
+    /// drops is no for every module behind that layer. Then the module's deltas against its
+    /// advertised list decide. A profile without an `advertise` list (the probe records that list,
+    /// phase 3) answers unknown, except for the mechanisms that its `add` list records as usable.
     #[must_use]
     pub fn mechanism(&self, name: &str) -> Verdict {
         if !self.baseline.mechanisms.contains_key(name) {
@@ -115,8 +118,8 @@ impl<'a> Effective<'a> {
         if m.subtract.mechanisms.iter().any(|x| x == name) {
             return Verdict::no(&m.profile, m.notes.get(name).cloned());
         }
-        // A mechanism the profile records as usable (`add`) is yes, advertised or not, and also
-        // in a profile that records no advertisement.
+        // A mechanism that the profile records as usable (`add`) is yes, whether or not the
+        // module advertises it, and also in a profile that records no advertised list.
         if m.add.iter().any(|x| x == name) {
             return Verdict::yes(&m.profile, m.notes.get(name));
         }
@@ -130,8 +133,9 @@ impl<'a> Effective<'a> {
             };
         }
         if m.advertise.iter().any(|x| x == name) {
-            // Advertised and never tried: not yes. A mechanism the tools never use (`scope`)
-            // is not asked about, and keeps its advertised answer.
+            // A mechanism that is advertised but was never tried is not yes. A mechanism that the
+            // tools never use (`scope`) is never asked about, so it keeps the answer that the
+            // advertised list gives.
             if let Some(u) = m.untested.get(name).filter(|u| u.why != Why::Scope) {
                 return Verdict::Unknown {
                     why: format!(
@@ -148,9 +152,10 @@ impl<'a> Effective<'a> {
         }
     }
 
-    /// The no a layer gives to generating `key_type`, with `item` and a size in bits: it
-    /// subtracts the key type, its hardware refuses the curve (D10; its `can` rows mean nothing
-    /// in delta mode, where the module decides the rest), or a `restrict` row bounds the size.
+    /// Returns the no that a layer gives to the generation of `key_type`, with `item` and a size
+    /// in bits. A layer refuses when it subtracts the key type, when its hardware refuses the
+    /// curve (D10), or when a `restrict` row bounds the size. A layer's `can` rows mean nothing
+    /// in delta mode, because the module decides everything that the layers do not refuse.
     fn layers_refuse(&self, key_type: &str, item: Option<&str>, bits: Option<u32>) -> Option<Verdict> {
         for l in self.layers {
             if l.subtract.key_types.iter().any(|k| k == key_type) {
@@ -174,13 +179,15 @@ impl<'a> Effective<'a> {
         None
     }
 
-    /// Whether a module generates a secret key of `key_type`, `bytes` long when the size is
-    /// known (`CKA_VALUE_LEN`: `valueLen`, or what the key type fixes). As [`Self::generate`]: layers
-    /// subtract the key type and bound the size (their `restrict` rows are in bits, so the
-    /// length times eight), then the module's rows decide. A length the probe tried decides;
-    /// one between two that generated is yes only for a key type whose length is free (a
-    /// generic secret, an HMAC key), never for AES, whose lengths are the three it defines;
-    /// anything else answers unknown, never a guess.
+    /// Returns whether a module generates a secret key of `key_type` that is `bytes` long, when
+    /// the size is known (`CKA_VALUE_LEN`, from `valueLen` or from the length that the key type
+    /// fixes). The order is the same as in [`Self::generate`]. First the layers subtract the key
+    /// type and bound the size. Their `restrict` rows are in bits, so the length is multiplied by
+    /// eight. Then the module's rows decide. A length that the probe tried is decided by its own
+    /// row. A length between two lengths that generated is yes only for a key type whose length
+    /// is free (a generic secret or an HMAC key). It is never yes for AES, whose only valid
+    /// lengths are the three that AES defines. Any other length answers unknown, and the
+    /// function never guesses.
     #[must_use]
     pub fn generate_secret(&self, key_type: &str, bytes: Option<u32>) -> Verdict {
         if !self.baseline.key_types.contains_key(key_type) {
@@ -197,24 +204,21 @@ impl<'a> Effective<'a> {
         };
         if let Some(n) = bytes {
             let size_note = || m.evidence(&generate(key_type, On::Bytes(n)), &format!("{key_type} at {n} bytes"));
-            if row.cannot_bytes.contains(&n) {
-                return Verdict::no(&m.profile, size_note());
-            }
-            if row.can_bytes.contains(&n) {
-                return Verdict::yes(&m.profile, None);
-            }
             let free = !matches!(KeyKind::from(key_type), KeyKind::Aes | KeyKind::Des3);
             let tried = tried(row.can_bytes.iter().copied(), row.cannot_bytes.iter().copied());
-            if free && between_working(&tried, n) {
-                return Verdict::yes(&m.profile, None);
-            }
-            if !tried.is_empty() {
-                return Verdict::Unknown {
-                    why: format!("module profile {} probed {} bytes only", m.profile, sizes(&tried)),
-                };
+            match decide_size(&tried, n, free) {
+                Size::No => return Verdict::no(&m.profile, size_note()),
+                Size::Yes => return Verdict::yes(&m.profile, None),
+                Size::Unknown if !tried.is_empty() => {
+                    return Verdict::Unknown {
+                        why: format!("module profile {} probed {} bytes only", m.profile, sizes(&tried)),
+                    };
+                }
+                Size::Unknown => {}
             }
         }
-        // The key type at all: yes when some length generated; no when every one tried was refused.
+        // The question is about the key type in general: yes when some length generated, and no
+        // when every length that was tried was refused.
         if !row.can_bytes.is_empty() {
             return Verdict::yes(&m.profile, m.notes.get(key_type));
         }
@@ -226,13 +230,13 @@ impl<'a> Effective<'a> {
         Verdict::Unknown { why: format!("module profile {} records no {key_type} generation it can judge", m.profile) }
     }
 
-    /// Whether a module computes the commitment `kind` (`hmac-sha256`, `cmac`, `kcv-ecb`...) on a
-    /// secret key of `key_type`, `bytes` long when the length is known. The module's
-    /// `commit.*` row for the length decides; for a key type whose length is free, a length
-    /// between the nearest two tried, both of which worked, is yes, and any other length is
-    /// unknown (a length below a refused one is never yes). Without a length, a free key type
-    /// is yes when any length worked. A profile with no such rows is unknown: the advertised
-    /// mechanism is all it knows.
+    /// Returns whether a module computes the commitment `kind` (`hmac-sha256`, `cmac`, `kcv-ecb`
+    /// and others) on a secret key of `key_type` that is `bytes` long, when the length is known.
+    /// The module's `commit.*` row for that length decides. For a key type whose length is free,
+    /// an untried length is yes when the nearest tried lengths on both sides worked, and any
+    /// other length is unknown (so a length below a refused length is never yes). Without a
+    /// length, a free key type is yes when any length worked. A profile without such rows
+    /// answers unknown, because it knows only the advertised mechanism.
     #[must_use]
     pub fn commit(&self, kind: &str, key_type: &str, bytes: Option<u32>) -> Verdict {
         let Some(m) = self.module else {
@@ -244,41 +248,42 @@ impl<'a> Effective<'a> {
             return Verdict::Unknown { why: format!("module profile {} records no {kind} commitment", m.profile) };
         }
         let row = |b: u32| Capability::Commit { kind: kind.to_owned(), key_type: kt.clone(), bytes: b };
-        if let Some(n) = bytes
-            && let Some((_, yes)) = rows.iter().find(|(b, _)| *b == n)
-        {
-            return if *yes {
-                Verdict::yes(&m.profile, None)
-            } else {
-                Verdict::no(&m.profile, m.evidence(&row(n), &format!("{kind} on {key_type} at {n} bytes")))
+        let free = !matches!(kt, KeyKind::Aes | KeyKind::Des3);
+        let unknown = || Verdict::Unknown {
+            why: format!("module profile {} probed {kind} at {} bytes only", m.profile, sizes(&rows)),
+        };
+        if let Some(n) = bytes {
+            return match decide_size(&rows, n, free) {
+                Size::Yes => Verdict::yes(&m.profile, m.provenance(&row(n)).map(str::to_owned).as_ref()),
+                Size::No => Verdict::no(&m.profile, m.evidence(&row(n), &format!("{kind} on {key_type} at {n} bytes"))),
+                Size::Unknown => unknown(),
             };
         }
+        // The question is about the commitment in general: no when every length that was tried
+        // was refused.
         if rows.iter().all(|(_, yes)| !yes) {
             return Verdict::no(&m.profile, m.evidence(&row(rows[0].0), &format!("{kind} on {key_type}")));
         }
-        let free = !matches!(kt, KeyKind::Aes | KeyKind::Des3);
-        let worked = match bytes {
-            Some(n) => between_working(&rows, n),
-            None => rows.iter().any(|(_, yes)| *yes),
-        };
-        if free && worked {
+        if free {
             return Verdict::yes(&m.profile, None);
         }
-        Verdict::Unknown { why: format!("module profile {} probed {kind} at {} bytes only", m.profile, sizes(&rows)) }
+        unknown()
     }
 
-    /// Whether the module profile measured the commitment `kind` on `key_type` at any length:
-    /// what tells an unknown [`Self::commit`] for a length the probe did not try from one for a
-    /// commitment it never measured (the advertised mechanism's to decide).
+    /// Returns whether the module profile measured the commitment `kind` on `key_type` at any
+    /// length. A caller uses it to tell apart two kinds of unknown from [`Self::commit`]: an
+    /// unknown for a length that the probe did not try, and an unknown for a commitment that the
+    /// probe never measured. In the second case, the advertised mechanism decides.
     #[must_use]
     pub fn measured_commit(&self, kind: &str, key_type: &str) -> bool {
         self.module.is_some_and(|m| !commit_rows(m, kind, &KeyKind::from(key_type)).is_empty())
     }
 
-    /// Whether a module generates a key of `key_type`, optionally with one item (a curve, or a
-    /// parameter set for the PQ types) and a modulus size. Layers subtract key types and
-    /// intersect size bounds first, then the module's `generate` row decides: what is in
-    /// neither its `can` nor its `cannot` answers unknown, never a guess.
+    /// Returns whether a module generates a key of `key_type`, optionally with one item (a curve,
+    /// or a parameter set for the PQ types) and a modulus size. First the layers subtract key
+    /// types and apply their size bounds. Then the module's `generate` row decides. An item or
+    /// size that is in neither its `can` list nor its `cannot` list answers unknown, and the
+    /// function never guesses.
     #[must_use]
     pub fn generate(&self, key_type: &str, item: Option<&str>, bits: Option<u32>) -> Verdict {
         if !self.baseline.key_types.contains_key(key_type) {
@@ -302,27 +307,24 @@ impl<'a> Effective<'a> {
             return Verdict::Unknown { why: format!("module profile {} records no {key_type} generation", m.profile) };
         };
         if let Some(bits) = bits {
-            // What the probe saw decides; then the range the module reports; then, for a
-            // probed row, only a size between two that generated is yes — the rest of what was
-            // never tried is unknown.
+            // The sizes that the probe tried decide first, and then the range that the module
+            // reports. For a probed row, an untried size is yes only when it lies between two
+            // sizes that generated. Any other untried size is unknown.
             let size_note = || m.evidence(&generate(key_type, On::Bits(bits)), &format!("{key_type} at {bits}"));
-            if row.cannot_bits.contains(&bits) {
-                return Verdict::no(&m.profile, size_note());
-            }
-            if row.can_bits.contains(&bits) {
-                return Verdict::yes(&m.profile, None);
-            }
-            if row.max_bits.is_some_and(|max| bits > max) || row.min_bits.is_some_and(|min| bits < min) {
-                return Verdict::no(&m.profile, m.notes.get(key_type).cloned());
-            }
+            let outside = row.max_bits.is_some_and(|max| bits > max) || row.min_bits.is_some_and(|min| bits < min);
             let tried = tried(row.can_bits.iter().copied(), row.cannot_bits.iter().copied());
-            if !tried.is_empty() {
-                if between_working(&tried, bits) {
-                    return Verdict::yes(&m.profile, None);
+            // Outside the reported range, no size is interpolated, and only a size that the probe
+            // tried can override the range.
+            match decide_size(&tried, bits, !outside) {
+                Size::No => return Verdict::no(&m.profile, size_note()),
+                Size::Yes => return Verdict::yes(&m.profile, None),
+                Size::Unknown if outside => return Verdict::no(&m.profile, m.notes.get(key_type).cloned()),
+                Size::Unknown if !tried.is_empty() => {
+                    return Verdict::Unknown {
+                        why: format!("module profile {} probed {} bits only", m.profile, sizes(&tried)),
+                    };
                 }
-                return Verdict::Unknown {
-                    why: format!("module profile {} probed {} bits only", m.profile, sizes(&tried)),
-                };
+                Size::Unknown => {}
             }
         }
         if let Some(item) = item {
@@ -339,8 +341,10 @@ impl<'a> Effective<'a> {
                 why: format!("module profile {} records neither can nor cannot for it (partial)", m.profile),
             };
         }
-        // The key type at all: yes when some curve or size generated, or the module reports
-        // generating it; no when every one tried was refused. Never yes from rows that all say no.
+        // The question is about the key type in general. It is yes when some curve or size
+        // generated, or when the module reports that it generates the key type. It is no when
+        // every curve or size that was tried was refused. Rows that all answer no never make it
+        // yes.
         if !row.can.is_empty() || !row.can_bits.is_empty() || m.reported.contains_key(key_type) {
             return Verdict::yes(&m.profile, m.notes.get(key_type));
         }
@@ -353,10 +357,10 @@ impl<'a> Effective<'a> {
         Verdict::Unknown { why: format!("module profile {} records no {key_type} generation it can judge", m.profile) }
     }
 
-    /// Whether a curve is generatable, over every key type that has a row, the module's or a
-    /// layer's: any yes wins, else any no, else unknown (the curve names no key type of this
-    /// stack). A layer's `cannot` row decides no without a module profile, as it does for
-    /// [`Self::generate`].
+    /// Returns whether a curve can be generated, over every key type that has a generation row in
+    /// the module's profile or in a layer. Any yes decides first, then any no. Otherwise the
+    /// answer is unknown, because no key type of this stack lists the curve. A layer's `cannot`
+    /// row decides no even without a module profile, as it does for [`Self::generate`].
     #[must_use]
     pub fn curve(&self, name: &str) -> Verdict {
         if !self.baseline.curves.contains(name) {
@@ -381,8 +385,9 @@ impl<'a> Effective<'a> {
             .unwrap_or(Verdict::Unknown { why: unknown })
     }
 
-    /// Ask after a bare name: `CKM_*` a mechanism, `CKK_*` a key type, `CKP_*` a parameter set
-    /// (mapped to its PQ key type), anything else a curve. `bits` asks for an RSA size.
+    /// Answers a query about a bare name. A `CKM_*` name is a mechanism, and a `CKK_*` name is a
+    /// key type. A `CKP_*` name of a PQ parameter set is generated with its PQ key type. Any other
+    /// name is a curve. `bits` asks about an RSA size.
     #[must_use]
     pub fn query(&self, name: &str, bits: Option<u32>) -> Verdict {
         if name.starts_with("CKM_") {
@@ -411,8 +416,9 @@ impl<'a> Effective<'a> {
         )
     }
 
-    /// The RSA-OAEP hashes usable for wrapping, with their verdicts; layers subtract none
-    /// today (whether p11-kit forwards OAEP wrapping is [todo], docs/CAMIGRATE.md).
+    /// Returns the RSA-OAEP hashes that are usable for wrapping, with their verdicts. No layer
+    /// subtracts any of them today (whether p11-kit forwards OAEP wrapping is [todo],
+    /// docs/CAMIGRATE.md).
     #[must_use]
     pub fn oaep(&self) -> Vec<(String, Verdict)> {
         match self.module {
@@ -422,7 +428,7 @@ impl<'a> Effective<'a> {
                     "OAEP".into(),
                     Verdict::Unknown { why: format!("module profile {} records no OAEP probe", m.profile) },
                 )],
-                // Probed, and no hash round-trips.
+                // The probe ran, and no hash completed a round trip.
                 Some([]) => vec![("OAEP".into(), Verdict::no(&m.profile, m.notes.get("oaep").cloned()))],
                 Some(hashes) => {
                     hashes.iter().map(|h| (h.clone(), Verdict::yes(&m.profile, m.notes.get("oaep")))).collect()
@@ -432,12 +438,40 @@ impl<'a> Effective<'a> {
     }
 }
 
-/// Whether `n`, a size the probe did not try, lies between the nearest sizes it tried on either
-/// side, and both of those worked: a refused size between them (a TPM's discrete sizes, a
-/// module's minimum HMAC length) or no tried size on one side leaves `n` unknown. A size tried
-/// both ways counts as refused. The one rule a size is interpolated by, in bits for
-/// [`Effective::generate`] and bytes for [`Effective::generate_secret`] and
-/// [`Effective::commit`] (review 2026-11-23 A-1).
+/// The verdict that the sizes a probe tried give for size `n`.
+enum Size {
+    /// `n` was tried and worked, or, for a free size, `n` lies between two sizes that worked.
+    Yes,
+    /// `n` was tried and refused. A size with both a working row and a refused row counts as
+    /// refused.
+    No,
+    /// Any other case. An untried size never takes the no that the tried sizes gave (review
+    /// 2026-11-24 A-9).
+    Unknown,
+}
+
+/// The single rule that decides a size, in bits for [`Effective::generate`] and in bytes for
+/// [`Effective::generate_secret`] and [`Effective::commit`]. A tried size is decided by its own
+/// rows. An untried size is yes only when `free` is true and [`between_working`] holds, and it
+/// is unknown otherwise.
+fn decide_size(tried: &[(u32, bool)], n: u32, free: bool) -> Size {
+    let at: Vec<bool> = tried.iter().filter(|(s, _)| *s == n).map(|(_, ok)| *ok).collect();
+    if at.contains(&false) {
+        Size::No
+    } else if !at.is_empty() || (free && between_working(tried, n)) {
+        Size::Yes
+    } else {
+        Size::Unknown
+    }
+}
+
+/// Returns whether `n`, a size that the probe did not try, lies between the nearest tried sizes
+/// on either side, and both of those sizes worked. If the nearest tried size on one side was
+/// refused (for example, because a TPM has discrete sizes or a module has a minimum HMAC
+/// length), or if no size was tried on one side, `n` stays unknown. A size with both a working
+/// row and a refused row counts as refused. This is the single rule by which a size is
+/// interpolated, in bits for [`Effective::generate`] and in bytes for
+/// [`Effective::generate_secret`] and [`Effective::commit`] (review 2026-11-23 A-1).
 fn between_working(tried: &[(u32, bool)], n: u32) -> bool {
     let worked = |size: u32| tried.iter().filter(|(s, _)| *s == size).all(|(_, ok)| *ok);
     let below = tried.iter().map(|(s, _)| *s).filter(|s| *s < n).max();
@@ -445,7 +479,8 @@ fn between_working(tried: &[(u32, bool)], n: u32) -> bool {
     below.zip(above).is_some_and(|(lo, hi)| worked(lo) && worked(hi))
 }
 
-/// The lengths `m` measured the commitment `kind` on `kt` at, each with whether it worked.
+/// Returns the lengths at which `m` measured the commitment `kind` on `kt`, each with whether it
+/// worked.
 fn commit_rows(m: &Profile, kind: &str, kt: &KeyKind) -> Vec<(u32, bool)> {
     m.capabilities
         .iter()
@@ -456,20 +491,20 @@ fn commit_rows(m: &Profile, kind: &str, kt: &KeyKind) -> Vec<(u32, bool)> {
         .collect()
 }
 
-/// `can` and `cannot` as one list of tried sizes, each with whether it worked.
+/// Merges `can` and `cannot` into one list of tried sizes, each with whether it worked.
 fn tried(can: impl IntoIterator<Item = u32>, cannot: impl IntoIterator<Item = u32>) -> Vec<(u32, bool)> {
     can.into_iter().map(|s| (s, true)).chain(cannot.into_iter().map(|s| (s, false))).collect()
 }
 
-/// The sizes that were tried, in order, as an unknown size names them.
+/// Returns the tried sizes, sorted, as the message of an unknown verdict lists them.
 fn sizes(tried: &[(u32, bool)]) -> String {
     let mut sizes: Vec<u32> = tried.iter().map(|(s, _)| *s).collect();
     sizes.sort_unstable();
     sizes.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")
 }
 
-/// The PQ key type a `CKP_*` parameter set belongs to ([`Effective::query`]): the PBKDF2
-/// pseudo-random functions name none.
+/// Returns the PQ key type to which a `CKP_*` parameter set belongs ([`Effective::query`]). The
+/// PBKDF2 pseudo-random functions also use the `CKP_*` prefix, but they belong to no key type.
 fn parameter_set_key_type(name: &str) -> Option<&'static str> {
     Some(match name.strip_prefix("CKP_")? {
         n if n.starts_with("ML_DSA_") => "CKK_ML_DSA",
@@ -484,8 +519,8 @@ mod tests {
     use super::*;
     use crate::baseline::Baseline;
 
-    /// A tiny baseline for the algebra tests: the real committed one is exercised through
-    /// [`crate::Set::embedded`] below.
+    /// A small baseline for the tests of the verdict rules. The tests in lib.rs exercise the
+    /// real committed baseline through [`crate::Set::embedded`].
     fn baseline() -> Baseline {
         let text = r#"
             baseline = "test"
@@ -538,8 +573,9 @@ mod tests {
         assert!(matches!(eff(&b, None, &[&p11]).mechanism("CKM_AES_KEY_WRAP"), Verdict::No { .. }));
     }
 
-    /// An advertised mechanism the probe did not try is unknown, never yes, unless the tools
-    /// never use it (`scope`); the table's own faults are named.
+    /// An advertised mechanism that the probe did not try is unknown, and never yes, unless the
+    /// tools never use it (`scope`). The test also checks that an `[untested]` entry for a
+    /// mechanism that the module does not advertise is reported as a problem.
     #[test]
     fn an_untested_mechanism_is_unknown_not_yes() {
         let b = baseline();
@@ -565,8 +601,8 @@ mod tests {
         ));
     }
 
-    /// What a partial profile's `add` records as usable is yes, without an advertisement; the
-    /// rest stays unknown (review effective.rs F3).
+    /// A mechanism that a partial profile's `add` records as usable is yes, without an advertised
+    /// list. Every other mechanism stays unknown (review effective.rs F3).
     #[test]
     fn a_partial_module_profile_answers_its_add() {
         let b = baseline();
@@ -578,8 +614,9 @@ mod tests {
         assert!(matches!(eff(&b, Some(&partial), &[&layer]).mechanism("CKM_ECDSA"), Verdict::No { .. }));
     }
 
-    /// A layer's refused curve is no also when no module profile is selected, as a layer's
-    /// refused generation is (review effective.rs F4); what no layer refuses stays unknown.
+    /// A curve that a layer refuses is no even when no module profile is selected, as a
+    /// generation that a layer refuses is (review effective.rs F4). A curve that no layer refuses
+    /// stays unknown.
     #[test]
     fn a_layer_refuses_a_curve_without_a_module() {
         let b = baseline();
@@ -633,7 +670,8 @@ mod tests {
         );
         let module = profile("profile = \"x/1\"\nmode = \"observed\"\n[reported.\"CKK_RSA\"]\nmax-bits = 4096");
         let layers = [&swtpm];
-        // A restriction names a bits bound: without bits it cannot decide, beyond it it can.
+        // A restriction states a bound in bits. Without a size in bits, the restriction cannot
+        // decide. With a size beyond the bound, it decides no.
         assert!(matches!(eff(&b, Some(&module), &layers).query("CKK_RSA", None), Verdict::Yes { .. }));
         assert!(matches!(
             eff(&b, Some(&module), &layers).query("CKK_RSA", Some(4096)),
@@ -668,9 +706,10 @@ mod tests {
         assert!(matches!(pq[1].1, Verdict::Yes { .. }));
     }
 
-    /// What the stack cannot answer is unknown, never a guess: no module profile, a name the
-    /// baseline lacks, an RSA size outside what was probed; a layer's own `cannot` row is a no,
-    /// and a size between two that generated is a yes.
+    /// A question that the stack cannot answer is unknown, and never a guess. That covers a stack
+    /// without a module profile, a name that the baseline lacks, and an RSA size outside the
+    /// probed sizes. A layer's own `cannot` row is a no, and a size between two sizes that
+    /// generated is a yes.
     #[test]
     fn unknowns_layer_refusals_and_sizes_between_probes() {
         let b = baseline();
@@ -701,9 +740,10 @@ mod tests {
         unknown(stack.generate("CKK_RSA", None, Some(8192)), "probed 2048, 4096 bits only");
     }
 
-    /// A key type asked about without a curve or size is no when every row of it is a no (it
-    /// was yes: any row at all made it yes), and a size between two that generated is unknown
-    /// when a refused size lies between them (a TPM generates only its discrete sizes).
+    /// A query about a key type without a curve or size is no when every row for that key type
+    /// is a no. (Before the fix, any row at all made the answer yes.) A size between two sizes
+    /// that generated is unknown when a refused size lies between them, because a TPM generates
+    /// only its discrete sizes.
     #[test]
     fn refused_rows_never_add_up_to_yes() {
         let b = baseline();
@@ -725,10 +765,11 @@ mod tests {
         }
     }
 
-    /// A secret-key length the probe did not try is yes only between the nearest two it tried,
-    /// both of which worked, for a commitment and a generation alike: below a refused length,
-    /// past the last one tried, or across a refused one it is unknown, never a guess. `SoftHSM`'s
-    /// rows (16 bytes refused, 32 and 64 computed) made 8 bytes a yes (review 2026-11-23 A-1).
+    /// A secret-key length that the probe did not try is yes only when it lies between the
+    /// nearest two tried lengths and both of them worked. This holds for a commitment and for a
+    /// generation. A length below a refused length, beyond the last tried length, or across a
+    /// refused length is unknown, and never a guess. Before the fix, `SoftHSM`'s rows (16 bytes
+    /// refused, 32 and 64 bytes computed) made 8 bytes a yes (review 2026-11-23 A-1).
     #[test]
     fn secret_lengths_interpolate_only_between_two_that_worked() {
         let b = baseline();
@@ -769,8 +810,45 @@ mod tests {
         assert!(matches!(generate(48), Verdict::Yes { .. }));
     }
 
-    /// A mechanism is usable when the module advertises it or the profile adds it, and no
-    /// other; a verdict prints its answer, who decided, and the note.
+    /// One rule decides a size for every query (review 2026-11-24 A-9). A length that the probe
+    /// did not try is unknown, whatever the answers for the tried lengths were. It never takes
+    /// the no that every tried length gave. A tried length is decided by its own row. The test
+    /// covers generation in bits, generation in bytes and the commitments.
+    #[test]
+    fn an_untried_size_is_unknown_whatever_the_tried_ones_said() {
+        type Ask<'a> = Box<dyn Fn(u32) -> Verdict + 'a>;
+        let b = baseline();
+        let m = profile(
+            "profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n\
+             \"commit.hmac-sha256.CKK_GENERIC_SECRET.16\" = { answer = \"no\" }\n\
+             \"commit.hmac-sha256.CKK_GENERIC_SECRET.32\" = { answer = \"no\" }\n\
+             \"commit.cmac.CKK_AES.16\" = { answer = \"no\" }\n\
+             \"generate.CKK_GENERIC_SECRET.16\" = { answer = \"no\" }\n\
+             \"generate.CKK_GENERIC_SECRET.32\" = { answer = \"no\" }\n\
+             \"generate.CKK_RSA.1024\" = { answer = \"no\" }\n\
+             \"generate.CKK_RSA.2048\" = { answer = \"no\" }\n",
+        );
+        let stack = eff(&b, Some(&m), &[]);
+        let asked: [(&str, Ask); 3] = [
+            ("commit", Box::new(|n| stack.commit("hmac-sha256", "CKK_GENERIC_SECRET", Some(n)))),
+            ("generate_secret", Box::new(|n| stack.generate_secret("CKK_GENERIC_SECRET", Some(n)))),
+            ("generate", Box::new(|n| stack.generate("CKK_RSA", None, Some(n * 64)))),
+        ];
+        for (what, ask) in &asked {
+            for n in [8, 24, 48] {
+                assert!(matches!(ask(n), Verdict::Unknown { .. }), "{what} at {n}: {:?}", ask(n));
+            }
+            assert!(matches!(ask(32), Verdict::No { .. }), "{what} at a refused size: {:?}", ask(32));
+        }
+        let aes = stack.commit("cmac", "CKK_AES", Some(32));
+        assert!(matches!(aes, Verdict::Unknown { .. }), "{aes:?}");
+        // For a query about the key type in general, the module answers no when every tried
+        // length was refused.
+        assert!(matches!(stack.commit("hmac-sha256", "CKK_GENERIC_SECRET", None), Verdict::No { .. }));
+    }
+
+    /// A mechanism is usable when the module advertises it or the profile adds it, and in no
+    /// other case. A verdict prints its answer, the profile that decided it, and the note.
     #[test]
     fn advertised_or_added_mechanisms_are_yes_and_verdicts_print() {
         let b = baseline();
@@ -786,8 +864,8 @@ mod tests {
         assert_eq!(Verdict::No { by: "layer".into(), note: None }.to_string(), "no — layer");
     }
 
-    /// A layer subtracts the key types it names and no other, and a size bound, a layer's or
-    /// the module's own, is inclusive at both ends.
+    /// A layer subtracts the key types that it names and no others. A size bound, whether it is
+    /// a layer's or the module's own, includes both ends.
     #[test]
     fn key_types_and_size_bounds_decide_exactly() {
         let b = baseline();
@@ -830,7 +908,8 @@ mod tests {
         }
     }
 
-    /// A parameter set belongs to the PQ key type its name says, and to none otherwise.
+    /// A parameter set belongs to the PQ key type that its name gives, and to no key type
+    /// otherwise.
     #[test]
     fn parameter_sets_name_their_key_type() {
         for (name, want) in [

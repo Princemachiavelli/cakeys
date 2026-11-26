@@ -1,55 +1,63 @@
-//! `keys.lock`: what was realised where, its invariants, and `gc`.
+//! The `keys.lock` file: which objects were realised on which tokens, the invariants that every
+//! lock must meet, and `gc`.
 
 use super::{AttrValue, Config, Locator, ObjectCfg, Observation, Observed, Provenance, TokenObservation};
 use crate::error::{KmError, Result};
 use crate::id::Scheme;
+use crate::known::{Known, Why};
 use crate::types::ObjectClass;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// A parsed `keys.lock` (docs/LOCK.md): each object's IDs and each spec's realisations, as
-/// cakeys recorded them.
+/// A parsed `keys.lock` file (docs/LOCK.md): the IDs of each object and the realisations of each
+/// spec, as cakeys recorded them.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Lock {
-    /// The lock format version: a lock of any other than [`LOCK_VERSION`] is refused on load.
+    /// The version of the lock format. The load refuses a lock with any version other than
+    /// [`LOCK_VERSION`].
     pub version: u32,
-    /// Each object's identity, by object name.
+    /// The identity of each object, keyed by the object name.
     #[serde(default)]
     pub objects: BTreeMap<String, LockObject>,
-    /// spec name -> token name -> realisation
+    /// The realisations, keyed first by the spec name and then by the token name.
     #[serde(default)]
     pub realisations: BTreeMap<String, BTreeMap<String, LockRealisation>>,
-    /// What realisations saw of their token, each distinct observation once (review A3), keyed
-    /// by [`Observation::digest`]. A realisation names the entry it was recorded with.
+    /// What the realisations saw of their tokens, with each distinct observation stored once
+    /// (review A3) and keyed by [`Observation::digest`]. A realisation names the entry with which
+    /// it was recorded.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub observations: BTreeMap<String, Observation>,
 }
 
-/// One object's identity: the IDs of its material and the type they were computed for, the
-/// same on every token.
+/// The identity of one object: the IDs of its material and the object type for which they were
+/// computed. The identity is the same on every token.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LockObject {
-    /// Label the object's commitment schemes were computed with. Required whenever
-    /// `ids` holds a commitment scheme; verification uses it, never the code default.
+    /// The label with which the object's commitment schemes were computed. It is required when
+    /// `ids` holds a commitment scheme. Verification uses this label and never the default label
+    /// in the code.
     #[serde(default, rename = "commitmentLabel", skip_serializing_if = "Option::is_none")]
     pub commitment_label: Option<String>,
-    /// The object type the IDs were computed for (required with `ids`). A `keys.toml` whose type
-    /// differs is refused rather than reported as a hash mismatch.
+    /// The object type for which the IDs were computed. It is required when `ids` is not empty.
+    /// When `keys.toml` declares a different type, the run refuses it with a type error instead
+    /// of reporting a hash mismatch.
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     pub object_type: Option<ObjectCfg>,
-    /// Material CA-IDs: scheme -> SRI hash.
+    /// The CA-IDs of the material, as a map from the scheme name to the SRI hash.
     #[serde(default)]
     pub ids: BTreeMap<String, String>,
-    /// Other objects with the same public key (`rfc7093m4`): a key and its certificate, a private
-    /// and a public key object. Recorded by cakeys, symmetric, and checked on load.
+    /// The other objects with the same public key (the same `rfc7093m4` ID), such as a key and its
+    /// certificate, or a private key object and a public key object. cakeys records the pairs,
+    /// each object of a pair lists the other one, and the load checks both.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub pairs: BTreeSet<String>,
-    /// A transport key's public key (docs/CAMIGRATE.md D3), base64 of the canonical SPKI whose hash is
-    /// `ids.rfc7093m4`: recorded when a token's `transportWith` spec is realised, so a source
-    /// exports to it from the lock alone. Checked against that ID on load.
+    /// The public key of a transport key (docs/CAMIGRATE.md D3): the base64 encoding of the
+    /// canonical SPKI whose hash is `ids.rfc7093m4`. It is recorded when a token's `transportWith`
+    /// spec is realised, so that a source token can export to this key with only the lock. The
+    /// load checks the public key against that ID.
     #[serde(default, rename = "publicKey", skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
 }
@@ -60,14 +68,16 @@ impl LockObject {
     }
 }
 
-/// The lock format version. Unpublished, so its schema changes in place.
+/// The version of the lock format. The format is not published yet, so its schema changes
+/// without a new version number.
 pub const LOCK_VERSION: u32 = 1;
 
 impl Lock {
-    /// Refuse other versions (the version is required), then every lock invariant: each object's
-    /// IDs and label, each realisation against its object, one object per material, and pairs
-    /// that list each other. What a lock is loaded with, and what [`save_lock`](super::save_lock)
-    /// asks before it writes, so no verb can save a lock that would not load again.
+    /// Refuses every version other than [`LOCK_VERSION`] (the version is required), then checks
+    /// every lock invariant: the IDs and the label of each object, each realisation against its
+    /// object, the observations, one object per material, and pairs that list each other. The
+    /// load runs this check, and [`save_lock`](super::save_lock) runs it before it writes, so no
+    /// verb can save a lock that would fail to load.
     pub(super) fn check(&self, path: &Path) -> Result<()> {
         if self.version != LOCK_VERSION {
             return Err(KmError::Validation(
@@ -87,8 +97,10 @@ impl Lock {
         self.check_pairs().map_err(invalid)
     }
 
-    /// Each object's IDs are SRI digests under lock scheme names, need a type, and — for
-    /// commitments — a printable label.
+    /// Checks each object: its IDs must be SRI digests under the scheme names that the lock uses
+    /// (not an input alias or an attestation scheme), an object with IDs must have a type, an
+    /// object with commitment IDs must have a printable label, and a recorded public key must
+    /// hash to the object's `rfc7093m4` ID.
     fn check_objects(&self) -> std::result::Result<(), String> {
         for (name, o) in &self.objects {
             if o.has_commitments() && o.commitment_label.is_none() {
@@ -105,8 +117,9 @@ impl Lock {
             if let Some((s, v)) = o.ids.iter().find(|(_, v)| !crate::id::is_sri(v)) {
                 return Err(format!("object '{name}': {s} = \"{v}\" is not a sha256 SRI digest"));
             }
-            // Attestation IDs are per device (§3.7): the same material attested on two TPMs has
-            // two IDs, so they live on each realisation, never in the object's shared `ids`.
+            // An attestation ID belongs to one device (§3.7). The same material attested on two
+            // TPMs has two attestation IDs, so each ID is stored on its realisation and never in
+            // the object's `ids`, which every token shares.
             if let Some(s) = o.ids.keys().find(|s| Scheme::from_name(s).is_some_and(Scheme::is_attestation)) {
                 return Err(format!(
                     "object '{name}' records the attestation scheme {s}: an attestation ID is per device \
@@ -140,9 +153,9 @@ impl Lock {
         Ok(())
     }
 
-    /// Each realisation names an object of the lock and schemes among its IDs, a binding exactly
-    /// when the object is a private key, and attestation evidence of a known kind that never
-    /// stands alone.
+    /// Checks each realisation: it must name an object of the lock and only schemes among that
+    /// object's IDs. It must have a binding if and only if the object is a private key. Its
+    /// attestation evidence, if any, must be of a known kind and must not be the only scheme.
     fn check_realisations(&self) -> std::result::Result<(), String> {
         for (spec, by_token) in &self.realisations {
             for (token, r) in by_token {
@@ -168,9 +181,9 @@ impl Lock {
                 {
                     return Err(format!("{what}: provenance origin method '{}' is unknown", o.method));
                 }
-                // Attestation evidence (§3.7): a known kind, SRI digests, and never alone — the
-                // realisation must also have matched a portable scheme, the only thing that links
-                // the same material on another token.
+                // Attestation evidence (§3.7) must have a known kind and SRI digests, and it must
+                // not be the only scheme. The realisation must also have matched a portable
+                // scheme, because only a portable scheme links the same material on another token.
                 let Some(a) = &r.attestation else { continue };
                 if Scheme::from_attestation_kind(&a.kind).is_none() {
                     return Err(format!(
@@ -196,8 +209,9 @@ impl Lock {
         Ok(())
     }
 
-    /// Each observation is keyed by an SRI digest, and each realisation names one the lock has.
-    /// The key is not recomputed here: an entry may hold keys of a newer cakeys (`extra`).
+    /// Checks that each observation is keyed by an SRI digest and that each realisation names an
+    /// observation that the lock has. The key is not computed again here, because an entry may
+    /// hold fields of a newer cakeys (`extra`) that this version cannot hash.
     fn check_observations(&self) -> std::result::Result<(), String> {
         if let Some(k) = self.observations.keys().find(|k| !crate::id::is_sri(k)) {
             return Err(format!("observation key \"{k}\" is not a sha256 SRI digest"));
@@ -219,8 +233,8 @@ impl Lock {
         Ok(())
     }
 
-    /// The observation the realisations on `token` name (review A3): the token's as far as the
-    /// lock knows, when they all agree.
+    /// Returns the observation that the realisations on `token` name (review A3). When they all
+    /// name the same observation, the lock treats it as the observation of that token.
     #[must_use]
     pub fn token_observation(&self, token: &str) -> TokenObservation<'_> {
         let mut named: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -242,7 +256,8 @@ impl Lock {
         }
     }
 
-    /// Observation keys no realisation names, or none of those `keep` accepts.
+    /// Returns the observation keys that no realisation names. Only the realisations that `keep`
+    /// accepts (given the spec name and the token name) are counted.
     fn unreferenced_observations(&self, keep: &dyn Fn(&str, &str) -> bool) -> Vec<String> {
         let named: BTreeSet<&str> = self
             .realisations
@@ -254,7 +269,7 @@ impl Lock {
         self.observations.keys().filter(|k| !named.contains(k.as_str())).cloned().collect()
     }
 
-    /// Drop the observations no realisation names; whether any was dropped.
+    /// Removes the observations that no realisation names. Returns whether it removed any.
     pub fn drop_unreferenced_observations(&mut self) -> bool {
         let gone = self.unreferenced_observations(&|_, _| true);
         for k in &gone {
@@ -263,9 +278,10 @@ impl Lock {
         !gone.is_empty()
     }
 
-    /// One object per material: two objects of one class with the same ID are the same thing
-    /// under two names. A certificate's rfc7093m4 names its subject key, which several
-    /// certificates may share.
+    /// Checks that the lock holds one object per material. Two objects of the same class with the
+    /// same ID are the same material under two names. A certificate's `rfc7093m4` ID identifies
+    /// the key that the certificate certifies, and several certificates may share that key, so
+    /// that ID is not compared between certificates.
     fn check_one_object_per_material(&self) -> std::result::Result<(), String> {
         let mut seen: BTreeMap<(&str, &str, &str), &str> = BTreeMap::new();
         for (name, o) in &self.objects {
@@ -285,8 +301,9 @@ impl Lock {
         Ok(())
     }
 
-    /// A listed partner that is in this file must share the public key and list back; one that is
-    /// not may live in another lock fragment (locks can be split and joined).
+    /// Checks the pairs. A listed pair that is in this file must share the public key and must
+    /// list this object in return. A listed pair that is not in this file may be in another lock
+    /// fragment, because locks can be split and joined.
     fn check_pairs(&self) -> std::result::Result<(), String> {
         for (name, o) in &self.objects {
             for p in &o.pairs {
@@ -315,7 +332,8 @@ impl Lock {
         self.realisations.get(spec)?.get(token)
     }
 
-    /// Objects in this file that share an rfc7093m4 with `name` but are not listed as its pairs.
+    /// Returns the objects in this file that share an `rfc7093m4` ID with `name` but are not
+    /// listed as its pairs.
     #[must_use]
     pub fn unlisted_pairs(&self, name: &str) -> BTreeSet<String> {
         let listed = self.objects.get(name).map(|o| &o.pairs);
@@ -327,7 +345,8 @@ impl Lock {
             .collect()
     }
 
-    /// For every object, the other objects with the same public key (`rfc7093m4`).
+    /// Returns, for every object, the other objects with the same public key (the same
+    /// `rfc7093m4` ID).
     #[must_use]
     pub fn computed_pairs(&self) -> BTreeMap<String, BTreeSet<String>> {
         let key = |o: &LockObject| o.ids.get(Scheme::Rfc7093m4.name()).cloned();
@@ -347,77 +366,102 @@ impl Lock {
     }
 }
 
-/// One realisation of a spec on a token. Fields fall in three classes (docs/DESIGN.md §4.2):
-/// - **compared** (top level): verification fails when they differ from keys.toml or the token;
+/// One realisation of a spec on a token. The fields fall into three classes (docs/DESIGN.md
+/// §4.2):
+/// - **compared** (the top-level fields): verification fails when they differ from keys.toml or
+///   from the token;
 /// - **`observed`** and **`observation`**: recorded facts about the object and the token (the
-///   latter an entry of the lock's `observations`) that never change a verdict;
-/// - **`provenance`**: the object's history (`origin`); never a verdict either.
+///   `observation` is the key of an entry in the lock's `observations`). They never change the
+///   result;
+/// - **`provenance`**: the object's history (`origin`). It never changes the result either.
 ///
-/// Stripping `observed`, `observation`, `provenance` and the `observations` table from a lock
-/// never changes a verdict.
+/// Removing `observed`, `observation`, `provenance` and the `observations` table from a lock
+/// never changes the result of a run.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct LockRealisation {
-    /// The object this spec realised and the locator it was found under: a spec pointed at
-    /// another object or locator in keys.toml is a change to review, not a hash mismatch.
+    /// The object that this spec realised. When keys.toml points the spec at another object or
+    /// another locator, a person must review the change, and the run does not report it as a hash
+    /// mismatch.
     pub object: String,
-    /// The locator the object was found under (see `object`).
+    /// The locator under which the run found the object (see `object`).
     pub(crate) locator: Locator,
-    /// SRI digest of the spec (object type and policy attributes) it was recorded under: another
-    /// digest is a spec change.
+    /// The SRI digest of the spec (the object type and the policy attributes) under which the
+    /// realisation was recorded. A different digest means that the spec changed.
     pub(crate) spec_digest: String,
-    /// The identity mode it was established in: a weaker one later is a downgrade (14).
+    /// The identity mode in which the realisation was established. A weaker mode in a later run
+    /// is a downgrade (exit 14).
     pub(crate) mode: Mode,
-    /// The identity schemes this realisation computed and matched: computing fewer later is a
-    /// downgrade. Also shows which realisation established which locked ID.
+    /// The identity schemes that this realisation computed and matched. A later run that computes
+    /// fewer of them is a downgrade. The field also shows which realisation established which
+    /// locked ID.
     pub schemes: BTreeSet<String>,
-    /// Adopted through its public key object only (`publicOnly`).
+    /// True when the object was adopted through its public key object only (`publicOnly`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) public_only: bool,
-    /// Private keys: how the private object is bound to the identity. Absent: not recorded.
+    /// For a private key: how the private object is bound to the identity. It is `None` for every
+    /// other class.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<Binding>,
-    /// The attestation this realisation pinned (§3.7 of docs/DESIGN.md), when its spec opted in:
-    /// the per-device attestation ID and the *anchor* it was verified against — the Yubico root
-    /// (PIV) or the Attestation Key (TPM). Kept here, not in `objects.<name>.ids`: the same
-    /// material attested on two devices has two IDs, joined through the portable `schemes`.
+    /// The attestation that this realisation pinned (§3.7 of docs/DESIGN.md), when its spec opted
+    /// in: the attestation ID of this device and the *anchor* against which it was verified,
+    /// which is the Yubico root (PIV) or the Attestation Key (TPM). It is stored here and not in
+    /// `objects.<name>.ids`, because the same material attested on two devices has two IDs. The
+    /// portable `schemes` link the two realisations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation: Option<AttestationRecord>,
-    /// Every boolean attribute the object exposes for its class (`CKA_SIGN = true`, ...), as
-    /// read from the token: declared or not. A drift is a change to review.
+    /// Every boolean attribute that the object exposes for its class (`CKA_SIGN = true`, ...), as
+    /// read from the token, whether the spec declares it or not. A person must review any change.
     pub policy: BTreeMap<String, AttrValue>,
-    /// Attributes fixed when the object was made; one that weakens means it was replaced.
+    /// The attributes that were fixed when the object was created. When one of them becomes
+    /// weaker, the object was replaced.
     #[serde(default, skip_serializing_if = "Immutables::is_empty")]
     pub immutables: Immutables,
-    /// The key of the `observations` entry this realisation was recorded with.
+    /// The key of the `observations` entry with which this realisation was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observation: Option<String>,
-    /// What was seen of the object when it was recorded; never compared.
+    /// What the run saw of the object when it recorded the realisation. It is never compared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) observed: Option<Observed>,
-    /// The object's history on this token; never compared.
+    /// The object's history on this token. It is never compared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) provenance: Option<Provenance>,
 }
 
-/// Offline-verifiable attestation evidence pinned per realisation (§3.7 of docs/DESIGN.md).
-/// `kind` names the attestation (`yubico-piv`, `tpm-certify` — one per scheme, see
-/// `id::ATTESTATION_KINDS`), `root` is the SRI digest of the trust anchor the chain was verified
-/// to: the pinned Yubico root's SPKI for PIV (never the device's own overwritable slot f9), or
-/// the Attestation Key's SPKI for TPM. `id` is the attestation commitment of this device.
+impl LockRealisation {
+    /// Returns the value of a boolean attribute as the token reported it when this realisation
+    /// was recorded, or `Why::Unrecorded` when the lock has no record of it.
+    pub fn observed(&self, name: &str) -> Known<bool> {
+        Known::or(
+            match self.policy.get(name) {
+                Some(AttrValue::Bool(b)) => Some(*b),
+                _ => None,
+            },
+            Why::Unrecorded,
+        )
+    }
+}
+
+/// Attestation evidence that can be verified offline, pinned for each realisation (§3.7 of
+/// docs/DESIGN.md). `kind` names the attestation (`yubico-piv` or `tpm-certify`, one for each
+/// scheme; see `Scheme::attestation_kind`). `root` is the SRI digest of the trust anchor to which
+/// the chain was verified: the SPKI of the pinned Yubico root for PIV (never the device's own
+/// slot f9, which can be overwritten), or the SPKI of the Attestation Key for TPM. `id` is the
+/// attestation commitment of this device.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AttestationRecord {
     /// The attestation kind (`yubico-piv`, `tpm-certify`).
     pub kind: String,
-    /// SRI digest of the trust anchor the attestation was verified to.
+    /// The SRI digest of the trust anchor to which the attestation was verified.
     pub root: String,
-    /// This device's attestation commitment.
+    /// The attestation commitment of this device.
     pub id: String,
 }
 
-/// Key attributes the token sets when the key is made, which no later operation can restore
-/// (PKCS#11 3.2 §4.9-4.10): `true` → `false` means the object was replaced, e.g. re-imported.
+/// The key attributes that the token sets when the key is created. No later operation can set
+/// them back to `true` (PKCS#11 3.2 §4.9-4.10), so a change from `true` to `false` means that the
+/// object was replaced, for example by a new import.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Immutables {
@@ -430,13 +474,15 @@ pub struct Immutables {
     /// `CKA_ALWAYS_SENSITIVE`: the key has always been sensitive.
     #[serde(rename = "CKA_ALWAYS_SENSITIVE", default, skip_serializing_if = "Option::is_none")]
     pub always_sensitive: Option<bool>,
-    /// `CKM_...`, absent when the token reports none (an imported key).
+    /// `CKA_KEY_GEN_MECHANISM`: the `CKM_...` mechanism that generated the key. It is `None` when
+    /// the token reports none, as for an imported key.
     #[serde(rename = "CKA_KEY_GEN_MECHANISM", default, skip_serializing_if = "Option::is_none")]
     pub key_gen_mechanism: Option<String>,
 }
 
 impl Immutables {
-    /// Nothing recorded (a class without these attributes): left out of the lock.
+    /// Returns true when nothing is recorded, as for a class without these attributes. The lock
+    /// then leaves the field out.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         *self == Immutables::default()
@@ -455,7 +501,7 @@ impl Immutables {
         .collect()
     }
 
-    /// Flags that were `true` when recorded and are not now.
+    /// Returns the flags that were `true` when the lock recorded them and are not `true` now.
     #[must_use]
     pub fn weakened_since(&self, recorded: &Immutables) -> Vec<&'static str> {
         [
@@ -470,20 +516,23 @@ impl Immutables {
     }
 }
 
-/// Inline-table form, as the lock writes it.
+/// Formats the immutables as a TOML inline table, in the form that the lock writes.
 impl std::fmt::Display for Immutables {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{{ {} }}", self.fields().join(", "))
     }
 }
 
-/// Lock entries `cfg` no longer names (finding D3): every `[realisations.<spec>.<token>]` whose
-/// spec or token is gone from keys.toml, and every `[objects.<name>]` absent from it — printed by
-/// `gc` as table names, removed with `--apply`. Live objects keep their `ids` however few specs
-/// use them; only entries whose whole subject is gone are collected, and every
-/// `[observations."<key>"]` no remaining realisation names. A realisation of an object keys.toml
-/// no longer defines goes with it (a renamed object, a spec pointed at another one), so what is
-/// left is a lock that loads. With `remove`, exactly the returned entries are dropped.
+/// Returns the lock entries that `cfg` no longer names (finding D3). These are every
+/// `[realisations.<spec>.<token>]` whose spec or token was removed from keys.toml, every
+/// `[objects.<name>]` that keys.toml no longer defines, and every `[observations."<key>"]` that
+/// no remaining realisation names. `gc --dry-run` prints them as table names, and `gc` removes
+/// them.
+///
+/// An object that keys.toml still defines keeps its `ids`, however few specs use it. A
+/// realisation of an object that keys.toml no longer defines (a renamed object, or a spec that
+/// now points at another object) is removed with the object, so that the remaining lock loads.
+/// With `remove`, the function removes exactly the returned entries.
 pub fn gc(cfg: &Config, lock: &mut Lock, remove: bool) -> Vec<String> {
     let named = |spec: &str, token: &str| cfg.specs.get(spec).is_some_and(|s| s.tokens.contains_key(token));
     let kept: BTreeSet<(String, String)> = lock
@@ -518,48 +567,59 @@ pub fn gc(cfg: &Config, lock: &mut Lock, remove: bool) -> Vec<String> {
     stale
 }
 
-/// Identity modes, strongest first (docs/DESIGN.md §3.4).
+/// The identity modes, with the strongest mode first (docs/DESIGN.md §3.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Mode {
-    /// The ID hashes the object's public material: public keys, certificates, data objects.
+    /// The ID is a hash of the object's public material: public keys, certificates and data
+    /// objects.
     Direct,
-    /// The ID hashes a commitment the token computes with the secret key (a MAC, a check value, a
-    /// wrap), for secret keys whose usage bits allow one.
+    /// The ID is a hash of a commitment that the token computes with the secret key (a MAC, a
+    /// check value or a wrap). This mode is for secret keys whose usage attributes allow such a
+    /// computation.
     Commitment,
-    /// An extractable secret key without such bits: wrapped under a session KEK, unwrapped as a
-    /// session copy that allows every scheme of its type, committed, then both destroyed.
+    /// This mode is for an extractable secret key whose usage attributes allow no commitment. The
+    /// run wraps the key under a session KEK and unwraps it as a session copy that allows every
+    /// scheme of its type. It then computes the commitments with the copy and destroys both the
+    /// copy and the KEK.
     WrapRebind,
 }
 
-/// How a private-key object is bound to the public key its identity hashes (docs/DESIGN.md §3.6).
+/// How a private key object is bound to the public key whose hash is its identity (docs/DESIGN.md
+/// §3.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Binding {
-    /// The token signed a fresh challenge that verified on the host against that public key.
+    /// The token signed a fresh challenge, and the host verified the signature with that public
+    /// key.
     PopSign,
-    /// `pop-sign` on a `CKA_ALWAYS_AUTHENTICATE` key: the same proof, with the per-use
-    /// `C_Login(CKU_CONTEXT_SPECIFIC)` the key demands before it signs. Derived from the
-    /// observed attribute and recorded in the lock; never written in keys.toml.
+    /// `pop-sign` on a `CKA_ALWAYS_AUTHENTICATE` key: the same proof, with the
+    /// `C_Login(CKU_CONTEXT_SPECIFIC)` that the key requires before each signature. The run
+    /// derives this binding from the observed attribute and records it in the lock. keys.toml
+    /// never declares it.
     PopSignPin,
-    /// The token derived the ECDH shared secret with an ephemeral host key and both sides `MACed`
-    /// the challenge with it (derive-only EC keys).
+    /// The token derived the ECDH shared secret with an ephemeral host key, and both the token
+    /// and the host computed a MAC of the challenge with that secret (for EC keys that can only
+    /// derive).
     PopEcdh,
-    /// The token decrypted a host challenge (RSA-OAEP) to the expected plaintext (decrypt-only
-    /// RSA keys).
+    /// The token decrypted a challenge from the host (RSA-OAEP) to the expected plaintext (for RSA
+    /// keys that can only decrypt).
     PopDecrypt,
-    /// The token unwrapped a host secret (RSA-OAEP) into a non-extractable session key and both
-    /// sides `MACed` the challenge with it (unwrap-only RSA keys: transport keys, docs/CAMIGRATE.md D3).
+    /// The token unwrapped a secret from the host (RSA-OAEP) into a non-extractable session key,
+    /// and both the token and the host computed a MAC of the challenge with it (for RSA keys that
+    /// can only unwrap, which are the transport keys of docs/CAMIGRATE.md D3).
     PopUnwrap,
-    /// Only the token says the objects belong together (opt-in, or `publicOnly`).
+    /// No proof of possession: only the token's report ties the private key to the identity
+    /// (with the opt-in `binding = "token-asserted"`, or with `publicOnly`).
     TokenAsserted,
 }
 
 impl Binding {
-    /// Strength, strongest 0: a realisation must never move to a higher rank. Every `pop-*`
-    /// proves the same fact — possession of the named public key — by whichever capability the
-    /// key has. `pop-sign-pin` proves it too: its per-use PIN is recorded by the observed
-    /// `CKA_ALWAYS_AUTHENTICATE` bit in the policy, not by a weaker rank.
+    /// Returns the strength of the binding, where 0 is the strongest. A realisation must never
+    /// move to a higher rank. Every `pop-*` binding proves the same fact, which is possession of
+    /// the named public key, with whichever capability the key has. `pop-sign-pin` proves it too.
+    /// The PIN that it requires for each use is recorded by the observed `CKA_ALWAYS_AUTHENTICATE`
+    /// attribute in the policy, not by a weaker rank.
     #[must_use]
     pub fn rank(self) -> u8 {
         match self {
@@ -568,27 +628,37 @@ impl Binding {
         }
     }
 
-    /// The name keys.toml and the lock write.
+    /// Returns the proof of possession of this binding, from the table of names that the
+    /// capability profiles share (`cakeys_names::Proof`). Returns `None` for `token-asserted`,
+    /// which proves nothing.
     #[must_use]
-    pub fn name(self) -> &'static str {
+    pub fn proof(self) -> Option<cakeys_names::Proof> {
+        use cakeys_names::Proof;
         match self {
-            Binding::PopSign => "pop-sign",
-            Binding::PopSignPin => "pop-sign-pin",
-            Binding::PopEcdh => "pop-ecdh",
-            Binding::PopDecrypt => "pop-decrypt",
-            Binding::PopUnwrap => "pop-unwrap",
-            Binding::TokenAsserted => "token-asserted",
+            Binding::PopSign => Some(Proof::PopSign),
+            Binding::PopSignPin => Some(Proof::PopSignPin),
+            Binding::PopEcdh => Some(Proof::PopEcdh),
+            Binding::PopDecrypt => Some(Proof::PopDecrypt),
+            Binding::PopUnwrap => Some(Proof::PopUnwrap),
+            Binding::TokenAsserted => None,
         }
     }
 
-    /// The proof a capability row names (`prove.<proof>.…`, docs/CAPROBE.md): the binding's,
-    /// `pop-sign` for a per-use PIN too; `None` for `token-asserted`, which proves nothing.
+    /// Returns the name that keys.toml and the lock use, which is the name of its proof
+    /// ([`Binding::proof`]).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        self.proof().map_or("token-asserted", cakeys_names::Proof::name)
+    }
+
+    /// Returns the proof name that a capability row uses (`prove.<proof>.…`, docs/CAPROBE.md).
+    /// That is the binding's own name, except that `pop-sign-pin` uses `pop-sign`. Returns `None`
+    /// for `token-asserted`, which proves nothing.
     #[must_use]
     pub fn proof_name(self) -> Option<&'static str> {
         match self {
             Binding::PopSignPin => Some(Binding::PopSign.name()),
-            Binding::TokenAsserted => None,
-            proven => Some(proven.name()),
+            proven => proven.proof().map(cakeys_names::Proof::name),
         }
     }
 }
@@ -600,7 +670,8 @@ impl std::fmt::Display for Binding {
 }
 
 impl Mode {
-    /// Strength, strongest 0: a realisation must never move to a higher rank.
+    /// Returns the strength of the mode, where 0 is the strongest. A realisation must never move
+    /// to a higher rank.
     #[must_use]
     pub fn rank(self) -> u8 {
         match self {
@@ -610,7 +681,7 @@ impl Mode {
         }
     }
 
-    /// The name the lock writes.
+    /// Returns the name that the lock writes.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -632,14 +703,16 @@ pub(super) mod tests {
     use super::*;
     use crate::config::*;
 
-    /// The synthetic Nix-library fixture must stay a valid lock of the current schema.
+    /// The synthetic fixture lock of the Nix library must remain a valid lock of the current
+    /// schema.
     #[test]
     fn fixture_lock_parses() {
         let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"));
         let lock = load_lock(path).unwrap();
         assert_eq!(lock.realisations["signing-soft"]["softhsm"].binding, Some(Binding::PopSign));
-        // A recorded CKA_ID loads in lower case, as keys.toml's does: `0A` and `0a` are one
-        // locator, never a change to review (review D1). A non-hex one is no lock cakeys wrote.
+        // A recorded `CKA_ID` loads in lower case, as a `CKA_ID` in keys.toml does, so `0A` and
+        // `0a` are the same locator and never a change to review (review D1). A `CKA_ID` that is
+        // not hex cannot come from a lock that cakeys wrote, so the load refuses it.
         let text = std::fs::read_to_string(path).unwrap();
         let with_id = |id: &str| {
             text.replace(
@@ -653,8 +726,9 @@ pub(super) mod tests {
         assert!(e.to_string().contains("CKA_ID 'zz' is not hex"), "{e}");
     }
 
-    /// Observation keys of a newer cakeys load and survive a rewrite (the TUF re-serialization
-    /// rule); anywhere else an unknown key is still a refused lock, `provenance` included.
+    /// Observation keys from a newer cakeys load, and a rewrite of the lock keeps them (the TUF
+    /// rule for re-serialization). An unknown key anywhere else, including in `provenance`, still
+    /// makes the load refuse the lock.
     #[test]
     fn unknown_observation_keys_are_kept_on_rewrite() {
         let fixture = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/tests/fixtures/keys.lock"));
@@ -673,9 +747,9 @@ pub(super) mod tests {
         assert_eq!(extra(&lock).keys().collect::<Vec<_>>(), ["builder", "run"]);
         save_lock(&path, &lock).unwrap();
         assert_eq!(extra(&load_lock(&path).unwrap()), extra(&lock));
-        // The rename left nothing behind but the lock.
+        // The rename of the temporary file left no file in the directory except the lock.
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-        // A compared table takes no unknown key, and neither does the object's history.
+        // A compared table accepts no unknown key, and the object's history does not either.
         for (table, key) in [
             ("[realisations.signing-soft.softhsm]\n", "builder = \"ci-7\"\n"),
             ("[realisations.signing-soft.softhsm]\n", "provenance = { builder = \"ci-7\" }\n"),
@@ -685,8 +759,9 @@ pub(super) mod tests {
         }
     }
 
-    /// A realisation names an observation the lock has (17 otherwise); an origin names a known
-    /// method; `gc` reports and drops exactly the observations no remaining realisation names.
+    /// A realisation must name an observation that the lock has (exit 17 otherwise), and an
+    /// origin must name a known method. `gc` reports and removes exactly the observations that no
+    /// remaining realisation names.
     #[test]
     fn observations_are_referenced_and_collected() {
         let path = Path::new("test.lock");
@@ -701,8 +776,8 @@ pub(super) mod tests {
         lock.observations.insert(sri.into(), Observation::default());
         lock.observations.insert("sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=".into(), Observation::default());
         lock.check(path).unwrap();
-        // Every observation's module hash is checked, not only the first one's (review
-        // config.rs F2): a good one first, a malformed one after.
+        // The module hash of every observation is checked, not only the first one's (review
+        // config.rs F2). The test puts a valid hash first and a malformed hash after it.
         let module = |hash: &str| ModuleInfo {
             path: "/m.so".into(),
             hash: Some(hash.into()),
@@ -737,17 +812,19 @@ pub(super) mod tests {
         .unwrap();
         let unnamed = "observations.\"sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=\"";
         assert_eq!(gc(&cfg, &mut lock.clone(), false), [unnamed]);
-        // With the spec gone, the realisation goes, and so does the observation only it named.
+        // When the spec is removed, `gc` removes its realisation and the observation that only
+        // that realisation named.
         let cfg = Config { specs: BTreeMap::new(), ..cfg };
         let stale = gc(&cfg, &mut lock, true);
         assert_eq!(stale.len(), 3, "{stale:?}");
         assert!(lock.realisations.is_empty() && lock.observations.is_empty());
     }
 
-    /// `gc` leaves a lock that loads: an object renamed in keys.toml before `lock` ran
-    /// takes the realisation that still names it along (it once stayed, naming an object `gc`
-    /// had dropped, and every later run refused the lock, `lock` and `gc` included). And no
-    /// lock that would not load is ever written: `save_lock` refuses it and keeps the old one.
+    /// `gc` leaves a lock that loads. When an object was renamed in keys.toml before `lock` ran,
+    /// `gc` removes the realisation that still names the old object. Earlier, that realisation
+    /// stayed and named an object that `gc` had removed, so every later run refused the lock,
+    /// including `lock` and `gc`. Also, a lock that would not load is never written: `save_lock`
+    /// refuses it and keeps the old file.
     #[test]
     fn gc_and_save_leave_a_lock_that_loads() {
         let path = Path::new("test.lock");
@@ -765,8 +842,8 @@ pub(super) mod tests {
         let file = dir.path().join("keys.lock");
         let mut broken = attestable_lock();
         broken.objects.clear();
-        // Saved after a token write, a lock that would not load is a lock not written (21), with
-        // the load rule it breaks (review 2026-11-23 A-17).
+        // When a run saves, after a token write, a lock that would not load, the save fails with
+        // exit 21 and names the load rule that the lock breaks (review 2026-11-23 A-17).
         let e = save_lock(&file, &broken).unwrap_err();
         assert!(e.exit_code() == 21 && e.to_string().contains("is not in the lock"), "{e}");
         assert!(!file.exists(), "an invalid lock was written");
@@ -774,8 +851,9 @@ pub(super) mod tests {
         load_lock(&file).unwrap();
     }
 
-    /// Downgrade detection compares ranks: an inverted order would silently disable it. The
-    /// `pop-*` methods share rank 0: each proves possession of the same key.
+    /// The downgrade check compares ranks, so an inverted order would disable it without any
+    /// error. The `pop-*` bindings share rank 0, because each one proves possession of the same
+    /// key.
     #[test]
     fn binding_ranks_are_pinned() {
         assert!(Binding::PopSign.rank() < Binding::TokenAsserted.rank());
@@ -791,8 +869,24 @@ pub(super) mod tests {
         assert_eq!(Binding::TokenAsserted.to_string(), "token-asserted");
     }
 
-    /// A minimal valid lock with one object and realisation, for the attestation-invariant
-    /// tests: the caller mutates it and expects `validate` to accept or refuse.
+    /// Every proof in the names table is a binding that keys.toml and the lock read under the
+    /// proof's name. Both the serde spelling, which the file format fixes, and [`Binding::name`]
+    /// use that name. So a binding, its `prove.*` row and the profiles' `Proof` have the same
+    /// name.
+    #[test]
+    fn every_proof_is_a_binding_by_its_name() {
+        for p in cakeys_names::Proof::ALL {
+            let b: Binding = serde_json::from_value(serde_json::json!(p.name())).unwrap();
+            assert_eq!((b.proof(), b.name()), (Some(p), p.name()), "{p:?}");
+            assert_eq!(serde_json::to_value(b).unwrap(), serde_json::json!(b.name()), "{p:?}");
+        }
+        assert_eq!(Binding::TokenAsserted.proof(), None);
+        assert_eq!(serde_json::to_value(Binding::TokenAsserted).unwrap(), "token-asserted");
+    }
+
+    /// Returns a minimal valid lock with one object and one realisation, for the tests of the
+    /// lock invariants. The caller changes the lock and expects `Lock::check` to accept or
+    /// refuse it.
     pub(crate) fn attestable_lock() -> Lock {
         let mut ids = BTreeMap::new();
         ids.insert("rfc7093m4".to_owned(), "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".to_owned());
@@ -834,9 +928,10 @@ pub(super) mod tests {
         lock
     }
 
-    /// Attestation IDs are per device and never stand alone (§3.7): they live on the realisation
-    /// that computed them — never in the object's shared `ids`, where the same material attested
-    /// on a second TPM would collide — and that realisation must also hold a portable scheme.
+    /// An attestation ID belongs to one device and is never the only scheme (§3.7). It is stored
+    /// on the realisation that computed it, and never in the object's `ids`, which every token
+    /// shares and where the same material attested on a second TPM would need a second value.
+    /// That realisation must also hold a portable scheme.
     #[test]
     fn attestation_is_per_realisation_and_never_alone() {
         let path = Path::new("test.lock");
@@ -847,20 +942,21 @@ pub(super) mod tests {
             lock.realisations.get_mut("s").unwrap().insert("t".into(), r);
         };
 
-        // In the object's ids: refused, wherever it came from.
+        // An attestation ID in the object's `ids` is refused, wherever it came from.
         let mut lock = attestable_lock();
         lock.objects.get_mut("k").unwrap().ids.insert("tpm-certify".to_owned(), sri.to_owned());
         let err = lock.check(path).unwrap_err();
         assert!(err.to_string().contains("belongs to the realisation"), "{err}");
 
-        // On the realisation beside a portable scheme: loads.
+        // An attestation on the realisation, next to a portable scheme, loads.
         let mut lock = attestable_lock();
         let mut r = real(&mut lock);
         r.attestation = Some(record("tpm-certify"));
         set(&mut lock, r.clone());
         lock.check(path).unwrap();
 
-        // Alone (a realisation whose portable schemes are gone): refused.
+        // An attestation without a portable scheme (the realisation's portable schemes were
+        // removed) is refused.
         let mut alone = lock.clone();
         let mut r2 = r.clone();
         r2.schemes.clear();
@@ -868,7 +964,7 @@ pub(super) mod tests {
         let err = alone.check(path).unwrap_err();
         assert!(err.to_string().contains("locked only by its attestation"), "{err}");
 
-        // Unknown kind, or a non-SRI id: refused.
+        // An unknown kind, or an `id` that is not an SRI digest, is refused.
         let mut bad = lock.clone();
         let mut r3 = r.clone();
         r3.attestation = Some(record("vendor-x"));

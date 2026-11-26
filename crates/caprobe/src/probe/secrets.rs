@@ -1,15 +1,16 @@
-//! The secret-key operation probes (`docs/archive/CAPROBE_PROFILE_COVERAGE.md`, Parts 1, 4 and 5): the
-//! commitments cakeys computes (`commit.*`), the symmetric modes (`crypt.*`) and the key
-//! derivations (`derive.CKM_*.*`). Each writes a row, yes or no, per key type it tried; a
-//! mechanism the module does not list is not tried, and so is left to `[untested]`.
+//! The secret-key operation probes (`docs/archive/CAPROBE_PROFILE_COVERAGE.md`, Parts 1, 4 and
+//! 5): the commitments that cakeys computes (`commit.*`), the symmetric modes (`crypt.*`) and the
+//! key derivations (`derive.CKM_*.*`). Each probe writes a row, yes or no, for each key type that
+//! it tried. A mechanism that the module does not list is not tried, so it is left to the
+//! `[untested]` table.
 
-use super::{Draft, Made, ck_said, evidence, refused, spec};
+use super::{Checked, Draft, Made, ck_said, evidence, refused, spec};
 use cakeys_core::config::ObjectCfg;
 use cakeys_core::id::{BlockCipher, Commit, HmacHash};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
 use cakeys_core::{Msg, Result};
 use cakeys_pkcs11::token;
-use cakeys_profile::{Answer, Capability, KeyKind};
+use cakeys_profile::{Capability, KeyKind};
 use cryptoki::error::RvError;
 use cryptoki::mechanism::aead::GcmParams;
 use cryptoki::mechanism::aes_ctr::AesCtrParams;
@@ -24,9 +25,11 @@ use sha2::{Digest, Sha256};
 /// The label every commitment probe computes over.
 const COMMIT_LABEL: &str = "cakeys probe: commitment";
 
-/// The commitments each secret key type offers, as the verbs compute them (`Commit`): a
-/// generic secret under each hash (the verbs use SHA-256; the others measure the mechanisms),
-/// each hash-bound type under its own, AES four ways, Triple DES by its check value.
+/// Returns the commitments that each secret key type offers, as the verbs compute them
+/// (`Commit`): an HMAC with each hash for a generic secret (the verbs use SHA-256, and the other
+/// hashes measure the mechanisms), an HMAC with its own hash for each hash-bound HMAC key type,
+/// four commitments for AES, and the check values (by encryption and by decryption) for Triple
+/// DES.
 fn commit_plan() -> Vec<(Kt, Vec<Commit>)> {
     let hashes = [HmacHash::Sha1, HmacHash::Sha224, HmacHash::Sha256, HmacHash::Sha384, HmacHash::Sha512];
     let mut plan = vec![(Kt::GenericSecret, hashes.map(Commit::Hmac).to_vec())];
@@ -47,8 +50,9 @@ fn commit_plan() -> Vec<(Kt, Vec<Commit>)> {
     plan
 }
 
-/// The key lengths, in bytes, a commitment is tried at: the three AES defines, Triple DES's
-/// fixed 24, and three across the free range. Only those the module generated.
+/// Returns the key lengths, in bytes, at which a commitment is tried: the three lengths that AES
+/// defines, the fixed 24 bytes of Triple DES, and three lengths across the free range of the
+/// other types. The probe uses only the lengths that the module generated.
 fn commit_lengths(kt: Kt) -> &'static [u32] {
     match kt {
         Kt::Aes => &[16, 24, 32],
@@ -57,33 +61,29 @@ fn commit_lengths(kt: Kt) -> &'static [u32] {
     }
 }
 
-/// `kt` at `bytes` as keys.toml would declare it (Triple DES's length is its type's).
+/// Returns the object configuration of a secret key of the type `kt` with `bytes` bytes, as
+/// keys.toml would declare it. Triple DES gets no `valueLen`, because its type fixes its length.
 pub(super) fn secret_object(kt: Kt, bytes: u32) -> ObjectCfg {
     ObjectCfg { value_len: (kt != Kt::Des3).then(|| bytes.into()), ..ObjectCfg::new(Class::SecretKey, Some(kt)) }
 }
 
-/// The lengths of `kt` the module generated (what the secret sweep recorded).
+/// Returns the lengths of `kt` that the module generated, as the secret-key generation probes
+/// recorded them.
 fn generated(profile: &Draft, kt: Kt) -> Vec<u32> {
     profile.generate.get(&KeyKind::from(kt.name())).map(|r| r.can_bytes.clone()).unwrap_or_default()
 }
 
-/// A refusal's row: the module's `CKR_*` is the answer, no; a refusal without one (the provider's
-/// or this build's) says nothing of the module, and a session left busy by an earlier operation
-/// says nothing of this one.
+/// Writes the row of a refusal as [`Draft::refused`] classifies it. The module's `CKR_*` value is
+/// the module's answer, a no, and any other failure says nothing about the module.
 fn refusal_row(made: &mut Made, profile: &mut Draft, cap: Capability, e: &cakeys_core::KmError, what: &str) {
-    if token::rv_is(e.rv(), RvError::OperationActive) {
-        made.undetermined.push(format!("no {cap} row: {what}: an earlier operation left the session busy"));
-    } else if e.rv().is_some() {
-        profile.set(cap, Answer::No, Some(format!("{what}: {}", evidence(made.tok, e))), None);
-    } else {
-        made.undetermined.push(format!("no {cap} row: {what}: {}", evidence(made.tok, e)));
-    }
+    profile.refused(&mut made.undetermined, cap, e.rv(), format!("{what}: {}", evidence(made.tok, e)));
 }
 
-/// `commit.<kind>.<key type>.<bytes>`: each commitment the module lists, on a key made with the
-/// usage it needs, computed by the verbs' own `Token::commit` twice (a constant or random answer
-/// is no commitment) and, at the first length, on a second key (another key must give another
-/// value).
+/// Writes the `commit.<kind>.<key type>.<bytes>` rows. For each commitment that the module lists,
+/// the probe makes a key with the usage that the commitment needs and computes the commitment
+/// twice with the verbs' own `Token::commit`, because a constant or random answer is not a
+/// commitment. At the first length, it also computes the commitment on a second key, because
+/// another key must give another value.
 pub(super) fn probe_commits(made: &mut Made, profile: &mut Draft) -> Result<()> {
     for (kt, commits) in commit_plan() {
         let lengths: Vec<u32> = generated(profile, kt);
@@ -98,8 +98,9 @@ pub(super) fn probe_commits(made: &mut Made, profile: &mut Draft) -> Result<()> 
             }
         }
     }
-    // No `CKM_DES3_CMAC`: cryptoki names no 0x138, neither to call nor in the module's list
-    // (review 2026-11-23 D-10, docs/OPEN.md).
+    // There is no `CKM_DES3_CMAC` probe. cryptoki has no `MechanismType` for the value 0x138, so
+    // it can neither call the mechanism nor keep it in the module's list (review 2026-11-23 D-10,
+    // docs/OPEN.md).
     Ok(())
 }
 
@@ -129,7 +130,7 @@ fn commit_row(made: &mut Made, profile: &mut Draft, kt: Kt, c: Commit, bytes: u3
         }
     };
     if again != first {
-        profile.set(cap, Answer::No, Some("the same key does not give the same commitment twice".into()), None);
+        profile.wrong(cap, "the same key does not give the same commitment twice".into());
         return Ok(());
     }
     if distinct {
@@ -137,20 +138,23 @@ fn commit_row(made: &mut Made, profile: &mut Draft, kt: Kt, c: Commit, bytes: u3
             Ok(h) => h,
             Err(e) => {
                 made.undetermined.push(format!("no distinctness check of {cap}: {}", refused(made.tok, &e)));
-                profile.set(cap, Answer::Yes, None, None);
+                profile.yes(cap, Checked::unverified(), None);
                 return Ok(());
             }
         };
         if made.tok.commit(other, &object, c, COMMIT_LABEL).ok().as_ref() == Some(&first) {
-            profile.set(cap, Answer::No, Some("another key gives the same commitment".into()), None);
+            profile.wrong(cap, "another key gives the same commitment".into());
             return Ok(());
         }
     }
-    profile.set(cap, Answer::Yes, None, None);
+    // The commitment is stable and distinct, but it was never compared with a value that the
+    // host computed (review 2026-11-24 E-3), so the yes is unverified.
+    profile.yes(cap, Checked::unverified(), None);
     Ok(())
 }
 
-/// One encrypt then decrypt with `m`: the plaintext comes back, and the ciphertext is not it.
+/// Encrypts `plain` with `m` and decrypts the result. Succeeds when the plaintext comes back and
+/// the ciphertext differs from the plaintext.
 fn round_trip(s: &Session, key: ObjectHandle, m: &Mechanism, plain: &[u8]) -> std::result::Result<(), Msg> {
     let cipher = s.encrypt(m, key, plain).map_err(|e| ck_said("C_Encrypt", &e))?;
     if cipher == plain {
@@ -160,9 +164,10 @@ fn round_trip(s: &Session, key: ObjectHandle, m: &Mechanism, plain: &[u8]) -> st
     if back == plain { Ok(()) } else { Err(Msg::from("decrypting does not give the plaintext back")) }
 }
 
-/// `crypt.<mechanism>.<key type>.<bytes>`: AES CBC, CBC with padding, CTR and GCM on a 32-byte
-/// key, and Triple DES CBC and CBC with padding, each a round trip on the token. A mode the
-/// module refuses with a `CKR_*` is a no; one it does not list is not tried.
+/// Writes the `crypt.<mechanism>.<key type>.<bytes>` rows: AES CBC, CBC with padding, CTR and GCM
+/// on a 32-byte key, and Triple DES CBC and CBC with padding, each as a round trip on the token.
+/// A mode that the module refuses with a `CKR_*` value is a no, and a mode that the module does
+/// not list is not tried.
 pub(super) fn probe_modes(made: &mut Made, profile: &mut Draft) -> Result<()> {
     let iv16 = [7u8; 16];
     let iv8 = [7u8; 8];
@@ -209,9 +214,10 @@ pub(super) fn probe_modes(made: &mut Made, profile: &mut Draft) -> Result<()> {
     Ok(())
 }
 
-/// One mechanism with the parameter choices to try, in order, each with the words naming it (empty
-/// for a mechanism whose parameters are fixed): a module that answers `CKR_MECHANISM_PARAM_INVALID`
-/// to one choice may take another, and that refusal is about the call, not the mechanism.
+/// One mechanism with the parameter choices to try, in order, each with the text that names the
+/// choice (empty for a mechanism whose parameters are fixed). A module that answers
+/// `CKR_MECHANISM_PARAM_INVALID` to one choice may accept another, and that refusal is about the
+/// call, not about the mechanism.
 type Variants<'a> = Vec<(Mechanism<'a>, String)>;
 
 /// A mechanism with one fixed parameter choice.
@@ -219,8 +225,8 @@ fn fixed(m: Mechanism<'_>) -> Variants<'_> {
     vec![(m, String::new())]
 }
 
-/// AES CTR with a 32-bit counter, then with the whole block as the counter: Cloud KMS takes only
-/// the latter, and a token that takes either answers to the first.
+/// Returns AES CTR with a 32-bit counter, and then with the whole block as the counter. Cloud KMS
+/// accepts only the second, and a token that accepts both answers to the first.
 fn ctr_variants<'a>(iv: [u8; 16]) -> Variants<'a> {
     [32u8, 128]
         .into_iter()
@@ -230,10 +236,13 @@ fn ctr_variants<'a>(iv: [u8; 16]) -> Variants<'a> {
         .collect()
 }
 
-/// One `crypt.*` row: the first of `variants` the module takes, round-tripped on `key`: yes when
-/// the plaintext comes back, no with the module's `CKR_*` when it refuses every choice. Only
-/// `CKR_MECHANISM_PARAM_INVALID` moves on to the next choice, and a yes on any but the first
-/// says which one worked. A session an earlier operation left busy says nothing.
+/// Writes one `crypt.*` row from a round trip on `key` with the first of `variants` that the
+/// module accepts. The row is a yes when the plaintext comes back (unverified, because only this
+/// module ran: review 2026-11-24 E-3). It is a no with the module's `CKR_*` value when the module
+/// refuses every choice, and a no by the host's finding when what came back is wrong. Only
+/// `CKR_MECHANISM_PARAM_INVALID` moves on to the next choice, and a yes on a choice other than
+/// the first gets a note that names the choice that worked. [`Draft::refused`] classifies any
+/// other failure.
 fn crypt_row(
     made: &mut Made,
     profile: &mut Draft,
@@ -254,21 +263,22 @@ fn crypt_row(
                         format!("refused the first parameters tried (CKR_MECHANISM_PARAM_INVALID); works with {label}"),
                     );
                 }
-                profile.set(cap, Answer::Yes, None, None);
-            }
-            Err(e) if token::rv_is(e.rv(), RvError::OperationActive) => {
-                made.undetermined.push(format!("no {cap} row: an earlier operation left the session busy"));
+                profile.yes(cap, Checked::unverified(), None);
             }
             Err(e) if token::rv_is(e.rv(), RvError::MechanismParamInvalid) && i + 1 < variants.len() => continue,
-            Err(e) => profile.set(cap, Answer::No, Some(e.to_string()), None),
+            // The findings of `round_trip` itself carry no return value, and they are the host's
+            // check.
+            Err(e) if e.rv().is_none() => profile.wrong(cap, e.to_string()),
+            Err(e) => profile.refused(&mut made.undetermined, cap, e.rv(), e.to_string()),
         }
         return;
     }
 }
 
-/// The modes of a bound AES key (a purpose-bound module's, such as kmsp11's): each of CBC, CBC
-/// with padding and CTR the key's binding serves, on the key the module generated for it, the
-/// same round trip as the unbound probe. `bytes` is the key's length.
+/// Probes the modes of a bound AES key (the key of a purpose-bound module, such as kmsp11). The
+/// function runs the same round trip as the unbound probe, on the key that the module generated
+/// for the binding, for each of CBC, CBC with padding and CTR that the binding serves. `bytes` is
+/// the key's length.
 pub(super) fn probe_bound_aes(
     made: &mut Made,
     profile: &mut Draft,
@@ -292,12 +302,13 @@ pub(super) fn probe_bound_aes(
     }
 }
 
-/// The base value every derivation starts from.
+/// Returns a fixed value of `n` bytes, from which the derivations' base keys are made.
 fn base_value(n: u8) -> Vec<u8> {
     (0..n).map(|i| i.wrapping_mul(29).wrapping_add(7)).collect()
 }
 
-/// A readable (not sensitive, extractable) base key of known value: the derivations' input.
+/// Creates a readable base key (not sensitive, and extractable) with the known value `value`, as
+/// the input of the derivations.
 fn base_key(s: &Session, key_type: KeyType, value: &[u8]) -> std::result::Result<ObjectHandle, Msg> {
     let mut template = vec![
         Attribute::Token(false),
@@ -308,15 +319,15 @@ fn base_key(s: &Session, key_type: KeyType, value: &[u8]) -> std::result::Result
         Attribute::Sensitive(false),
         Attribute::Extractable(true),
     ];
-    // Only a block cipher's key encrypts: a HKDF key refuses the attribute.
+    // Only a block cipher's key encrypts, and an HKDF key refuses `CKA_ENCRYPT`.
     if key_type == KeyType::AES {
         template.push(Attribute::Encrypt(true));
     }
     s.create_object(&template).map_err(|e| ck_said("C_CreateObject of the base key", &e))
 }
 
-/// Derive with `m` from `base` into a readable generic secret, `len` bytes if given, and read
-/// what came out.
+/// Derives with `m` from `base` into a readable generic secret (of `len` bytes, if `len` is
+/// given), and returns the derived value.
 fn derived_value(
     s: &Session,
     m: &Mechanism,
@@ -343,7 +354,8 @@ fn derived_value(
     }
 }
 
-/// HMAC-SHA-256 on the host, from the hash alone: HKDF's only primitive here.
+/// Computes HMAC-SHA-256 on the host from the SHA-256 hash alone. HKDF needs no other primitive
+/// here.
 fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
     let mut block = [0u8; 64];
     if key.len() > 64 {
@@ -374,21 +386,23 @@ fn aes256_cbc(key: &[u8], iv: [u8; 16], data: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// One derivation to try: the mechanism, the type of its base key, the bytes it should give.
+/// One derivation to try: the mechanism, the base key, the length to ask for, the value that the
+/// host expects, and the key type that the row names.
 struct Derivation<'a> {
     mechanism: Mechanism<'a>,
     base: ObjectHandle,
-    /// Length asked of the derived key, where the mechanism does not decide it.
+    /// The length to ask for the derived key, where the mechanism does not decide the length.
     len: Option<u64>,
     /// What the host computes the derived value to be.
     expected: Vec<u8>,
     key_type: KeyKind,
 }
 
-/// `derive.<mechanism>.<key type>`: HKDF, concatenation (base and data, data and base, base and
-/// key), XOR with data, extraction of bits, and AES-CBC-encrypt-data, each into a readable secret
-/// whose value the host computes on its own and compares. A module that derives something else
-/// is a no, as one that refuses.
+/// Writes the `derive.<mechanism>.<key type>` rows: HKDF, concatenation (base and data, data and
+/// base, base and key), XOR with data, extraction of bits, and AES-CBC-encrypt-data. Each
+/// derivation goes into a readable secret, and the host computes the expected value on its own
+/// and compares the two. A module that derives another value gets a no, as does a module that
+/// refuses.
 pub(super) fn probe_kdfs(made: &mut Made, profile: &mut Draft) {
     let s = made.session;
     let base_v = base_value(32);
@@ -484,7 +498,8 @@ pub(super) fn probe_kdfs(made: &mut Made, profile: &mut Draft) {
     }
 }
 
-/// Each derivation the module lists, tried: its row is yes when the value is the host's.
+/// Tries each derivation that the module lists. Its row is yes when the derived value equals the
+/// value that the host computed.
 fn run_derivations(made: &mut Made, profile: &mut Draft, tries: &[Derivation]) {
     for d in tries {
         let mt = d.mechanism.mechanism_type();
@@ -493,18 +508,11 @@ fn run_derivations(made: &mut Made, profile: &mut Draft, tries: &[Derivation]) {
         }
         let cap = Capability::Kdf { mechanism: mt.to_string(), key_type: d.key_type.clone() };
         match derived_value(made.session, &d.mechanism, d.base, d.len) {
-            Ok(v) if v == d.expected => profile.set(cap, Answer::Yes, None, None),
-            Ok(v) => profile.set(
-                cap,
-                Answer::No,
-                Some(format!("it derives {} bytes that are not what the host computes", v.len())),
-                None,
-            ),
-            Err(e) if token::rv_is(e.rv(), RvError::OperationActive) => {
-                made.undetermined.push(format!("no {cap} row: an earlier operation left the session busy"));
-            }
-            Err(e) if e.rv().is_some() => profile.set(cap, Answer::No, Some(e.to_string()), None),
-            Err(e) => made.undetermined.push(format!("no {cap} row: {e}")),
+            Ok(v) => match Checked::same(&v, &d.expected) {
+                Some(checked) => profile.yes(cap, checked, None),
+                None => profile.wrong(cap, format!("it derives {} bytes that are not what the host computes", v.len())),
+            },
+            Err(e) => profile.refused(&mut made.undetermined, cap, e.rv(), e.to_string()),
         }
     }
 }

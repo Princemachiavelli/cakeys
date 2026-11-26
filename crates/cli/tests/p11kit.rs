@@ -1,10 +1,11 @@
 //! End-to-end tests through p11-kit forwarding: `p11-kit server` in front of a `SoftHSM` token
 //! (`kmp11`), reached with `p11-kit-client.so`, compared with the same token opened directly.
 //!
-//! Needs `CAKEYS_P11KIT_CLIENT` (p11-kit-client.so), `P11_KIT_SERVER_ADDRESS`, `CAKEYS_TEST_MODULE`
-//! (libsofthsm2.so, for the direct path) and `SOFTHSM2_CONF`; the server must export only
-//! `pkcs11:token=kmp11` (user PIN 1234) while the same `SoftHSM` also holds `kmtest`. Skipped when
-//! `CAKEYS_P11KIT_CLIENT` or `CAKEYS_TEST_MODULE` is unset, unless `CAKEYS_P11KIT_REQUIRE=1`.
+//! The tests need `CAKEYS_P11KIT_CLIENT` (p11-kit-client.so), `P11_KIT_SERVER_ADDRESS`,
+//! `CAKEYS_TEST_MODULE` (libsofthsm2.so, for the direct path) and `SOFTHSM2_CONF`. The server must
+//! export only `pkcs11:token=kmp11` (user PIN 1234), while the same `SoftHSM` also holds `kmtest`.
+//! The tests are skipped when `CAKEYS_P11KIT_CLIENT` or `CAKEYS_TEST_MODULE` is unset, unless
+//! `CAKEYS_P11KIT_REQUIRE=1` is set.
 
 mod common;
 
@@ -13,9 +14,10 @@ use cryptoki::object::{Attribute, KeyType, ObjectClass};
 use hmac::{Hmac, KeyInit, Mac};
 use std::process::Output;
 
-/// The suite for test `name` ([`p11kit_tokens`]; its module is the client) and the `SoftHSM`
-/// module of the direct path, or `None` (skipped). Both through the gate (review p11kit.rs F2:
-/// the direct one was an `expect`).
+/// Returns the suite for test `name` ([`p11kit_tokens`], whose module is the p11-kit client) and
+/// the `SoftHSM` module of the direct path, or `None` when the test is skipped. Both variables go
+/// through the same skip check, `suite_var` (review p11kit.rs F2: the direct module was read with
+/// an `expect`).
 fn env(name: &str) -> Option<(Suite, String)> {
     let client = suite_var("CAKEYS_P11KIT_CLIENT", "CAKEYS_P11KIT_REQUIRE", name)?;
     let direct = suite_var("CAKEYS_TEST_MODULE", "CAKEYS_P11KIT_REQUIRE", name)?;
@@ -23,18 +25,20 @@ fn env(name: &str) -> Option<(Suite, String)> {
     Some((suite, direct))
 }
 
-/// A logged-in session on the exported token `kmp11`, through `module` (the client or direct).
+/// Opens a logged-in session on the exported token `kmp11` through `module` (the p11-kit client,
+/// or the direct module).
 fn session(module: &str) -> TestSession {
     open_session(module, "kmp11", "1234")
 }
 
-/// The IDs a `lock` run printed: one result per object, so the one this test locks is the first.
+/// Returns the IDs that a `lock` run printed. The run prints one result per object, and this test
+/// locks one object, so its result is the first.
 fn ids(o: &Output) -> serde_json::Value {
     let results: Vec<serde_json::Value> = serde_json::from_str(&stdout(o)).unwrap();
     results[0]["ids"].clone()
 }
 
-/// A test-only AES-256 value planted on the token, known to the host.
+/// A test-only AES-256 value that the test plants on the token, so that the host knows it.
 const AES_VALUE: [u8; 32] = *b"p11-kit forwarding aes vector!!!";
 const HMAC_VALUE: [u8; 32] = *b"p11-kit forwarding hmac vector!!";
 
@@ -109,7 +113,8 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-hmac" }, origin = "adopt" }
 "#;
     e.config(&body);
 
-    // Generated through the forwarded token, then the same object opened directly: one identity.
+    // Each key is generated through the forwarded token, and then the same object is opened
+    // directly. Both paths must give the same identity.
     for (k, _) in kinds {
         assert_eq!(e.code(&["create", "--spec", k, "--token", "fwd"]), 22, "{k}");
         assert_eq!(e.code(&["lock", "--spec", k, "--token", "direct"]), 22, "{k}: direct agrees");
@@ -119,7 +124,7 @@ tokens.fwd = { locator = { CKA_LABEL = "fwd-hmac" }, origin = "adopt" }
     }
 
     // AES: p11-kit forwards CMAC and ECB but not key wrap, so the forwarded path computes two of
-    // the three commitments; they still link to the direct path, which computes all three.
+    // the three commitments. Those two still match the direct path, which computes all three.
     let o = e.km(&["lock", "--spec", "aes", "--token", "fwd"]);
     assert_eq!(code(&o), 22);
     assert_eq!(ids(&o).as_object().unwrap().keys().collect::<Vec<_>>(), ["cmac", "kcv-ecb"]);
@@ -189,10 +194,14 @@ fn p11kit_login_is_per_client() {
          [specs.k-pub]\nobject = \"k\"\ntokens.fwd-anon = { locator = { CKA_LABEL = \"fwd-login\" }, origin = \"adopt\", publicOnly = true }\n",
     );
     assert_eq!(e.code(&["create", "--spec", "k", "--token", "fwd"]), 22);
-    // Another client of the same server holds a logged-in session meanwhile...
+    // Meanwhile, another client of the same server holds a logged-in session...
     let held = session(&e.module);
-    // ...yet a client without the PIN still cannot see the private key; the public half works.
-    assert_eq!(e.code(&["lock", "--spec", "k", "--token", "fwd-anon", "--dry-run"]), 11);
+    // ...but a client without the PIN still cannot see the private key, and cakeys says so (16,
+    // `needs-login`; it once reported the key as not found, 11: review 2026-11-24 B-4). The
+    // public half works.
+    let o = e.km(&["lock", "--spec", "k", "--token", "fwd-anon", "--dry-run"]);
+    assert_eq!(code(&o), 16, "{}", stderr(&o));
+    assert!(stderr(&o).contains("a session without login cannot see private objects"), "{}", stderr(&o));
     assert_eq!(e.code(&["lock", "--spec", "k-pub", "--token", "fwd-anon"]), 22);
     drop(held);
 }

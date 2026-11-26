@@ -1,0 +1,16 @@
+[package]
+name = "cakeys-names"
+description = "cakeys: the tables more than one crate needs (curves, proofs, commitments, device failures), one owner each"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# No dependencies: the profile crate reads these tables without cakeys-core, and core without
+# the profiles (docs/ARCHITECTURE.md).
+[dependencies]

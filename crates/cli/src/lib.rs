@@ -1,8 +1,8 @@
-//! The `cakeys` command line (README.md, "Three tools"): it pins and verifies. As a
-//! library so a downstream binary can link extra provider crates:
-//! `cakeys::main(&cakeys::default_registry().with(MyProvider))`.
+//! The `cakeys` command line (README.md, "Three tools"), which pins and verifies the identity of
+//! PKCS#11 objects. It is built as a library, so that a downstream binary can link extra provider
+//! crates: `cakeys::main(&cakeys::default_registry().with(MyProvider))`.
 
-use cakeys_cli_common::{Opener, print, read_lock, save_changed, token_cfg};
+use cakeys_cli_common::{DeferredRow, Opener, Outcome, print, read_lock, refused, save_changed, token_cfg};
 use cakeys_core::KmError;
 use cakeys_core::config::{Config, Lock, gc, save_lock};
 use cakeys_core::types::ObjectClass;
@@ -23,15 +23,15 @@ struct Cli {
     /// Declarative input (keys.toml).
     #[arg(short, long, env = "CAKEYS_CONFIG")]
     config: PathBuf,
-    /// Lock file (keys.lock); defaults to the config path with a `.lock` extension. It must
-    /// exist, unless --new-lock.
+    /// Lock file (keys.lock). It defaults to the config path with a `.lock` extension. It must
+    /// exist, unless --new-lock is given.
     #[arg(short, long, env = "CAKEYS_LOCK")]
     lock: Option<PathBuf>,
     /// Override a token's PKCS#11 module: `<token>=<path>` (repeatable).
     #[arg(long = "module", value_name = "TOKEN=PATH")]
     modules: Vec<String>,
-    /// Start a lock where none is: without it, a lock that is not there is refused (17), so a
-    /// mistyped --lock never becomes a second lock.
+    /// Start a new lock file when none exists. Without this flag, a missing lock file is refused
+    /// (exit 17), so a mistyped --lock path never creates a second lock.
     #[arg(long, global = true)]
     new_lock: bool,
     /// Print the reports (`validate`, `gc`) as JSON.
@@ -50,47 +50,53 @@ enum Cmd {
         #[command(flatten)]
         at: Address,
     },
-    /// Find each object and compare it with the lock, recording what it lacks (missing hashes,
-    /// realisation details) and what changed around it; never overwriting a hash. Never creates
-    /// an object: `create` does. Prints each object's identity, as a JSON array.
+    /// Find each object and compare it with the lock. Record what the lock lacks (missing
+    /// hashes, realisation details) and what changed around the object, but never overwrite a
+    /// hash. Never create an object; `create` does that. Print each object's identity as a JSON
+    /// array.
     Lock {
         #[command(flatten)]
         at: Addresses,
-        /// Compare with the lock only; write nothing (a first use is then exit 18, with `got:`).
+        /// Compare with the lock only, and write nothing. A first use then exits 18, and its
+        /// message shows the identity after `got:`.
         #[arg(long)]
         dry_run: bool,
     },
-    /// Create keys, the one verb that does: every selected (spec, token) pair with origin =
-    /// "create" whose object the lock does not pin yet, then record them like `lock`; a pair
-    /// whose object the lock pins is verified as `check` verifies it and left alone; the other
-    /// pairs are skipped with a note. Nothing named selects every pair. Before any token is
-    /// opened, each is checked against the capability profiles: a pair they say cannot be made
-    /// refuses the whole run (15), and nothing is created. Naming one pair (an object or --spec,
-    /// and --token) creates or verifies it, or says why not. A key the lock does not pin already
-    /// under its locator stops the run (19): `lock` records it. Prints the created objects as
-    /// JSON.
+    /// Create the keys that keys.toml declares. No other verb creates them; `lock` creates only
+    /// the TPM Attestation Key that a realisation needs. For every selected (spec, token) pair
+    /// with origin = "create" whose object the lock does not pin yet, create the object, and then
+    /// record it as `lock` does. A pair whose object the lock already pins is verified as `check`
+    /// verifies it, and is otherwise left alone. The other pairs are skipped with a note. When
+    /// nothing is named, every pair is selected. Before any token is opened, each pair is checked
+    /// against the capability profiles. If the profiles say that a pair cannot be created, the
+    /// whole run is refused (exit 15), and nothing is created. When one pair is named (an object
+    /// or --spec, and --token), create or verify it, or say why not. If a key that the lock does
+    /// not pin already exists under the pair's locator, the run stops (exit 19); `lock` records
+    /// such a key. Print the created objects as JSON.
     Create {
         #[command(flatten)]
         at: Addresses,
-        /// Print what would be created, verified, skipped or refused, and why, as JSON; open no
-        /// token and write nothing. Exits 15 when a pair is refused (0 with --skip-unsupported).
+        /// Print, as JSON, what would be created, verified, skipped or refused, and why. Write
+        /// nothing, and open the tokens read-only. Exit 15 when a pair is refused (0 with
+        /// --skip-unsupported).
         #[arg(long)]
         dry_run: bool,
-        /// Create the pairs the profiles allow and warn about the ones they refuse, instead of
-        /// refusing the run.
+        /// Create the pairs that the profiles allow, and warn about the pairs that they refuse,
+        /// instead of refusing the whole run.
         #[arg(long)]
         skip_unsupported: bool,
-        /// Create, but record nothing: a first use to review before `lock` records it.
+        /// Create the keys, but record nothing in the lock. The run is then a first use, which a
+        /// person can review before `lock` records it.
         #[arg(long, conflicts_with = "dry_run")]
         no_update_lock: bool,
     },
     /// Delete each object by its locator if it holds the expected identity, and remove its
-    /// realisation from the lock. Absent is success. Prints what happened to each, as a JSON
-    /// array.
+    /// realisation from the lock. An absent object counts as success. Print what happened to each
+    /// object as a JSON array.
     Delete {
         #[command(flatten)]
         at: Addresses,
-        /// Expected CA-ID of the one object named; defaults to the locked one.
+        /// Expected CA-ID of the one object named. It defaults to the CA-ID that the lock pins.
         #[arg(long)]
         if_match: Option<String>,
         /// Identify each object and check it as a delete would; destroy and write nothing.
@@ -99,30 +105,30 @@ enum Cmd {
     },
     /// Remove the lock entries whose spec or object is gone from the config, printing each.
     Gc {
-        /// Print them; remove nothing.
+        /// Print the stale entries, and remove nothing.
         #[arg(long)]
         dry_run: bool,
     },
     /// Verify the object against the lock before it is used, in a read-only session, and print
     /// its URI. `<object>.id.<scheme>` asks for one identity scheme, which the lock must pin.
-    /// Never writes, the lock or the token. With --token alone (no object, no --spec), checks
-    /// every object keys.toml places on that token and prints the token's module file; when any
-    /// fails, each failure goes to stderr with its own exit code and the run exits 20.
+    /// Never write to the lock or to the token. With --token alone (no object and no --spec),
+    /// check every object that keys.toml places on that token, and print the token's module file.
+    /// When any object fails, write each failure to stderr with its own exit code, and exit 20.
     Check {
         #[command(flatten)]
         at: Address,
-        /// `uri`, or `pkcs11-provider-pem`: pkcs11-provider's key file (what its `uri2pem.py`
-        /// writes) wrapping the URI, for programs that take a private key only as a PEM file
-        /// and load it through OpenSSL with pkcs11-provider.
+        /// `uri`, or `pkcs11-provider-pem`. The second format is pkcs11-provider's key file that
+        /// wraps the URI (the file that its `uri2pem.py` writes), for programs that take a
+        /// private key only as a PEM file and load it through OpenSSL with pkcs11-provider.
         #[arg(long, value_enum, default_value_t = Format::Uri)]
         format: Format,
-        /// Add `module-path=` with the module file the check loaded (read by p11-kit and libp11;
-        /// pkcs11-provider takes its module from its own configuration).
+        /// Add `module-path=` with the module file that the check loaded. p11-kit and libp11 read
+        /// it; pkcs11-provider takes its module from its own configuration.
         #[arg(long)]
         uri_module: bool,
-        /// Add the user PIN: `source` refers to keys.toml's pinEnv (`pin-source=env:`, a
-        /// pkcs11-provider extension) or pinFile (`pin-source=file:`); `value` writes the PIN
-        /// itself (`pin-value=`) into the output, wherever that goes.
+        /// Add the user PIN. `source` refers to keys.toml's pinEnv (`pin-source=env:`, a
+        /// pkcs11-provider extension) or pinFile (`pin-source=file:`). `value` writes the PIN
+        /// itself (`pin-value=`) into the output, wherever the output goes.
         #[arg(long, value_enum)]
         uri_pin: Option<UriPin>,
         #[command(flatten)]
@@ -130,12 +136,14 @@ enum Cmd {
     },
 }
 
-/// When a key's attestation chain must be valid under `check` (ISSUES.md B8): every
-/// certificate of it, from the slot's to the pinned root, within its validity period.
+/// The time at which a key's attestation chain must be valid under `check` (ISSUES.md B8).
+/// Every certificate of the chain, from the slot's certificate to the pinned root, must be
+/// within its validity period at that time.
 #[derive(clap::Args)]
 struct ValidityArgs {
-    /// Judge the attestation chain's certificate dates at this time, not now (a host clock that
-    /// is wrong, or the time the lock was recorded): RFC 3339 in UTC, YYYY-MM-DDTHH:MM:SSZ.
+    /// Check the dates of the attestation chain's certificates at this time instead of now (for
+    /// a host clock that is wrong, or for the time at which the lock was recorded). The format
+    /// is RFC 3339 in UTC: YYYY-MM-DDTHH:MM:SSZ.
     #[arg(long, value_name = "TIME", conflicts_with = "ignore_validity")]
     at: Option<String>,
     /// Do not check the attestation chain's certificate dates; a note says so.
@@ -144,7 +152,9 @@ struct ValidityArgs {
 }
 
 impl ValidityArgs {
-    /// The time the chain is held to: the system clock's, never `SOURCE_DATE_EPOCH`.
+    /// Returns the time against which the chain's dates are checked: the `--at` time, or else
+    /// the system clock's time (never `SOURCE_DATE_EPOCH`). With `--ignore-validity`, it adds a
+    /// note and returns `Unchecked`.
     fn chain_time(&self, notes: &mut Notes) -> cakeys_core::Result<cakeys_pkcs11::ChainTime> {
         if self.ignore_validity {
             notes.note(format_args!("check: the attestation chain's certificate dates are not checked"));
@@ -154,49 +164,52 @@ impl ValidityArgs {
     }
 }
 
-/// What a verb with one result acts on (docs/CAKEYS.md): an object, narrowed by the spec and the
-/// token when keys.toml realises it more than once. A name keys.toml lacks is 17.
+/// The target of a verb with one result (docs/CAKEYS.md): an object, narrowed by the spec and
+/// the token when keys.toml realises it more than once. A name that keys.toml lacks is refused
+/// with exit 17.
 #[derive(clap::Args)]
 struct Address {
-    /// The object (`[objects.<name>]`); `check` also takes `<object>.id.<scheme>`. May be left
-    /// out when --spec names it, or for `check` of every object on --token.
+    /// The object (`[objects.<name>]`). `check` also takes `<object>.id.<scheme>`. The object may
+    /// be left out when --spec names it, or for a `check` of every object on --token.
     object: Option<String>,
-    /// The spec realising it, when several do.
+    /// The spec that realises the object, when several specs do.
     #[arg(long)]
     spec: Option<String>,
-    /// The token it is on, when it is on several.
+    /// The token that holds the object, when several tokens do.
     #[arg(long)]
     token: Option<String>,
 }
 
 impl Address {
-    /// The one (spec, token) pair named; `.id.<scheme>` is `check`'s alone.
+    /// Returns the one (spec, token) pair that the address names. Only `check` accepts
+    /// `.id.<scheme>`, so this function refuses it.
     fn pair(&self, cfg: &Config) -> Result<(String, String), KmError> {
         cfg.address(plain(self.object.as_deref())?, self.spec.as_deref(), self.token.as_deref())
     }
 }
 
-/// What `lock`, `create` and `delete` act on: objects, each narrowed by the specs that realise
-/// it and by the token, the same address as [`Address`], several times.
+/// The targets of `lock`, `create` and `delete`: several objects, each narrowed by the specs
+/// that realise it and by the token. Each one is the same kind of address as an [`Address`].
 #[derive(clap::Args)]
 struct Addresses {
-    /// The objects (`[objects.<name>]`); may be left out when --spec names them.
+    /// The objects (`[objects.<name>]`). They may be left out when --spec names them.
     objects: Vec<String>,
-    /// A spec realising one of the objects, where it has several (repeatable); with no object
-    /// named, the spec's own object.
+    /// A spec that realises one of the objects, when the object has several specs (repeatable).
+    /// When no object is named, the spec selects its own object.
     #[arg(long)]
     spec: Vec<String>,
-    /// The token they are on, when they are on several.
+    /// The token that holds the objects, when several tokens do.
     #[arg(long)]
     token: Option<String>,
 }
 
-/// An object and a spec of it, either left out (`Addresses::units`).
+/// An object and one of its specs, either of which may be left out (`Addresses::units`).
 type Unit<'a> = (Option<&'a str>, Option<&'a str>);
 
 impl Addresses {
-    /// Each object with the specs named for it, or each spec alone when no object is named;
-    /// `(None, None)` when nothing is. A spec that realises none of the objects named is 17.
+    /// Returns each object with the specs named for it, or each spec alone when no object is
+    /// named, or `(None, None)` when nothing is named. A spec that realises none of the named
+    /// objects is refused with exit 17.
     fn units<'a>(&'a self, cfg: &Config) -> Result<Vec<Unit<'a>>, KmError> {
         for o in &self.objects {
             plain(Some(o))?;
@@ -218,7 +231,8 @@ impl Addresses {
                 }
             }
         }
-        // A --spec that is no named object's: said as the pair it would have been is.
+        // A --spec that realises none of the named objects is refused. An unknown spec gets the
+        // error that `Config::address` gives for it, as the pair of that spec alone would.
         if let Some(s) = self.spec.iter().find(|s| !units.iter().any(|(_, u)| *u == Some(s.as_str()))) {
             let Some(c) = cfg.specs.get(s.as_str()) else {
                 cfg.address(None, Some(s), self.token.as_deref())?;
@@ -232,7 +246,7 @@ impl Addresses {
         Ok(units)
     }
 
-    /// The (spec, token) pair of each unit ([`Config::address`]), each once.
+    /// Returns the (spec, token) pair of each unit ([`Config::address`]), without duplicates.
     fn pairs(&self, cfg: &Config) -> Result<Vec<(String, String)>, KmError> {
         let mut pairs: Vec<(String, String)> = Vec::new();
         for (object, spec) in self.units(cfg)? {
@@ -245,7 +259,8 @@ impl Addresses {
     }
 }
 
-/// `object` as every verb but `check` takes it: a name, never `<object>.id.<scheme>`.
+/// Checks `object` in the form that every verb except `check` takes: a plain name, never
+/// `<object>.id.<scheme>`.
 fn plain(object: Option<&str>) -> Result<Option<&str>, KmError> {
     match object {
         Some(o) if ops::split_reference(o).1.is_some() => {
@@ -269,22 +284,23 @@ enum UriPin {
     Value,
 }
 
-/// The command line's definition: its verbs and flags, with the exit codes after its help, for
-/// parsing and for the test that every flag is used by an integration test
-/// (`tests/common/surface.rs`).
+/// Returns the command line's definition: its verbs and flags, with the exit codes after its
+/// help. It is used for parsing, and by the test that checks that an integration test uses every
+/// flag (`tests/common/surface.rs`).
 #[must_use]
 pub fn command() -> clap::Command {
     cakeys_cli_common::with_exit_codes(<Cli as clap::CommandFactory>::command())
 }
 
-/// Run the command line with the given providers; maps errors to the documented exit codes.
+/// Runs the command line with the given providers, and maps errors to the documented exit codes.
 #[must_use]
 pub fn main(registry: &Registry) -> ExitCode {
     cakeys_cli_common::main(|notes| dispatch(registry, notes))
 }
 
-/// Parse the arguments, then load keys.toml and the lock — refusing up front a run that may write
-/// a lock it cannot, and a lock that is not there unless --new-lock — and run the verb.
+/// Parses the arguments, loads keys.toml and the lock, and runs the verb. Before any token is
+/// opened, it refuses a run that would write a lock that it cannot write, and it refuses a
+/// missing lock file unless --new-lock is given.
 fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
     let cli: Cli = cakeys_cli_common::parse(command());
     let mut opener = Opener::load(&cli.config, &cli.modules, registry, notes)?;
@@ -298,23 +314,24 @@ fn dispatch(registry: &Registry, notes: &mut Notes) -> anyhow::Result<()> {
         }
         _ => (false, ""),
     };
-    // Held to the end of the run.
+    // The update guard is held until the end of the run.
     let (lock, _update_guard) = read_lock(&lock_path, cli.new_lock, writes, instead)?;
-    // `create`'s gate and generation decide by what the token's own runs demonstrated, as
-    // `validate` does; no other verb's verdict takes an observation (docs/LOCK.md).
+    // `create`'s gate and its generation decide by what earlier runs on the token itself
+    // demonstrated (the observations in the lock), as `validate` does. No other verb's verdict
+    // uses an observation (docs/LOCK.md).
     if matches!(cli.cmd, Cmd::Create { .. }) {
         opener.recall(&lock);
     }
     Run { opener, lock, lock_path, json: cli.json }.verb(&cli.cmd, notes)
 }
 
-/// What a verb works with once the arguments are parsed: keys.toml, the lock and where it is
-/// saved, and how tokens are opened.
+/// The state that a verb works with after the arguments are parsed: keys.toml, the lock, the path
+/// where the lock is saved, and the way in which tokens are opened.
 struct Run<'a> {
     opener: Opener<'a>,
     lock: Lock,
     lock_path: PathBuf,
-    /// `--json`: the reports as JSON.
+    /// `--json`: print the reports as JSON.
     json: bool,
 }
 
@@ -334,11 +351,13 @@ impl Run<'_> {
                 let write = if *dry_run { LockWrite::Compare } else { LockWrite::Record };
                 let mut locked = Vec::new();
                 let result = self.each(at, &mut locked, notes, |opener, lock, t, notes| {
-                    // Never creates: read-write where the token allows (the session objects a
-                    // wrap-rebind copy or a proof makes), read-only on a write-protected one.
+                    // `lock` never creates an object. It opens the token read-write where the
+                    // token allows it, because a wrap-rebind copy or a proof creates session
+                    // objects, and read-only on a write-protected token.
                     let tok = opener.open(t.token_name, Access::Scratch, notes)?;
                     let (r, changed) = ops::lock(t, &tok, lock, write, notes)?;
-                    Ok((serde_json::to_value(r)?, changed))
+                    let word = if *dry_run { "compared" } else { "locked" };
+                    Ok((Outcome::passed(t.object_name, t.spec_name, t.token_name, word).with(&r)?, changed))
                 });
                 print(&locked)?;
                 result
@@ -357,15 +376,12 @@ impl Run<'_> {
                     )
                     .into());
                 }
-                let access = if *dry_run { Access::Read } else { Access::Write };
+                let access = if *dry_run { Access::DryWrite } else { Access::Write };
                 let mut deleted = Vec::new();
                 let result = self.each(at, &mut deleted, notes, |opener, lock, t, notes| {
                     let tok = opener.open(t.token_name, access, notes)?;
                     let (outcome, changed) = ops::delete(t, &tok, lock, if_match.as_deref(), *dry_run, notes)?;
-                    let row = serde_json::json!({
-                        "object": t.object_name, "spec": t.spec_name, "token": t.token_name, "outcome": outcome.name(),
-                    });
-                    Ok((row, changed))
+                    Ok((Outcome::passed(t.object_name, t.spec_name, t.token_name, outcome.name()), changed))
                 });
                 print(&deleted)?;
                 result
@@ -395,8 +411,9 @@ impl Run<'_> {
         }
     }
 
-    /// `check`: the verified URI as the consumer asked for it. The lock's URI stays the bare
-    /// locator; the module and PIN are only ever added here, on request.
+    /// `check`: prints the verified URI in the form that the consumer asked for. The lock's URI
+    /// stays the bare locator. The module path and the PIN are added only here, and only on
+    /// request.
     fn check(
         &self,
         at: &Address,
@@ -419,7 +436,8 @@ impl Run<'_> {
             }
             return self.check_token(token, when, notes);
         }
-        // Refused before any token is opened: the address, and what the output cannot carry.
+        // These checks refuse a bad address, and an output format that cannot hold the result,
+        // before any token is opened.
         let object = reference.map(|r| ops::split_reference(r).0);
         let (spec_name, token_name) = cfg.address(object, spec, token)?;
         let object = &cfg.specs[&spec_name].object;
@@ -438,7 +456,7 @@ impl Run<'_> {
             Some(how) => Some(pin_ref(&token_name, token_cfg(cfg, &token_name)?, how == UriPin::Value)?),
         };
         let open = |name: &str, access| opener.open_quiet(name, access, when);
-        // The pair resolved above, so `check_open` cannot settle on another one.
+        // Pass the pair that was resolved above, so that `check_open` cannot choose another pair.
         let (spec, token) = (Some(spec_name.as_str()), Some(token_name.as_str()));
         let (r, tok) = ops::check_open(cfg, reference, spec, token, open, &self.lock, notes)?;
         let uri = with_query(&r.uri, uri_module.then_some(tok.module.path.as_str()), pin.as_ref());
@@ -446,8 +464,8 @@ impl Run<'_> {
             println!("{uri}");
             return Ok(());
         }
-        // pkcs11-provider finds a private key's public half by CKA_ID alone: without one, a
-        // module whose private key carries no public point (SoftHSM) gives OpenSSL no public key.
+        // pkcs11-provider finds a private key's public half by CKA_ID alone. Without a CKA_ID, a
+        // module whose private key holds no public point (SoftHSM) gives OpenSSL no public key.
         let t = Target::new(cfg, &r.spec, &r.token)?;
         if tok.key_id(&t.object, &t.on_token.locator, t.on_token.public_only)?.is_none() {
             notes.warn(format!(
@@ -461,9 +479,10 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// `check --token`: every object keys.toml places on the token, in one session. All pass:
-    /// the module file the check loaded, on stdout. Any fails: nothing on stdout, each failure on
-    /// stderr led by its own exit code, and 20.
+    /// `check --token`: checks every object that keys.toml places on the token, in one session.
+    /// If all objects pass, it prints the module file that the check loaded on stdout. If any
+    /// object fails, it prints nothing on stdout, prints each failure on stderr after its own
+    /// exit code, and exits 20.
     fn check_token(&self, token: &str, when: cakeys_pkcs11::ChainTime, notes: &mut Notes) -> anyhow::Result<()> {
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let open = |name: &str, access| opener.open_quiet(name, access, when);
@@ -489,16 +508,19 @@ impl Run<'_> {
         save_changed(&self.lock_path, &self.lock, changed, notes)
     }
 
-    /// `verb` on each pair `at` names, in order, its result pushed to `out` and the lock saved
-    /// when it changed it, before the next pair; the first failure ends the run, after what was
-    /// done before it, and is pushed too (its object, spec, token, exit code and message), so the
-    /// caller prints every pair's outcome whatever ended the run (review 2026-11-23 C-7).
+    /// Runs `verb` on each pair that `at` names, in order. For each pair, it pushes the pair's
+    /// row to `out`, and it saves the lock if the verb changed it, before it moves to the next
+    /// pair. The first failure ends the run, after the work on the earlier pairs, and the failed
+    /// pair's row is pushed too ([`Outcome::failed`]). The caller therefore prints every pair's
+    /// outcome in the same form, whatever ended the run (review 2026-11-23 C-7, 2026-11-24 C-1).
+    /// If an earlier pair wrote the lock and a later pair fails, the run exits 22, and the failed
+    /// pair's row holds the failure's code (`cakeys_cli_common::main`, review 2026-11-24 L5).
     fn each(
         &mut self,
         at: &Addresses,
-        out: &mut Vec<serde_json::Value>,
+        out: &mut Vec<Outcome>,
         notes: &mut Notes,
-        mut verb: impl FnMut(&Opener<'_>, &mut Lock, &Target, &mut Notes) -> anyhow::Result<(serde_json::Value, bool)>,
+        mut verb: impl FnMut(&Opener<'_>, &mut Lock, &Target, &mut Notes) -> anyhow::Result<(Outcome, bool)>,
     ) -> anyhow::Result<()> {
         let Run { opener, lock, lock_path, .. } = self;
         for (spec, token) in at.pairs(&opener.cfg)? {
@@ -510,11 +532,7 @@ impl Run<'_> {
             match done {
                 Ok(v) => out.push(v),
                 Err(e) => {
-                    let code = e.downcast_ref::<KmError>().map_or(1, KmError::exit_code);
-                    out.push(serde_json::json!({
-                        "object": t.object_name, "spec": spec, "token": token, "outcome": "failed",
-                        "exit": code, "error": format!("{e:#}"),
-                    }));
+                    out.push(Outcome::failed(t.object_name, &spec, &token, &e));
                     return Err(e);
                 }
             }
@@ -522,15 +540,15 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// `validate`: each token's options (with a named provider), then the static gate
-    /// (docs/CAPROBE.md) — each target's needs against its token's capability
-    /// profiles, resolved from keys.toml and the lock. No token is opened. Each pair's mode goes
-    /// to stdout only when the run passes.
+    /// `validate`: checks each token's options (for a token with a named provider), and then runs
+    /// the static gate (docs/CAPROBE.md). The gate checks each target's needs against its token's
+    /// capability profiles, which are resolved from keys.toml and the lock. No token is opened.
+    /// Each pair's mode is printed on stdout only when the run passes.
     fn validate(&self, notes: &mut Notes) -> anyhow::Result<()> {
         for (name, t) in &self.opener.cfg.tokens {
             let Some(p) = t.named_provider() else { continue };
-            // A named provider checks the token's options here too; an auto-detected one
-            // can only be known, and check them, once the token is opened.
+            // A named provider also checks the token's options here. An auto-detected provider is
+            // known only after the token is opened, so it can check the options only then.
             let provider = self.opener.registry.named(p)?.ok_or_else(|| {
                 KmError::Validation(
                     format!(
@@ -542,14 +560,11 @@ impl Run<'_> {
             })?;
             provider.check_options(name, &t.options)?;
         }
+        // A token whose stack does not resolve also goes through the gate. Each pair on it defers
+        // its rules by name and says why (review 2026-11-24 B-1).
         let mut stacks = BTreeMap::new();
         for (name, t) in &self.opener.cfg.tokens {
-            match cakeys_pkcs11::gate::stack(name, t, &self.lock)? {
-                Ok(stack) => {
-                    stacks.insert(name.as_str(), stack);
-                }
-                Err(why) => notes.note(format_args!("validate: {why}")),
-            }
+            stacks.insert(name.as_str(), cakeys_pkcs11::gate::stack(name, t, &self.lock)?);
         }
         let (mut refusals, mut modes) = (Vec::new(), Vec::new());
         for (spec_name, spec) in &self.opener.cfg.specs {
@@ -557,22 +572,21 @@ impl Run<'_> {
                 let t = Target::new(&self.opener.cfg, spec_name, token)?;
                 let mode = ops::plan_mode(&t)?;
                 modes.push((spec_name, token, mode.to_string()));
-                if let Some(stack) = stacks.get(token.as_str()) {
-                    let creates = ops::creates(&t, &self.lock);
-                    let v = cakeys_pkcs11::gate::check(&t, mode, stack, self.opener.registry, creates)?;
-                    for n in &v.notes {
-                        notes.note(format_args!("validate: {n}"));
-                    }
-                    refusals.extend(v.refusals);
+                let verb = ops::Verb::of(&t, &self.lock);
+                let v = cakeys_pkcs11::gate::check(&t, mode, &stacks[token.as_str()], self.opener.registry, verb)?;
+                for d in ops::deferred_lines(&v.deferred) {
+                    notes.note(format_args!("validate: {d}"));
                 }
+                refusals.extend(v.refusals.into_iter().map(KmError::from));
             }
         }
-        for (name, stack) in &stacks {
+        for (name, stack) in stacks.iter().filter_map(|(name, s)| Some((name, s.as_ref().ok()?))) {
             for n in &stack.resolved.notes {
                 notes.note(format_args!("validate: token '{name}' ({}): {n}", stack.source));
             }
         }
-        // stdout carries the result only: the modes of a run that passes, nothing of one that fails.
+        // stdout holds only the result: the modes of a run that passes, and nothing for a run
+        // that fails.
         if refusals.is_empty() {
             if self.json {
                 let rows: Vec<serde_json::Value> = modes
@@ -586,27 +600,16 @@ impl Run<'_> {
             }
             return Ok(());
         }
-        for r in &refusals {
-            eprintln!("{r}");
-        }
-        let one = refusals.len() == 1;
-        Err(KmError::Unsupported(
-            format!(
-                "{} target{} need{} what the capability profiles say the token cannot do",
-                refusals.len(),
-                if one { "" } else { "s" },
-                if one { "s" } else { "" }
-            )
-            .into(),
-        )
-        .into())
+        // The exit code is the refusal's own code when there is one refusal, or 20 when there are
+        // several, and then each refusal is listed with its code.
+        Err(refused(refusals, "refusals by the static gate").map_or_else(|| anyhow::anyhow!("no refusal"), Into::into))
     }
 
-    /// `create`: what each selected pair gets is decided before any token is opened
-    /// ([`ops::plan_create`]); a pair the profiles refuse ends the run there unless
-    /// `--skip-unsupported`. Then the pairs to create or verify; the lock file records each key
-    /// as it is created, so a later pair's failure, a failed save or a killed run never loses
-    /// one made before.
+    /// `create`: decides what each selected pair gets before any token is opened
+    /// ([`ops::plan_create`]). A pair that the profiles refuse ends the run at that point, unless
+    /// `--skip-unsupported` is given. Then it creates or verifies the pairs. The lock file
+    /// records each key as soon as it is created, so a later pair's failure, a failed save or a
+    /// killed run never loses a key that was made earlier.
     fn create(&mut self, at: &Addresses, how: CreateHow, notes: &mut Notes) -> anyhow::Result<()> {
         let (cfg, opener) = (&self.opener.cfg, &self.opener);
         let mut planned: Vec<ops::Planned> = Vec::new();
@@ -617,9 +620,10 @@ impl Run<'_> {
                 }
             }
         }
-        let refused: Vec<&ops::Planned> = planned.iter().filter(|p| p.action == ops::Action::Refuse).collect();
+        let refusing = planned.iter().filter(|p| p.action == ops::Action::Refuse).count();
+        let stopped = refusing > 0 && !how.skip_unsupported;
         for p in &planned {
-            for r in &p.reasons {
+            for r in &p.reasons() {
                 match p.action {
                     ops::Action::Skip => notes.note(format_args!(
                         "create: skipped '{}' (spec '{}') on token '{}': {r}",
@@ -629,52 +633,104 @@ impl Run<'_> {
                     ops::Action::Refuse if how.skip_unsupported => {
                         notes.warn(format!("create: skipped, unsupported: {r}"));
                     }
-                    ops::Action::Refuse => eprintln!("{r}"),
+                    // A refusal is reported once: as the run's error, or as one line with its
+                    // code for each refusal ([`refused`]).
+                    ops::Action::Refuse => {}
                 }
             }
         }
         if how.dry_run {
-            let rows: Vec<serde_json::Value> = planned
-                .iter()
-                .map(|p| {
-                    serde_json::json!({
-                        "spec": p.spec, "token": p.token, "object": p.object,
-                        "action": p.action.name(), "reasons": p.reasons,
-                    })
-                })
-                .collect();
+            // The dry run also checks what the run would refuse after a token opens. For each
+            // pair that the run would create or verify, it opens the token read-only, refuses it
+            // where the write's open would refuse it (a write-protected token, 15: L4a-3), and
+            // asks the token the same questions that the write asks (review 2026-11-24 C-4). A
+            // run that the profiles stop opens no token, and neither does its dry run. A token
+            // that fails (at its open, a login or a search) ends the dry run at that pair, as it
+            // would end the run (16), and the pair's row says so (review 2026-11-24 L4a-2).
+            if !stopped {
+                let open = |name: &str, notes: &mut Notes| opener.open(name, Access::DryWrite, notes);
+                ops::plan_on_tokens(cfg, &mut planned, &open, &self.lock, notes);
+            }
+            let rows: Vec<Outcome> = planned.iter().map(dry_row).collect::<anyhow::Result<_>>()?;
             print(&rows)?;
+            if let Some(e) = planned.iter_mut().find_map(|p| p.failed.take()) {
+                return Err(e.into());
+            }
         }
-        if !refused.is_empty() && !how.skip_unsupported {
-            let one = refused.len() == 1;
-            return Err(KmError::Unsupported(
-                format!(
-                    "{} pair{} cannot be created, as the capability profiles say{}; pass --skip-unsupported to create \
-                 the others",
-                    refused.len(),
-                    if one { "" } else { "s" },
-                    if how.dry_run { "" } else { ": nothing was created" }
-                )
-                .into(),
-            )
-            .into());
+        if stopped {
+            let one = refusing == 1;
+            notes.note(format_args!(
+                "create: {refusing} pair{} cannot be created, as the capability profiles say{}; pass \
+                 --skip-unsupported to create the others",
+                if one { "" } else { "s" },
+                if how.dry_run { "" } else { ": nothing was created" }
+            ));
+            let errors = planned.into_iter().flat_map(|p| p.refusals).map(KmError::from).collect();
+            return Err(refused(errors, "refusals").map_or_else(|| anyhow::anyhow!("no refusal"), Into::into));
         }
         if how.dry_run {
-            return Ok(());
+            // The first refusal that the run would meet ends the dry run with its own exit code.
+            // The other refusals are printed on stderr.
+            let mut on_token = planned.into_iter().filter(|p| p.on_token).flat_map(|p| p.refusals);
+            let first = on_token.next();
+            for r in on_token {
+                eprintln!("{r}");
+            }
+            return first.map_or(Ok(()), |r| Err(KmError::from(r).into()));
         }
-        let pairs: Vec<(&str, &str)> = planned.iter().filter(|p| p.action.runs()).map(|p| (p.spec, p.token)).collect();
+        let ready: Vec<ops::Ready> = planned.iter().filter_map(ops::Planned::ready).collect();
         let open = |name: &str, notes: &mut Notes| opener.open(name, Access::Write, notes);
-        // Each created key is recorded before the next pair is touched; what was created is
-        // printed whatever ended the run, the only machine-readable record of it.
+        // Each created key is recorded before the next pair is touched. What was created is
+        // printed whatever ended the run, because that output is the only machine-readable
+        // record of it.
         let lock_path = &self.lock_path;
-        let mut persist = |lock: &Lock| save_lock(lock_path, lock);
-        let done = ops::create_selected(cfg, &pairs, &open, &mut self.lock, how.write, &mut persist, notes);
-        print(&done.created)?;
+        let mut persist = |lock: &Lock| save_lock(lock_path, lock).map_err(cakeys_cli_common::lock_rule);
+        let done = ops::create_selected(cfg, &ready, &open, &mut self.lock, how.write, &mut persist, notes);
         if done.changed {
             notes.lock_written(lock_path);
         }
-        done.failed.map_or(Ok(()), |e| Err(e.into()))
+        // One row for each pair that the run reached, including the pair that failed (review
+        // 2026-11-24 C-1).
+        let (mut rows, mut failure) = (Vec::new(), None);
+        for r in done.reached {
+            let object = Target::new(cfg, r.spec, r.token)?.object_name;
+            let mut row = match &r.made {
+                Some(ops::Made::Created(res, _)) => Outcome::passed(object, r.spec, r.token, "created").with(res)?,
+                Some(ops::Made::Verified(res)) => Outcome::passed(object, r.spec, r.token, "verified").with(res)?,
+                None => Outcome::passed(object, r.spec, r.token, "failed"),
+            };
+            if let Some(e) = r.failed {
+                let e = anyhow::Error::from(e);
+                row = Outcome { more: row.more, ..Outcome::failed(object, r.spec, r.token, &e) };
+                failure = Some(e);
+            }
+            rows.push(row);
+        }
+        print(&rows)?;
+        failure.map_or(Ok(()), Err)
     }
+}
+
+/// Builds a `create --dry-run` row. The row holds what the run would do with the pair. When a
+/// refusal applies, it holds the first refusal's exit code, rule and message. When the pair's
+/// token failed, it holds `failed` with the failure's exit code, rule and device bit, as the
+/// run's row would. It also holds the rules that only the run decides.
+fn dry_row(p: &ops::Planned<'_>) -> anyhow::Result<Outcome> {
+    let mut row = Outcome::passed(p.object, p.spec, p.token, p.action.name());
+    if let Some(r) = p.refusals.first() {
+        row = Outcome { error: Some(r.error.to_string()), ..row.refused_by(Some(&r.error)) };
+    }
+    if let Some(e) = &p.failed {
+        row = Outcome { outcome: "failed".to_owned(), error: Some(e.to_string()), ..row.refused_by(Some(e)) };
+    }
+    row.deferred =
+        p.deferred.iter().map(|d| DeferredRow { rule: d.rule.name().to_owned(), why: d.why.clone() }).collect();
+    let refusals: Vec<serde_json::Value> = p
+        .refusals
+        .iter()
+        .map(|r| serde_json::json!({"rule": r.rule.name(), "exit": r.error.exit_code(), "error": r.error.to_string()}))
+        .collect();
+    row.with(&serde_json::json!({"action": p.action.name(), "reasons": p.reasons(), "refusals": refusals}))
 }
 
 /// How `create` runs: its flags.

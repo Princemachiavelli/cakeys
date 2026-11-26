@@ -1,16 +1,17 @@
-//! Plaintext key material on the `host` path (docs/CAMIGRATE.md D2, phase 4): a private key as the
-//! source's `C_WrapKey` hands it over (PKCS#8 `PrivateKeyInfo`), parsed into the parts a
-//! target's `C_CreateObject` takes. Every secret part is zeroized when dropped; nothing here
-//! formats, logs or returns a secret in an error.
+//! Plaintext key material on the `host` path (docs/CAMIGRATE.md D2, phase 4). This module parses
+//! a private key, in the form that the source's `C_WrapKey` returns (PKCS#8 `PrivateKeyInfo`),
+//! into the parts that a target's `C_CreateObject` takes. Every secret part is zeroized when it
+//! is dropped, and no code here formats, logs or returns a secret in an error.
 
 use crate::id::Curve;
 use crate::types::KeyType;
-use crate::{KmError, Result};
+use crate::{Check, KmError, Reason, Result};
 use zeroize::Zeroizing;
 
-/// A private key's parts, as PKCS#11 names them.
+/// The parts of a private key, as PKCS#11 names them.
 pub enum PrivateParts {
-    /// A Weierstrass curve's private scalar (`CKA_VALUE`), big-endian, the curve's length.
+    /// The private scalar of a key on a Weierstrass curve (`CKA_VALUE`), big-endian, with the
+    /// curve's length.
     Ec(Zeroizing<Vec<u8>>),
     /// An Edwards private key (`CKA_VALUE`): the RFC 8410 seed.
     Edwards(Zeroizing<Vec<u8>>),
@@ -18,7 +19,7 @@ pub enum PrivateParts {
     Rsa(Box<RsaParts>),
 }
 
-/// An RSA private key's parts, big-endian, as `CKA_MODULUS` … `CKA_COEFFICIENT`.
+/// The parts of an RSA private key, big-endian, as `CKA_MODULUS` … `CKA_COEFFICIENT`.
 pub struct RsaParts {
     /// `CKA_MODULUS`.
     pub modulus: Vec<u8>,
@@ -38,22 +39,27 @@ pub struct RsaParts {
     pub coefficient: Zeroizing<Vec<u8>>,
 }
 
-/// A private scalar as its decoder hands it back, by value: that copy is wiped too.
+/// Converts a private scalar that its decoder returns by value, and wipes that copy too.
 fn scalar<B: AsRef<[u8]> + zeroize::Zeroize>(bytes: B) -> Zeroizing<Vec<u8>> {
     let bytes = Zeroizing::new(bytes);
     Zeroizing::new(bytes.as_ref().to_vec())
 }
 
-/// Parse a PKCS#8 private key of `key_type` (and `curve`, for EC and Edwards keys, as the object
-/// was parsed: review 2026-11-23 A-8) into its parts.
+/// Parses a PKCS#8 private key of `key_type` (and of `curve`, for EC and Edwards keys, as the
+/// object was parsed: review 2026-11-23 A-8) into its parts.
 ///
 /// # Errors
 ///
-/// `Unsupported` for a key type or curve with no parser here; `Conflict` for bytes that are not
-/// such a key (the message never includes them).
+/// Returns `Unsupported` for a key type or curve that has no parser here, and `Conflict` for
+/// bytes that are not such a key (the message never includes the bytes).
 pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<Curve>) -> Result<PrivateParts> {
     use pkcs8::DecodePrivateKey as _;
-    let bad = |what: &str| KmError::Conflict(format!("the source's wrapped key is not a PKCS#8 {what} key").into());
+    let bad = |what: &str| {
+        KmError::Conflict(Reason::check(
+            Check::HostKeyType,
+            format!("the source's wrapped key is not a PKCS#8 {what} key"),
+        ))
+    };
     let ec = |value| Ok(PrivateParts::Ec(value));
     match (key_type, curve) {
         (KeyType::Ec, Some(Curve::P256)) => {
@@ -89,13 +95,15 @@ pub fn private_from_pkcs8(der: &[u8], key_type: KeyType, curve: Option<Curve>) -
     }
 }
 
-/// The canonical SPKI of the public half of a PKCS#8 private key of any type cakeys parses (a
-/// key file names no object: its identity, `rfc7093m4` of this, finds it in the lock).
+/// Returns the canonical SPKI of the public half of a PKCS#8 private key of any type that cakeys
+/// parses. A key file does not name its object, so the identity of the key (`rfc7093m4` of this
+/// SPKI) finds the object in the lock.
 ///
 /// # Errors
 ///
-/// `Unsupported` for a key no parser here takes, or one its algorithm's own parser refuses
-/// (ISSUES.md Q20: the parser is chosen by the key's OIDs).
+/// Returns `Unsupported` for a key that no parser here takes, or for a key that the parser of its
+/// algorithm refuses (ISSUES.md Q20: the key's OIDs select the parser). Returns `Conflict` (13)
+/// when the public half of a parsed key cannot be encoded.
 pub fn spki_of_pkcs8(der: &[u8]) -> Result<Vec<u8>> {
     use crate::id::{Curve, KeyAlg};
     use pkcs8::{DecodePrivateKey as _, EncodePublicKey as _};
@@ -131,12 +139,14 @@ pub fn spki_of_pkcs8(der: &[u8]) -> Result<Vec<u8>> {
     spki.map(|d| d.as_bytes().to_vec()).map_err(spki_err)
 }
 
-/// A key that parsed whose public half does not encode: the key's fault, no token's (13).
+/// The error for a key that parsed but whose public half cannot be encoded. The fault is the
+/// key's and not a token's, so the error is a conflict (13).
 fn spki_err(e: impl std::fmt::Display) -> KmError {
-    KmError::Conflict(format!("encoding the public key: {e}").into())
+    KmError::Conflict(Reason::check(Check::HostKeyType, format!("encoding the public key: {e}")))
 }
 
-/// A multi-prime RSA key (RFC 8017's `otherPrimeInfos`): PKCS#11 names two primes only.
+/// The error for a multi-prime RSA key (RFC 8017's `otherPrimeInfos`), because PKCS#11 names only
+/// two primes.
 fn multi_prime() -> KmError {
     KmError::Unsupported(
         "the source's wrapped key is a multi-prime RSA key, which has no PKCS#11 form (CKA_PRIME_1 and \
@@ -145,8 +155,8 @@ fn multi_prime() -> KmError {
     )
 }
 
-/// Whether `der` is a PKCS#8 RSA key with more than two primes: what `rsa`'s decoder refuses
-/// without saying why. Reads structure only, borrowing every part.
+/// Returns whether `der` is a PKCS#8 RSA key with more than two primes, which the `rsa` decoder
+/// refuses without a reason. It reads only the structure, and it borrows every part.
 fn is_multi_prime(der: &[u8]) -> bool {
     use pkcs8::der::Decode as _;
     pkcs8::PrivateKeyInfoRef::from_der(der)
@@ -157,21 +167,24 @@ fn is_multi_prime(der: &[u8]) -> bool {
 
 fn rsa_parts(der: &[u8]) -> Result<RsaParts> {
     use pkcs8::DecodePrivateKey as _;
-    let bad = || KmError::Conflict("the source's wrapped key is not a PKCS#8 RSA key".into());
+    let bad =
+        || KmError::Conflict(Reason::check(Check::HostKeyType, "the source's wrapped key is not a PKCS#8 RSA key"));
     let key =
         rsa::PrivateKey::from_pkcs8_der(der).map_err(|_| if is_multi_prime(der) { multi_prime() } else { bad() })?;
     rsa_key_parts(key)
 }
 
-/// The parts of a decoded RSA key: two primes, as PKCS#11 has them.
+/// Returns the parts of a decoded RSA key, with two primes, as PKCS#11 has them.
 fn rsa_key_parts(mut key: rsa::PrivateKey) -> Result<RsaParts> {
     use rsa::traits::{PrivateKeyParts as _, PublicKeyParts as _};
-    let bad = || KmError::Conflict("the source's wrapped key is not a PKCS#8 RSA key".into());
+    let bad =
+        || KmError::Conflict(Reason::check(Check::HostKeyType, "the source's wrapped key is not a PKCS#8 RSA key"));
     if key.primes().len() != 2 {
         return Err(multi_prime());
     }
     key.precompute().map_err(|_| bad())?;
-    // `into_vec` keeps the allocation: no second, unzeroized copy of a private part.
+    // `into_vec` keeps the allocation, so that no second copy of a private part exists without
+    // being zeroized.
     let be = |n: &rsa::BoxedUint| Zeroizing::new(n.to_be_bytes_trimmed_vartime().into_vec());
     let [p, q] = key.primes() else { return Err(multi_prime()) };
     Ok(RsaParts {
@@ -182,7 +195,8 @@ fn rsa_key_parts(mut key: rsa::PrivateKey) -> Result<RsaParts> {
         prime_2: be(q),
         exponent_1: be(key.dp().ok_or_else(bad)?),
         exponent_2: be(key.dq().ok_or_else(bad)?),
-        // `crt_coefficient` computes an owned copy: wiped when dropped, like the key's own parts.
+        // `crt_coefficient` computes an owned copy, which is wiped when it is dropped, like the
+        // key's own parts.
         coefficient: be(&Zeroizing::new(key.crt_coefficient().ok_or_else(bad)?)),
     })
 }
@@ -191,7 +205,8 @@ fn rsa_key_parts(mut key: rsa::PrivateKey) -> Result<RsaParts> {
 mod tests {
     use super::*;
 
-    /// Each parser takes what a key's own PKCS#8 encoder writes, and yields its private value.
+    /// Each parser accepts what the key's own PKCS#8 encoder writes, and returns the key's private
+    /// value.
     #[test]
     fn pkcs8_keys_parse_into_their_parts() {
         use pkcs8::EncodePrivateKey as _;
@@ -217,11 +232,13 @@ mod tests {
             panic!("not RSA")
         };
         assert_eq!(parts.modulus, rsa.n().to_be_bytes_trimmed_vartime().to_vec());
-        // A key file's public half, whatever its type: the SPKI the key's own encoder writes.
+        // The public half of a key file, whatever its type, is the SPKI that the key's own
+        // encoder writes.
         assert_eq!(spki_of_pkcs8(der.as_bytes()).unwrap(), rsa.to_public_key().to_public_key_der().unwrap().as_bytes());
         let ec_der = ec.to_pkcs8_der().unwrap();
         assert_eq!(spki_of_pkcs8(ec_der.as_bytes()).unwrap(), ec.public_key().to_public_key_der().unwrap().as_bytes());
-        // The wrong type, or bytes that are no key: refused, and never echoed.
+        // The wrong type, or bytes that are not a key, are refused, and the error never repeats
+        // the bytes.
         assert!(matches!(
             private_from_pkcs8(der.as_bytes(), KeyType::Ec, Some(Curve::P256)),
             Err(KmError::Conflict(_))
@@ -229,13 +246,13 @@ mod tests {
         assert!(
             matches!(private_from_pkcs8(&[1, 2, 3], KeyType::Rsa, None), Err(KmError::Conflict(m)) if !m.contains("010203"))
         );
-        // A type with no parser is named as PKCS#11 names it.
+        // The error names a type without a parser as PKCS#11 names it.
         let e = private_from_pkcs8(der.as_bytes(), KeyType::Aes, None).err().unwrap();
         assert!(matches!(&e, KmError::Unsupported(m) if m.contains("a CKK_AES private key")), "{e}");
     }
 
-    /// A multi-prime RSA key is an RSA key PKCS#11 has no attributes for: unsupported (15),
-    /// saying so, never "not an RSA key" (13).
+    /// A multi-prime RSA key is an RSA key for which PKCS#11 has no attributes. It is unsupported
+    /// (15) with a message that says so, and never "not an RSA key" (13).
     #[test]
     fn a_multi_prime_rsa_key_is_unsupported() {
         use pkcs8::EncodePrivateKey as _;
@@ -253,7 +270,7 @@ mod tests {
         let three = info.to_der().unwrap();
         let e = private_from_pkcs8(&three, KeyType::Rsa, None).err().unwrap();
         assert!(matches!(&e, KmError::Unsupported(m) if m.contains("multi-prime RSA key")), "{e}");
-        // Its two-prime original still parses.
+        // The original key with two primes still parses.
         assert!(private_from_pkcs8(p8.as_bytes(), KeyType::Rsa, None).is_ok());
     }
 }

@@ -1,12 +1,16 @@
-//! `Provider::template` on a real module (`SoftHSM`): the templates cakeys builds for a
-//! generation, a proof of possession, the host's session key and a transport key's trusted copy
-//! each pass through the provider, what it sets reaches the token, and its refusal comes before
-//! anything is made, a proof's included. Skipped without `CAKEYS_TEST_MODULE`.
+//! Tests of `Provider::template` on a real module (`SoftHSM`). The templates that cakeys builds
+//! for a generation, a proof of possession, the host's session key and a transport key's trusted
+//! copy each pass through the provider. What the provider sets reaches the token, and its refusal
+//! comes before anything is made, including a refusal of a proof's template. The tests are
+//! skipped without `CAKEYS_TEST_MODULE`.
 //!
-//! The import templates (`Import`, `PublicHalf`, `Object`) are asked by camigrate and the probe
-//! alone, never by this crate: caprobe's `tests/template_hook.rs` holds the probe's to the
-//! provider. camigrate has no entry point a test can give a registry, so its own asks are held
-//! only by its runs with the default providers.
+//! Only camigrate and the probe ask about the import templates (`Import`, `PublicHalf`,
+//! `Object`), and this crate never does. caprobe's `tests/template_hook.rs` tests that the probe
+//! asks the provider. camigrate has no entry point to which a test can give a registry, so only
+//! its runs with the default providers test its own requests.
+
+#[path = "../../test-skip.rs"]
+mod test_skip;
 
 use cakeys_core::config::{AttrValue, Binding, Locator, Lock, Object, ObjectCfg, SpecCfg, TokenCfg};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
@@ -19,16 +23,19 @@ use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-/// What the provider sets on every key it generates: readable back, and no default's.
+/// The value that the provider sets on every key that it generates. It can be read back, and no
+/// default has this value.
 const SUBJECT: &[u8] = b"0\x0e1\x0c0\n\x06\x03U\x04\x03\x0c\x03tmp";
 
-/// What the provider sets as the trusted copy's `CKA_ID`: readable back, and no default's.
-const TRUSTED_ID: &[u8] = b"stamped";
+/// The value that the provider sets as the trusted copy's `CKA_SUBJECT`. It can be read back, and
+/// no default has this value. The provider does not set the copy's `CKA_ID`, because that is a
+/// security attribute that a provider may not change (review 2026-11-24 B-3).
+const TRUSTED_SUBJECT: &[u8] = b"stamped";
 
-/// The label whose key the provider refuses to generate.
+/// The label under which the provider refuses to generate a key.
 const REFUSED: &str = "tmpl-refused";
 
-/// What a template is for, as the providers here record it.
+/// Returns the purpose of a template, in the form in which the providers here record it.
 fn kind(req: &Template<'_>) -> String {
     match req {
         Template::Generate(_, half) => format!("generate {half:?}"),
@@ -40,9 +47,9 @@ fn kind(req: &Template<'_>) -> String {
     }
 }
 
-/// A provider that records what each template is for, stamps generated private keys with
-/// [`SUBJECT`] (a secret key has no `CKA_SUBJECT`: `SoftHSM` refuses one) and a trusted copy
-/// with [`TRUSTED_ID`], and refuses a key under [`REFUSED`].
+/// A provider that records the purpose of each template, sets [`SUBJECT`] on generated private
+/// keys (a secret key has no `CKA_SUBJECT`, and `SoftHSM` refuses one), sets [`TRUSTED_SUBJECT`]
+/// on a trusted copy, and refuses a key under [`REFUSED`].
 struct Stamp(Arc<Mutex<Vec<String>>>);
 
 impl Provider for Stamp {
@@ -62,7 +69,7 @@ impl Provider for Stamp {
             Template::Generate(on, Half::Key) if on.object.class == Class::PrivateKey => {
                 attrs.set(Attribute::Subject(SUBJECT.to_vec()));
             }
-            Template::TrustedCopy => attrs.set(Attribute::Id(TRUSTED_ID.to_vec())),
+            Template::TrustedCopy => attrs.set(Attribute::Subject(TRUSTED_SUBJECT.to_vec())),
             _ => {}
         }
         self.0.lock().unwrap().push(kind(req));
@@ -84,30 +91,39 @@ fn at(label: &str) -> Locator {
     Locator { label: Some(label.into()), id: None }
 }
 
-/// The `SoftHSM` reference token as keys.toml's `[tokens.softhsm]` says it, its provider
-/// `provider`, and PIN files for it, the user's and the SO's (the harness's 5678); `None`
-/// without the module.
-fn token(provider: &str) -> Option<String> {
+/// Each test holds this lock while it uses the token. The login belongs to the process, so one
+/// test's SO session (for the removal of the trusted copy) would make another test's reads of a
+/// private key fail.
+static TOKEN: Mutex<()> = Mutex::new(());
+
+/// Returns the `SoftHSM` reference token as keys.toml's `[tokens.softhsm]` table describes it,
+/// with the provider `provider` and with PIN files for the user and the SO (the harness's SO PIN
+/// is 5678), together with the [`TOKEN`] guard. Returns `None` without the module.
+fn token(provider: &str) -> Option<(String, std::sync::MutexGuard<'static, ()>)> {
     let Ok(module) = std::env::var("CAKEYS_TEST_MODULE") else {
-        // As every token suite (`common::suite_var`): required where the harness says so.
-        assert!(std::env::var("CAKEYS_TEST_REQUIRE").is_err(), "CAKEYS_TEST_MODULE is required");
-        eprintln!("skipping templates: CAKEYS_TEST_MODULE is not set");
+        // As in every token suite (`common::suite_var`), the test is required when the run says
+        // so.
+        test_skip::skip("templates", "CAKEYS_TEST_REQUIRE", "CAKEYS_TEST_MODULE is not set");
         return None;
     };
     let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("cakeys-pkcs11-templates-{provider}"));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("pin"), "1234\n").unwrap();
     std::fs::write(dir.join("so-pin"), "5678\n").unwrap();
-    Some(format!(
-        "module = \"{module}\"\nprovider = \"{provider}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n\
-         soCredentialFile = \"{}\"\n",
-        dir.join("pin").display(),
-        dir.join("so-pin").display()
+    let guard = TOKEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    Some((
+        format!(
+            "module = \"{module}\"\nprovider = \"{provider}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\n\
+             soCredentialFile = \"{}\"\n",
+            dir.join("pin").display(),
+            dir.join("so-pin").display()
+        ),
+        guard,
     ))
 }
 
-/// A provider that refuses every proof's session secret, and records what each template it is
-/// asked is for.
+/// A provider that refuses every proof's session secret, and records the purpose of each
+/// template that it is asked about.
 struct NoProof(Arc<Mutex<Vec<String>>>);
 
 impl Provider for NoProof {
@@ -128,13 +144,13 @@ impl Provider for NoProof {
     }
 }
 
-/// The proof of possession runs once the key exists; its template is asked before the key is
-/// generated, so a provider refusing it leaves nothing behind (a key on a module that cannot
-/// delete one would stay).
+/// The proof of possession runs after the key exists, but its template is checked before the key
+/// is generated. So a provider that refuses the template leaves nothing behind (a key on a module
+/// that cannot delete keys would stay).
 #[test]
 fn a_refused_proof_template_creates_nothing() {
     cakeys_profile::Set::activate_embedded().unwrap();
-    let Some(token) = token("no-proof") else { return };
+    let Some((token, _held)) = token("no-proof") else { return };
     let cfg: cakeys_core::config::Config = toml::from_str(&format!(
         "[tokens.softhsm]\n{token}\n\
          [objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
@@ -153,10 +169,12 @@ fn a_refused_proof_template_creates_nothing() {
     asked.lock().unwrap().clear();
     let e = ops::create(&t, &tok, &mut lock, ops::LockWrite::Record, &mut notes).unwrap_err();
     assert!(matches!(&e, KmError::Unsupported(m) if m.contains("no-proof refuses")), "{e}");
-    // Not generated and removed again (SoftHSM could): never generated. A generation asks its
-    // templates right before it generates, so a key made before the refusal shows as a second
-    // pair of them; the check asks them once, then the proof's, refused, the last asked (review
-    // templates.rs F2: an empty note list stood in for this).
+    // The key must never be generated, and not merely generated and removed again (SoftHSM could
+    // remove it). A generation asks about its templates right before it generates, so a key that
+    // was made before the refusal would show up as a second pair of generation templates. The
+    // check asks about them once, and then about the proof's template, which is refused and is
+    // the last one asked (review templates.rs F2: before this, an empty note list was used as the
+    // evidence).
     let asked = asked.lock().unwrap().clone();
     let refused = format!("session {:?}", SessionKey::ProofSecret { binding: Binding::PopEcdh, sealed: true });
     let generations = asked.iter().filter(|a| a.starts_with("generate")).count();
@@ -168,14 +186,14 @@ fn a_refused_proof_template_creates_nothing() {
 #[test]
 fn templates_pass_through_the_provider() {
     cakeys_profile::Set::activate_embedded().unwrap();
-    let Some(table) = token("stamp") else { return };
+    let Some((table, _held)) = token("stamp") else { return };
     let cfg: TokenCfg = toml::from_str(&table).unwrap();
     let asked = Arc::new(Mutex::new(Vec::new()));
     let registry = Registry::new().with(Stamp(Arc::clone(&asked)));
     let tok = Token::open("softhsm", &cfg, None, &registry, Access::Write, ChainTime::Unchecked).unwrap();
     let taken = || std::mem::take(&mut *asked.lock().unwrap());
 
-    // A key pair: both templates asked, the key stamped.
+    // A key pair: the provider is asked about both templates, and the key gets the subject.
     let ec = ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(Class::PrivateKey, Some(Kt::Ec)) };
     let loc = at("tmpl-ec");
     tok.destroy(&ec, &loc).unwrap();
@@ -196,7 +214,7 @@ fn templates_pass_through_the_provider() {
     );
     tok.destroy(&ec, &loc).unwrap();
 
-    // The host's session key, taking a secret key out.
+    // The host's session key, which takes a secret key out.
     let aes = ObjectCfg { value_len: Some(32), ..ObjectCfg::new(Class::SecretKey, Some(Kt::Aes)) };
     let loc = at("tmpl-aes");
     tok.destroy(&aes, &loc).unwrap();
@@ -208,17 +226,18 @@ fn templates_pass_through_the_provider() {
     assert_eq!(taken(), [format!("session {:?}", SessionKey::HostKek)]);
     tok.destroy(&aes, &loc).unwrap();
 
-    // A transport key's trusted copy, made as SO: its template asked, what the provider set on
-    // the object (review templates.rs F3: no template but a generation's and a session's was
-    // ever asked here).
+    // A transport key's trusted copy, which is made as the SO: the provider is asked about its
+    // template, and the object has what the provider set (review templates.rs F3: before this,
+    // only a generation's and a session's templates were checked here).
     let mut modulus = vec![0xc5; 256];
     modulus[255] = 0x01;
     let h = tok.create_trusted_copy(modulus, vec![1, 0, 1], "tmpl-trusted").unwrap();
     assert_eq!(taken(), ["trusted copy"]);
-    let id = tok.raw().get_attributes(h, &[AttributeType::Id, AttributeType::Trusted]).unwrap();
-    assert_eq!(id, [Attribute::Id(TRUSTED_ID.to_vec()), Attribute::Trusted(true)]);
-    // Taken off again as SO, with any an earlier run left (review 2026-11-23 B-25): the token's
-    // trusted set, which `Token::trusted` counts for camigrate, stays as the test found it.
+    let id = tok.raw().get_attributes(h, &[AttributeType::Subject, AttributeType::Trusted]).unwrap();
+    assert_eq!(id, [Attribute::Subject(TRUSTED_SUBJECT.to_vec()), Attribute::Trusted(true)]);
+    // The copy is removed again as the SO, together with any copy that an earlier run left
+    // (review 2026-11-23 B-25), so that the token's set of trusted keys, which `Token::trusted`
+    // counts for camigrate, stays as the test found it.
     let label = [Attribute::Label(b"tmpl-trusted".to_vec())];
     let left = || tok.raw().find_objects(&label).unwrap();
     tok.as_so("removing the trusted copies", || {
@@ -230,9 +249,109 @@ fn templates_pass_through_the_provider() {
     .unwrap();
     assert!(left().is_empty(), "a trusted copy left on the token");
 
-    // Refused: the provider's error, and nothing under the locator.
+    // A refusal returns the provider's error and leaves nothing under the locator.
     let loc = at(REFUSED);
     let e = tok.create(Object::new(&ec).unwrap(), &spec(&[("CKA_SIGN", true)]), &loc, None).unwrap_err();
     assert!(matches!(&e, KmError::Unsupported(m) if m.contains("stamp refuses")), "{e}");
     assert_eq!(tok.find_any(&loc).unwrap().len(), 0, "made under the refused locator");
+}
+
+/// A provider that makes the host's session key extractable, although cakeys builds it sealed.
+/// Then the key that carries a secret key off the token could itself be read from the token.
+struct Loosens;
+
+impl Provider for Loosens {
+    fn name(&self) -> &'static str {
+        "loosens"
+    }
+
+    fn matches(&self, _: &ModuleInfo) -> bool {
+        false
+    }
+
+    fn template(&self, req: &Template<'_>, attrs: &mut Attributes) -> Result<()> {
+        if matches!(req, Template::Session(SessionKey::HostKek)) {
+            attrs.set(Attribute::Extractable(true));
+        }
+        Ok(())
+    }
+}
+
+/// A provider's adjustment is checked when the hook returns (review 2026-11-24 B-3,
+/// phase1-design.md §3.2.2). A session key that its provider loosened is refused (exit 17)
+/// before it is made, so the host never takes a key out under an extractable KEK. Before the
+/// fix, the loosened key was made and used.
+#[test]
+fn a_provider_cannot_loosen_a_session_key() {
+    cakeys_profile::Set::activate_embedded().unwrap();
+    let Some((table, _held)) = token("loosens") else { return };
+    let cfg: TokenCfg = toml::from_str(&table).unwrap();
+    let registry = Registry::new().with(Loosens);
+    let tok = Token::open("softhsm", &cfg, None, &registry, Access::Write, ChainTime::Unchecked).unwrap();
+    let aes = ObjectCfg { value_len: Some(32), ..ObjectCfg::new(Class::SecretKey, Some(Kt::Aes)) };
+    let loc = at("tmpl-loosened");
+    tok.destroy(&aes, &loc).unwrap();
+    tok.create(Object::new(&aes).unwrap(), &spec(&[("CKA_EXTRACTABLE", true), ("CKA_SENSITIVE", false)]), &loc, None)
+        .unwrap();
+    let [h] = tok.find(ObjectClass::SECRET_KEY, &loc).unwrap()[..] else { panic!("one secret key") };
+    let e = tok.extract(h, &Mechanism::AesKeyWrapPad).unwrap_err();
+    assert!(e.exit_code() == 17 && e.to_string().contains("CKA_EXTRACTABLE"), "{e}");
+    tok.destroy(&aes, &loc).unwrap();
+}
+
+/// A provider that reports `CKA_DERIVE` as true on every key, as ykcs11's repair does on its EC
+/// and X25519 private keys. When `declared` is true, the provider declares the repair
+/// (`Provider::repairs`) for EC keys only.
+struct Derives {
+    declared: bool,
+}
+
+impl Provider for Derives {
+    fn name(&self) -> &'static str {
+        if self.declared { "derives-declared" } else { "derives" }
+    }
+
+    fn matches(&self, _: &ModuleInfo) -> bool {
+        false
+    }
+
+    fn repairs(&self) -> &'static [(AttributeType, cryptoki::object::KeyType)] {
+        if self.declared { &[(AttributeType::Derive, cryptoki::object::KeyType::EC)] } else { &[] }
+    }
+
+    fn policy_flag(
+        &self,
+        attr: AttributeType,
+        reported: bool,
+        _: &dyn Fn() -> Option<cryptoki::object::KeyType>,
+    ) -> bool {
+        reported || attr == AttributeType::Derive
+    }
+}
+
+/// A repair applies only where the provider declares it (review 2026-11-24 B-3,
+/// phase1-design.md §3.2.2). `CKA_DERIVE` reads as the module reports it (false here) for a
+/// provider that repairs it without declaring the repair, and reads as repaired for a provider
+/// that declares (`CKA_DERIVE`, EC). Before the fix, the undeclared repair was applied.
+#[test]
+fn a_repair_applies_only_where_it_is_declared() {
+    cakeys_profile::Set::activate_embedded().unwrap();
+    let ec = ObjectCfg { curve: Some("secp256r1".into()), ..ObjectCfg::new(Class::PrivateKey, Some(Kt::Ec)) };
+    let loc = at("tmpl-derive");
+    let derive = |declared: bool| {
+        let (table, _held) = token(if declared { "derives-declared" } else { "derives" })?;
+        let cfg: TokenCfg = toml::from_str(&table).unwrap();
+        let registry = Registry::new().with(Derives { declared });
+        let tok = Token::open("softhsm", &cfg, None, &registry, Access::Write, ChainTime::Unchecked).unwrap();
+        tok.destroy(&ec, &loc).unwrap();
+        // `CKA_DERIVE` is not declared, so SoftHSM's default, false, applies.
+        tok.create(Object::new(&ec).unwrap(), &spec(&[("CKA_SIGN", true)]), &loc, None).unwrap();
+        let [h] = tok.find(ObjectClass::PRIVATE_KEY, &loc).unwrap()[..] else { panic!("one private key") };
+        let read = tok.policy(h).unwrap().get("CKA_DERIVE").cloned();
+        tok.destroy(&ec, &loc).unwrap();
+        Some(read)
+    };
+    let Some(undeclared) = derive(false) else { return };
+    assert_eq!(undeclared, Some(AttrValue::Bool(false)), "an undeclared repair");
+    assert_eq!(derive(true), Some(Some(AttrValue::Bool(true))), "a declared repair");
 }

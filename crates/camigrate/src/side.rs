@@ -1,42 +1,43 @@
 //! A token's capabilities for moving keys (docs/CAMIGRATE.md D10): what it accepts, what its
-//! profile probed, and the mechanisms it offers, built by [`crate::tokens::side`] from its
-//! capability profile. camigrate's alone, so they are not in core (review 2026-11-23 A-6).
+//! profile probed, and the mechanisms it offers. [`crate::tokens::side`] builds them from the
+//! token's capability profile. Only camigrate uses these types, so they are not in core (review
+//! 2026-11-23 A-6).
 
 use cakeys_core::config::ObjectCfg;
 use cakeys_core::migrate::OaepHash;
 use cakeys_core::types::{KeyType, ObjectClass};
 use std::collections::BTreeSet;
 
-/// Which objects a capability covers: a class, and optionally only some key types, curves,
-/// RSA sizes or secret-key lengths (empty: any).
+/// The objects that a capability covers: a class, and optionally only some key types, curves, RSA
+/// sizes or secret-key lengths. An empty constraint covers any value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Accept {
     /// The object class covered.
     pub(crate) class: ObjectClass,
-    /// The key types covered (empty: any).
+    /// The key types covered. An empty list covers any key type.
     pub(crate) key_types: Vec<KeyType>,
-    /// The curves covered, by canonical name (empty: any).
+    /// The curves covered, by canonical name. An empty list covers any curve.
     pub(crate) curves: Vec<&'static str>,
-    /// Inclusive RSA modulus range in bits.
+    /// The inclusive RSA modulus range in bits.
     pub(crate) modulus_bits: Option<(u32, u32)>,
     /// A secret key's length in bytes (`valueLen`).
     pub(crate) value_len: Option<u64>,
 }
 
 impl Accept {
-    /// Every object of `class`.
+    /// Returns a capability that covers every object of `class`.
     #[must_use]
     pub(crate) fn class(class: ObjectClass) -> Accept {
         Accept { class, key_types: vec![], curves: vec![], modulus_bits: None, value_len: None }
     }
 
-    /// The objects of `class` with one of `key_types`.
+    /// Returns a capability that covers the objects of `class` with one of `key_types`.
     #[must_use]
     pub(crate) fn key(class: ObjectClass, key_types: &[KeyType]) -> Accept {
         Accept { key_types: key_types.to_vec(), ..Accept::class(class) }
     }
 
-    /// Whether an object of type `ty` is one this capability covers.
+    /// Returns whether this capability covers an object of type `ty`.
     #[must_use]
     pub(crate) fn covers(&self, ty: &ObjectCfg) -> bool {
         self.class == ty.class
@@ -51,97 +52,119 @@ impl Accept {
     }
 }
 
-/// What a probed row (`docs/archive/CAPROBE_MIGRATION.md`) answers for the objects it covers, and how
-/// the operation succeeded where it has more than one way.
+/// The answer that a probed row (`docs/archive/CAPROBE_MIGRATION.md`) gives for the objects that it
+/// covers, and how the operation succeeded when it has more than one way to succeed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Probed {
-    /// The objects the row is about: one key type on one curve, size or length.
+    /// The objects that the row is about: one key type with one curve, size or length.
     pub(crate) covers: Accept,
-    /// Its answer.
+    /// The row's answer.
     pub(crate) yes: bool,
-    /// How it succeeded: an import's path, an export's method.
+    /// How the operation succeeded: an import's path, or an export's method.
     pub(crate) via: Option<String>,
+    /// The reason why the probe could not decide the row (`Profile::unknown`), such as a legacy
+    /// "no" that cites a device failure, or an `[untested]` entry. It names the re-probe that is
+    /// still needed. Such a "no" is not the module's own answer.
+    pub(crate) unknown: Option<String>,
+    /// Whether the row's "yes" rests only on the module's claim (`by = "unverified"`). The plan may
+    /// use the row, and it defers the capability check to the run, which shows the result (review
+    /// 2026-11-24 E-3, the part of P2 that was left over).
+    pub(crate) unverified: bool,
 }
 
-/// A token's probed rows by way (`docs/archive/CAPROBE_MIGRATION.md`, M1): where one covers an object's
-/// type it decides, before a module's claims and the spec-compliant default.
+impl Probed {
+    /// Returns why a "no" of this row (`row`, such as `unwrap.*`) refuses, as a plan's reason.
+    /// When the probe could not decide the row, the reason says that the answer is unknown and
+    /// names the re-probe that is needed (phase1-design §9.1).
+    pub(crate) fn said(&self, row: &str) -> String {
+        self.unknown.clone().unwrap_or_else(|| format!("its {row} row says no"))
+    }
+}
+
+/// A token's probed rows, grouped by the way of moving (`docs/archive/CAPROBE_MIGRATION.md`, M1).
+/// When a row covers an object's type, the row decides, before the module's claims and before the
+/// spec-compliant default.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ProbedWays {
-    /// `import.*`: a plaintext key brought in.
+    /// `import.*`: a plaintext key that is brought in.
     pub(crate) import: Vec<Probed>,
-    /// `create.*`: a public object created from its value.
+    /// `create.*`: a public object that is created from its value.
     pub(crate) create: Vec<Probed>,
-    /// `export.host.*`: a key handed to the host.
+    /// `export.host.*`: a key that is handed to the host.
     pub(crate) export_host: Vec<Probed>,
-    /// `export.sealed.*`: a key wrapped toward another token.
+    /// `export.sealed.*`: a key that is wrapped toward another token.
     pub(crate) export_sealed: Vec<Probed>,
-    /// `unwrap.*`: a wrapped key brought in.
+    /// `unwrap.*`: a wrapped key that is brought in.
     pub(crate) unwrap: Vec<Probed>,
 }
 
 impl ProbedWays {
-    /// The row of `rows` that covers `ty`, if one does.
+    /// Returns the row of `rows` that covers `ty`, if one does.
     #[must_use]
     pub(crate) fn of<'a>(rows: &'a [Probed], ty: &ObjectCfg) -> Option<&'a Probed> {
         rows.iter().find(|r| r.covers.covers(ty))
     }
 }
 
-/// How plaintext material gets into a token (the `host` paths).
+/// The way in which plaintext material gets into a token (the `host` paths).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PlaintextImport {
-    /// `C_CreateObject` with the key's attributes (any PKCS#11 module that accepts it).
+    /// `C_CreateObject` with the key's attributes (for any PKCS#11 module that accepts it).
     CreateObject,
     /// `tpm2_ptool import`, for the listed objects.
     Tpm2Ptool(Vec<Accept>),
-    /// ykcs11 `C_CreateObject` as SO into a PIV slot, for the listed objects.
+    /// The ykcs11 `C_CreateObject` as the SO into a PIV slot, for the listed objects.
     PivImport(Vec<Accept>),
 }
 
-/// One token's capabilities for moving keys, as its provider describes them.
+/// One token's capabilities for moving keys, as its capability profiles describe them
+/// ([`crate::tokens::side`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[expect(clippy::struct_excessive_bools, reason = "independent capability claims of a module profile")]
 pub(crate) struct Side {
     /// The token's name in keys.toml.
     pub(crate) token: String,
-    /// The provider that handles it.
+    /// The provider that handles the token.
     pub(crate) provider: String,
-    /// The usable mechanisms (provider-filtered), by `CKM_*` name.
+    /// The usable mechanisms, as the provider and the profiles adjust them, by `CKM_*` name.
     pub(crate) mechanisms: BTreeSet<String>,
-    /// Whether the module ever wraps a key out (`C_WrapKey`).
+    /// Whether the module ever wraps a key out of the token (`C_WrapKey`).
     pub(crate) exports: bool,
-    /// Whether the module unwraps a key in (`C_UnwrapKey`).
+    /// Whether the module unwraps a key into the token (`C_UnwrapKey`).
     pub(crate) unwraps: bool,
-    /// Whether a secret key it unwraps reports its length (`CKA_VALUE_LEN`), which the import's
-    /// type check reads: `SoftHSM` leaves it 0.
+    /// Whether a secret key that the module unwraps reports its length (`CKA_VALUE_LEN`), which
+    /// the import's type check reads. `SoftHSM` leaves the length at 0.
     pub(crate) secret_unwraps: bool,
-    /// Whether a `CKA_WRAP_WITH_TRUSTED` key can leave toward a transport key the SO marked
+    /// Whether a `CKA_WRAP_WITH_TRUSTED` key can leave toward a transport key that the SO marked
     /// `CKA_TRUSTED` (`enforced`).
     pub(crate) trusted_wrap: bool,
-    /// The OAEP hashes the module implements for wrapping, not only lists.
+    /// The OAEP hashes that the module implements for wrapping, not only the hashes that it lists.
     pub(crate) oaep: Vec<OaepHash>,
-    /// Public objects it accepts from their value or DER.
+    /// The public objects that the token accepts from their value or DER.
     pub(crate) public_import: Vec<Accept>,
-    /// How plaintext private and secret keys get in, if at all.
+    /// The way in which plaintext private and secret keys get into the token, if they can.
     pub(crate) plaintext_import: Option<PlaintextImport>,
-    /// Keys it takes in by no import at all, as a target (a profile's `migration.refuses`).
+    /// The keys that the token accepts by no import at all, as a target (a profile's
+    /// `migration.refuses`).
     pub(crate) refuses: Vec<Accept>,
-    /// What its probed rows say, per object type: they decide before the claims above.
+    /// The answers of the token's probed rows for each object type. They decide before the claims
+    /// above.
     pub(crate) probed: ProbedWays,
-    /// Whether an ECDH proof of possession derives into a sealed secret here, as its module
-    /// profile says (`derive.ecdh.sealed`); `None` when it does not.
+    /// Whether an ECDH proof of possession derives into a sealed secret on this token, as its
+    /// module profile says (`derive.ecdh.sealed`). It is `None` when the profile does not say.
     pub(crate) derive_sealed: Option<bool>,
-    /// The attributes its module refuses in an unwrap template (`unwrap.refuse`), left out of an
-    /// unwrapped key's.
+    /// The attributes that the module refuses in an unwrap template (`unwrap.refuse`). They are
+    /// left out of an unwrapped key's template.
     pub(crate) unwrap_refuse: Vec<String>,
-    /// Whether it creates public key objects: an imported private key gets its public half beside
-    /// it (not on PIV, which derives it from the slot).
+    /// Whether the token creates public key objects. If it does, an imported private key gets its
+    /// public half next to it. PIV does not, because it derives the public key from the slot.
     pub(crate) public_keys: bool,
 }
 
 impl Side {
-    /// A spec-compliant PKCS#11 module: wraps and unwraps with what it lists, imports public
-    /// objects and plaintext keys with `C_CreateObject`.
+    /// Returns the capabilities of a spec-compliant PKCS#11 module. Such a module wraps and unwraps
+    /// with the mechanisms that it lists, and it imports public objects and plaintext keys with
+    /// `C_CreateObject`.
     #[must_use]
     pub(crate) fn pkcs11(token: &str, provider: &str, mechanisms: impl IntoIterator<Item = String>) -> Side {
         Side {
@@ -166,13 +189,14 @@ impl Side {
         }
     }
 
-    /// Whether the token offers `mechanism` (a `CKM_*` name).
+    /// Returns whether the token offers `mechanism` (a `CKM_*` name).
     #[must_use]
     pub(crate) fn has(&self, mechanism: &str) -> bool {
         self.mechanisms.contains(mechanism)
     }
 
-    /// RFC 5649, under either PKCS#11 name (the same format, docs/CAMIGRATE.md spike).
+    /// Returns whether the token offers RFC 5649 key wrap under either of its PKCS#11 names, which
+    /// produce the same format (docs/CAMIGRATE.md spike).
     #[must_use]
     pub(crate) fn kwp(&self) -> bool {
         self.has("CKM_AES_KEY_WRAP_KWP") || self.has("CKM_AES_KEY_WRAP_PAD")
@@ -187,9 +211,9 @@ mod tests {
         toml::from_str(text).unwrap()
     }
 
-    /// What a target accepts is every constraint it names at once: the class, then the key
-    /// type, the curve and the modulus range where the row gives one; a row that gives none
-    /// takes any.
+    /// Checks that a capability requires every constraint that it names at once: the class, and
+    /// the key type, the curve and the modulus range where the row gives one. A row that gives no
+    /// constraint covers any value.
     #[test]
     fn an_accept_row_covers_what_meets_every_constraint_it_names() {
         let p256 = object("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"");
@@ -208,24 +232,26 @@ mod tests {
         assert_eq!(ec.key_types, [KeyType::Ec]);
         assert!(ec.covers(&p256) && ec.covers(&p384));
         assert!(!ec.covers(&rsa(2048)) && !ec.covers(&public));
-        // A row of key types never takes an object that has none.
+        // A row of key types never covers an object that has no key type.
         assert!(!Accept::key(ObjectClass::Certificate, &[KeyType::Ec]).covers(&cert));
 
         let p256_only = Accept { curves: vec!["secp256r1"], ..Accept::key(private, &[KeyType::Ec]) };
         assert!(p256_only.covers(&p256));
         assert!(!p256_only.covers(&p384) && !p256_only.covers(&rsa(2048)));
-        // A curve named without a key type still excludes what has no curve, or another class.
+        // A curve named without a key type still excludes an object that has no curve, or an
+        // object of another class.
         let curve_only = Accept { curves: vec!["secp256r1"], ..Accept::class(private) };
         assert!(curve_only.covers(&p256) && !curve_only.covers(&rsa(2048)) && !curve_only.covers(&public));
 
         let sized = Accept { modulus_bits: Some((2048, 3072)), ..Accept::key(private, &[KeyType::Rsa]) };
         assert!(sized.covers(&rsa(2048)) && sized.covers(&rsa(3072)));
         assert!(!sized.covers(&rsa(1024)) && !sized.covers(&rsa(4096)));
-        // A size range never takes an object that has no size.
+        // A size range never covers an object that has no size.
         assert!(!Accept { modulus_bits: Some((0, u32::MAX)), ..Accept::class(private) }.covers(&p256));
     }
 
-    /// A side offers the mechanisms it lists; RFC 5649 goes by either of its PKCS#11 names.
+    /// Checks that a side offers the mechanisms that it lists, and that RFC 5649 is found under
+    /// either of its PKCS#11 names.
     #[test]
     fn a_side_offers_what_it_lists() {
         let side = |mechanisms: &[&str]| Side::pkcs11("t", "p", mechanisms.iter().map(|m| (*m).to_owned()));

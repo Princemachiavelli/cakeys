@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
 # Regenerate the committed module profiles the reference suites check (docs/CAPROBE.md phase
 # 3): softhsm/2.7, kryoptic/1.5 and tpm2-pkcs11/1.10+swtpm, each probed with --write-probes on a fresh
-# token set up the way the Nix check phase sets it up (nix/package-common.nix), and written over
-# its committed file — [migration] and [manual] kept. Afterwards `git diff profiles/` is the
-# drift; the build's conformance tests then pass.
+# token set up the way the Nix check phase sets it up (nix/package-common.nix), and written
+# beside its committed file as <file>.new, or over it with CAKEYS_ACCEPT=1 (caprobe's --accept;
+# docs/DEVELOPMENT.md, "Golden files") — [migration] and [manual] kept. Afterwards the .new
+# files (or, accepted, `git diff profiles/`) are the drift; the build's conformance tests then pass.
 #
 #   scripts/regen-profiles.sh <caprobe> <dir>
 #
 # <caprobe> must carry the patched cryptoki (the probe refuses to write through an unpatched
-# one): the Nix-built package — while the committed profiles drift its check phase fails, so
-# build it without the check phase:
-#   nix build --impure -o /tmp/cakeys --expr \
-#     "((builtins.getFlake \"git+file://$PWD\").packages.x86_64-linux.cakeys.overrideAttrs { doCheck = false; }).caprobe"
+# one): the Nix-built package, `packages.cakeys`, which has no check phase (the committed
+# profiles' drift fails only `packages.cakeys-crane`):
+#   nix build -o /tmp/cakeys '.#packages.x86_64-linux.cakeys^caprobe'
 # The tools come from the flake's own nixpkgs, so the probed versions are the build's:
 #   nix shell --inputs-from . nixpkgs#{opensc,swtpm,dbus,tpm2-abrmd,tpm2-tools,tpm2-pkcs11} -c \
 #     env KRYOPTIC_MODULE=... TPM2_PKCS11_MODULE=... scripts/regen-profiles.sh /tmp/cakeys-caprobe/bin/caprobe <dir>
 # SoftHSM is the flake's own patched build (.#softhsm-unwrap-value-len), which this script
 # builds: the one the conformance test re-probes, and pkcs11-check-compare's (apps.nix).
+# SOFTHSM_PACKAGE names that build's store path instead, where nix cannot run (inside a
+# derivation on the Linux builder).
 set -euo pipefail
 
 [ $# -eq 2 ] || {
@@ -26,7 +28,7 @@ set -euo pipefail
 bin=$(realpath "$1") dir=$(realpath -m "$2")
 repo=$(realpath "$(dirname "$(realpath "$0")")/..")
 : "${KRYOPTIC_MODULE:?the path to libkryoptic_pkcs11.so}" "${TPM2_PKCS11_MODULE:?the path to libtpm2_pkcs11.so}"
-softhsm_pkg=$(nix build --no-link --print-out-paths "$repo#softhsm-unwrap-value-len")
+softhsm_pkg=${SOFTHSM_PACKAGE:-$(nix build --no-link --print-out-paths "$repo#softhsm-unwrap-value-len")}
 softhsm=$softhsm_pkg/lib/softhsm/libsofthsm2.so
 # Its softhsm2-util initialises the token (nix/token-env.sh), so module and tool are one build.
 export PATH=$softhsm_pkg/bin:$PATH
@@ -71,8 +73,10 @@ for t in softhsm:softhsm/2.7:softhsm/2.7.toml kryoptic:kryoptic/1.5:kryoptic/1.5
   echo "== $name"
   # 15 is drift, the rows named: the file is written anyway, the diff is for review.
   rc=0
-  "$bin" --config "$dir/keys.toml" probe --profiles "$repo/profiles" --token "$token" --write-probes --rsa-max-bits 4096 \
-    --diff "$name" --out "$repo/profiles/modules/$file" || rc=$?
+  # The module profiles alone: profiles/ also holds LEDGER.toml, which is no profile. The flags
+  # every regeneration shares are the verb's (profiles/LEDGER.toml, [regen]).
+  "$bin" --config "$dir/keys.toml" regenerate "$name" --profiles "$repo/profiles/modules" --token "$token" \
+    --out "$repo/profiles/modules/$file" ${CAKEYS_ACCEPT:+--accept} || rc=$?
   [ "$rc" = 0 ] || [ "$rc" = 15 ] || status=$rc
 done
 exit "$status"

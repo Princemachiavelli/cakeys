@@ -1,23 +1,26 @@
-//! Logins a token cannot check again: a refused SO login is not tried a second time (review
-//! 2026-11-23 B-11), and an "already logged in" answer validates a PIN only when this process
-//! logged in with it (B-12). Skipped without `CAKEYS_TEST_MODULE`.
+//! Tests for logins that a token cannot check again. A refused SO login is not tried a second
+//! time (review 2026-11-23 B-11), and an "already logged in" answer validates a PIN only when
+//! this process logged in with that PIN (B-12). The tests are skipped without
+//! `CAKEYS_TEST_MODULE`.
+
+#[path = "../../test-skip.rs"]
+mod test_skip;
 
 use cakeys_core::config::TokenCfg;
 use cakeys_pkcs11::token::Access;
 use cakeys_pkcs11::{ChainTime, Registry, Token};
 
-/// The reference module, or `None` (and a note) where the harness sets none.
+/// Returns the reference module, or `None` (with a note) when the harness sets none.
 fn module() -> Option<String> {
     let Ok(module) = std::env::var("CAKEYS_TEST_MODULE") else {
-        assert!(std::env::var("CAKEYS_TEST_REQUIRE").is_err(), "CAKEYS_TEST_MODULE is required");
-        eprintln!("skipping logins: CAKEYS_TEST_MODULE is not set");
+        test_skip::skip("logins", "CAKEYS_TEST_REQUIRE", "CAKEYS_TEST_MODULE is not set");
         return None;
     };
     cakeys_profile::Set::activate_embedded().unwrap();
     Some(module)
 }
 
-/// A token of the reference module with this user PIN.
+/// Opens a token of the reference module with the user PIN `pin`.
 fn open(module: &str, dir: &std::path::Path, pin: &str) -> cakeys_core::Result<Token> {
     let file = dir.join(format!("pin-{pin}"));
     std::fs::write(&file, format!("{pin}\n")).unwrap();
@@ -27,8 +30,8 @@ fn open(module: &str, dir: &std::path::Path, pin: &str) -> cakeys_core::Result<T
     Token::open("ref", &cfg, None, &Registry::new(), Access::Read, ChainTime::Unchecked)
 }
 
-/// The PKCS #11 login state is the process's: a second token of the slot is told "already
-/// logged in" whatever PIN it gives, so a wrong one is refused rather than kept, and the same one
+/// The PKCS #11 login state belongs to the process. A second token of the slot gets "already
+/// logged in" whatever PIN it gives, so a wrong PIN is refused instead of kept, and the same PIN
 /// is accepted.
 #[test]
 fn an_already_logged_in_slot_checks_the_pin_against_the_first_login() {

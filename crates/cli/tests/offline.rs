@@ -1,6 +1,6 @@
-//! What `cakeys` decides from keys.toml and the lock alone, opening no token, so these run
-//! everywhere: the `--module` overrides every tool parses, `validate`'s stdout and `gc`'s
-//! lines.
+//! Tests of what `cakeys` decides from keys.toml and the lock alone, without opening a token, so
+//! these tests run everywhere: the `--module` overrides that every tool parses, the stdout of
+//! `validate`, and the lines of `gc`.
 
 mod common;
 
@@ -14,9 +14,9 @@ fn stdout_lines(o: &Output) -> Vec<String> {
 }
 
 /// `--module TOKEN=PATH` (cli-common `module_overrides`): each malformed or misdirected override
-/// is invalid (17), refused before any token opens, naming why: a missing `=`, an empty half, a
-/// token keys.toml does not name (a typo would leave keys.toml's module in place), and a token
-/// given twice.
+/// is invalid (exit 17). It is refused before any token opens, and the message says why: a
+/// missing `=`, an empty half, a token that keys.toml does not name (a typo would leave
+/// keys.toml's module in place), or a token given twice.
 #[test]
 fn an_override_that_cannot_apply_is_invalid() {
     let w = Workdir::new("module-override-invalid");
@@ -35,9 +35,9 @@ fn an_override_that_cannot_apply_is_invalid() {
     }
 }
 
-/// `validate` that passes prints one `<spec> on <token>: mode <mode>` line per pair on stdout,
-/// or with `--json` one `{spec, token, mode}` per pair; one the gate refuses (15) prints nothing
-/// there, as stdout carries only a result.
+/// A `validate` run that passes prints one `<spec> on <token>: mode <mode>` line per pair on
+/// stdout, or, with `--json`, one `{spec, token, mode}` object per pair. A run that the gate
+/// refuses (15) prints nothing on stdout, because stdout holds only a result.
 #[test]
 fn validate_prints_the_modes_only_when_it_passes() {
     let run = |config: &str| Run::new(BIN, std::path::Path::new(&format!("{FIXTURES}/{config}"))).output(&["validate"]);
@@ -64,15 +64,19 @@ fn validate_prints_the_modes_only_when_it_passes() {
         })
         .collect();
     assert_eq!(as_lines, lines);
+    // Several refusals exit 20, and each one is listed with its own code (review 2026-11-24
+    // §1.4: the exit is the one refusal's code, or 20 for several; it used to be 15 whatever the
+    // codes were).
     let refused = run("gate.toml");
-    assert_eq!(code(&refused), 15, "{}", stderr(&refused));
+    assert_eq!(code(&refused), 20, "{}", stderr(&refused));
+    assert!(stderr(&refused).lines().any(|l| l.starts_with("exit 15: ")), "{}", stderr(&refused));
     assert_eq!(stdout_lines(&refused), Vec::<String>::new());
 }
 
-/// `gc` prints the stale entries on stdout (`--json`: as an array), and says what it did as every
-/// writing verb does, through the run's notes: it removes them and saves the lock with the same
-/// `updated <lock>` line, and exits 22; `--dry-run` only prints them (review 2026-11-23 C-4: `gc`
-/// was the one verb that wrote only when asked).
+/// `gc` prints the stale entries on stdout (as an array with `--json`). It reports what it did
+/// through the run's notes, as every writing verb does: it removes the entries, saves the lock
+/// with the same `updated <lock>` line, and exits 22. `--dry-run` only prints the entries (review
+/// 2026-11-23 C-4: `gc` was the one verb that wrote only when asked).
 #[test]
 fn gc_says_what_it_did_through_the_notes() {
     let w = Workdir::new("gc-notes");

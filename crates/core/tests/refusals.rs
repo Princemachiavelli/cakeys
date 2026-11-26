@@ -1,6 +1,6 @@
-//! What loading keys.toml and a lock, planning a target and reading a key refuse, each with the
-//! message that says why (the coverage report's gaps in `config`, `plan`, `pop` and `plaintext`):
-//! none needs a token.
+//! The inputs that the load of keys.toml and of a lock, the plan of a target, and the read of a
+//! key refuse, each with the message that gives the reason. These tests fill the gaps of the
+//! coverage report in `config`, `plan`, `pop` and `plaintext`, and none of them needs a token.
 
 use cakeys_core::KmError;
 use cakeys_core::config::{Binding, Config, Mode, ObjectKind, parse_config_with, parse_lock};
@@ -11,12 +11,12 @@ use cakeys_core::types::KeyType;
 use ed25519_dalek::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
 use std::path::Path;
 
-/// The RSA signature the PKCS#11 baseline makes: PKCS#1 v1.5 over SHA-256.
+/// The RSA signature that the PKCS#11 baseline makes: PKCS#1 v1.5 over SHA-256.
 const V15: cakeys_core::pop::RsaSignature = cakeys_core::pop::RsaSignature::Pkcs1v15(cakeys_core::pop::HashAlg::Sha256);
 
-/// keys.toml with one token `t`, one object `o` of `object`, and one spec `s` on `t` with
-/// `spec` lines and `on_token` entries beside the locator; `origin = "adopt"` unless they name
-/// one.
+/// Returns a keys.toml with one token `t`, one object `o` with the lines `object`, and one spec
+/// `s` on `t` with the lines `spec` and the entries `on_token` next to the locator. The pair gets
+/// `origin = "adopt"` unless `on_token` names an origin.
 fn keys(object: &str, spec: &str, on_token: &str) -> String {
     let origin = if on_token.contains("origin") { "" } else { ", origin = \"adopt\"" };
     format!(
@@ -29,9 +29,9 @@ fn load(text: &str) -> cakeys_core::Result<Config> {
     parse_config_with(text, Path::new("keys.toml"), &|_| None)
 }
 
-/// How `text` is refused, its exit code and why: at load, or when its one target is planned.
-/// The code is cakeys' contract, the message what tells the rules that share it apart, so a
-/// table pins both (review `refusals.rs` F1).
+/// Returns how `text` is refused, as its exit code and the reason, at load or when its one target
+/// is planned. The exit code is part of the contract of cakeys, and the message distinguishes the
+/// rules that share an exit code, so a table pins both (review `refusals.rs` F1).
 fn refusal(text: &str) -> (u8, String) {
     let e = match load(text) {
         Err(e) => e,
@@ -43,7 +43,7 @@ fn refusal(text: &str) -> (u8, String) {
     (e.exit_code(), e.to_string())
 }
 
-/// `text` is refused with `code`, saying `why`.
+/// Asserts that `text` is refused with `code`, and that the message contains `why`.
 fn refused_with(text: &str, code: u8, why: &str) {
     let (got, said) = refusal(text);
     assert!(got == code && said.contains(why), "expected {code} and {why:?}, got {got}: {said}");
@@ -56,7 +56,8 @@ const SIGN: &str = "attributes = { CKA_SIGN = true }";
 
 #[test]
 fn specs_that_cannot_hold_are_refused_with_why() {
-    // An invalid spec is 17; a type cakeys does not manage, 15 (`every_object_is_typed_at_load`).
+    // An invalid spec exits with 17, and a type that cakeys does not manage exits with 15
+    // (`every_object_is_typed_at_load`).
     let cases: &[(&str, &str, &str, u8, &str)] = &[
         (AES, SIGN, ", binding = \"pop-sign\"", 17, "applies to private keys only"),
         (EC, SIGN, ", publicOnly = true, binding = \"pop-sign\"", 17, "publicOnly cannot prove possession"),
@@ -107,9 +108,10 @@ fn specs_that_cannot_hold_are_refused_with_why() {
     }
 }
 
-/// Every object's type is parsed at load (`ObjectCfg::kind`), whether a spec uses it or not:
-/// a field that names nothing on its class or key type is invalid (17), what PKCS#11 has but
-/// cakeys does not manage (a class/key-type pairing, a certificate type) unsupported (15).
+/// Every object's type is parsed at load (`ObjectCfg::kind`), whether a spec uses the object or
+/// not. A field that has no meaning for its class or key type is invalid (17). What PKCS#11 has
+/// but cakeys does not manage (a combination of class and key type, or a certificate type) is
+/// unsupported (15).
 #[test]
 fn every_object_is_typed_at_load() {
     let unused = |object: &str| format!("{}\n[objects.unused]\n{object}\n", keys(EC, SIGN, ""));
@@ -135,10 +137,10 @@ fn every_object_is_typed_at_load() {
     assert_eq!(kind, ObjectKind::Secret { key_type: KeyType::Des3, value_len: Some(24) });
 }
 
-/// What loads is usable (review D1): every rule that needs only keys.toml is checked at load,
-/// so no verb, `validate` included, meets a spec that loaded and is then refused at every use.
-/// An empty `CKA_ID` is a real object's ID and loads; hex is stored lower case, so `0A` and
-/// `0a` name one object.
+/// A configuration that loads is usable (review D1). Every rule that needs only keys.toml is
+/// checked at load, so that no verb, including `validate`, meets a spec that loaded but is then
+/// refused at every use. An empty `CKA_ID` is the ID of a real object and loads. Hex is stored in
+/// lower case, so `0A` and `0a` name one object.
 #[test]
 fn what_loads_is_usable() {
     let at_load = |text: &str, why: &str| {
@@ -159,8 +161,8 @@ fn what_loads_is_usable() {
     }
     let generic = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 0";
     at_load(&keys(generic, SIGN, ""), "valueLen 0");
-    // The spec's own planning: a binding its class cannot have, and a secret key with no
-    // re-verifiable identity.
+    // The plan of the spec itself: a binding that its class cannot have, and a secret key
+    // without an identity that can be verified again.
     at_load(&keys(AES, SIGN, ", binding = \"pop-sign\""), "applies to private keys only");
     at_load(&keys(AES, "attributes = { CKA_SIGN = false }", ""), "no re-verifiable identity");
 
@@ -176,12 +178,15 @@ fn names_that_select_nothing_are_refused() {
     assert!(matches!(&e, KmError::NotFound(m) if m.contains("has no token 'elsewhere'")), "{e}");
     let e = Target::new(&cfg, "nope", "t").err().unwrap();
     assert!(matches!(&e, KmError::NotFound(m) if m.contains("'nope'")), "{e}");
-    // A spec realised on a token `[tokens]` does not define is refused at load
-    // (`what_loads_is_usable`); planning one still refuses it, for a config built otherwise.
+    // A spec whose object keys.toml does not define is refused at load (17). A spec that is
+    // realised on a token that `[tokens]` does not define is also refused at load
+    // (`what_loads_is_usable`), and the plan still refuses it, for a config that was built in
+    // another way.
     let e = load(&keys(EC, SIGN, "").replace("object = \"o\"", "object = \"gone\"")).unwrap_err();
     assert!(e.exit_code() == 17 && e.to_string().contains("'gone'"), "{e}");
-    // An object's one (spec, token) pair, or why there is not exactly one.
-    // Every part of the address names something keys.toml has, or the run is invalid (17).
+    // The address returns an object's one (spec, token) pair, or the reason why there is not
+    // exactly one pair. Every part of the address must name something that keys.toml has, or
+    // the run is invalid (17).
     assert_eq!(cfg.address(Some("o"), None, None).unwrap(), ("s".to_owned(), "t".to_owned()));
     assert_eq!(cfg.address(None, Some("s"), None).unwrap(), ("s".to_owned(), "t".to_owned()));
     for (object, spec, token, why) in [
@@ -200,14 +205,14 @@ fn names_that_select_nothing_are_refused() {
 
 #[test]
 fn token_and_creation_rules_are_checked_at_load() {
-    // Each invalid config (17) at load, told apart by why.
+    // Each config is invalid (17) at load, and the message distinguishes the cases.
     let refused = |text: String, why: &str| {
         let e = load(&text).unwrap_err();
         assert!(e.exit_code() == 17 && e.to_string().contains(why), "expected 17 and {why:?}: {e}");
     };
     let with_token =
         |line: &str| keys(EC, SIGN, "").replace("tokenLabel = \"t\"", &format!("tokenLabel = \"t\"\n{line}"));
-    // A provider is a family; one profile of it is moduleProfile, of the same family.
+    // A provider names a family, and `moduleProfile` names one profile of that same family.
     refused(
         with_token("provider = \"aws-cloudhsm/5.18+hsm2m-non-fips\""),
         "name its family in provider and the profile in moduleProfile",
@@ -219,15 +224,17 @@ fn token_and_creation_rules_are_checked_at_load() {
     load(&with_token("moduleProfile = \"aws-cloudhsm/5.18+hsm2m-non-fips\"")).unwrap();
     refused(with_token("probe = { scratchId = \"zz\" }"), "is not a hex CKA_ID");
     refused(with_token("probe = { scratchId = \"\" }"), "is not a hex CKA_ID");
-    // The probe's scratch slot is no slot keys.toml keeps a key in on that token, in whichever
-    // case it is written (review 2026-11-23 D-1: one digit off, the probe overwrote it).
+    // The probe's scratch slot must not be a slot in which keys.toml keeps a key on that token,
+    // in either case of the hex (review 2026-11-23 D-1: with an ID that differed by one digit,
+    // the probe overwrote a real key).
     let at_id = |scratch: &str| {
         with_token(&format!("probe = {{ scratchId = \"{scratch}\" }}"))
             .replace("locator = { CKA_LABEL = \"o\" }", "locator = { CKA_ID = \"0a\" }")
     };
     refused(at_id("0A"), "probe.scratchId 0a is the CKA_ID of spec 's''s locator there");
     load(&at_id("0b")).unwrap();
-    // A transport key: an RSA private key of at least 2048 bits that unwraps and never leaves.
+    // A transport key is an RSA private key of at least 2048 bits that may unwrap and never
+    // leaves the token.
     let rsa = |bits: u32| format!("class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = {bits}");
     let unwraps = "attributes = { CKA_UNWRAP = true, CKA_EXTRACTABLE = false }";
     let transport = |object: &str, spec: &str| {
@@ -246,12 +253,12 @@ fn token_and_creation_rules_are_checked_at_load() {
             .replace("migrate = { transportWith = \"s\" }", "migrate = { transportWith = \"nope\" }"),
         "names no spec",
     );
-    // A token's transport key is on that token: another token cannot name it.
+    // A token's transport key is on that token, so another token cannot name it.
     refused(
         transport(&rsa(2048), unwraps) + "\n[tokens.u]\ntokenLabel = \"u\"\nmigrate = { transportWith = \"s\" }\n",
         "token 'u': migrate.transportWith = \"s\", but that spec does not realise it on 'u'",
     );
-    // A key states how it comes to be on its token, and is created once at most.
+    // A key states how it gets onto its token, and it is created at most once.
     refused(keys(EC, SIGN, ", origin = \"made\""), "unknown variant `made`");
     let twice = keys(EC, SIGN, ", origin = \"create\"")
         + "\n[tokens.u]\ntokenLabel = \"u\"\n\n[specs.s2]\nobject = \"o\"\n\
@@ -268,9 +275,9 @@ fn schemes_and_assurance_names_follow_the_class() {
     assert_eq!(schemes(CERT, ""), [Scheme::Certhash, Scheme::Rfc7093m4]);
     let secret = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 32";
     assert_eq!(schemes(secret, SIGN), [Scheme::Commitment]);
-    // A key pair by its public key, a data object by its value; an AES key by the commitments
-    // its declared usage allows, strongest first, and by all of them when it declares none
-    // (wrapping it out computes each).
+    // A key pair is identified by its public key, and a data object by its value. An AES key is
+    // identified by the commitments that its declared usage allows, strongest first, and by all
+    // of them when it declares no usage (because a wrap out of the token computes each of them).
     assert_eq!(schemes(EC, SIGN), [Scheme::Rfc7093m4]);
     assert_eq!(
         schemes("class = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"", ""),
@@ -285,7 +292,7 @@ fn schemes_and_assurance_names_follow_the_class() {
     );
     let names = [Assurance::Proof, Assurance::Fingerprint, Assurance::Public].map(Assurance::name);
     assert_eq!(names, ["proof", "fingerprint", "public"]);
-    // An object's type reads back as keys.toml writes it.
+    // An object's type prints in the form that keys.toml uses.
     let cfg = load(&keys(EC, SIGN, "")).unwrap();
     let shown = cfg.objects["o"].to_string();
     assert_eq!(shown, "{ class = \"CKO_PRIVATE_KEY\", keyType = \"CKK_EC\", curve = \"secp256r1\" }");
@@ -314,8 +321,8 @@ fn locks_that_contradict_themselves_are_invalid() {
         ),
         "module hash",
     );
-    // Every observation's module hash, not only the first one with a hash: a good one sorted
-    // first once let a bad one after it load.
+    // The load checks the module hash of every observation, not only of the first one with a
+    // hash. Before, a valid hash that sorted first allowed an invalid hash after it to load.
     let (first, second) = {
         let (a, b) = (cakeys_core::id::sri(b"a"), cakeys_core::id::sri(b"b"));
         if a < b { (a, b) } else { (b, a) }
@@ -330,13 +337,53 @@ fn locks_that_contradict_themselves_are_invalid() {
         "module hash \"md5-x\"",
     );
     refused("version = 1\n[observations.short]\nmechanisms = []\n".into(), "is not a sha256 SRI digest");
-    // A directory is no lock file: an I/O error, not an empty lock.
+    // A directory is not a lock file, so the load fails with an I/O error and does not return an
+    // empty lock.
     let e = cakeys_core::config::load_lock(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap_err();
     assert_eq!(e.exit_code(), 1, "{e}");
 }
 
-/// Every curve cakeys names parses from its own PKCS#8 into its private scalar and its public
-/// key; a key of another type than asked for, or of no type cakeys reads, is refused.
+/// A realisation of a private key records its `binding`, and a realisation of any other class
+/// has none (docs/DESIGN.md §4.2). The test edits a valid lock of each class: the binding added to a
+/// realisation of an AES key, a public key, a certificate or a data object is refused when the
+/// lock loads (17), and so is a private key's realisation without its binding. Every verb loads
+/// the lock this way, and `save_lock` runs the same check before it writes.
+#[test]
+fn a_binding_is_recorded_for_private_keys_and_no_other_class() {
+    let sri = cakeys_core::id::sri(b"x");
+    let lock = |ty: &str, scheme: &str, binding: &str| {
+        let label = if scheme == "cmac" { "commitmentLabel = \"key-management/v1\"\n" } else { "" };
+        format!(
+            "version = 1\n[objects.k]\n{label}type = {ty}\nids = {{ {scheme} = \"{sri}\" }}\n\
+             [realisations.s.t]\nobject = \"k\"\nlocator = {{ CKA_LABEL = \"k\" }}\nspecDigest = \"{sri}\"\n\
+             mode = \"direct\"\nschemes = [\"{scheme}\"]\npolicy = {{}}\n{binding}"
+        )
+    };
+    let classes = [
+        ("{ class = \"CKO_PRIVATE_KEY\", keyType = \"CKK_EC\", curve = \"secp256r1\" }", "rfc7093m4"),
+        ("{ class = \"CKO_SECRET_KEY\", keyType = \"CKK_AES\", valueLen = 32 }", "cmac"),
+        ("{ class = \"CKO_PUBLIC_KEY\", keyType = \"CKK_EC\", curve = \"secp256r1\" }", "rfc7093m4"),
+        ("{ class = \"CKO_CERTIFICATE\", certificateType = \"CKC_X_509\" }", "certhash"),
+        ("{ class = \"CKO_DATA\" }", "valuehash"),
+    ];
+    for (ty, scheme) in classes {
+        let private = ty.contains("CKO_PRIVATE_KEY");
+        for (bound, binding) in [(false, ""), (true, "binding = \"pop-sign\"\n")] {
+            let text = lock(ty, scheme, binding);
+            let loaded = parse_lock(&text, Path::new("keys.lock"));
+            if private == bound {
+                loaded.unwrap_or_else(|e| panic!("{e}:\n{text}"));
+            } else {
+                let e = loaded.expect_err(&text);
+                assert_eq!(e.exit_code(), 17, "{e}:\n{text}");
+            }
+        }
+    }
+}
+
+/// A key on every curve that cakeys names parses from its own PKCS#8 into its private scalar and
+/// its public key. A key of a different type than the requested type, or of a type that cakeys
+/// does not read, is refused.
 #[test]
 fn every_curve_parses_from_pkcs8() {
     macro_rules! ec {
@@ -362,17 +409,18 @@ fn every_curve_parses_from_pkcs8() {
     let ed = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
     let der = ed.to_pkcs8_der().unwrap();
     assert_eq!(spki_of_pkcs8(der.as_bytes()).unwrap(), ed.verifying_key().to_public_key_der().unwrap().as_bytes());
-    // Asked for as another type, or a type with no parser: refused, the bytes never echoed.
+    // A key requested as a different type, or as a type without a parser, is refused, and the
+    // error never repeats the bytes.
     assert!(matches!(private_from_pkcs8(der.as_bytes(), KeyType::Ec, Some(Curve::P384)), Err(KmError::Conflict(_))));
     let e = private_from_pkcs8(der.as_bytes(), KeyType::Aes, Some(Curve::P256)).err().unwrap();
     assert!(matches!(&e, KmError::Unsupported(m) if m.contains("on secp256r1")), "{e}");
     assert!(matches!(spki_of_pkcs8(b"no key at all"), Err(KmError::Unsupported(_))));
-    // An Edwards curve has no ECDSA hash: its proof is EdDSA.
+    // An Edwards curve has no ECDSA hash, because its proof uses EdDSA.
     assert!(cakeys_core::pop::HashAlg::for_curve(cakeys_core::id::Curve::Ed25519).is_none());
 }
 
-/// A proof of possession needs a verifier for the key's type: Ed448 has none, and bytes that
-/// are no public key name themselves by their digest.
+/// A proof of possession needs a verifier for the key's type. Ed448 has no verifier, and the
+/// error for bytes that are not a public key names the bytes by their digest.
 #[test]
 fn proofs_need_a_verifier_for_the_key() {
     let ed448 = ed448::pkcs8::PublicKeyBytes([3u8; 57]).to_public_key_der().unwrap();
@@ -393,9 +441,9 @@ fn planned(object: &str, spec: &str, on_token: &str) -> (Mode, Option<Binding>, 
     (mode, binding(&t), expected_binding(&t))
 }
 
-/// A private key proves possession the way its type and declared usage allow (docs/DESIGN.md
-/// §3.6): each binding is accepted on the key it fits, with the usage bit it needs, and refused
-/// anywhere else with the reason for that binding.
+/// A private key proves possession in the way that its type and its declared usage allow
+/// (docs/DESIGN.md §3.6). Each binding is accepted on the key that it fits, with the usage bit
+/// that it needs, and it is refused everywhere else with the reason for that binding.
 #[test]
 fn a_binding_fits_its_key_and_usage_or_is_refused() {
     use Binding::{PopDecrypt, PopEcdh, PopSign, PopSignPin, PopUnwrap, TokenAsserted};
@@ -405,13 +453,15 @@ fn a_binding_fits_its_key_and_usage_or_is_refused() {
     let accepted: &[(&str, String, String, Binding, Binding)] = &[
         (EC, flag("CKA_SIGN"), String::new(), PopSign, PopSign),
         (EC, flag("CKA_SIGN"), with("pop-sign"), PopSign, PopSign),
-        // The per-use PIN is the token's to demand: planned as pop-sign, expected as pop-sign-pin.
+        // The token decides whether to demand the PIN for each use, so the binding is planned
+        // as pop-sign and expected as pop-sign-pin.
         (EC, per_use("CKA_SIGN"), String::new(), PopSign, PopSignPin),
         (EC, flag("CKA_DERIVE"), with("pop-ecdh"), PopEcdh, PopEcdh),
         (RSA, flag("CKA_DECRYPT"), with("pop-decrypt"), PopDecrypt, PopDecrypt),
         (RSA, flag("CKA_UNWRAP"), with("pop-unwrap"), PopUnwrap, PopUnwrap),
         (RSA, flag("CKA_SIGN"), String::new(), PopSign, PopSign),
-        // No usage to prove with, and said so; a per-use PIN changes nothing about that.
+        // The key has no usage with which to prove possession, and the spec states that. A PIN
+        // for each use does not change that.
         (EC, flag("CKA_DERIVE"), with("token-asserted"), TokenAsserted, TokenAsserted),
         (EC, per_use("CKA_DERIVE"), with("token-asserted"), TokenAsserted, TokenAsserted),
         (ED448, flag("CKA_SIGN"), with("token-asserted"), TokenAsserted, TokenAsserted),
@@ -439,18 +489,19 @@ fn a_binding_fits_its_key_and_usage_or_is_refused() {
         (RSA, flag("CKA_SIGN"), with("pop-unwrap"), "needs CKA_UNWRAP = true"),
         (RSA, "attributes = { CKA_UNWRAP = false }".into(), with("pop-unwrap"), "needs CKA_UNWRAP = true"),
     ];
-    // Each an invalid spec (17), told apart by why.
+    // Each spec is invalid (17), and the message distinguishes the cases.
     for (object, spec, on_token, why) in refused {
         refused_with(&keys(object, spec, on_token), 17, why);
     }
-    // Other classes have no binding to plan or expect.
+    // Other classes have no binding to plan or to expect.
     assert_eq!(planned(AES, SIGN, ""), (Mode::Commitment, None, None));
     assert_eq!(planned(CERT, "", ""), (Mode::Direct, None, None));
 }
 
-/// The identity mode follows what the spec declares (docs/DESIGN.md §3.4): asymmetric keys and
-/// public objects are hashed directly, a secret key by a commitment its usage allows, else by
-/// wrapping when it is extractable, else not at all; and what a class cannot be asked is refused.
+/// The identity mode follows what the spec declares (docs/DESIGN.md §3.4). Asymmetric keys and
+/// public objects are hashed directly. A secret key is identified by a commitment that its usage
+/// allows, otherwise by a wrap when it is extractable, and otherwise not at all. A spec that asks
+/// a class for something that the class cannot do is refused.
 #[test]
 fn the_identity_mode_follows_the_declared_usage() {
     const HMAC: &str = "class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = 32";
@@ -462,14 +513,15 @@ fn the_identity_mode_follows_the_declared_usage() {
     assert_eq!(mode(AES, "attributes = { CKA_EXTRACTABLE = true }", ""), Mode::WrapRebind);
     assert_eq!(mode(AES, "attributes = { CKA_SIGN = false, CKA_EXTRACTABLE = true }", ""), Mode::WrapRebind);
     assert_eq!(mode(HMAC, SIGN, ""), Mode::Commitment);
-    // An HMAC key commits by signing alone: encrypting names no commitment for it.
+    // An HMAC key computes a commitment only by signing. Encryption gives it no commitment.
     assert_eq!(mode(HMAC, "attributes = { CKA_ENCRYPT = true, CKA_EXTRACTABLE = true }", ""), Mode::WrapRebind);
     assert_eq!(mode(PUBLIC, "", ""), Mode::Direct);
     assert_eq!(mode("class = \"CKO_DATA\"", "", ""), Mode::Direct);
     assert_eq!(mode(CERT, "", ""), Mode::Direct);
     assert_eq!(mode(EC, SIGN, ", attestation = true"), Mode::Direct);
     assert_eq!(mode(AES, SIGN, ", attestation = true"), Mode::Commitment);
-    // Adopted, a trusted key is only read; generated, the token would have to set it.
+    // An adopted trusted key is only read. A generated trusted key would need the token to set
+    // `CKA_TRUSTED`.
     assert_eq!(mode(AES, "attributes = { CKA_WRAP = true, CKA_TRUSTED = true }", ""), Mode::Commitment);
     assert_eq!(mode(AES, "attributes = { CKA_WRAP = true, CKA_TRUSTED = false }", ""), Mode::Commitment);
     assert_eq!(
@@ -498,15 +550,15 @@ fn the_identity_mode_follows_the_declared_usage() {
             "CKA_ALLOWED_MECHANISMS does not apply to",
         ),
     ];
-    // Each an invalid spec (17), told apart by why.
+    // Each spec is invalid (17), and the message distinguishes the cases.
     for (object, spec, on_token, why) in cases {
         refused_with(&keys(object, spec, on_token), 17, why);
     }
 }
 
-/// What `cakeys create` never makes, whatever the token, cannot say `origin = "create"` (17 at
-/// load): the classes cakeys adopts, a `publicOnly` adoption, and a key the token's security
-/// officer must mark `CKA_TRUSTED`. Each is a valid spec to adopt.
+/// An object that `cakeys create` never makes, on any token, cannot have `origin = "create"` (17
+/// at load). These are the classes that cakeys adopts, a `publicOnly` adoption, and a key that
+/// the token's security officer must mark `CKA_TRUSTED`. Each one is a valid spec to adopt.
 #[test]
 fn what_create_never_makes_cannot_say_origin_create() {
     const PUBLIC: &str = "class = \"CKO_PUBLIC_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
@@ -528,7 +580,8 @@ fn what_create_never_makes_cannot_say_origin_create() {
     }
 }
 
-/// A lock's `[objects.<name>]` table: its type (by class and key type), IDs, and extra lines.
+/// Returns a lock's `[objects.<name>]` table: its type (by class and key type), its IDs, and
+/// extra lines.
 fn lock_object(name: &str, ty: &str, ids: &[(&str, &str)], extra: &str) -> String {
     let ids = ids.iter().map(|(s, v)| format!("{s} = \"{v}\"\n")).collect::<Vec<_>>().concat();
     format!("[objects.{name}]\n{extra}{ty}[objects.{name}.ids]\n{ids}\n")
@@ -539,10 +592,10 @@ const PUBLIC_TYPE: &str = "type = { class = \"CKO_PUBLIC_KEY\", keyType = \"CKK_
 const CERT_TYPE: &str = "type = { class = \"CKO_CERTIFICATE\", certificateType = \"CKC_X_509\" }\n";
 const AES_TYPE: &str = "type = { class = \"CKO_SECRET_KEY\", keyType = \"CKK_AES\", valueLen = 32 }\n";
 
-/// The lock's objects are held to their invariants on load (docs/DESIGN.md §4): one object per
-/// material within a class, pairs that share a public key and list each other, IDs with a type
-/// and a label where they need one. A lock that keeps them loads, and its pairs are computed
-/// from the shared public key.
+/// The load checks the invariants of the lock's objects (docs/DESIGN.md §4): one object for each
+/// material within a class, pairs that share a public key and list each other, and IDs with a
+/// type and with a label where they need one. A lock that satisfies them loads, and its pairs are
+/// computed from the shared public key.
 #[test]
 fn lock_objects_keep_their_invariants() {
     use base64::Engine as _;
@@ -561,8 +614,9 @@ fn lock_objects_keep_their_invariants() {
         lock_object(name, CERT_TYPE, &[("certhash", hash), ("rfc7093m4", id)], extra)
     };
 
-    // One material, one object per class: a key, its public key object and two certificates
-    // of it share the public key; an object that records nothing yet is still an object.
+    // One material has one object in each class: a key, its public key object and two
+    // certificates of the key share the public key. An object that records nothing yet is still
+    // an object.
     let family = [
         key("k", &a, "pairs = [\"c1\", \"elsewhere\"]\n"),
         lock_object("p", PUBLIC_TYPE, &[("rfc7093m4", &a)], ""),
@@ -577,7 +631,8 @@ fn lock_objects_keep_their_invariants() {
     assert_eq!(pairs.keys().map(String::as_str).collect::<Vec<_>>(), ["c1", "c2", "k", "p"]);
     assert_eq!(pairs["k"], names(&["c1", "c2", "p"]));
     assert_eq!(pairs["c2"], names(&["c1", "k", "p"]));
-    // What shares the key and is not listed yet; an object with no public key shares none.
+    // The objects that share the key and are not listed yet. An object without a public key
+    // shares no key.
     assert_eq!(l.unlisted_pairs("k"), names(&["c2", "p"]));
     assert_eq!(l.unlisted_pairs("c1"), names(&["c2", "p"]));
     assert_eq!(l.unlisted_pairs("p"), names(&["c1", "c2", "k"]));
@@ -599,16 +654,16 @@ fn lock_objects_keep_their_invariants() {
         refused(&[lock_object("s", AES_TYPE, &[("cmac", &b)], &extra)], "must be non-empty printable ASCII");
     }
 
-    // A recorded public key is the one its identity hashes.
+    // A recorded public key must be the key that its identity hashes.
     let spki = base64::engine::general_purpose::STANDARD.encode(b"a");
     let l = loaded(&[key("k", &a, &format!("publicKey = \"{spki}\"\n"))]);
     assert_eq!(l.objects["k"].public_key.as_deref(), Some(spki.as_str()));
     refused(&[key("k", &b, &format!("publicKey = \"{spki}\"\n"))], "publicKey hashes to");
 }
 
-/// What is shown and picked is what is there: a curve alias loads as its canonical name, a
-/// spec is picked among the object's own and narrowed by name, and the lock's small views
-/// (a mode, the immutables, differing observations) print what they hold.
+/// What is shown and selected matches what is there. A curve alias loads as its canonical name,
+/// a spec is selected among the object's own specs and narrowed by name, and the lock's small
+/// views (a mode, the immutables, and differing observations) print what they hold.
 #[test]
 fn views_and_picks_say_what_is_there() {
     use cakeys_core::config::{Immutables, TokenObservation};
@@ -653,9 +708,9 @@ fn views_and_picks_say_what_is_there() {
     );
 }
 
-/// The small tables the rest is built on: the hash an HMAC key type commits with and an EC
-/// curve signs with, which curves are Edwards and how they may be named to a token, and which
-/// classes carry a mechanism list.
+/// The small tables on which the rest of the code is built: the hash with which an HMAC key type
+/// computes a commitment and with which an EC curve signs, which curves are Edwards curves and
+/// how they may be named to a token, and which classes have a mechanism list.
 #[test]
 fn types_name_their_hash_and_curve() {
     use cakeys_core::id::{Curve, HmacHash};
@@ -691,11 +746,11 @@ fn types_name_their_hash_and_curve() {
 }
 
 /// A certificate is linked to its key by its subject public key, and an Ed25519 proof of
-/// possession verifies only for the key and the message it was made for.
+/// possession verifies only for the key and the message for which it was made.
 #[test]
 fn a_certificate_names_its_key_and_an_ed25519_proof_its_signer() {
     use ed25519_dalek::Signer as _;
-    // The fixture certificate of the fixture key, whose identity the token suites pin.
+    // The fixture certificate of the fixture key, whose identity the token test suites pin.
     let cert = include_bytes!("../../cli/tests/fixtures/tpm-import-p256-cert.der");
     let spki = cakeys_core::id::cert_spki(cert).unwrap();
     assert_eq!(cakeys_core::id::sri(&spki), "sha256-0ymh9vfz8P3lnbdlAXskvxwoDAfUJNEIbsv0KEupcSg=");
@@ -713,10 +768,10 @@ fn a_certificate_names_its_key_and_an_ed25519_proof_its_signer() {
     }
 }
 
-/// A secret's length is bounded so its commitment label cannot overflow: the largest length
-/// that fits loads, one more is refused (17). Over the full `u64` range,
-/// `commitment_labels_are_injective` (tests/properties.rs) failed with an overflow panic; its
-/// range is now what keys.toml accepts.
+/// A secret's length has an upper bound so that its commitment label cannot overflow. The
+/// largest length that fits loads, and a length one larger is refused (17). Over the full `u64`
+/// range, `commitment_labels_are_injective` (tests/properties.rs) failed with an overflow panic,
+/// so its range is now the range that keys.toml accepts.
 #[test]
 fn the_value_length_bound_is_inclusive() {
     let secret = |len: u64| format!("class = \"CKO_SECRET_KEY\"\nkeyType = \"CKK_GENERIC_SECRET\"\nvalueLen = {len}");

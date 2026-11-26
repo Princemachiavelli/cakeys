@@ -1,8 +1,10 @@
 //! A downstream `cakeys` with an extra provider for an in-house PKCS#11 module.
-//! `cargo run --example custom-provider -- --config keys.toml verify <object> --token acme`
+//! `cargo run --example custom-provider -- --config keys.toml check <object> --token acme`
 
-use cakeys_pkcs11::provider::Provider;
-use cakeys_pkcs11::token::ModuleInfo;
+use cakeys_core::Result;
+use cakeys_pkcs11::Token;
+use cakeys_pkcs11::provider::{Checked, Create, Provider};
+use cakeys_pkcs11::token::{CreateNote, ModuleInfo};
 use std::process::ExitCode;
 
 struct Acme;
@@ -14,6 +16,14 @@ impl Provider for Acme {
 
     fn matches(&self, m: &ModuleInfo) -> bool {
         m.manufacturer == "Acme Corp"
+    }
+
+    /// An override of an operation receives a request that the token has already checked.
+    /// Before the override is called, the token has asked where the key may go (`placement`),
+    /// and it has entered the session in which the module writes (`manages_as_so`). Here the
+    /// override only calls the default implementation.
+    fn create(&self, tok: &Token, req: &Checked<Create<'_>>) -> Result<Option<CreateNote>> {
+        tok.create_declared(req)
     }
 }
 

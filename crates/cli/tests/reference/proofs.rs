@@ -1,10 +1,11 @@
-//! Proof of possession (`pop-*`) and the PIV attestation.
+//! Tests of proof of possession (`pop-*`) and of the PIV attestation.
 
 use super::*;
 
-/// docs/DESIGN.md §3.6: a `CKA_ALWAYS_AUTHENTICATE` key proves possession under its
-/// per-use policy (`C_SignInit → C_Login(CKU_CONTEXT_SPECIFIC) → C_Sign`), and the
-/// lock records `pop-sign-pin` from the attribute the token reports, declared or not.
+/// docs/DESIGN.md §3.6: a `CKA_ALWAYS_AUTHENTICATE` key proves possession under its per-use
+/// policy (`C_SignInit → C_Login(CKU_CONTEXT_SPECIFIC) → C_Sign`), and the lock records
+/// `pop-sign-pin` because of the attribute that the token reports, whether keys.toml declares the
+/// attribute or not.
 #[test]
 fn always_authenticate_keys_prove_possession_with_a_per_use_pin() {
     let Some(e) = env("always-auth-pop") else { return };
@@ -28,22 +29,23 @@ fn always_authenticate_keys_prove_possession_with_a_per_use_pin() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
 
     // The module enforces the policy: signing without the context-specific login fails, so the
-    // proof above did log in rather than sign freely.
+    // proof above did log in, instead of signing without a login.
     let private = s
         .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"always-auth-rsa".to_vec())])
         .unwrap()[0];
     assert!(s.sign(&Mechanism::Sha256RsaPkcs, private, b"challenge").is_err(), "signed without re-authenticating");
 
-    // Undeclared, the attribute the token reports still decides: same proof, same record.
+    // When keys.toml does not declare the attribute, the attribute that the token reports still
+    // decides, so the proof and the record are the same.
     e.config(&spec(rsa, "always-auth-rsa", "CKA_SIGN = true"));
     let o = e.km(&["resolve", "--spec", "s", "--token", "ref"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let resolved: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(resolved["binding"].as_str(), Some("pop-sign-pin"), "{resolved}");
 
-    // The signature after the login is single-part, which every signing mechanism offers:
-    // hashed ECDSA (SoftHSM signs it in one part only), raw ECDSA over the host's digest where
-    // the token lacks the hashed one, and EdDSA.
+    // The signature after the login is a single-part operation, which every signing mechanism
+    // offers: hashed ECDSA (SoftHSM signs it only in one part), raw ECDSA over the host's digest
+    // where the token lacks the hashed mechanism, and EdDSA.
     let ec = "keyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
     let ed = "keyType = \"CKK_EC_EDWARDS\"\ncurve = \"edwards25519\"";
     for (key, label, hidden) in
@@ -77,22 +79,23 @@ fn binding_downgrade_is_refused() {
     assert_eq!(e.code(&["validate"]), 17);
 }
 
-/// P0-1: keys that cannot sign still prove possession. `pop-ecdh` derives the shared secret into
-/// a non-extractable session key and MACs the challenge on both sides; `pop-decrypt` has the token
-/// RSA-OAEP-decrypt the challenge; `pop-unwrap` has it unwrap a host secret into a non-extractable
-/// session key and MAC with it (a transport key, docs/CAMIGRATE.md D3). A different private key under the
-/// locator fails the proof.
+/// P0-1: keys that cannot sign still prove possession. `pop-ecdh` derives the shared secret into a
+/// non-extractable session key and computes a MAC of the challenge on both sides. `pop-decrypt`
+/// has the token decrypt the challenge with RSA-OAEP. `pop-unwrap` has the token unwrap a host
+/// secret into a non-extractable session key and compute a MAC with it (a transport key,
+/// docs/CAMIGRATE.md D3). A different private key under the locator fails the proof.
 #[test]
 fn derive_and_decrypt_only_keys_prove_possession() {
     let Some(e) = env("pop-ecdh") else { return };
-    // Shapes: each proof needs its capability declared, and applies to its key type only.
+    // Spec forms: each proof needs its capability declared, and it applies only to its key type.
     let ec = "[objects.k]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
               [specs.k]\nobject = \"k\"\nattributes = { CKA_DERIVE = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
     let rsa = "[objects.r]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
                [specs.r]\nobject = \"r\"\nattributes = { CKA_DECRYPT = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
     let unwrap = "[objects.u]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048\n\n\
                   [specs.u]\nobject = \"u\"\nattributes = { CKA_UNWRAP = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
-    // Each invalid (17) for its own reason, so a refusal of the shared skeleton cannot pass.
+    // Each case is invalid (17) for its own reason, so a refusal of the shared configuration
+    // cannot be mistaken for the refusal under test.
     for (body, token, why) in [
         (ec, "binding = \"pop-decrypt\"", "by decrypting: it applies to RSA private keys only"),
         (ec.replace("CKA_DERIVE = true, ", "").as_str(), "binding = \"pop-ecdh\"", "needs CKA_DERIVE = true"),
@@ -110,7 +113,8 @@ fn derive_and_decrypt_only_keys_prove_possession() {
     let o = e.km(&["validate"]);
     assert!(code(&o) == 17 && stderr(&o).contains("needs CKA_SIGN = true"), "{}", stderr(&o));
 
-    // Derive-only EC key, proven by deriving: created, recorded as pop-ecdh, verifies.
+    // A derive-only EC key, proven by deriving: the key is created, recorded as pop-ecdh, and
+    // verified.
     e.config(&format!(
         "{ec}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-ecdh\" }}, origin = \"create\", binding = \"pop-ecdh\" }}\n"
     ));
@@ -120,13 +124,14 @@ fn derive_and_decrypt_only_keys_prove_possession() {
     assert_eq!(e.code(&["check", "--spec", "k", "--token", "ref"]), 0);
     assert!(e.lock()["objects"]["k"]["ids"].get("rfc7093m4").is_some(), "the object id was recorded");
 
-    // Decrypt-only RSA key, proven by decrypting (OAEP-SHA256).
+    // A decrypt-only RSA key, proven by decrypting (OAEP-SHA256).
     e.config(&format!("{rsa}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-oaep\" }}, origin = \"create\", binding = \"pop-decrypt\" }}\n"));
     assert_eq!(e.code(&["create", "--spec", "r", "--token", "ref"]), 22);
     assert_eq!(e.lock()["realisations"]["r"]["ref"]["binding"].as_str(), Some("pop-decrypt"));
     assert_eq!(e.code(&["check", "--spec", "r", "--token", "ref"]), 0);
 
-    // Unwrap-only RSA key, proven by unwrapping: no CKA_DECRYPT, nothing leaves the token.
+    // An unwrap-only RSA key, proven by unwrapping: the key has no CKA_DECRYPT, and nothing
+    // leaves the token.
     e.config(&format!(
         "{unwrap}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-unwrap\" }}, origin = \"create\", binding = \"pop-unwrap\" }}\n"
     ));
@@ -140,9 +145,10 @@ fn derive_and_decrypt_only_keys_prove_possession() {
         "{ec}tokens.ref = {{ locator = {{ CKA_LABEL = \"pop-ecdh\" }}, origin = \"create\", binding = \"pop-ecdh\" }}\n"
     ));
 
-    // A different private key under the EC locator fails the derivation proof, like H1. A fresh
-    // session: one opened before the `lock` processes does not see objects they created
-    // (common/mod.rs), but everything is visible to a session opened after them.
+    // A different private key under the EC locator fails the derivation proof, as in H1. The
+    // test opens a new session, because a session opened before the `lock` processes does not
+    // see the objects that they created (common/mod.rs), but a session opened after them sees
+    // everything.
     let usage = [Attribute::Derive(true), Attribute::Sensitive(true), Attribute::Extractable(false)];
     swap_private_key(
         &e.session(),
@@ -156,9 +162,9 @@ fn derive_and_decrypt_only_keys_prove_possession() {
     assert_eq!(e.code(&["lock", "--spec", "k", "--token", "ref", "--dry-run"]), 13);
 }
 
-/// A proof the token cannot give is refused, never skipped: without the proof's mechanism the
-/// token is unsupported (15) with the opt-out named, and a `CKA_ALWAYS_AUTHENTICATE` key under a
-/// binding that has no per-use login is unavailable (16).
+/// A proof that the token cannot give is refused, and never skipped. Without the proof's
+/// mechanism, the token is unsupported (15), and the message names the opt-out. A
+/// `CKA_ALWAYS_AUTHENTICATE` key under a binding that has no per-use login is unavailable (16).
 #[test]
 fn proofs_the_token_cannot_give_are_refused() {
     let Some(e) = env("pop-refused") else { return };
@@ -173,9 +179,10 @@ fn proofs_the_token_cannot_give_are_refused() {
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     let said = stderr(&o);
     assert!(said.contains("CKM_ECDH1_DERIVE") && said.contains("token-asserted"), "{said}");
-    // A key that wants its PIN per use, under a proof that has no point to give it. Declared, the
-    // spec is invalid (attributes_are_validated_per_class); here the token reports it undeclared.
-    // (An object of its own: the lock pins `k`'s material.)
+    // A key that needs its PIN for each use, under a proof that has no use for a per-use login.
+    // If the spec declared the attribute, the spec would be invalid
+    // (attributes_are_validated_per_class), so here only the token reports the attribute. (The
+    // key is an object of its own, because the lock pins `k`'s material.)
     let s = e.session();
     let label = || Attribute::Label(b"pop-refused-always".to_vec());
     let p256 = P256.to_vec();
@@ -198,10 +205,10 @@ fn proofs_the_token_cannot_give_are_refused() {
     assert_eq!(code(&o), 16, "{said}");
 }
 
-/// A proof falls back where the token lacks its first choice, and still catches a swapped key
-/// there: without the curve's hashed ECDSA, `pop-sign` signs a host digest with raw `CKM_ECDSA`;
-/// without HMAC, `pop-ecdh` derives into an extractable secret the host compares; without OAEP,
-/// `pop-decrypt` decrypts a PKCS #1 v1.5 challenge.
+/// A proof falls back to another mechanism where the token lacks its first choice, and it still
+/// detects a swapped key there. Without the curve's hashed ECDSA, `pop-sign` signs a host digest
+/// with raw `CKM_ECDSA`. Without HMAC, `pop-ecdh` derives into an extractable secret that the host
+/// compares. Without OAEP, `pop-decrypt` decrypts a PKCS #1 v1.5 challenge.
 #[test]
 fn proofs_fall_back_to_what_the_token_has() {
     let Some(e) = env("pop-fallback") else { return };
@@ -224,7 +231,8 @@ fn proofs_fall_back_to_what_the_token_has() {
         assert_eq!(code(&o), 22, "{mechanism} hidden: {}", stderr(&o));
         assert_eq!(code(&e.km_env(&["check", "--spec", spec, "--token", "ref"], &[(var, conf.as_path())])), 0);
     }
-    // Another private key under the derive-only locator: the extractable path's comparison fails.
+    // Put another private key under the derive-only locator, so that the comparison on the
+    // extractable path fails.
     let usage = [Attribute::Derive(true), Attribute::Sensitive(true), Attribute::Extractable(false)];
     let p256 = [Attribute::EcParams(P256.to_vec())];
     swap_private_key(&e.session(), "pop-fallback-d", &Mechanism::EccKeyPairGen, &p256, &usage, &[]);
@@ -232,10 +240,10 @@ fn proofs_fall_back_to_what_the_token_has() {
     assert_swapped_key_conflict(&e.km_env(&["check", "--spec", "d", "--token", "ref"], &[(var, conf.as_path())]));
 }
 
-/// What a key cannot give its proof with: a `CKA_ALWAYS_AUTHENTICATE` key on a token with no PIN
-/// configured is unavailable (16); a key whose `CKA_ALLOWED_MECHANISMS` leave out every mechanism
-/// the proof could use is unsupported (15), those mechanisms named. A decrypt-only key pinned to
-/// `CKM_RSA_PKCS` proves with PKCS #1 v1.5 instead of OAEP.
+/// Keys that cannot give their proof: a `CKA_ALWAYS_AUTHENTICATE` key on a token with no PIN
+/// configured is unavailable (16), and a key whose `CKA_ALLOWED_MECHANISMS` leave out every
+/// mechanism that the proof could use is unsupported (15), with those mechanisms named. A
+/// decrypt-only key that is restricted to `CKM_RSA_PKCS` proves with PKCS #1 v1.5 instead of OAEP.
 #[test]
 fn proofs_the_key_will_not_give_are_refused() {
     let Some(e) = env("pop-key-refuses") else { return };
@@ -257,8 +265,9 @@ fn proofs_the_key_will_not_give_are_refused() {
         s.generate_key_pair(mechanism, &public, &private)
     };
     let p256 = P256;
-    // Visible without login (CKA_PRIVATE = false), so `ref-anon` finds it, and wanting the PIN per
-    // use: kryoptic makes it, SoftHSM refuses the combination (CKR_TEMPLATE_INCONSISTENT).
+    // A key that is visible without login (CKA_PRIVATE = false), so that `ref-anon` finds it, and
+    // that needs the PIN for each use. kryoptic makes it, and SoftHSM refuses the combination
+    // (CKR_TEMPLATE_INCONSISTENT).
     let anon = [Attribute::Private(false), Attribute::Sign(true), Attribute::AlwaysAuthenticate(true)];
     let anon = plant_ec("anon", &Mechanism::EccKeyPairGen, p256, &anon).is_ok();
     let derive = [Attribute::Derive(true), Attribute::AllowedMechanisms(vec![MechanismType::ECDSA])];
@@ -296,16 +305,18 @@ fn proofs_the_key_will_not_give_are_refused() {
         assert!(stderr(&o).contains(&format!("CKA_ALLOWED_MECHANISMS allows none of {mechanism}")), "{}", stderr(&o));
     }
     assert_eq!(e.code(&["lock", "--spec", "decrypt", "--token", "ref"]), 22);
-    // The same on the extractable derive path (no HMAC for the sealed one).
+    // The same refusal happens on the extractable derive path, which is used when the token has
+    // no HMAC for the sealed path.
     let (var, conf) = e.hiding("CKM_SHA256_HMAC");
     let o = e.km_env(&["lock", "--spec", "derive", "--token", "ref", "--dry-run"], &[(var, conf.as_path())]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("allows none of CKM_ECDH1_DERIVE"), "{}", stderr(&o));
 }
 
-/// A key bound to one RSA signature proves possession in it (Cloud KMS binds each key so
-/// \[run\]): PSS, hashed by the token or over the host's digest, and PKCS #1 v1.5 over SHA-512,
-/// hashed or raw over its `DigestInfo`. The host verifies each as the key is bound.
+/// A key that is bound to one RSA signature scheme proves possession with that scheme (Cloud KMS
+/// binds each key in this way \[run\]): PSS, hashed by the token or over the host's digest, and
+/// PKCS #1 v1.5 over SHA-512, hashed or raw over its `DigestInfo`. The host verifies each
+/// signature with the scheme to which the key is bound.
 #[test]
 fn a_key_bound_to_one_signature_proves_in_it() {
     use std::fmt::Write as _;
@@ -345,8 +356,8 @@ fn a_key_bound_to_one_signature_proves_in_it() {
     }
 }
 
-/// ykcs11's slot 9a objects from the committed fixtures (crates/ykcs11/tests/fixtures/): the
-/// public key planted, and its attestation and device certificates planted on request.
+/// ykcs11's slot 9a objects from the committed fixtures (crates/ykcs11/tests/fixtures/). The
+/// public key is planted, and its attestation and device certificates are planted on request.
 struct Piv<'a> {
     s: &'a TestSession,
     slot: Vec<u8>,
@@ -357,8 +368,8 @@ impl<'a> Piv<'a> {
     const SLOT_LABEL: &'static str = "X.509 Certificate for PIV Attestation 9a";
     const DEVICE_LABEL: &'static str = "X.509 Certificate for PIV Attestation";
 
-    /// Plant slot 9a's public key (`CKA_ID` 01) and write keys.toml's spec `piv` adopting it on
-    /// token `yk` (`provider = "ykcs11"`) with attestation.
+    /// Plants slot 9a's public key (`CKA_ID` 01), and writes the keys.toml spec `piv`, which
+    /// adopts the key on token `yk` (`provider = "ykcs11"`) with attestation.
     fn plant(e: &Suite, s: &'a TestSession) -> Piv<'a> {
         let fixture = |name: &str| {
             let pem =
@@ -396,23 +407,25 @@ impl<'a> Piv<'a> {
         self.s.create_object(&t).unwrap()
     }
 
-    /// Slot 9a's attestation certificate, under the key's `CKA_ID` and the slot-suffixed label.
+    /// Plants slot 9a's attestation certificate under the key's `CKA_ID` and the slot-suffixed
+    /// label.
     fn slot_cert(&self) -> cryptoki::object::ObjectHandle {
         self.cert(&self.slot, Self::SLOT_LABEL, 0x01)
     }
 
-    /// The f9 device certificate, under the bare label.
+    /// Plants the f9 device certificate under the bare label.
     fn device_cert(&self) -> cryptoki::object::ObjectHandle {
         self.cert(&self.device, Self::DEVICE_LABEL, 0x19)
     }
 }
 
-/// The `YubiKey` provider's `piv-attestation` lookups, on this token named `provider = "ykcs11"`
-/// with ykcs11's objects planted ([`Piv`]): slot 9a's public key (`CKA_ID` 01), its attestation
-/// certificate under the same `CKA_ID` and the slot-suffixed label, and the f9 device
-/// certificate under the bare label. The chain ends at a test root, never a pinned Yubico one:
-/// refused (13). Without the slot or the device certificate there is no attestation (15); with
-/// two of either, it is ambiguous (12). `check --at` holds the chain to that time.
+/// Tests the `YubiKey` provider's `piv-attestation` lookups on this token, declared with
+/// `provider = "ykcs11"`, with ykcs11's objects planted ([`Piv`]): slot 9a's public key (`CKA_ID`
+/// 01), its attestation certificate under the same `CKA_ID` and the slot-suffixed label, and the
+/// f9 device certificate under the bare label. The chain ends at a test root, which is never a
+/// pinned Yubico root, so the attestation is refused (13). Without the slot certificate or the
+/// device certificate, there is no attestation (15). With two of either, the attestation is
+/// ambiguous (12). `check --at` checks the chain at the given time.
 #[test]
 fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
     let Some(e) = env("piv-attest") else { return };
@@ -438,9 +451,10 @@ fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
     s.destroy_object(device_cert).unwrap();
     refused(15, "the device attestation certificate (slot f9) is not exposed");
 
-    // `check --at` reaches the chain (ISSUES.md B8; review check.rs F1): before the device
-    // certificate's notBefore (2026-11-12) the dates refuse first; with `--ignore-validity` the
-    // chain goes on to its root, which no pinned one signed; and now, the same.
+    // `check --at` reaches the chain (ISSUES.md B8; review check.rs F1). At a time before the
+    // device certificate's notBefore (2026-11-12), the dates are refused first. With
+    // `--ignore-validity`, the check of the chain continues to its root, which no pinned root
+    // signed. At the current time, the result is the same.
     let device_cert = piv.device_cert();
     let checked = |more: &[&str], why: &str| {
         let o = e.km(&[&["check", "piv", "--token", "yk"][..], more].concat());
@@ -452,8 +466,9 @@ fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
     checked(&[], "is signed by no pinned root and no intermediate given");
     s.destroy_object(device_cert).unwrap();
 
-    // ykcs11 reports CKA_DERIVE false on every private key though it derives with any EC key:
-    // the provider records what the key does. And it creates only in an SO session.
+    // ykcs11 reports CKA_DERIVE as false on every private key, although it derives with any EC
+    // key, so the provider records what the key does. ykcs11 also creates objects only in an SO
+    // session.
     let ec_params = P256.to_vec();
     let id = || Attribute::Id(vec![0x02]);
     s.generate_key_pair(
@@ -482,13 +497,14 @@ fn piv_attestations_are_found_by_slot_and_chain_to_yubico() {
     let o = e.km(&["create", "--spec", "new", "--token", "yk", "--no-update-lock"]);
     assert_eq!(code(&o), 15, "{}", stderr(&o));
     assert!(stderr(&o).contains("needs a Security Officer session"), "{}", stderr(&o));
-    // ykcs11 clears only a slot's certificate on delete and keeps the key: a delete is refused (15)
-    // with the tool that does remove it, never reported as done.
+    // On delete, ykcs11 clears only a slot's certificate and keeps the key. So a delete is refused
+    // (15) before it destroys anything, the message names the tool that does remove the key, and
+    // the delete is never reported as done.
     assert_eq!(e.code(&["lock", "--spec", "sig", "--token", "yk"]), 22);
-    let o = e.km(&["delete", "--spec", "sig", "--token", "yk"]);
-    assert_eq!(code(&o), 15, "{}", stderr(&o));
-    assert!(stderr(&o).contains("ykman piv keys delete"), "{}", stderr(&o));
-    // An admin credential the module refuses: the SO step is unavailable (16), never retried.
+    let rows = e.refused(&["delete", "--spec", "sig", "--token", "yk"], 15, "delete-refused");
+    assert!(rows[0].error.as_deref().is_some_and(|e| e.contains("ykman piv keys delete")), "{rows:?}");
+    // When the module refuses the admin credential, the SO step is unavailable (16), and it is
+    // never retried.
     std::fs::write(e.dir.join("bad-so"), "0000\n").unwrap();
     let text = std::fs::read_to_string(e.dir.join("keys.toml")).unwrap();
     let bad_so = format!("provider = \"ykcs11\"\nsoCredentialFile = \"{}\"\n", e.dir.join("bad-so").display());

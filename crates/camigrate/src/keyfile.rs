@@ -1,10 +1,11 @@
-//! Files an object is born in (docs/FILE.md): the file an object's `migrate.file` names, read in
-//! the formats deployments hold, into the material a pair that says `origin = "file"` is created
-//! from. Recognised by content, never by extension. Every private-key format is normalised to
-//! PKCS#8 `PrivateKeyInfo`, so a key from a file takes the one host path (`host::create_and_record`).
-//! A data object is its file's bytes as they are; a secret key is its value's bytes, or hex or
-//! base64 text of them. Every plaintext buffer is zeroized; nothing here formats a key or a
-//! passphrase.
+//! Reads the files in which objects are born (docs/FILE.md). Such a file is the file that an
+//! object's `migrate.file` names. This module reads it, in the formats that deployments use, into
+//! the material from which a pair that says `origin = "file"` is created. A file's format is
+//! recognised by its content, never by its extension. Every private-key format is normalised to
+//! PKCS#8 `PrivateKeyInfo`, so a key from a file always takes the same host path
+//! (`host::create_and_record`). A data object is its file's bytes as they are. A secret key is its
+//! value's bytes, or hex or base64 text of those bytes. Every plaintext buffer is zeroized, and no
+//! code here formats a key or a passphrase into a string.
 
 use crate::file;
 use base64::Engine as _;
@@ -17,10 +18,10 @@ use der::asn1::AnyRef;
 use der::{Decode as _, Tagged as _};
 use zeroize::Zeroizing;
 
-/// What an object takes from its file.
+/// The material that an object takes from its file.
 pub(crate) struct Material {
-    /// A private key's PKCS#8; a secret key's value; a certificate's DER; a public key's SPKI; a
-    /// data object's value.
+    /// A private key's PKCS#8, a secret key's value, a certificate's DER, a public key's SPKI, or
+    /// a data object's value.
     pub bytes: Zeroizing<Vec<u8>>,
     /// A private key's canonical SPKI.
     pub spki: Option<Vec<u8>>,
@@ -30,7 +31,7 @@ pub(crate) struct Material {
     pub exposure: Exposure,
 }
 
-/// One thing a structured file (PEM or DER) holds.
+/// One item that a structured file (PEM or DER) holds.
 enum Entry {
     /// A private key, normalised to PKCS#8, and the format it came in.
     Key(Zeroizing<Vec<u8>>, Method),
@@ -40,29 +41,33 @@ enum Entry {
     PublicKey(Vec<u8>),
 }
 
-/// The refusal a file gets: invalid input (17); the caller names the file.
+/// Returns the refusal for a file: invalid input (17). The caller adds the file's name.
 fn bad(what: impl std::fmt::Display) -> KmError {
     KmError::Validation(what.to_string().into())
 }
 
-/// What OpenSSL's pre-PKCS#8 encrypted PEM (`Proc-Type: 4,ENCRYPTED`) is refused with.
+/// The message that refuses OpenSSL's encrypted PEM format from before PKCS#8
+/// (`Proc-Type: 4,ENCRYPTED`).
 const LEGACY_PEM: &str = "a legacy encrypted PEM (Proc-Type/DEK-Info: one MD5 pass derives its key); convert it: \
                           openssl pkcs8 -topk8 -v2 aes-256-cbc -in old.pem -out new.pem";
 
-/// PEM blocks that carry nothing an object takes and are skipped: curve and Diffie-Hellman
-/// parameters, which `openssl ecparam -genkey` and server bundles write beside a key.
+/// The PEM blocks that carry nothing that an object takes, and that are skipped: curve parameters
+/// and Diffie-Hellman parameters, which `openssl ecparam -genkey` and server bundles write next to
+/// a key.
 const SKIPPED: [&str; 3] = ["EC PARAMETERS", "DH PARAMETERS", "X9.42 DH PARAMETERS"];
 
-/// What `object` takes from the file `bytes`: a private key's PKCS#8, a certificate, a public
-/// key or a value. `private_data` marks a data object a spec declares `CKA_PRIVATE = true`;
-/// `pass` opens an encrypted key file; `encoding` is a secret key's `migrate.encoding`.
+/// Returns what `object` takes from the file content `bytes`: a private key's PKCS#8, a
+/// certificate, a public key or a value. `private_data` marks a data object that a spec declares
+/// `CKA_PRIVATE = true`. `pass` opens an encrypted key file. `encoding` is a secret key's
+/// `migrate.encoding`.
 ///
 /// # Errors
 ///
-/// `Validation` (17) for a file that holds no such object, or several where one is meant, an
-/// object of another type than `object`'s, a format refused with the command that converts it,
-/// an encrypted file without a passphrase or one that does not open under it, a secret key's
-/// value of another length or in text no `valueLen` or `encoding` says how to read.
+/// `Validation` (17) in these cases: a file that holds no such object, or several where one is
+/// expected; an object of another type than `object`'s; a format that is refused, with the command
+/// that converts it; an encrypted file without a passphrase, or with a passphrase that does not
+/// open it; a secret key's value of another length; or a secret key's value in text that neither
+/// `valueLen` nor `encoding` says how to read.
 pub(crate) fn read(
     bytes: &[u8],
     object: &ObjectCfg,
@@ -82,8 +87,9 @@ pub(crate) fn read(
         }),
         Class::PrivateKey => {
             let (pkcs8, method) = one_key(entries(bytes)?)?;
-            // A SEC1 key given the object's curve, of another curve, reads as no key at all; a
-            // malformed key or an algorithm cakeys does not read says so too.
+            // A SEC1 key that was given the object's curve but is on another curve does not read
+            // as a key at all. A malformed key, or a key of an algorithm that cakeys does not
+            // read, also fails here, and the message says so.
             let spki = cakeys_core::plaintext::spki_of_pkcs8(&pkcs8).map_err(|e| {
                 bad(format!("its key does not read as a key of the object's type ({e}); the object is {object}"))
             })?;
@@ -103,17 +109,18 @@ pub(crate) fn read(
     }
 }
 
-/// A key file's private key (PKCS #8 DER), the certificates beside it, and how it was read.
+/// A key file's private key (PKCS #8 DER), the certificates next to it in the file, and the format
+/// in which it was read.
 pub(crate) type PrivateKey = (Zeroizing<Vec<u8>>, Vec<Vec<u8>>, Method);
 
-/// The one private key the file `bytes` holds, as PKCS#8 and the format it came in, and the
-/// certificates beside it: what `import --in` takes from a key file, which names no object
-/// (the lock's identity of the key says which), in every format [`read`] reads (review
-/// 2026-11-23 C-6). `pass` opens an encrypted one.
+/// Returns the one private key that the file content `bytes` holds, as PKCS#8 with the format that
+/// it came in, and the certificates next to it. This is what `import --in` takes from a key file,
+/// in every format that [`read`] reads (review 2026-11-23 C-6). A key file names no object; the
+/// lock finds the object by the key's identity. `pass` opens an encrypted file.
 ///
 /// # Errors
 ///
-/// As [`read`] for a private key.
+/// The same errors as [`read`] for a private key.
 pub(crate) fn private_key(bytes: &[u8], pass: Option<&str>) -> Result<PrivateKey> {
     let entries = entries(bytes, pass, None)?;
     let certificates =
@@ -122,12 +129,14 @@ pub(crate) fn private_key(bytes: &[u8], pass: Option<&str>) -> Result<PrivateKey
     Ok((pkcs8, certificates, method))
 }
 
-/// Whether the file `bytes` holds a private key, plain or encrypted, told by shape alone and
-/// before anything is decoded: a certificate object taken from a bundle or a PKCS#12 decodes
-/// the key beside it, so its import puts key plaintext in this process's memory too.
+/// Returns whether the file content `bytes` holds a private key, plain or encrypted. It decides by
+/// the shape of the content alone, before anything is decoded. This matters because the import of
+/// a certificate object from a PEM bundle or a PKCS#12 file decodes the private key next to it, so
+/// that import also puts key plaintext in this process's memory.
 ///
-/// The same scan the reader decodes by ([`pem_blocks`], [`der_kind`]), so the two never
-/// disagree on what a file holds; a PEM file the scan cannot split is taken to hold one.
+/// The function uses the same scan that the reader uses to decode ([`pem_blocks`], [`der_kind`]),
+/// so the two never disagree on what a file holds. A PEM file that the scan cannot split is taken
+/// to hold a private key.
 pub(crate) fn holds_private_key(bytes: &[u8]) -> bool {
     match pem_text(bytes) {
         Some(text) => pem_blocks(text).map_or(true, |blocks| blocks.iter().any(|(label, _)| is_private(label))),
@@ -135,19 +144,22 @@ pub(crate) fn holds_private_key(bytes: &[u8]) -> bool {
     }
 }
 
-/// A PEM label that names a private key, in any of its formats (encrypted, OpenSSH, ...).
+/// Returns whether a PEM label names a private key, in any of its formats (for example, encrypted
+/// or OpenSSH).
 fn is_private(label: &str) -> bool {
     label.contains("PRIVATE KEY")
 }
 
-/// The file as PEM text: UTF-8 holding a BEGIN line; `None` for DER.
+/// Returns the file as PEM text when it is UTF-8 that contains a BEGIN line, and `None` otherwise
+/// (for DER).
 pub(crate) fn pem_text(bytes: &[u8]) -> Option<&str> {
     std::str::from_utf8(bytes).ok().filter(|t| t.contains("-----BEGIN "))
 }
 
-/// The IDs the host computes from `m`, as the token must show them once it holds the object:
-/// `rfc7093m4` of a key, `certhash` of a certificate, `valuehash` of a data object. Empty for a
-/// secret key, whose commitments only the token computes (docs/FILE.md F3).
+/// Returns the IDs that the host computes from `m`, which the token must show once it holds the
+/// object: the `rfc7093m4` of a key, the `certhash` of a certificate, or the `valuehash` of a data
+/// object. The list is empty for a secret key, because only the token computes its commitments
+/// (docs/FILE.md F3).
 pub(crate) fn host_ids(object: &ObjectCfg, m: &Material) -> Vec<(Scheme, String)> {
     match object.class {
         Class::PrivateKey => m.spki.iter().map(|s| (Scheme::Rfc7093m4, id::sri(s))).collect(),
@@ -158,17 +170,18 @@ pub(crate) fn host_ids(object: &ObjectCfg, m: &Material) -> Vec<(Scheme, String)
     }
 }
 
-/// The certificate among `certificates` whose public key is `spki` (canonical): the one a key
-/// file carries for its key.
+/// Returns the certificate among `certificates` whose public key is `spki` (canonical), which is
+/// the certificate that a key file carries for its key.
 pub(crate) fn key_certificate(certificates: &[Vec<u8>], spki: &[u8]) -> Option<Vec<u8>> {
     certificates.iter().find(|c| id::cert_spki(c).is_ok_and(|s| s == spki)).cloned()
 }
 
-/// A secret key's value, exactly the object's `valueLen` long when it has one: the file's bytes,
-/// or hex or base64 text of them, as `encoding` says. Without one, the length decides: exactly
-/// `valueLen` bytes are the value, else text that is hex or base64 of that many. Those never
-/// share a length. Load requires one of the two (docs/FILE.md F4): a guess would be pinned as
-/// the object's identity by the first file read (F3).
+/// Returns a secret key's value, which must be exactly the object's `valueLen` long when the object
+/// has one. The value is the file's bytes, or hex or base64 text of those bytes, as `encoding`
+/// says. Without `encoding`, the length decides: a file of exactly `valueLen` bytes is the value
+/// itself, and any other file must be hex or base64 text of that many bytes. These three forms
+/// never have the same length. Loading keys.toml requires `valueLen` or `encoding` (docs/FILE.md
+/// F4), because the first file read would otherwise pin a guess as the object's identity (F3).
 fn secret(bytes: &[u8], object: &ObjectCfg, encoding: Option<Encoding>) -> Result<Material> {
     if bytes.is_empty() {
         return Err(bad("it is empty, and a secret key's file holds its value"));
@@ -192,8 +205,9 @@ fn secret(bytes: &[u8], object: &ObjectCfg, encoding: Option<Encoding>) -> Resul
     Ok(Material { bytes: value, spki: None, method: Method::Raw, exposure: Exposure::File })
 }
 
-/// The value `bytes` spells in `encoding`, whitespace anywhere left out of text: hex dumps and
-/// base64 tools wrap their lines. `None` when it does not spell one.
+/// Returns the value that `bytes` spells in `encoding`. For hex and base64 text, all whitespace is
+/// removed first, because hex dumps and base64 tools wrap their lines. Returns `None` when `bytes`
+/// is not valid text in that encoding.
 fn decode(bytes: &[u8], encoding: Encoding) -> Option<Zeroizing<Vec<u8>>> {
     let text: Zeroizing<Vec<u8>> = Zeroizing::new(bytes.iter().copied().filter(|b| !b.is_ascii_whitespace()).collect());
     let value = match encoding {
@@ -204,9 +218,11 @@ fn decode(bytes: &[u8], encoding: Encoding) -> Option<Zeroizing<Vec<u8>>> {
     Some(Zeroizing::new(value))
 }
 
-/// A secret key's `n`-byte value from a file that does not say how it spells it ([`secret`]).
+/// Returns a secret key's `n`-byte value from a file whose encoding is not configured
+/// ([`secret`]).
 fn detect(bytes: &[u8], n: u64) -> Result<Zeroizing<Vec<u8>>> {
-    // The value itself first, before any whitespace is left out: a key's bytes may be any.
+    // Check for the value itself first, before any whitespace is removed, because a key's bytes
+    // may have any value.
     if bytes.len() as u64 == n {
         return Ok(Zeroizing::new(bytes.to_vec()));
     }
@@ -227,7 +243,7 @@ fn detect(bytes: &[u8], n: u64) -> Result<Zeroizing<Vec<u8>>> {
     )))
 }
 
-/// The file's one private key.
+/// Returns the file's one private key, and refuses a file with no private key or with several.
 fn one_key(entries: Vec<Entry>) -> Result<(Zeroizing<Vec<u8>>, Method)> {
     let mut keys = entries.into_iter().filter_map(|e| match e {
         Entry::Key(k, m) => Some((k, m)),
@@ -240,8 +256,8 @@ fn one_key(entries: Vec<Entry>) -> Result<(Zeroizing<Vec<u8>>, Method)> {
     }
 }
 
-/// The file's certificate: the one whose public key is the file's private key when it holds
-/// one, else its only certificate.
+/// Returns the file's certificate. When the file holds a private key, this is the certificate whose
+/// public key matches that key. Otherwise, it is the file's only certificate.
 fn certificate(entries: Vec<Entry>) -> Result<Vec<u8>> {
     let mut certs = Vec::new();
     let mut key = None;
@@ -270,7 +286,8 @@ fn certificate(entries: Vec<Entry>) -> Result<Vec<u8>> {
     }
 }
 
-/// The file's public key: its one `PUBLIC KEY`, else the public half of its one private key.
+/// Returns the file's public key: its one `PUBLIC KEY`, or else the public half of its one private
+/// key.
 fn public_key(entries: Vec<Entry>) -> Result<Vec<u8>> {
     let (mut spkis, mut keys) = (Vec::new(), Vec::new());
     for e in entries {
@@ -288,8 +305,8 @@ fn public_key(entries: Vec<Entry>) -> Result<Vec<u8>> {
     }
 }
 
-/// The key `spki` (canonical) is of `object`'s type: RSA, or EC or Edwards on its curve; and
-/// as many bits as `modulusBits` says.
+/// Checks that the key `spki` (canonical) is of `object`'s type: RSA, or EC or Edwards on the
+/// object's curve. An RSA key must also have as many bits as `modulusBits` says.
 fn check_type(spki: &[u8], object: &ObjectCfg) -> Result<()> {
     let curve = id::KeyAlg::of_spki(spki).map(id::KeyAlg::curve).map_err(|e| bad(format!("its key: {e}")))?;
     let fits = match (object.key_type, curve) {
@@ -312,8 +329,8 @@ fn check_type(spki: &[u8], object: &ObjectCfg) -> Result<()> {
     Err(bad(format!("it holds {what}, and the object is {object}")))
 }
 
-/// Everything a PEM or DER file holds, private keys normalised to PKCS#8; `curve` is the
-/// object's, for a SEC1 key that names none.
+/// Returns everything that a PEM or DER file holds, with private keys normalised to PKCS#8.
+/// `curve` is the object's curve, for a SEC1 key that names none.
 fn entries(bytes: &[u8], pass: Option<&str>, curve: Option<Curve>) -> Result<Vec<Entry>> {
     match pem_text(bytes) {
         Some(text) => pem_entries(text, pass, curve),
@@ -321,9 +338,9 @@ fn entries(bytes: &[u8], pass: Option<&str>, curve: Option<Curve>) -> Result<Vec
     }
 }
 
-/// The blocks of a PEM file, each with its label, wherever on its line a BEGIN starts; text
-/// between blocks (OpenSSL's `Bag Attributes`) is skipped. What [`holds_private_key`] and
-/// [`pem_entries`] both read.
+/// Returns the blocks of a PEM file, each with its label. A block is found wherever its BEGIN
+/// marker starts on a line, and the text between blocks (such as OpenSSL's `Bag Attributes`) is
+/// skipped. Both [`holds_private_key`] and [`pem_entries`] read the file through this function.
 pub(crate) fn pem_blocks(text: &str) -> Result<Vec<(&str, &str)>> {
     let mut out = Vec::new();
     let mut rest = text;
@@ -341,7 +358,7 @@ pub(crate) fn pem_blocks(text: &str) -> Result<Vec<(&str, &str)>> {
     Ok(out)
 }
 
-/// The blocks of a PEM file ([`pem_blocks`]), decoded by their labels.
+/// Decodes the blocks of a PEM file ([`pem_blocks`]) by their labels.
 fn pem_entries(text: &str, pass: Option<&str>, curve: Option<Curve>) -> Result<Vec<Entry>> {
     let mut out = Vec::new();
     for (label, block) in pem_blocks(text)? {
@@ -375,8 +392,8 @@ fn pem_entries(text: &str, pass: Option<&str>, curve: Option<Curve>) -> Result<V
     Ok(out)
 }
 
-/// What a DER file holds: a certificate, a public key, a private key in any of its formats,
-/// or a PKCS#12 (its key and certificates).
+/// Returns what a DER file holds: a certificate, a public key, a private key in any of its
+/// formats, or the key and the certificates of a PKCS#12 file.
 fn der_entry(der: &[u8], pass: Option<&str>, curve: Option<Curve>) -> Result<Vec<Entry>> {
     match der_kind(der) {
         Some(DerKind::Certificate) => Ok(vec![Entry::Certificate(der.to_vec())]),
@@ -398,8 +415,8 @@ fn der_entry(der: &[u8], pass: Option<&str>, curve: Option<Curve>) -> Result<Vec
     }
 }
 
-/// What a DER file is, told by shape in the order [`der_entry`] decodes it; what
-/// [`holds_private_key`] reads too.
+/// The kind of a DER file, recognised by its shape in the order in which [`der_entry`] decodes
+/// it. [`holds_private_key`] also uses it.
 #[derive(Clone, Copy)]
 enum DerKind {
     Certificate,
@@ -440,8 +457,8 @@ fn der_kind(der: &[u8]) -> Option<DerKind> {
     }
 }
 
-/// The private-key structures told apart by shape: PKCS#1 is nine INTEGERs, the first 0; SEC1
-/// is INTEGER 1 and an OCTET STRING, then optional tagged fields.
+/// The private-key structures that are recognised by their shape. PKCS#1 is nine INTEGERs, of which
+/// the first is 0. SEC1 is INTEGER 1 and an OCTET STRING, followed by optional tagged fields.
 enum Structure {
     Pkcs1,
     Sec1,
@@ -459,19 +476,19 @@ fn structure(der: &[u8]) -> Option<Structure> {
     }
 }
 
-/// A PKCS#8 `PrivateKeyInfo`, checked to be one.
+/// Returns a PKCS#8 `PrivateKeyInfo` after it checks that `der` is one.
 fn pkcs8(der: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     pkcs8::PrivateKeyInfoRef::try_from(der).map_err(|e| bad(format!("its PRIVATE KEY: {e}")))?;
     Ok(Zeroizing::new(der.to_vec()))
 }
 
-/// An `EncryptedPrivateKeyInfo` opened under `pass`.
+/// Decrypts an `EncryptedPrivateKeyInfo` with `pass`.
 fn encrypted(der: &[u8], pass: Option<&str>) -> Result<Zeroizing<Vec<u8>>> {
     let pass = pass.ok_or_else(|| bad("an encrypted private key, and no passphrase is given for it"))?;
     file::decrypt_pkcs8(der, pass)
 }
 
-/// A certificate's DER, checked to be one.
+/// Returns a certificate's DER after it checks that `der` is a certificate.
 fn certificate_der(der: &[u8]) -> Result<Vec<u8>> {
     x509_cert::Certificate::from_der(der).map_err(|e| bad(format!("its CERTIFICATE: {e}")))?;
     Ok(der.to_vec())
@@ -483,7 +500,8 @@ const RSA_ENCRYPTION: [u8; 11] = [0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d
 const EC_PUBLIC_KEY: [u8; 9] = [0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
 const NULL: [u8; 2] = [0x05, 0x00];
 
-/// A PKCS#1 `RSAPrivateKey` as PKCS#8 (RFC 5208): `rsaEncryption`, NULL parameters.
+/// Converts a PKCS#1 `RSAPrivateKey` to PKCS#8 (RFC 5208), with the algorithm `rsaEncryption`
+/// and NULL parameters.
 fn from_pkcs1(der: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     if !matches!(structure(der), Some(Structure::Pkcs1)) {
         return Err(bad("its RSA PRIVATE KEY is not a two-prime PKCS#1 key"));
@@ -491,8 +509,9 @@ fn from_pkcs1(der: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     Ok(wrap(&[&RSA_ENCRYPTION, &NULL], der))
 }
 
-/// A SEC1 `ECPrivateKey` as PKCS#8 (RFC 5915): `id-ecPublicKey` with the curve it names, else
-/// with `object_curve`, the object's (a key of another curve is then refused by its type check).
+/// Converts a SEC1 `ECPrivateKey` to PKCS#8 (RFC 5915), with the algorithm `id-ecPublicKey` and
+/// the curve that the key names. When the key names no curve, it uses `object_curve`, the
+/// object's curve; a key on another curve is then refused by the type check.
 fn from_sec1(der: &[u8], object_curve: Option<Curve>) -> Result<Zeroizing<Vec<u8>>> {
     let fields = Vec::<AnyRef>::from_der(der).map_err(|e| bad(format!("its EC PRIVATE KEY: {e}")))?;
     let named = fields.iter().skip(2).find(|f| f.tag() == sec1_parameters()).map(|f| f.value());
@@ -512,8 +531,9 @@ fn sec1_parameters() -> der::Tag {
     der::Tag::ContextSpecific { constructed: true, number: der::TagNumber(0) }
 }
 
-/// `PrivateKeyInfo { version 0, algorithm { parts }, privateKey OCTET STRING { key } }`, built
-/// in buffers sized up front so the key is never copied into one left unzeroized.
+/// Builds `PrivateKeyInfo { version 0, algorithm { parts }, privateKey OCTET STRING { key } }`.
+/// The buffers are sized in advance, so that a buffer never grows and leaves an unzeroized copy of
+/// the key behind.
 fn wrap(algorithm: &[&[u8]], key: &[u8]) -> Zeroizing<Vec<u8>> {
     let alg: Vec<u8> = algorithm.concat();
     let mut body = Zeroizing::new(Vec::with_capacity(key.len() + alg.len() + 32));
@@ -525,7 +545,7 @@ fn wrap(algorithm: &[&[u8]], key: &[u8]) -> Zeroizing<Vec<u8>> {
     out
 }
 
-/// One DER tag-length-value onto `out`.
+/// Appends one DER tag-length-value to `out`.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "a short length is below 0x80, and a long one's count of bytes is at most a usize's 8"
@@ -572,8 +592,9 @@ mod tests {
         }
     }
 
-    /// One P-256 key in each format OpenSSL writes it in: every one reads as the same key, its
-    /// format recorded, and the PKCS#8 it is normalised to is one the host path parses.
+    /// Checks one P-256 key in each format in which OpenSSL writes it. Every file reads as the same
+    /// key with its format recorded, and the host path parses the PKCS#8 to which the key is
+    /// normalised.
     #[test]
     fn every_format_of_a_key_reads_as_that_key() {
         let want = id::spki_canonical(&fixture("p256.pub.der")).unwrap();
@@ -607,8 +628,9 @@ mod tests {
         assert_eq!(read(&fixture("ed25519.pkcs8.pem"), &ed, false, None, None).unwrap().method, Method::Pkcs8);
     }
 
-    /// A PKCS#8 whose key does not decode says why, beside the type it was read as (review
-    /// keyfile.rs F2): an RSA key that is no RSA key is not only "of another type".
+    /// Checks that the refusal of a PKCS#8 whose key does not decode gives the reason next to the
+    /// type as which the key was read (review keyfile.rs F2). A key that claims RSA but is not a
+    /// valid RSA key is reported with the decoding error, not only as a key "of another type".
     #[test]
     fn a_key_that_does_not_decode_says_why() {
         // PrivateKeyInfo { version 0, rsaEncryption, OCTET STRING 01 02 03 }.
@@ -622,7 +644,8 @@ mod tests {
         assert!(said.contains("RSA private key"), "{said}");
     }
 
-    /// A SEC1 key that names no curve takes the object's: the key must then be on it.
+    /// Checks that a SEC1 key that names no curve takes the object's curve, and that the key must
+    /// then be on that curve.
     #[test]
     fn a_sec1_key_without_parameters_takes_the_objects_curve() {
         use der::Encode as _;
@@ -639,8 +662,9 @@ mod tests {
         assert!(refusal(read(&bare, &rsa, false, None, None)).contains("names no curve"));
     }
 
-    /// A certificate object takes its file's one certificate, or the one for the key beside it;
-    /// a public key object its `PUBLIC KEY`, or the public half of the key beside it.
+    /// Checks that a certificate object takes its file's one certificate, or the certificate for
+    /// the key next to it. A public key object takes its file's `PUBLIC KEY`, or the public half of
+    /// the key next to it.
     #[test]
     fn certificates_and_public_keys_are_taken_as_the_file_says() {
         let cert = ObjectCfg { certificate_type: Some("CKC_X_509".into()), ..object(Class::Certificate, None, None) };
@@ -664,8 +688,8 @@ mod tests {
         }
     }
 
-    /// What camigrate does not read is refused (17) by name, with the command that converts it
-    /// where there is one, before any key in it is used.
+    /// Checks that a file that camigrate does not read is refused (17) with the name of its format,
+    /// and with the command that converts it when there is one, before any key in it is used.
     #[test]
     fn files_of_another_shape_are_refused_with_the_way_out() {
         let p256 = p256();
@@ -674,8 +698,8 @@ mod tests {
         let cases: [(&[u8], Option<&str>, &str); 8] = [
             (&fixture("p256.legacy-enc.pem"), PASS, "openssl pkcs8 -topk8"),
             (&fixture("p256.legacy.p12"), PASS, "openssl pkcs12 -in old.p12 -legacy"),
-            // Its key in a plain keyBag: said as such, not as a file without a key (review
-            // 2026-11-23 C-22).
+            // A PKCS#12 file whose key is in a plain keyBag is reported as such, not as a file
+            // without a key (review 2026-11-23 C-22).
             (&fixture("p256.nokeypbe.p12"), PASS, "whose key is not encrypted (a keyBag, `-keypbe NONE`)"),
             (&fixture("p256.enc.pem"), None, "no passphrase is given"),
             (&fixture("p256.enc.pem"), Some("other"), "does not open under this passphrase"),
@@ -698,8 +722,8 @@ mod tests {
         assert!(refusal(read(&two, &p256, false, None, None)).contains("more than one private key"));
     }
 
-    /// A file holding a private key, in any format, is told from one that does not before
-    /// anything in it is decoded.
+    /// Checks that a file that holds a private key, in any format, is told apart from a file that
+    /// does not, before anything in it is decoded.
     #[test]
     fn private_keys_are_seen_before_they_are_decoded() {
         for file in [
@@ -719,11 +743,12 @@ mod tests {
         }
     }
 
-    /// The gate and the reader never disagree (camigrate keyfile.rs F1): whatever the reader
-    /// decodes a private key from, the gate says holds one — for every fixture, and for each
-    /// mangled the ways files arrive: a BEGIN after other text on its line, indented, with CRLF
-    /// line ends, behind a certificate, unterminated. A key the gate missed was decoded without
-    /// `--allow-host-plaintext`.
+    /// Checks that the gate (`holds_private_key`) and the reader never disagree (camigrate
+    /// keyfile.rs F1). For every file from which the reader decodes a private key, the gate must
+    /// say that the file holds one. This is checked for every fixture, and for each fixture changed
+    /// in the ways in which real files arrive: a BEGIN after other text on its line, an indented
+    /// BEGIN, CRLF line ends, a certificate before the key, and a block without its END line. A key
+    /// that the gate missed would be decoded without `--allow-host-plaintext`.
     #[test]
     fn the_gate_sees_every_key_the_reader_decodes() {
         let files = [
@@ -771,9 +796,10 @@ mod tests {
         assert!(decodes_a_key(pasted.as_bytes()) && holds_private_key(pasted.as_bytes()));
     }
 
-    /// A secret key is its value: the file's bytes, or hex or base64 of them however they wrap,
-    /// told by the object's `valueLen` or said by `migrate.encoding`; text without either is
-    /// refused, never guessed. A data object is its file's bytes as they are.
+    /// Checks that a secret key is its value: the file's bytes, or hex or base64 text of those
+    /// bytes, however the lines wrap. The object's `valueLen` tells the forms apart, or
+    /// `migrate.encoding` names the form. Text without either is refused, never guessed. A data
+    /// object is its file's bytes as they are.
     #[test]
     fn secret_keys_are_their_value_and_data_objects_their_bytes() {
         let aes = ObjectCfg { value_len: Some(32), ..object(Class::SecretKey, Some(KeyType::Aes), None) };
@@ -797,11 +823,13 @@ mod tests {
             assert_eq!(value(text, &aes, None).unwrap().as_slice(), key.as_slice(), "{what}");
             assert_eq!(value(text, &aes, Some(*e)).unwrap().as_slice(), key.as_slice(), "{what}");
         }
-        // Exactly valueLen bytes are the value, whitespace bytes and hex digits among them.
+        // A file of exactly valueLen bytes is the value itself, even when some of its bytes are
+        // whitespace or hex digits.
         let ascii = b"0123456789abcdef0123456789abcde\n";
         assert_eq!(value(ascii, &aes, None).unwrap().as_slice(), ascii);
         assert_eq!(value(ascii, &aes, Some(Encoding::Raw)).unwrap().as_slice(), ascii);
-        // Hex digits are base64 characters too: read as base64, they spell another length.
+        // Hex digits are also base64 characters, and when they are read as base64, they spell
+        // another length.
         assert!(refusal(read(&hex, &aes, false, None, Some(Encoding::Base64))).contains("48 bytes of base64"));
         assert!(refusal(read(&key, &aes, false, None, Some(Encoding::Base64))).contains("not base64 text"));
         assert!(refusal(read(&key, &aes, false, None, Some(Encoding::Hex))).contains("not hex text"));
@@ -813,7 +841,8 @@ mod tests {
         assert!(refusal(read(&[], &aes, false, None, None)).contains("empty"));
         assert!(refusal(read(b"\n", &aes, false, None, Some(Encoding::Hex))).contains("no value"));
 
-        // Without valueLen the length decides nothing, so encoding says it (load requires one).
+        // Without valueLen, the length decides nothing, so the encoding must name the form
+        // (loading keys.toml requires one of the two).
         let any = object(Class::SecretKey, Some(KeyType::GenericSecret), None);
         assert!(refusal(read(&key, &any, false, None, None)).contains("neither the key's valueLen"));
         assert_eq!(value(&key, &any, Some(Encoding::Raw)).unwrap().as_slice(), key.as_slice());

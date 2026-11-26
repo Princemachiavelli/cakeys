@@ -1,9 +1,10 @@
-//! PKCS#11 token layer over `cryptoki`. Transparent: PKCS#11 names in, PKCS#11 calls out.
-//! Module-specific behaviour goes through the selected [`Provider`].
+//! The PKCS#11 token layer over `cryptoki`. The layer is transparent: it takes PKCS#11 names as
+//! input and makes the PKCS#11 calls with them. Behaviour that is specific to one module goes
+//! through the selected [`Provider`].
 
 use crate::provider::{
-    AttestCtx, AttestationCap, Attested, Create, Declared, Destroy, Generation, Half, Provider, SessionKey, Template,
-    Topic, keygen_mechanism,
+    AttestCtx, AttestationCap, Attested, Checked, Create, Declared, Destroy, Generation, Half, Provider, SessionKey,
+    Template, Topic, keygen_mechanism,
 };
 use crate::registry::Registry;
 use crate::templates;
@@ -13,7 +14,7 @@ use cakeys_core::config::{AttrValue, Binding, Locator, Mode, Object, ObjectCfg, 
 pub use cakeys_core::config::{Immutables, ModuleInfo, TokenInfo};
 use cakeys_core::id::{self, BlockCipher, Commit, Curve, HmacHash, Scheme};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::error::{Error as CkError, Rv, RvError};
 use cryptoki::mechanism::eddsa::{EddsaParams, EddsaSignatureScheme};
@@ -43,6 +44,7 @@ mod uri;
 pub use generate::{BY_NAME, CreateNote, PUBLIC_MADE_PRIVATE, with_public_default_dropped};
 pub use host::accepts_public_keys;
 pub use identity::commit_mechanism;
+pub use library::unpadded;
 use library::{Library, Logins, library, module_info};
 pub use login::has_admin;
 use login::{Pin, PinState, read_pin, session};
@@ -52,87 +54,108 @@ pub use possession::{
     template_refusal,
 };
 pub use public::{public_key_attrs, public_object_attrs};
-pub use rv::{SO_LOGIN, read_attribute, rv_is, rv_name, rv_of, rv_value, rv_value_name};
+pub use rv::{
+    SO_LOGIN, device_failed, device_failed_rv, read_attribute, refused_unless_device, rv_is, rv_name, rv_of, rv_value,
+    rv_value_name,
+};
 use rv::{ck, if_readable};
 use types::managed_class;
 pub use types::{class_of, hmac_key_gen, key_type_of, secret_key_gen};
 use uri::pct_all;
 pub use uri::{PinRef, locator_attrs, pin_ref, provider_pem, with_query};
 
-/// The session a verb opens (M1, docs/archive/REVIEW-2026-11-11.md): read-only for the verbs that only
-/// read — a write-protected token (`CKF_WRITE_PROTECTED`) refuses read-write sessions, and the
-/// session objects reading needs (a key-wrap copy, an ECDH secret) are allowed in read-only
-/// ones — read-write only to create or destroy.
+/// The kind of session that a verb opens (M1, docs/archive/REVIEW-2026-11-11.md). The verbs that
+/// only read open a read-only session, because a write-protected token (`CKF_WRITE_PROTECTED`)
+/// refuses read-write sessions, and because the session objects that a read needs (a key-wrap
+/// copy, an ECDH secret) are allowed in a read-only session. A verb opens a read-write session
+/// only to create or destroy objects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
-    /// A read-only session: the verbs that only read.
+    /// A read-only session, for the verbs that only read.
     Read,
     /// A read-write session, to create or destroy objects.
     Write,
-    /// Reads, and makes session objects (a key-wrap copy, a KEK): read-write where the token
-    /// allows it, since AWS `CloudHSM` refuses even a session object in a read-only session
-    /// (`CKR_SESSION_READ_ONLY` \[run\]); read-only on a write-protected token.
+    /// A session that reads and also makes session objects (a key-wrap copy, a KEK). It is
+    /// read-write where the token allows it, because AWS `CloudHSM` refuses even a session object
+    /// in a read-only session (`CKR_SESSION_READ_ONLY` \[run\]). It is read-only on a
+    /// write-protected token.
     Scratch,
+    /// The dry run of a write (`create --dry-run`, `delete --dry-run`, and camigrate's dry run
+    /// into a token). The session is read-only, so the dry run writes nothing. The dry run opens
+    /// only a token that [`Access::Write`] would open, so it refuses a write-protected token as
+    /// the real run does (exit 15; review 2026-11-24 L4a-3: the dry runs once opened with
+    /// [`Access::Read`] and passed such a token).
+    DryWrite,
 }
 
-/// An open token: its module and the session cakeys works in, with the provider that handles
-/// the module and the mechanisms it may rely on.
+/// An open token: its module and the session that cakeys works in, with the provider that
+/// handles the module and the mechanisms that cakeys may rely on.
 pub struct Token {
     /// The token's name in keys.toml.
     pub name: String,
-    /// The label the token reports (`CK_TOKEN_INFO.label`).
+    /// The label that the token reports (`CK_TOKEN_INFO.label`).
     pub(crate) label: String,
-    /// What the module reports of itself, and the file loaded.
+    /// What the module reports about itself, and the file that was loaded.
     pub module: ModuleInfo,
-    /// What the token reports of itself.
+    /// What the token reports about itself.
     pub token: TokenInfo,
-    /// Usable mechanisms: advertised ones, minus what the resolved capability profiles
-    /// subtract (the module's advertised-but-broken rows and every layer's), else minus
-    /// what the provider's override drops.
+    /// The usable mechanisms (`usable_mechanisms`): the mechanisms that the module advertises,
+    /// minus the mechanisms that the resolved capability profiles subtract (the module profile's
+    /// rows for mechanisms that are advertised but broken, and the subtractions of every layer),
+    /// or else minus the mechanisms that the provider's override drops.
     pub mechanisms: Vec<MechanismType>,
-    /// What `C_GetMechanismList` returned, as the module returned it: what
-    /// [`Token::unprofiled`] filters anew, and [`Token::advertised`] names.
+    /// The list that `C_GetMechanismList` returned, unchanged. [`Token::unprofiled`] filters it
+    /// again, and [`Token::advertised`] returns its names.
     listed: Vec<MechanismType>,
-    /// The RSA key-pair generation's key-size range as `C_GetMechanismInfo` reports it, when
-    /// the module advertises `CKM_RSA_PKCS_KEY_PAIR_GEN`: the probe's reported bounds.
+    /// The range of key sizes for RSA key-pair generation, as `C_GetMechanismInfo` reports it,
+    /// when the module advertises `CKM_RSA_PKCS_KEY_PAIR_GEN`. The probe reports these bounds.
     pub rsa_bits: Option<(u64, u64)>,
-    /// The provider handling the module.
+    /// The provider that handles the module.
     pub provider: Arc<dyn Provider>,
-    /// The resolved capability profiles (docs/CAPROBE.md): the module profile and the
-    /// delta layers between cakeys and it, with the notes resolution noticed on the way.
+    /// The resolved capability profiles (docs/CAPROBE.md): the module profile and the delta
+    /// layers between cakeys and the module profile, with the notes that the resolution
+    /// collected.
     pub profiles: crate::resolution::Resolved,
     session: Session,
-    /// The slot holding the token, for a second session ([`Token::extra_session`]).
+    /// The slot that holds the token, for a second session ([`Token::extra_session`]).
     slot: cryptoki::slot::Slot,
-    /// Logged in as the user: private objects are visible. Otherwise a public session.
+    /// Whether the session is logged in as the user, so that private objects are visible. When
+    /// it is `false`, the session is a public session.
     pub logged_in: bool,
-    /// The token's config, for provider hooks that need more than the module (the native TPM
-    /// attestation path's `options`: `tcti`, `tpm2Store` and `akHandle`).
+    /// The token's configuration, for provider hooks that need more than the module, such as
+    /// the `options` of the native TPM attestation path (`tcti`, `tpm2Store` and `akHandle`).
     pub cfg: TokenCfg,
-    /// The PIN counters at open, checked before every login (M2).
+    /// The PIN counters as they were when the token was opened. They are checked before every
+    /// login (M2).
     pins: PinState,
-    /// An SO login of this token was refused: the counters read at open no longer say what is
-    /// left, so the credential is not tried again (review 2026-11-23 B-11).
+    /// Whether an SO login on this token was refused. After a refusal, the counters read at the
+    /// open no longer show how many retries are left, so the credential is not tried again
+    /// (review 2026-11-23 B-11).
     so_refused: std::sync::atomic::AtomicBool,
-    /// The user credential, already read for login, kept for what needs it again: the
-    /// context-specific login of a `CKA_ALWAYS_AUTHENTICATE` proof, the TPM attestation path
-    /// (it unseals the token's wrapping key with it) and logging the user back in after an SO
-    /// step (`soCredentialFile`/`soCredentialEnv`). Zeroized on drop.
+    /// Whether a step runs in the SO session now ([`Token::as_so`]). A nested step then runs in
+    /// the same SO session, without another login.
+    in_so: std::sync::atomic::AtomicBool,
+    /// The user credential, which was already read for the login. It is kept for the steps that
+    /// need it again: the context-specific login of a `CKA_ALWAYS_AUTHENTICATE` proof, the TPM
+    /// attestation path (which unseals the token's wrapping key with it), and the user's login
+    /// again after an SO step (`soCredentialFile` or `soCredentialEnv`). It is zeroized on drop.
     pin: Option<Zeroizing<String>>,
-    /// When an attestation chain's certificates must be valid, as the open named it
-    /// ([`crate::ChainTime`]).
+    /// The time at which the certificates of an attestation chain must be valid, as the caller
+    /// of the open specified it ([`crate::ChainTime`]).
     chain_time: crate::ChainTime,
-    /// Last: fields drop in declaration order, so the session is closed before the module is
-    /// finalized.
+    /// This field is last because fields are dropped in declaration order, so the session is
+    /// closed before the module is finalized.
     library: Arc<Library>,
 }
 
-/// The mechanisms a token may rely on: what the module lists, less what the resolved stack
-/// subtracts (the module profile's advertised-but-broken rows and every layer's), plus what it
-/// adds although the module does not list it (a provider's stand-in the probe found working,
-/// `Provider::stand_in`). Every layer subtracts, the binding's included where no module profile
-/// is resolved (token/mod.rs F7), and by the one spelling of a mechanism's name
-/// ([`policy::mechanism_namer`]): one cryptoki does not name is named by the baseline.
+/// Returns the mechanisms that a token may be relied on for. These are the mechanisms that the
+/// module lists, minus the mechanisms that the resolved profile stack subtracts (the module
+/// profile's rows for mechanisms that are advertised but broken, and the subtractions of every
+/// layer). The stack can also add a mechanism that the module does not list: a provider's
+/// stand-in that the probe found working (`Provider::stand_in`). Every layer subtracts, including
+/// the binding layer when no module profile is resolved (token/mod.rs F7). A subtraction matches a
+/// mechanism by its one canonical name ([`policy::mechanism_namer`]), and a mechanism that
+/// cryptoki does not name gets its name from the baseline.
 fn usable_mechanisms(
     advertised: &[MechanismType],
     profiles: &crate::resolution::Resolved,
@@ -159,23 +182,25 @@ fn usable_mechanisms(
     Ok(usable)
 }
 
-/// The `CKM_*` names of `mechanisms`, sorted: the form the lock, a profile and `caps` list them in.
+/// Returns the `CKM_*` names of `mechanisms`, sorted, which is the form in which the lock, a
+/// profile and `caps` list them.
 fn sorted_names(mechanisms: &[MechanismType]) -> Vec<String> {
     let mut names: Vec<String> = mechanisms.iter().map(ToString::to_string).collect();
     names.sort();
     names
 }
 
-/// A session object cakeys made for one step (a derived secret, a key-encryption key, a
-/// wrap-rebind copy), destroyed when this is dropped, whatever the step returned. A destroy
-/// that fails is not an error: the object goes with its session.
+/// A session object that cakeys made for one step (a derived secret, a key-encryption key, or a
+/// wrap-rebind copy). The object is destroyed when this value is dropped, whatever the step
+/// returned. A failed destroy is not an error, because the module destroys a session object when
+/// its session closes.
 pub struct SessionObject<'a> {
     session: &'a Session,
     handle: ObjectHandle,
 }
 
 impl<'a> SessionObject<'a> {
-    /// `handle`, an object of `session`, to destroy on drop.
+    /// Wraps `handle`, an object of `session`, so that the object is destroyed on drop.
     #[must_use]
     pub fn new(session: &'a Session, handle: ObjectHandle) -> SessionObject<'a> {
         SessionObject { session, handle }
@@ -197,36 +222,41 @@ impl Drop for SessionObject<'_> {
 /// What [`Token::occupied`] found under a locator.
 #[derive(Debug, Default)]
 pub struct Occupied {
-    /// Objects a creation there would collide with.
+    /// The number of objects that a creation there would collide with.
     pub colliding: usize,
-    /// A public key object holding the key's public key, to reuse rather than create.
+    /// A public key object that holds the key's public key. The import reuses it instead of
+    /// creating another one.
     pub public_half: Option<ObjectHandle>,
 }
 
 impl Token {
-    /// Put what the lock recorded of this token (`observed`) over its module profile, as the
-    /// static gate does ([`crate::gate::stack`]): the answers its own runs demonstrated decide
-    /// before what a shipped profile says of its kind (ISSUES.md B18). Only an observation of
-    /// the module and token this open found: answers recorded on another module or token say
-    /// nothing of this one.
+    /// Places what the lock recorded about this token (`observed`) above its module profile, as
+    /// the static gate does ([`crate::gate::stack`]). The answers that this token's own runs
+    /// demonstrated take precedence over what a shipped profile says about this kind of module
+    /// (ISSUES.md B18). The function applies only an observation of the same module and token
+    /// that this open found, because answers recorded on another module or token say nothing
+    /// about this one.
     pub fn with_answers(&mut self, observed: &cakeys_core::config::Observation) {
         if observed.module.as_ref() == Some(&self.module) && observed.token.as_ref() == Some(&self.token) {
             self.profiles.with_answers(&self.name, observed);
         }
     }
 
-    /// Open the token named `name`: load the module, find the slot whose token label matches,
-    /// read its capabilities, and log in as the user when a PIN is configured.
+    /// Opens the token named `name`. It loads the module, finds the slot whose token label
+    /// matches, reads the token's capabilities, and logs in as the user when a PIN is configured.
     ///
-    /// Tokens of one module open at once share its library, which the first open initializes
-    /// and dropping the last of them (or a failed open, when it was the only one) finalizes.
+    /// Tokens of one module that are open at the same time share the module's library. The first
+    /// open initializes the library, and the drop of the last token (or a failed open, when it
+    /// was the only one) finalizes it.
     ///
     /// # Errors
     ///
-    /// `Validation` for a token with no module, an unknown provider, options its provider
-    /// refuses, or an admin credential on a provider that creates as the user; `Ambiguous`
-    /// when several slots carry the label; `Unavailable` when no slot does, the module
-    /// cannot be loaded, any `C_*` call fails, or the PIN (env var or file) cannot be read.
+    /// - `Validation` for a token with no module, an unknown provider, options that the provider
+    ///   refuses, or an admin credential on a provider that creates objects as the user.
+    /// - `Ambiguous` when several slots carry the label.
+    /// - `Unavailable` when no slot carries the label, when the module cannot be loaded, when any
+    ///   `C_*` call fails, or when the PIN (from an environment variable or a file) cannot be
+    ///   read.
     pub fn open(
         name: &str,
         cfg: &TokenCfg,
@@ -242,8 +272,8 @@ impl Token {
         .ok_or_else(|| {
             KmError::Validation(format!("token '{name}' has no module (set module, or pass --module)").into())
         })?;
-        // From here every return releases the library (finalized with its last token), a failed
-        // open too.
+        // From here on, every return releases the library, including the return of a failed
+        // open. The library is finalized with its last token.
         let module_guard = library(&module)?;
         let ctx = &module_guard.0;
         let module = module_info(ctx, module)?;
@@ -251,10 +281,11 @@ impl Token {
         provider.check_options(name, &cfg.options)?;
         let FoundSlot { slot, token, pins, write_protected } =
             find_slot(ctx, &cfg.token_label, cfg.token_serial.as_deref(), &module.path)?;
-        // The capability profiles (docs/CAPROBE.md): the module profile follows the
-        // provider (D9), the binding layer is always in the stack, a forwarder the module
-        // names and the config's extras with it. What the stack subtracts filters the
-        // advertisement; a token with no resolved profile keeps the provider's own filter.
+        // Resolve the capability profiles (docs/CAPROBE.md). The module profile follows the
+        // provider (D9). The binding layer is always in the stack, together with a forwarder that
+        // the module names and the extra profiles of the configuration. The mechanisms that the
+        // stack subtracts are removed from the advertised list, and a token with no resolved
+        // profile keeps the provider's own filter.
         let profiles = crate::resolution::resolve(cfg, &module, Some(&token), provider.name())
             .map_err(|e| KmError::Validation(e.into()))?;
         let advertised = ctx.get_mechanism_list(slot).map_err(ck("C_GetMechanismList"))?;
@@ -280,6 +311,7 @@ impl Token {
             cfg: cfg.clone(),
             pins,
             so_refused: std::sync::atomic::AtomicBool::new(false),
+            in_so: std::sync::atomic::AtomicBool::new(false),
             pin,
             provider,
             chain_time,
@@ -287,24 +319,28 @@ impl Token {
         })
     }
 
-    /// An `Unsupported` error carrying the return value `msg` carries, and no advice.
+    /// Returns an `Unsupported` error with `msg`, which keeps the return value that `msg`
+    /// carries, and with no advice from the provider.
     pub fn unsupported(&self, msg: impl Into<Msg>) -> KmError {
         KmError::Unsupported(msg.into())
     }
 
-    /// [`Self::unsupported`], with the provider's advice on `about` if it has any.
+    /// Works as [`Self::unsupported`], and adds the provider's advice on `about` if the provider
+    /// has any.
     pub fn unsupported_for(&self, about: Topic, msg: impl Into<Msg>) -> KmError {
-        let msg = msg.into();
-        let rv = msg.rv();
-        match self.provider.hint(about) {
-            Some(h) => KmError::Unsupported(format!("{msg} (hint for {}: {h})", self.provider.name()).into()),
-            None => KmError::Unsupported(msg),
-        }
-        .with_rv(rv)
+        self.provider.hinted(about, KmError::Unsupported(msg.into()))
     }
 
-    /// A warning for the run when the user PIN counters at open reported a failed login
-    /// (`CKF_USER_PIN_COUNT_LOW`) and cakeys logged in: retries remain, so it is no refusal.
+    /// Turns the module's failed call `e` into the error of [`Self::unsupported_for`], which
+    /// carries the call's return value. A failure of the device, the token or the session becomes
+    /// `Unavailable` instead ([`refused_unless_device`]).
+    pub fn refused_for(&self, about: Topic, e: &CkError, msg: impl Into<Msg>) -> KmError {
+        refused_unless_device(msg.into().with_rv(rv_of(e)), |m| self.unsupported_for(about, m))
+    }
+
+    /// Returns a warning for the run when the user PIN counters at the open reported a failed
+    /// login (`CKF_USER_PIN_COUNT_LOW`) and cakeys logged in. It is only a warning and not a
+    /// refusal, because retries remain.
     #[must_use]
     pub fn pin_warning(&self) -> Option<String> {
         (self.logged_in && self.pins.user.count_low).then(|| {
@@ -316,18 +352,19 @@ impl Token {
         })
     }
 
-    /// The session itself, for raw `C_*` calls: caprobe's probes, which exercise what the
-    /// module does beyond what the verbs ask of it (the verbs go through the methods above).
+    /// Returns the session itself, for raw `C_*` calls. caprobe's probes use it to test what the
+    /// module does beyond what the verbs ask of it. The verbs use the methods above instead.
     #[must_use]
     pub fn raw(&self) -> &Session {
         &self.session
     }
 
-    /// A second session on the token, for a step the module refuses in the verb's own: a
-    /// read-only verb's proof by deriving on tpm2-pkcs11, which keeps derived secrets as store
-    /// rows and so derives only in a read-write session \[run\]. Login state belongs to the
-    /// token, shared by every session of the process, and object handles are valid in all of
-    /// them (PKCS#11 base §5.6), so it needs no login and finds the same key.
+    /// Opens a second session on the token, for a step that the module refuses in the verb's own
+    /// session. An example is a proof by derivation for a read-only verb on tpm2-pkcs11, which
+    /// stores derived secrets as rows in its store and therefore derives only in a read-write
+    /// session \[run\]. The login state belongs to the token and is shared by every session of
+    /// the process, and object handles are valid in all of these sessions (PKCS#11 base §5.6).
+    /// The second session therefore needs no login, and it finds the same key.
     ///
     /// # Errors
     ///
@@ -335,7 +372,7 @@ impl Token {
     pub fn extra_session(&self, access: Access) -> Result<Session> {
         let ctx = &self.library.0;
         match access {
-            Access::Read => ctx.open_ro_session(self.slot).map_err(ck("C_OpenSession (read-only)")),
+            Access::Read | Access::DryWrite => ctx.open_ro_session(self.slot).map_err(ck("C_OpenSession (read-only)")),
             Access::Scratch if ctx.get_token_info(self.slot).is_ok_and(|i| i.write_protected()) => {
                 ctx.open_ro_session(self.slot).map_err(ck("C_OpenSession (read-only)"))
             }
@@ -343,29 +380,33 @@ impl Token {
         }
     }
 
-    /// Whether the token may be relied on for mechanism `m` (provider-filtered).
+    /// Returns whether the token may be relied on for mechanism `m`, after the filtering of
+    /// `mechanisms`.
     pub fn has(&self, m: MechanismType) -> bool {
         self.mechanisms.contains(&m)
     }
 
-    /// The mechanism to run for `m`: `m` itself where the module lists it, else the provider's
-    /// stand-in for it (`Provider::stand_in`: AWS `CloudHSM`'s Ed25519), else `m`.
+    /// Returns the mechanism to run for `m`. This is `m` itself when the module lists it.
+    /// Otherwise, it is the provider's stand-in for `m` (`Provider::stand_in`, for example AWS
+    /// `CloudHSM`'s Ed25519), or `m` when the provider has no stand-in.
     #[must_use]
     pub fn runnable<'a>(&self, m: Mechanism<'a>) -> Mechanism<'a> {
         if self.listed.contains(&m.mechanism_type()) { m } else { self.provider.stand_in(&m).unwrap_or(m) }
     }
 
-    /// The session key `key`'s template ([`templates::session`]), as the provider adjusts it.
+    /// Returns the template of the session key `key` ([`templates::session`]), as the provider
+    /// adjusts it.
     ///
     /// # Errors
     ///
     /// The provider's refusal.
     pub fn session_template(&self, key: SessionKey) -> Result<Vec<Attribute>> {
-        self.provider.adjusted(&Template::Session(key), templates::session(key))
+        self.provider.adjusted_session(templates::session(key))
     }
 
-    /// The key type of `h` as a spec-compliant module would report it: `CKA_KEY_TYPE`, repaired
-    /// by the provider from `CKA_EC_PARAMS` (`Provider::key_type`). `None`: the object has none.
+    /// Returns the key type of `h` as a module that follows the specification would report it.
+    /// The value is `CKA_KEY_TYPE`, which the provider corrects from `CKA_EC_PARAMS`
+    /// (`Provider::key_type`). Returns `None` when the object has no key type.
     ///
     /// # Errors
     ///
@@ -374,7 +415,8 @@ impl Token {
         self.key_type_by(|t| self.attr(h, t))
     }
 
-    /// [`Self::key_type`] where it can be read ([`if_readable`]).
+    /// Works as [`Self::key_type`], but returns `None` when the module refuses to read an
+    /// attribute ([`if_readable`]).
     fn key_type_if_readable(&self, h: ObjectHandle) -> Result<Option<KeyType>> {
         self.key_type_by(|t| self.attr_if_readable(h, t))
     }
@@ -391,25 +433,25 @@ impl Token {
         Ok(Some(self.provider.key_type(kt, params.as_deref())))
     }
 
-    /// The provider's attestation capability for `object`'s class, when the spec opted in:
-    /// `None` when this module attests nothing (or not this class).
+    /// Returns the provider's attestation capability for the class of `object`, for a spec that
+    /// opted in. Returns `None` when this module attests nothing, or nothing of this class.
     pub fn attestation_cap(&self, object: &ObjectCfg) -> Option<AttestationCap> {
         self.provider.attestation().filter(|cap| cap.classes.contains(&object.class))
     }
 
-    /// Compute the attestation commitment for `key` (§3.7 of docs/DESIGN.md) through the
-    /// provider: the module-exposed attestation certificate (PIV) or the native `TPM2_Certify`
-    /// path (tpm2-pkcs11), verified on the host. `spki` is the material SPKI the attestation
-    /// must name (`None` for secret keys), and `commitments` what a secret key's must be bound
-    /// to instead; `provision` lets the provider create the device state it attests with (only
-    /// `lock` sets it).
+    /// Computes the attestation for `key` through the provider (§3.7 of docs/DESIGN.md). The
+    /// provider uses the attestation certificate that the module exposes (PIV) or the native
+    /// `TPM2_Certify` path (tpm2-pkcs11), and the host verifies the result. `spki` is the material
+    /// SPKI that the attestation must name (`None` for a secret key). `commitments` holds what a
+    /// secret key's attestation must be bound to instead. `provision` allows the provider to
+    /// create the device state that it attests with, and only `lock` sets it.
     ///
     /// # Errors
     ///
-    /// Whatever the provider's attestation path cannot establish: `Unsupported` when the
-    /// provider attests no class like this, `Unavailable` when the token has none to give
-    /// (an imported key, a session that could not attest), `Conflict` when it names other
-    /// material than `spki` or `commitments`.
+    /// Every failure of the provider's attestation path: `Unsupported` when the provider attests
+    /// no class like this one, `Unavailable` when the token has no attestation to give (for an
+    /// imported key, or for a session that could not attest), and `Conflict` when the attestation
+    /// names material other than `spki` or `commitments`.
     pub fn attest(
         &self,
         key: ObjectHandle,
@@ -440,32 +482,35 @@ impl Token {
         (cap.attest)(&ctx)
     }
 
-    /// Every object of `class` under the locator.
+    /// Returns every object of `class` under the locator.
     ///
     /// # Errors
     ///
-    /// `Validation` when the locator names neither `CKA_LABEL` nor `CKA_ID` or its `CKA_ID`
-    /// is not hex; `Unavailable` when `C_FindObjects` fails.
+    /// `Validation` when the locator names neither `CKA_LABEL` nor `CKA_ID`, or when its `CKA_ID`
+    /// is not hex. `Unavailable` when `C_FindObjects` fails.
     pub fn find(&self, class: ObjectClass, loc: &Locator) -> Result<Vec<ObjectHandle>> {
         let mut template = vec![Attribute::Class(class)];
         template.extend(locator_attrs(loc)?);
         self.session.find_objects(&template).map_err(ck("C_FindObjects"))
     }
 
-    /// Every object under the locator, whatever its class (If-None-Match before generating: a key
-    /// made now belongs with nothing already there).
+    /// Returns every object under the locator, whatever its class. This is the If-None-Match
+    /// check before a generation, because a key that is generated now must not share its locator
+    /// with any object that is already there.
     ///
     /// # Errors
     ///
-    /// `Validation` for a locator naming neither `CKA_LABEL` nor `CKA_ID` (or a non-hex
-    /// `CKA_ID`); `Unavailable` when `C_FindObjects` fails.
+    /// `Validation` for a locator that names neither `CKA_LABEL` nor `CKA_ID`, or that has a
+    /// `CKA_ID` that is not hex. `Unavailable` when `C_FindObjects` fails.
     pub fn find_any(&self, loc: &Locator) -> Result<Vec<ObjectHandle>> {
         self.session.find_objects(&locator_attrs(loc)?).map_err(ck("C_FindObjects"))
     }
 
-    /// The objects the SO marked `CKA_TRUSTED` on this token (docs/CAMIGRATE.md D2, `enforced`): the
-    /// public key object holding `spki` (the transport key's trusted copy), and how many others
-    /// there are — an `enforced` move is only as narrow as the token's whole trusted set.
+    /// Looks up the objects that the SO marked `CKA_TRUSTED` on this token (docs/CAMIGRATE.md D2,
+    /// `enforced`). Returns the public key object that holds `spki` (the trusted copy of the
+    /// transport key) and the number of other trusted objects. The number matters because an
+    /// `enforced` move allows a wrap with any trusted key on the token, so the move is only as
+    /// restricted as the token's whole set of trusted objects.
     ///
     /// # Errors
     ///
@@ -484,14 +529,15 @@ impl Token {
         Ok((copy, others))
     }
 
-    /// Create the trusted copy of a transport key on this token (`camigrate transport
-    /// --trusted`): an RSA public token object of `modulus` and `exponent`, labelled `label`,
-    /// that may wrap, marked `CKA_TRUSTED` — which only the SO can set, and only at creation.
+    /// Creates the trusted copy of a transport key on this token (`camigrate transport
+    /// --trust-on`). The copy is an RSA public token object with `modulus`, `exponent` and the
+    /// label `label`. It may wrap, and it is marked `CKA_TRUSTED`, which only the SO can set, and
+    /// only at creation.
     ///
     /// # Errors
     ///
-    /// Whatever [`Self::as_so`] refuses; `Unsupported` when the module will not create it
-    /// trusted.
+    /// Every refusal of [`Self::as_so`]. `Unsupported` when the module does not create the object
+    /// with `CKA_TRUSTED`.
     pub fn create_trusted_copy(&self, modulus: Vec<u8>, exponent: Vec<u8>, label: &str) -> Result<ObjectHandle> {
         let template = self.provider.adjusted(
             &Template::TrustedCopy,
@@ -512,21 +558,23 @@ impl Token {
         self.as_so("marking the transport key trusted", || {
             self.session
                 .create_object(&template)
-                .map_err(|e| self.unsupported_for(Topic::Create, trusted_copy_refused(&self.name, &e)))
+                .map_err(|e| self.refused_for(Topic::Create, &e, trusted_copy_refused(&self.name, &e)))
         })
     }
 
-    /// If-None-Match before importing `object` under `loc`, per class: PKCS#11's convention puts a
-    /// key, its public key and its certificate under one `CKA_ID` (and often one `CKA_LABEL`), so
-    /// only what the creation would collide with counts — an object of its class, and for a
-    /// private key any public key object that does not hold `spki`. A public key object that
-    /// holds `spki` (`None`: not known yet, so none does) is no collision but the public half
-    /// to reuse; for a public key object it is the object itself, already there.
+    /// The If-None-Match check before an import of `object` under `loc`, which depends on the
+    /// class. The PKCS#11 convention puts a key, its public key and its certificate under one
+    /// `CKA_ID` (and often under one `CKA_LABEL`). So only the objects that the creation would
+    /// collide with count: an object of the same class and, for a private key, any public key
+    /// object that does not hold `spki`. A public key object that holds `spki` is not a
+    /// collision. It is the public half, which the import reuses; for the import of a public key
+    /// object, it is the object itself, which is already there. When `spki` is `None` (not known
+    /// yet), no public key object counts as holding it.
     ///
     /// # Errors
     ///
-    /// `Validation` for a locator naming neither `CKA_LABEL` nor `CKA_ID` (or a non-hex
-    /// `CKA_ID`); `Unavailable` when `C_FindObjects` fails.
+    /// `Validation` for a locator that names neither `CKA_LABEL` nor `CKA_ID`, or that has a
+    /// `CKA_ID` that is not hex. `Unavailable` when `C_FindObjects` fails.
     pub fn occupied(&self, object: &ObjectCfg, loc: &Locator, spki: Option<&[u8]>) -> Result<Occupied> {
         let class = class_of(object);
         let mut out = Occupied::default();
@@ -546,30 +594,35 @@ impl Token {
         Ok(out)
     }
 
-    /// Exactly-one lookup of the object named by the locator: the key (private or secret) or
-    /// certificate, or the public key object when adopting public-only.
+    /// Looks up the one object that the locator names: the key (private or secret) or the
+    /// certificate, or the public key object when the object is adopted with `publicOnly`.
+    /// Returns `None` when no object matches.
     ///
     /// # Errors
     ///
-    /// `Ambiguous` when several objects match the locator; whatever `find` refuses.
+    /// `Ambiguous` when several objects match the locator. Every error of `find`.
     pub fn find_key(&self, object: &ObjectCfg, loc: &Locator, public_only: bool) -> Result<Option<ObjectHandle>> {
         let class = if public_only { ObjectClass::PUBLIC_KEY } else { class_of(object) };
         let found = self.find(class, loc)?;
         match found.len() {
             0 => Ok(None),
             1 => Ok(Some(found[0])),
-            n => Err(KmError::Ambiguous(format!("{n} objects match locator {loc} on token '{}'", self.name).into())),
+            n => Err(KmError::Ambiguous(Reason::check(
+                Check::LocatorUnique,
+                format!("{n} objects match locator {loc} on token '{}'", self.name),
+            ))),
         }
     }
 
-    /// Consumers that select a key by `CKA_ID` (OpenSSH takes the first private key with the
-    /// certificate's or public key's ID) must find exactly this one: refuse when another private
-    /// key shares `h`'s `CKA_ID`. Only a logged-in session can see private keys; a public session
-    /// checks nothing (the lock records which it was).
+    /// Refuses when another private key shares the `CKA_ID` of `h`. A consumer that selects a key
+    /// by `CKA_ID` must find exactly this key; for example, OpenSSH takes the first private key
+    /// with the ID of the certificate or of the public key. Only a logged-in session can see
+    /// private keys, so a public session checks nothing, and the lock records which kind of
+    /// session it was.
     ///
     /// # Errors
     ///
-    /// `Ambiguous` (12) when another private key on the token shares the `CKA_ID`.
+    /// `Ambiguous` (exit 12) when another private key on the token shares the `CKA_ID`.
     pub fn check_unique_private_id(&self, h: ObjectHandle) -> Result<()> {
         if !self.logged_in {
             return Ok(());
@@ -583,25 +636,26 @@ impl Token {
             .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Id(id.clone())])
             .map_err(ck("C_FindObjects"))?;
         if keys.len() > 1 {
-            return Err(KmError::Ambiguous(
+            return Err(KmError::Ambiguous(Reason::check(
+                Check::CkaIdUnique,
                 format!(
                     "{} private keys on token '{}' share CKA_ID {}; a consumer selecting by ID may use another key",
                     keys.len(),
                     self.name,
                     pct_all(&id)
-                )
-                .into(),
-            ));
+                ),
+            )));
         }
         Ok(())
     }
 
-    /// The `CKA_ID` of the key `loc` finds, if it has a non-empty one (`None` too when nothing
-    /// is found: call it on an object a check has just verified).
+    /// Returns the `CKA_ID` of the key that `loc` finds, if the key has a non-empty one. It also
+    /// returns `None` when nothing is found, so call it only on an object that a check has just
+    /// verified.
     ///
     /// # Errors
     ///
-    /// As [`Token::find_key`], or when the module cannot read the attribute.
+    /// The errors of [`Token::find_key`], and an error when the module cannot read the attribute.
     pub fn key_id(&self, object: &ObjectCfg, loc: &Locator, public_only: bool) -> Result<Option<Vec<u8>>> {
         let Some(h) = self.find_key(object, loc, public_only)? else { return Ok(None) };
         Ok(match self.attr(h, AttributeType::Id)? {
@@ -614,19 +668,21 @@ impl Token {
         Ok(self.session.get_attributes(h, &[t]).map_err(ck("C_GetAttributeValue"))?.into_iter().next())
     }
 
-    /// `h`'s attribute `t` where it can be read ([`if_readable`]).
+    /// Returns the attribute `t` of `h`, or `None` when the module refuses to read it
+    /// ([`if_readable`]).
     fn attr_if_readable(&self, h: ObjectHandle, t: AttributeType) -> Result<Option<Attribute>> {
         if_readable(self.session.get_attributes(h, &[t]).map(|a| a.into_iter().next()))
     }
 }
 
-/// Why `token` would not create the trusted copy of a transport key: the module's refusal `e`,
-/// its return value kept for code to match on (Q3).
+/// Returns the message for the refusal `e` of `token` to create the trusted copy of a transport
+/// key. The message keeps the return value of `e`, so that code can match on it (Q3).
 fn trusted_copy_refused(token: &str, e: &CkError) -> Msg {
     Msg::from(format!("token '{token}' will not create a CKA_TRUSTED RSA public key: {e}")).with_rv(rv_of(e))
 }
 
-/// The one slot whose token is labelled `label`, with what `C_GetTokenInfo` says of it.
+/// The one slot whose token carries the requested label, with what `C_GetTokenInfo` reports
+/// about the token.
 struct FoundSlot {
     slot: cryptoki::slot::Slot,
     token: TokenInfo,
@@ -634,26 +690,30 @@ struct FoundSlot {
     write_protected: bool,
 }
 
-/// [`FoundSlot`] for `label`, and `serial` when given, among the module's slots with a token.
+/// Returns the token as `C_GetTokenInfo` describes it, with its fixed-width fields converted to
+/// text ([`unpadded`]). The lock records this value, and a module profile's match keys are
+/// compared with it.
+pub(crate) fn token_info(model: &str, serial: &str, firmware: String) -> TokenInfo {
+    TokenInfo { model: unpadded(model), serial: unpadded(serial), firmware }
+}
+
+/// Finds the [`FoundSlot`] whose token has the label `label` and, when `serial` is given, that
+/// serial number, among the module's slots that hold a token.
 ///
 /// # Errors
 ///
-/// `Ambiguous` when several match, naming their serials; `Unavailable` when none does or a
-/// `C_*` call fails.
+/// `Ambiguous` when several tokens match; the message names their serial numbers. `Unavailable`
+/// when no token matches or when a `C_*` call fails.
 fn find_slot(ctx: &Pkcs11, label: &str, serial: Option<&str>, module_path: &str) -> Result<FoundSlot> {
     let mut found: Vec<FoundSlot> = Vec::new();
     for slot in ctx.get_slots_with_token().map_err(ck("C_GetSlotList"))? {
         let info = ctx.get_token_info(slot).map_err(ck("C_GetTokenInfo"))?;
-        if info.label() != label || serial.is_some_and(|s| info.serial_number().trim() != s) {
+        if info.label() != label || serial.is_some_and(|s| unpadded(info.serial_number()) != s) {
             continue;
         }
         found.push(FoundSlot {
             slot,
-            token: TokenInfo {
-                model: info.model().trim().to_owned(),
-                serial: info.serial_number().trim().to_owned(),
-                firmware: info.firmware_version().to_string(),
-            },
+            token: token_info(info.model(), info.serial_number(), info.firmware_version().to_string()),
             pins: PinState {
                 user: Pin {
                     locked: info.user_pin_locked(),
@@ -676,13 +736,13 @@ fn find_slot(ctx: &Pkcs11, label: &str, serial: Option<&str>, module_path: &str)
     match found.len() {
         0 => Err(KmError::Unavailable(format!("{named} not present in {module_path}").into())),
         1 => Ok(found.remove(0)),
-        _ => Err(KmError::Ambiguous(
+        _ => Err(KmError::Ambiguous(Reason::check(
+            Check::TokenUnique,
             format!(
                 "several tokens labelled '{label}' (serials {}); name one with tokenSerial",
                 found.iter().map(|f| format!("'{}'", f.token.serial)).collect::<Vec<_>>().join(", ")
-            )
-            .into(),
-        )),
+            ),
+        ))),
     }
 }
 
@@ -691,9 +751,9 @@ mod tests {
     use super::*;
     use cryptoki::context::Function;
 
-    /// Every layer's subtraction applies, the binding layer's too when no module profile is
-    /// resolved (token/mod.rs F7): a generic module loses what the binding cannot do, as a
-    /// profiled one does.
+    /// The subtraction of every layer applies, including the binding layer's when no module
+    /// profile is resolved (token/mod.rs F7). A generic module therefore loses the mechanisms
+    /// that the binding cannot use, as a module with a profile does.
     #[test]
     fn the_binding_layer_subtracts_without_a_module_profile() {
         cakeys_profile::Set::activate_embedded().unwrap();
@@ -706,8 +766,9 @@ mod tests {
         assert_eq!(usable_mechanisms(&advertised, &none).unwrap(), advertised);
     }
 
-    /// The module's refusal of a trusted copy keeps its return value (token/mod.rs F4), which
-    /// `Token::unsupported` carries past a provider's hint.
+    /// The module's refusal of a trusted copy keeps its return value (token/mod.rs F4), and the
+    /// `Unsupported` error that `Token::unsupported` builds still carries that value after the
+    /// provider adds its hint.
     #[test]
     fn a_refused_trusted_copy_keeps_its_return_value() {
         let e = CkError::Pkcs11(RvError::VendorDefined(0x8000_0001), Function::CreateObject);

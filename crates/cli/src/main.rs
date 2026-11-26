@@ -3,7 +3,8 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    // `COMPLETE=<shell> cakeys` prints the shell's completion script; the script calls back here per tab.
+    // `COMPLETE=<shell> cakeys` prints the shell's completion script. The script runs this
+    // binary again for each tab completion.
     clap_complete::CompleteEnv::with_factory(cakeys::command).complete();
     cakeys::main(&cakeys::default_registry())
 }

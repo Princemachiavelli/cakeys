@@ -1,38 +1,42 @@
-//! Coverage as data (docs/PLAN.md A1): spec-coverage/cakeys.toml gives every row of the spec
-//! baseline (every function, mechanism, key type, attribute, object class, return value, flag,
-//! …) one status, and is generated, never edited. Test-only, like the baseline's generator:
+//! Coverage as data (docs/PLAN.md A1). The file spec-coverage/cakeys.toml gives one status to
+//! every row of the spec baseline (every function, mechanism, key type, attribute, object class,
+//! return value, flag, and so on). The file is generated and is never edited by hand. Like the
+//! generator of the baseline, this module is used only by tests. The statuses are these:
 //!
-//! - `used`: a call of cakeys, caprobe or camigrate reached it in the traced test run
-//!   (nix/test-tokens.sh with `CAKEYS_TRACE_DIR`: every module behind p11-fault).
-//! - `out-of-scope`, `gap`: spec-coverage/manual.toml, hand-kept rules by table and name
-//!   pattern, each with its reason (the OPEN.md item of a gap). The first rule that matches a row
-//!   decides it.
+//! - `used`: a call from cakeys, caprobe or camigrate reached the row in the traced test run
+//!   (nix/test-tokens.sh with `CAKEYS_TRACE_DIR`, which puts every module behind p11-fault).
+//! - `out-of-scope` and `gap`: these come from spec-coverage/manual.toml, which holds rules that
+//!   are kept by hand. Each rule names a table and a name pattern and gives its reason (for a
+//!   gap, the OPEN.md item). The first rule that matches a row decides the row's status.
 //!
-//! (A `refused` and a `profile` status were dropped: neither classified a row, review 2026-11-23
-//! D-8.)
+//! (A `refused` status and a `profile` status were removed, because neither classified a row:
+//! review 2026-11-23 D-8.)
 //!
-//! A row with none of these fails the test, which lists it: a new spec revision or a new code
-//! path shows up as a diff. With `CAKEYS_COVERAGE_TRACE` naming a trace directory, the `used`
-//! rows come from the trace, and `CAKEYS_UPDATE_COVERAGE=1` rewrites the committed file (and
-//! writes `coverage-report.txt`, the tests behind each used row, into the trace directory).
-//! Without it, the committed file's own `used` rows stand in for the trace, so every other
-//! status is still checked on every run.
+//! A row with none of these statuses fails the test, and the test lists the row, so a new spec
+//! revision or a new code path shows up as a difference. When `CAKEYS_COVERAGE_TRACE` names a
+//! trace directory, the `used` rows come from the trace. `CAKEYS_UPDATE_COVERAGE=1` then
+//! regenerates the committed file (beside it as `.new`, or over it with `CAKEYS_ACCEPT=1`:
+//! `cakeys_profile::regenerate`), and writes `coverage-report.txt` into the trace directory,
+//! which lists the tests behind each used row. Without a trace directory, the committed file's
+//! own `used` rows take the place of the trace, so every other status is still checked on every
+//! run.
 
-use cakeys_profile::Baseline;
 use cakeys_profile::baseline::TABLES;
+use cakeys_profile::{Baseline, regenerate};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-/// The programs whose calls count: the three tools, never a test harness, pkcs11-tool,
-/// `p11-kit remote` or OpenSSL.
+/// The programs whose calls count: the three tools. Calls from a test harness, pkcs11-tool,
+/// `p11-kit remote` or OpenSSL never count.
 const TOOLS: [&str; 3] = ["cakeys", "caprobe", "camigrate"];
 
-/// The statuses a manual rule may give.
+/// The statuses that a manual rule may give.
 const MANUAL: [&str; 2] = ["out-of-scope", "gap"];
 
-/// The flag families, by the trace field that carries a flag word of each: `CKF_` values repeat
-/// across families, so a set bit is named within its own (pkcs11t.h's sections).
+/// The flag families, each with the trace field that carries a flag word of that family. The
+/// same `CKF_` values occur in several families, so a set bit is named only within its own family
+/// (the sections of pkcs11t.h).
 const FLAG_FAMILIES: [(&str, &[&str]); 5] = [
     ("flags", &["CKF_RW_SESSION", "CKF_SERIAL_SESSION", "CKF_ASYNC_SESSION"]),
     ("init_flags", &["CKF_LIBRARY_CANT_CREATE_OS_THREADS", "CKF_OS_LOCKING_OK"]),
@@ -99,15 +103,17 @@ const FLAG_FAMILIES: [(&str, &[&str]); 5] = [
     ),
 ];
 
-/// A row of the baseline: its table (`functions`, or one of [`TABLES`]) and name.
+/// A row of the baseline: its table (`functions`, or one of [`TABLES`]) and its name.
 type Row = (String, String);
 
-/// What the traced run reached: the rows, and for each the tests (`suite/test`) that did.
+/// What the traced run reached: the rows, and for each row, the tests (`suite/test`) that
+/// reached it.
 #[derive(Debug, Default)]
 struct Observed {
     rows: BTreeMap<Row, BTreeSet<String>>,
-    /// What no baseline row names, by table: vendor mechanism numbers (hex), vendor return
-    /// values, functions the baseline lacks. Listed in the report, never a row.
+    /// The values that no baseline row names, by table: vendor mechanism numbers (in hex), vendor
+    /// return values, and functions that the baseline does not have. The report lists them, and
+    /// they never become rows.
     unnamed: BTreeMap<String, BTreeSet<String>>,
 }
 
@@ -116,7 +122,7 @@ struct Observed {
 #[serde(deny_unknown_fields)]
 struct Rule {
     table: String,
-    /// A name, or a pattern where `*` stands for any run of characters.
+    /// A name, or a pattern in which `*` stands for any sequence of characters.
     #[serde(rename = "match")]
     pattern: String,
     status: String,
@@ -130,7 +136,7 @@ struct Manual {
     rule: Vec<Rule>,
 }
 
-/// `pattern` (with `*` wildcards) matches all of `name`.
+/// Returns whether `pattern` (with `*` wildcards) matches the whole of `name`.
 fn glob(pattern: &str, name: &str) -> bool {
     let mut parts = pattern.split('*');
     let first = parts.next().unwrap_or_default();
@@ -146,7 +152,7 @@ fn glob(pattern: &str, name: &str) -> bool {
     rest.len() >= last.len() && rest.ends_with(last)
 }
 
-/// Every row of `b`, table by table.
+/// Returns every row of `b`, table by table.
 fn rows(b: &Baseline) -> Vec<Row> {
     let functions = b.functions.iter().map(|f| ("functions".to_owned(), f.clone()));
     let tables =
@@ -154,7 +160,8 @@ fn rows(b: &Baseline) -> Vec<Row> {
     functions.chain(tables).collect()
 }
 
-/// The names of `table` by value; where several names share one (the flag families), all.
+/// Returns the names of `table` by value. Where several names share one value (as in the flag
+/// families), the map holds all of them.
 fn by_value(b: &Baseline, table: &str) -> BTreeMap<u64, Vec<String>> {
     let mut map: BTreeMap<u64, Vec<String>> = BTreeMap::new();
     for (name, id) in b.table(table).into_iter().flatten() {
@@ -163,7 +170,8 @@ fn by_value(b: &Baseline, table: &str) -> BTreeMap<u64, Vec<String>> {
     map
 }
 
-/// Read every `*.jsonl` under `dir` (the trace of nix/test-tokens.sh: `<suite>/<test>.jsonl`).
+/// Reads every `*.jsonl` file under `dir` (the trace of nix/test-tokens.sh, with one file
+/// `<suite>/<test>.jsonl` for each test).
 fn observe(b: &Baseline, dir: &Path) -> Observed {
     let mut seen = Observed::default();
     let names: BTreeMap<&str, BTreeMap<u64, Vec<String>>> = [
@@ -205,7 +213,8 @@ fn observe(b: &Baseline, dir: &Path) -> Observed {
             let mut add = |table: &str, name: &str| {
                 seen.rows.entry((table.to_owned(), name.to_owned())).or_default().insert(test.clone());
             };
-            // How the program loaded the module: the shim answers it itself, untraced.
+            // Every program called C_GetFunctionList to load the module. The shim answers that
+            // call itself and does not trace it, so the row is added for every traced call.
             add("functions", "C_GetFunctionList");
             for (table, name) in
                 [("functions", call["fn"].as_str().unwrap()), ("return-values", call["rv"].as_str().unwrap())]
@@ -220,9 +229,9 @@ fn observe(b: &Baseline, dir: &Path) -> Observed {
                     seen.unnamed.entry(table.to_owned()).or_default().insert(name.to_owned());
                 }
             }
-            // The names of `table` with `field`'s values, among those starting with `prefix`
-            // (a table whose values repeat across uses: CKG_ holds the MGFs and the IV
-            // generators, CKZ_ the OAEP and the PBKDF2 sources).
+            // Adds the names in `table` that have the values of `field` and start with `prefix`.
+            // The prefix matters in a table whose values repeat across uses: CKG_ holds both the
+            // MGFs and the IV generators, and CKZ_ holds both the OAEP and the PBKDF2 sources.
             let mut numbers = |table: &str, field: &str, prefix: &str| {
                 let values = match &call[field] {
                     serde_json::Value::Array(a) => a.iter().filter_map(serde_json::Value::as_u64).collect(),
@@ -245,7 +254,8 @@ fn observe(b: &Baseline, dir: &Path) -> Observed {
             numbers("key-types", "key_type", "CKK_");
             numbers("certificate-types", "certificate_type", "CKC_");
             numbers("user-types", "user", "CKU_");
-            // From mechanism parameters: the hash inside OAEP or PSS is a mechanism too.
+            // These rows come from the mechanism parameters. The hash inside OAEP or PSS
+            // parameters is also a mechanism.
             numbers("mechanisms", "hash", "CKM_");
             numbers("generators", "mgf", "CKG_MGF1_");
             numbers("sources", "source", "CKZ_DATA_SPECIFIED");
@@ -263,8 +273,9 @@ fn observe(b: &Baseline, dir: &Path) -> Observed {
     seen
 }
 
-/// The generated file and the rows nothing classifies (each with why not), from the baseline,
-/// the rows a run reached and the manual rules.
+/// Generates the file from the baseline, the rows that a run reached, and the manual rules.
+/// Returns as the error the problems found: each row that nothing classifies, and each manual
+/// rule that decides nothing, with the reason.
 fn generate(b: &Baseline, used: &BTreeSet<Row>, manual: &Manual) -> Result<String, Vec<String>> {
     let mut problems = Vec::new();
     let rows = rows(b);
@@ -283,7 +294,8 @@ fn generate(b: &Baseline, used: &BTreeSet<Row>, manual: &Manual) -> Result<Strin
         if !r.pattern.contains('*') && matched.iter().any(|row| used.contains(*row)) {
             problems.push(format!("manual rule {} {} names a used row", r.table, r.pattern));
         } else if !matched.is_empty() && matched.iter().all(|row| used.contains(*row)) {
-            // A wildcard whose every row is used decides nothing: it names used rows only.
+            // A wildcard rule whose rows are all used decides nothing, because it names only used
+            // rows.
             problems.push(format!("manual rule {} {} names used rows only", r.table, r.pattern));
         }
     }
@@ -332,7 +344,7 @@ fn generate(b: &Baseline, used: &BTreeSet<Row>, manual: &Manual) -> Result<Strin
     Ok(s)
 }
 
-/// The rows the committed file marks `used`.
+/// Returns the rows that the committed file marks as `used`.
 fn committed_used(text: &str) -> BTreeSet<Row> {
     let doc: toml::Table = toml::from_str(text).expect("the committed coverage parses");
     let mut used = BTreeSet::new();
@@ -388,7 +400,7 @@ fn committed_coverage_is_generated_from_the_trace() {
     };
     if trace.is_some() && std::env::var_os("CAKEYS_UPDATE_COVERAGE").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, &generated).unwrap();
+        eprintln!("{}", regenerate::write(&path, &generated, regenerate::accepted()).unwrap());
         return;
     }
     assert!(
@@ -398,7 +410,8 @@ fn committed_coverage_is_generated_from_the_trace() {
     );
 }
 
-/// Every flag the families name is a baseline flag, and none is named in two families.
+/// Every flag that the families name is a flag in the baseline, and no flag is named in two
+/// families.
 #[test]
 fn flag_families_name_baseline_flags_once() {
     let b = Baseline::from_toml(&read(&repo().join("profiles/baselines/pkcs11-3.2.toml"))).unwrap();
@@ -425,22 +438,22 @@ fn rule(table: &str, pattern: &str) -> Rule {
     Rule { table: table.into(), pattern: pattern.into(), status: "gap".into(), reason: "why".into() }
 }
 
-/// A wildcard manual rule whose every row is used fails, as a plain name of a used row does:
-/// it decides nothing (review coverage F2).
+/// A wildcard manual rule whose rows are all used fails, in the same way as a rule that names a
+/// single used row, because it decides nothing (review coverage F2).
 #[test]
 fn a_wildcard_rule_over_used_rows_only_fails() {
     let b = Baseline::from_toml(&read(&repo().join("profiles/baselines/pkcs11-3.2.toml"))).unwrap();
     let all: BTreeSet<Row> = rows(&b).into_iter().collect();
     let manual = Manual { rule: vec![rule("functions", "C_Log*")] };
     assert_eq!(generate(&b, &all, &manual).unwrap_err(), ["manual rule functions C_Log* names used rows only"]);
-    // One of its rows not used: the rule decides it.
+    // When one of its rows is not used, the rule decides that row.
     let mut used = all.clone();
     used.remove(&("functions".to_owned(), "C_Login".to_owned()));
     assert!(generate(&b, &used, &manual).is_ok());
 }
 
-/// A traced function or return value the baseline does not name is listed as unnamed, as a
-/// vendor mechanism is, never a row the report drops (review coverage F3).
+/// A traced function or return value that the baseline does not name is listed as unnamed, in the
+/// same way as a vendor mechanism. The report never drops it (review coverage F3).
 #[test]
 fn traced_names_outside_the_baseline_are_unnamed() {
     let b = Baseline::from_toml(&read(&repo().join("profiles/baselines/pkcs11-3.2.toml"))).unwrap();

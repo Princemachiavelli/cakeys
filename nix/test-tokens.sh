@@ -58,7 +58,7 @@ for a in "$@"; do
   prev=$a
 done
 case $suite/$test in
-fault/* | reference/kryoptic_committed_profile_is_what_the_probe_observes | tpm2/tpm2_attestation_says_what_it_lacks | tpm2/tpm2_identity_failure_after_create_leaves_nothing | dry_run/a_failed_reopen_after_ptool_says_what_is_in_the_tpm) untraced=1 ;;
+fault/* | liars/* | provider_contract/k5_a_destroy_the_module_did_not_do_keeps_the_lock | reference/kryoptic_committed_profile_is_what_the_probe_observes | tpm2/tpm2_attestation_says_what_it_lacks | tpm2/tpm2_identity_failure_after_create_leaves_nothing | tpm2/tpm2_vendor_attestation_liars | dry_run/a_failed_reopen_after_ptool_says_what_is_in_the_tpm) untraced=1 ;;
 *) untraced= ;;
 esac
 if [ -n "${CAKEYS_TRACE_DIR:-}" ] && [ -z "$untraced" ]; then
@@ -78,11 +78,16 @@ if [ -n "${CAKEYS_TRACE_DIR:-}" ] && [ -z "$untraced" ]; then
     export "P11_FAULT_MODULE_${tag^^}=${!var}" "P11_FAULT_TRACE_${tag^^}=$trace" "$var=$copy"
   done
 fi
-# tests/fault.rs runs the reference suite again, through p11-fault in front of this test's own
-# SoftHSM token.
-if [ "$suite" = fault ]; then
-  export P11_FAULT_MODULE=$CAKEYS_TEST_MODULE CAKEYS_FAULT_REQUIRE=1
-fi
+# tests/fault.rs runs the reference suite again, and tests/liars.rs its liar matrix, through
+# p11-fault in front of this test's own SoftHSM token. CAKEYS_FAULT_REQUIRE is test_env's, not
+# this arm's: a fault suite this name match misses fails rather than skipping (review 2026-11-24
+# C-11).
+# cli-common's tests/provider_contract.rs (K-5) loads it in-process, under a plan it writes
+# before the shim reads it: a file of this test's own directory.
+case $suite in
+fault | liars) export P11_FAULT_MODULE=$CAKEYS_TEST_MODULE ;;
+provider_contract) export P11_FAULT_MODULE=$CAKEYS_TEST_MODULE P11_FAULT_PLAN=$D/p11-fault-plan.toml ;;
+esac
 case $suite in
 p11kit | reference | references | dry_run)
   SOFTHSM_MODULE=$CAKEYS_TEST_MODULE bash "$CAKEYS_P11KIT_ENV_SH" up "$D/p11"

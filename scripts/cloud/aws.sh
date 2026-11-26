@@ -29,8 +29,9 @@
 #           instead of building one.
 # cakeys    runs cakeys on the runner with scripts/cloud/aws/cakeys.toml, the crypto user's PIN in
 #           tmpfs and a lock kept on the runner, against CloudHSM and a SoftHSM token beside it:
-#           `cakeys create`, `check ec-p256 --token cloudhsm`, `delete ...`. CAKEYS names a
-#           cakeys binary to use instead of building one; CAKEYS_AWS_CONFIG another keys.toml,
+#           `--new-lock create` (no lock there yet: without --new-lock, 17), `check ec-p256 --token
+#           cloudhsm`, `delete ...`. CAKEYS names a cakeys binary to use instead of building one;
+#           CAKEYS_AWS_CONFIG another keys.toml,
 #           CAKEYS_AWS_LOCK another lock path on the runner (crates/cli/tests/cloud.rs: one per run).
 # camigrate the same for camigrate (CAMIGRATE): `camigrate migrate movable --from softhsm --to
 #           cloudhsm`, and back: `migrate outbound --from cloudhsm --to softhsm`.
@@ -322,10 +323,9 @@ probe() {
   name=${1:-$(profile_name "$p11")}
   out=$repo/profiles/modules/$name.toml
   opensc=$(nix build --no-link --print-out-paths --inputs-from "$repo" nixpkgs#opensc)
-  # Only the Nix-built caprobe may write a profile (docs/CAPROBE.md); its check phase is skipped
-  # as scripts/regen-profiles.sh does.
-  bin=${CAPROBE:-$(nix build --no-link --print-out-paths --impure --expr \
-    "((builtins.getFlake \"git+file://$repo\").packages.x86_64-linux.cakeys.overrideAttrs { doCheck = false; }).caprobe")/bin/caprobe}
+  # Only the Nix-built caprobe may write a profile (docs/CAPROBE.md): packages.cakeys, which has
+  # no check phase, as scripts/regen-profiles.sh builds it.
+  bin=${CAPROBE:-$(nix build --no-link --print-out-paths "$repo#packages.x86_64-linux.cakeys^caprobe")/bin/caprobe}
   wait_runner
   copy "$p11" "$opensc" "$(dirname "$(dirname "$(realpath "$bin")")")"
   label=$(runner "$opensc/bin/pkcs11-tool" --module "$p11/lib/libcloudhsm_pkcs11.so" -L |
@@ -346,20 +346,24 @@ EOF
   # one even before the binary embeds it.
   runner rm -rf /run/caprobe/profiles
   tar -C "$repo" -c profiles | runner tar -C /run/caprobe -x
-  local -a diff=()
-  [[ -f $out ]] && diff=(--diff "$name")
   # caprobe keeps the [migration] and [manual] sections of the file it overwrites: the
   # committed one, in place for it.
   runner rm -f /run/caprobe/profile.toml
   if [[ -f $out ]]; then
     runner install -D -m 644 /dev/stdin /run/caprobe/profile.toml <"$out"
   fi
-  runner "$(realpath "$bin")" --config /run/caprobe/keys.toml probe --profiles /run/caprobe/profiles \
-    --token cloudhsm --write-probes --name "$name" "${diff[@]}" --out /run/caprobe/profile.toml || rc=$?
+  # The flags every regeneration shares are the verb's (profiles/LEDGER.toml, [regen]); it diffs
+  # against the committed profile when there is one. The module profiles alone: profiles/ also
+  # holds LEDGER.toml, which is no profile (17).
+  runner "$(realpath "$bin")" --config /run/caprobe/keys.toml regenerate "$name" --profiles /run/caprobe/profiles/modules \
+    --token cloudhsm --out /run/caprobe/profile.toml --accept || rc=$?
   runner rm -f /run/caprobe/pin
   # 15 is drift against the committed profile: written anyway, for review.
   [[ $rc == 0 || $rc == 15 ]] || exit "$rc"
   mkdir -p "$(dirname "$out")"
+  # The runner's copy is accepted above; the committed profile is replaced only with
+  # CAKEYS_ACCEPT=1, else the profile goes beside it (docs/DEVELOPMENT.md, "Golden files").
+  [[ -f $out && -z ${CAKEYS_ACCEPT:-} ]] && out=$out.new
   runner cat /run/caprobe/profile.toml >"$out"
   echo "wrote $out"
   return "$rc"

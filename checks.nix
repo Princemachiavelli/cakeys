@@ -9,6 +9,7 @@
   deny,
   demo,
   fuzz,
+  kani-library-lock,
   mkTest,
   softhsm-unwrap-value-len-tested,
 }:
@@ -26,8 +27,17 @@
   inherit (cakeys) msrv;
   # cargo-deny offline (see `deny` in pkgs.nix): reproducible with the flake.lock.
   deny = deny.check;
-  # Every test and function the docs name is a `fn`, and every docs/*.md cited exists
-  # (nix/doc-references.py). Its own fileset, so a docs edit does not rebuild crane.
+  # fuzz/Cargo.lock still holds what the fuzz crate needs, at Cargo.lock's versions (nix/fuzz.nix,
+  # `lock`): the fuzz run is Linux's and CI's vm job's, this resolution every system's and the
+  # light job's.
+  fuzz-lock = fuzz.lock;
+  # nix/kani/library-Cargo.lock is the Kani nightly's own (nix/kani.nix, `libraryLock`): the Kani
+  # build is x86_64-linux's and CI's kani job's, this comparison every system's and the light
+  # job's.
+  inherit kani-library-lock;
+  # Every test and function the docs name is a `fn`, every name and path a doc or a Rust comment
+  # cites is in the sources, and every docs/*.md cited exists (nix/doc-references.py, its fixture
+  # tests first). Its own fileset, so a docs edit does not rebuild crane.
   doc-references =
     let
       src = pkgs.lib.fileset.toSource {
@@ -49,9 +59,76 @@
       };
     in
     pkgs.runCommand "cakeys-doc-references" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      python3 -I ${src}/nix/doc-references-test.py
       python3 -I ${src}/nix/doc-references.py ${src}
       touch $out
     '';
+  # A universal claim of the documents that say what the tools guarantee (every, never, always,
+  # … about a PIN, the lock, a slot, …) names the tests that hold it in docs/claims.toml, or is
+  # counted against its max-unregistered, which only goes down (nix/claims.py, its fixture tests
+  # first); each bullet of DESIGN.md §8.1 names a test that holds it. Its own fileset, like
+  # doc-references: the docs, the sources the tests are in, and this file (a bullet may name a
+  # NixOS test of it).
+  claims =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./docs
+          ./Cargo.toml
+          ./crates
+          ./fuzz
+          ./nix/doc-references.py
+          ./nix/claims.py
+          ./nix/claims-test.py
+          ./checks.nix
+        ];
+      };
+    in
+    pkgs.runCommand "cakeys-claims" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      set -o pipefail
+      python3 -I ${src}/nix/claims-test.py
+      python3 -I ${src}/nix/claims.py ${src} | tee $out
+    '';
+  # What was measured on hardware or a cloud and no build repeats (profiles/LEDGER.toml,
+  # nix/ledger.py): a file changed, or the code on its path changed since its run, fails until
+  # the ledger records it; and a golden file a build regenerates changed without a record of the
+  # rows that moved and why (review 2026-11-24 C-8). Its fixture tests first. Its own fileset,
+  # like doc-references: what the ledger's `code` and `generator` name, lock entries included (a
+  # path it lacks names no file and fails).
+  ledger =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./profiles
+          ./spec-coverage
+          ./crates
+          ./nix
+          ./scripts
+          ./examples
+          ./upstream/rust-cryptoki
+          ./Cargo.lock
+          ./flake.lock
+        ];
+      };
+    in
+    # nix/golden-rows.py needs git, so CI's light job runs it on a pull request; here its
+    # fixture tests, on repositories they make.
+    pkgs.runCommand "cakeys-ledger"
+      {
+        nativeBuildInputs = [
+          pkgs.python3
+          pkgs.git
+        ];
+      }
+      ''
+        set -o pipefail
+        export HOME=$TMPDIR
+        python3 -I ${src}/nix/ledger-test.py
+        python3 -I ${src}/nix/golden-rows-test.py
+        python3 -I ${src}/nix/ledger.py ${src} | tee $out
+      '';
   # The software tokens are set up in one place, nix/token-env.sh (review D9): no other script
   # writes a SoftHSM configuration or initialises a token by hand, but those its header leaves
   # out (VM tests, old SoftHSM releases, upstream repros, a cloud host, p11-kit's own token).
@@ -72,12 +149,83 @@
       fi
       touch $out
     '';
+  # No test binary has fewer tests in its source than nix/test-count.toml says (nix/test-count.py,
+  # its own tests first): a test that goes fails here, on every system, unless the diff lowers
+  # the manifest (review 2026-11-24 F §2.1: 8aaba2e lost 8 and no check saw it).
+  test-count =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./Cargo.toml
+          ./crates
+          ./nix/test-count.py
+          ./nix/test-count-tests.py
+          ./nix/test-count.toml
+        ];
+      };
+    in
+    pkgs.runCommand "cakeys-test-count" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      python3 -I ${src}/nix/test-count-tests.py
+      python3 -I ${src}/nix/test-count.py ${src} | tee $out
+    '';
+  # No integration test file asserts on what a tool said more often than nix/oracle-count.toml
+  # allows, a number that only goes down (nix/oracle-count.py, its fixture tests first): a
+  # refusal's oracle is its exit, the rule its row names and the state it left, not its prose
+  # (review 2026-11-24 C-9).
+  oracle-count =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./crates
+          ./nix/test-count.py
+          ./nix/oracle-count.py
+          ./nix/oracle-count-tests.py
+          ./nix/oracle-count.toml
+        ];
+      };
+    in
+    pkgs.runCommand "cakeys-oracle-count" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      set -o pipefail
+      python3 -I ${src}/nix/oracle-count-tests.py
+      python3 -I ${src}/nix/oracle-count.py ${src} | tee $out
+    '';
+  # Every source file of a workspace crate is in a scope of the mutation gate's tiers or is left
+  # out with a reason, every pattern in nix/mutants-scopes.toml matches a file, and every part of
+  # a scope's `re` matches a function (nix/mutants-scopes.py, its fixture tests first). So a new
+  # crate or file, and a renamed file or function, fail here until the scopes decide them.
+  mutants-scopes =
+    let
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./Cargo.toml
+          ./crates
+          ./nix/mutants-scopes.toml
+          ./nix/mutants-scopes.py
+          ./nix/mutants-scopes-tests.py
+        ];
+      };
+    in
+    pkgs.runCommand "cakeys-mutants-scopes" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      set -o pipefail
+      python3 -I ${src}/nix/mutants-scopes-tests.py
+      python3 -I ${src}/nix/mutants-scopes.py ${src} | tee $out
+    '';
   # CI builds the three parts flake.nix splits the checks into, each once
   # (.github/workflows/checks.yml): a part the workflow stops naming is never built there.
   ci-jobs = pkgs.runCommand "cakeys-ci-jobs" { nativeBuildInputs = [ pkgs.ripgrep ]; } ''
     for part in '.#checks-no-vm' '.#checks-vm' '.#checks.x86_64-linux.kani'; do
       if [ "$(rg -c -F "build: $part" ${./.github/workflows/checks.yml})" != 1 ]; then
         echo "ci-jobs: .github/workflows/checks.yml should build $part once" >&2
+        exit 1
+      fi
+    done
+    # The golden rows (nix/golden-rows.py) need the history back to the pull request's base.
+    for line in 'fetch-depth: 0' 'nix/golden-rows.py --base'; do
+      if [ "$(rg -c -F "$line" ${./.github/workflows/checks.yml})" != 1 ]; then
+        echo "ci-jobs: .github/workflows/checks.yml should say '$line' once" >&2
         exit 1
       fi
     done
@@ -133,17 +281,17 @@
         "Spec"
         "Mode"
         "Binding"
-        "Anchor"
+        "AttestationAnchor"
         "AttestationId"
-        "AttestationLost"
-        "SchemesLost"
-        "Replaced"
-        "Object"
-        "Unlinked"
+        "AttestationKept"
+        "SchemesKept"
+        "Immutables"
+        "Attributes"
+        "SharedScheme"
         "Mismatch"
         "FirstUse"
-        "Unrealised"
-        "SecondName"
+        "Realised"
+        "OneName"
         "Compared"
         "Recorded"
         "Unchanged"
@@ -202,10 +350,16 @@
     printf 'profile = "cryptoki-sim"\nmode = "delta"\n[subtract]\nkey-types = ["CKK_SHA224_HMAC", "CKK_SHA384_HMAC", "CKK_SHA512_HMAC"]\nnote = "a binding without the key-type fix"\n' > $sim/layer.toml
     expect 15 --profile softhsm/2.7 --layer cryptoki-sim --profiles $sim CKK_SHA512_HMAC
     # The static gate (phase 4): `validate` against the profiles, no token opened. kryoptic
-    # generating secp256k1 and a `kw` commitment through p11-kit are refused (15); the fixture
-    # with a recorded SoftHSM lock passes.
+    # generating secp256k1 and a `kw` commitment through p11-kit are each refused (15), and two
+    # refusals end the run with 20 (tests/validate.rs, review 2026-11-24 §1.4); the fixture
+    # with a recorded SoftHSM lock passes. Each config is read with the lock beside it, as
+    # tests/validate.rs reads it: without one, every verb is refused (17) unless --new-lock
+    # (review 2026-11-23 C-16), which a store copy of the config alone shows.
     q() { "${cakeys}/bin/cakeys" --config "$@" validate; }
-    expect 15 ${./crates/cli/tests/fixtures/gate.toml}
+    expect 17 ${./crates/cli/tests/fixtures/gate.toml}
+    cp ${./crates/cli/tests/fixtures/gate.toml} gate.toml
+    cp ${./crates/cli/tests/fixtures/gate.lock} gate.lock
+    expect 20 gate.toml
     cp ${./crates/cli/tests/fixtures/keys.toml} keys.toml
     cp ${./crates/cli/tests/fixtures/keys.lock} keys.lock
     expect 0 keys.toml

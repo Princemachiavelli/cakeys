@@ -1,21 +1,23 @@
-//! Moving a key sealed (docs/CAMIGRATE.md D2–D7, phase 3): the material leaves the source only wrapped
-//! to a transport key that lives on the target — an RSA key the lock pins (D3) — and is unwrapped
-//! there. The host never sees it. [`export`] wraps one object into a [`Bundle`]; [`import`]
-//! checks the bundle against the lock before it touches the target, creates the key (and a
-//! private key's public half) under the target spec, and records it through
-//! `ops::lock_import`, the lock rules `cakeys lock` uses. `migrate` is the two in one
-//! process, with the bundle in memory. A bundle carries every key of one export (one file per
-//! source and target); each is imported, checked and rolled back on its own.
+//! A sealed move of a key (docs/CAMIGRATE.md D2 to D7, phase 3). The material leaves the source
+//! only in wrapped form, under a transport key that is stored on the target, and the target
+//! unwraps it. The transport key is an RSA key that the lock pins (D3). The host never sees the
+//! material. [`export`] wraps the keys of one export into a [`Bundle`]. [`import`] checks the
+//! bundle against the lock before it touches the target, creates the key (and a private key's
+//! public half) under the target spec, and records it through `ops::lock_import`, which applies
+//! the lock rules that `cakeys lock` uses. `migrate` runs both in one process, with the bundle in
+//! memory. A bundle carries every key of one export (one file for each source and target), and
+//! each key is imported, checked and rolled back on its own.
 
 use crate::bundle::{BUNDLE_FORMAT, BUNDLE_VERSION, Bundle, Entry, Source, TransportRef, encode};
 use crate::public::free_locator;
 use crate::public::{Moved, already_there, public_key, roll_back};
 use crate::side::Side;
 use crate::tokens::unwrap_refusals;
+use crate::trust::{BoundBundle, BoundTransport};
 use cakeys_core::config::{AttrValue, Binding, Lock, Origin};
 use cakeys_core::migrate::{Exposure, Method, OaepHash};
 use cakeys_core::types::{KeyType, ObjectClass as Class};
-use cakeys_core::{KmError, Result};
+use cakeys_core::{Check, KmError, Reason, Result};
 use cakeys_pkcs11::ops::{self, Notes, Target};
 use cakeys_pkcs11::token::{SessionObject, with_public_default_dropped};
 use cakeys_pkcs11::{SessionKey, Template, Token, Topic, Via, templates};
@@ -26,91 +28,97 @@ use rsa::pkcs8::DecodePublicKey as _;
 use rsa::traits::PublicKeyParts as _;
 use std::collections::BTreeMap;
 
-/// The transport key a source wraps to: its object, its locked identity, and its public key.
-pub(crate) struct TransportKey {
-    pub object: String,
-    pub rfc7093m4: String,
-    /// The canonical SPKI DER.
-    pub spki: Vec<u8>,
-}
-
-/// One key an export wraps: its source realisation, and the planned method and exposure.
+/// One object that an export puts into a bundle: its source realisation, and the planned method
+/// and exposure.
 pub(crate) struct Item<'a> {
     pub src: Target<'a>,
     pub method: Method,
     pub exposure: Exposure,
 }
 
-/// Wrap every item's key on `from` to `transport`, as one bundle — all or nothing: a key that
-/// cannot be wrapped fails the export, and no bundle is made. Public objects need no transport
-/// key: a bundle of them alone names none, and nothing is created on the source. Each source realisation is verified
-/// against the lock first; the transport public key and the composed methods' shared KEK are
-/// session objects on the source, destroyed again whatever happens.
+/// Wraps the key of every item on `from` to `transport`, which is `to`'s transport key as the
+/// lock binds it, and returns the items as one bundle for `to`. The export is all or nothing: a key
+/// that cannot be wrapped fails the export, and no bundle is made. Public objects need no
+/// transport key. A bundle of public objects alone names no transport key, and nothing is created
+/// on the source. Each source realisation is verified against the lock first. The transport public
+/// key and the shared KEK of the composed methods are session objects on the source, and they are
+/// destroyed when the function returns, whether it succeeds or fails.
 ///
 /// # Errors
 ///
-/// Whatever `ops::verify` refuses; `NotFound` for a key not under its locator; `Unsupported`
-/// (15) for a method this build or the source cannot perform, or a `C_WrapKey` the source
-/// refuses; `PreconditionFailed` for a key to wrap and no transport key.
+/// Every error of `ops::verify`. `NotFound` (11) for a key that is not under its locator.
+/// `Unsupported` (15) for a method that this build or the source cannot perform, or for a
+/// `C_WrapKey` that the source refuses. `PreconditionFailed` (14) when there is a key to wrap but
+/// no transport key of `to` whose public key is known, or when the source holds no trusted copy of
+/// the transport key for an enforced key.
 pub(crate) fn export(
     items: &[Item],
     from: &Token,
     lock: &Lock,
-    transport: Option<&TransportKey>,
+    to: &str,
+    transport: Option<&BoundTransport>,
     notes: &mut Notes,
 ) -> Result<Bundle> {
     let found = hold(items, from, lock, notes)?;
     let source = Source { token: from.name.clone(), provider: from.provider.name().into() };
+    let target = Some(to.to_owned());
     let wraps = found.iter().any(|f| matches!(f.held, Held::Key(..)));
-    let Some(transport) = transport.filter(|_| wraps) else {
+    let Some(transport) = transport.filter(|t| wraps && t.token() == to) else {
         if wraps {
-            return Err(KmError::PreconditionFailed(
-                format!("exporting keys from '{}' needs the target's transport key to wrap them to", from.name).into(),
-            ));
+            return Err(KmError::PreconditionFailed(Reason::check(
+                Check::ImportTransport,
+                format!("exporting keys from '{}' needs the target's transport key to wrap them to", from.name),
+            )));
         }
-        // Public objects only: nothing to wrap, so no transport key and nothing made on the source.
+        // The bundle holds only public objects. Nothing is wrapped, so the bundle names no
+        // transport key, and nothing is created on the source.
         let keys = found.iter().map(|f| entry(f, None));
         return Ok(Bundle {
             format: BUNDLE_FORMAT.into(),
             version: BUNDLE_VERSION,
             kek: None,
             source,
+            target,
             transport: None,
             keys: keys.collect(),
         });
     };
-    // An enforced key wraps only under the transport key's trusted copy (`transport --trusted`),
-    // the composed method by CKM_RSA_AES_KEY_WRAP: the source trusts no key-encryption key.
-    let trusted =
-        if items.iter().any(|i| i.exposure == Exposure::Enforced) {
-            let (copy, others) = from.trusted(&transport.spki)?;
-            if others > 0 {
-                notes.warn(format_args!(
+    let spki = transport.spki().ok_or_else(|| transport.no_public_key())?;
+    // An enforced key is wrapped only under the trusted copy of the transport key
+    // (`transport --trust-on`). Its composed method then uses `CKM_RSA_AES_KEY_WRAP`, because the
+    // source trusts no key-encryption key.
+    let trusted = if items.iter().any(|i| i.exposure == Exposure::Enforced) {
+        let (copy, others) = from.trusted(spki)?;
+        if others > 0 {
+            notes.warn(format_args!(
                 "{others} other object(s) on '{}' are CKA_TRUSTED: a CKA_WRAP_WITH_TRUSTED key there wraps under any \
                  of them, so `enforced` is only as narrow as that set",
                 from.name
             ));
-            }
-            Some(copy.ok_or_else(|| {
-                KmError::PreconditionFailed(format!(
-                "'{}' holds no trusted copy of transport key '{}': `camigrate transport <spec> --token <target> \
-                 --trusted {}`",
-                from.name, transport.object, from.name
-            ).into())
-            })?)
-        } else {
-            None
-        };
-    let modulus = rsa_parts(&transport.spki)?.0.len();
+        }
+        Some(copy.ok_or_else(|| {
+            KmError::PreconditionFailed(Reason::check(
+                Check::ImportTransport,
+                format!(
+                    "'{}' holds no trusted copy of transport key '{}': `{}`",
+                    from.name,
+                    transport.object(),
+                    crate::plan::trust_command(Some(transport.object()), &from.name)
+                ),
+            ))
+        })?)
+    } else {
+        None
+    };
+    let modulus = rsa_parts(spki)?.0.len();
     let session = from.raw();
     let refused = |what: &str, e: cryptoki::error::Error| {
-        from.unsupported_for(Topic::Mechanism, format!("{what} on '{}': {e}", from.name))
+        from.refused_for(Topic::Mechanism, &e, format!("{what} on '{}': {e}", from.name))
     };
-    // The transport public key and the shared KEK are session objects on the source: both go
-    // when this returns, however it does.
-    let mut tpub_template = templates::session(SessionKey::TransportKey);
-    tpub_template.extend(rsa_public(transport)?);
-    let tpub_template = from.provider.adjusted(&Template::Session(SessionKey::TransportKey), tpub_template)?;
+    // The transport public key and the shared KEK are session objects on the source. Both are
+    // destroyed when this function returns, whether it succeeds or fails.
+    let tpub_template = templates::session(SessionKey::TransportKey).with_material(rsa_public(spki)?)?;
+    let tpub_template = from.provider.adjusted_session(tpub_template)?;
     let tpub = session.create_object(&tpub_template).map_err(|e| refused("loading the transport key", e))?;
     let tpub = SessionObject::new(session, tpub);
     let under_kek =
@@ -142,13 +150,17 @@ pub(crate) fn export(
         version: BUNDLE_VERSION,
         kek: shared.map(|(_, blob)| encode(&blob)),
         source,
-        transport: Some(TransportRef { object: transport.object.clone(), rfc7093m4: transport.rfc7093m4.clone() }),
+        target,
+        transport: Some(TransportRef {
+            object: transport.object().to_owned(),
+            rfc7093m4: transport.rfc7093m4().to_owned(),
+        }),
         keys,
     })
 }
 
-/// One object's bundle entry: a public object's bytes, or a key's `wrapped` blob with its own
-/// wrapped KEK when it has one ([`wrap`]'s result).
+/// Builds one object's bundle entry. The entry holds a public object's bytes, or a key's `wrapped`
+/// blob together with the key's own wrapped KEK when it has one (the result of [`wrap`]).
 fn entry(found: &Found, wrapped: Option<Wrapped>) -> Entry {
     let Found { item, locked, object_type, held } = found;
     let (public_key, value) = match held {
@@ -182,19 +194,19 @@ struct Found<'a> {
     held: Held,
 }
 
-/// One wrapped key ([`wrap`]): its blob, and its own wrapped KEK when it does not share the
-/// bundle's.
+/// One wrapped key ([`wrap`]): its blob, and its own wrapped KEK when it does not use the bundle's
+/// shared KEK.
 struct Wrapped {
     own_kek: Option<Vec<u8>>,
     blob: Vec<u8>,
 }
 
-/// Each item as the source holds it, verified against the lock first.
+/// Finds each item on the source, after it verifies the item against the lock.
 fn hold<'a>(items: &'a [Item<'a>], from: &Token, lock: &'a Lock, notes: &mut Notes) -> Result<Vec<Found<'a>>> {
     let mut found = Vec::new();
     for item in items {
         let src = &item.src;
-        // A public object travels as it is: its bytes, read and verified on the source.
+        // A public object is copied as it is: its bytes are read and verified on the source.
         let public = if item.method == Method::Public {
             Some(crate::public::material(src, from, lock, notes)?)
         } else {
@@ -202,12 +214,16 @@ fn hold<'a>(items: &'a [Item<'a>], from: &Token, lock: &'a Lock, notes: &mut Not
             None
         };
         let locked = lock.objects.get(src.object_name).filter(|o| !o.ids.is_empty()).ok_or_else(|| {
-            KmError::PreconditionFailed(format!("{src}: the lock pins no IDs for object '{}'", src.object_name).into())
+            KmError::PreconditionFailed(Reason::check(
+                Check::ImportLocked,
+                format!("{src}: the lock pins no IDs for object '{}'", src.object_name),
+            ))
         })?;
         let object_type = locked.object_type.clone().ok_or_else(|| {
-            KmError::PreconditionFailed(
-                format!("{src}: the lock records no type for object '{}'", src.object_name).into(),
-            )
+            KmError::PreconditionFailed(Reason::check(
+                Check::ImportLocked,
+                format!("{src}: the lock records no type for object '{}'", src.object_name),
+            ))
         })?;
         let held = if let Some(bytes) = public {
             Held::Public(bytes)
@@ -228,7 +244,8 @@ enum Held {
     Public(Vec<u8>),
 }
 
-/// A fresh session AES-256 KEK on the source, and its blob wrapped to the transport key.
+/// Creates a fresh AES-256 session KEK on the source, and returns it with its blob wrapped to the
+/// transport key.
 fn kek<'a>(
     from: &'a Token,
     tpub: ObjectHandle,
@@ -243,19 +260,22 @@ fn kek<'a>(
     Ok((kek, blob))
 }
 
-/// The keys one export wraps under: the transport key on the source (its trusted copy for an
-/// enforced key), the shared KEK of the sealed composed keys, and the transport modulus length.
+/// The keys under which an export wraps one key: the transport key on the source (its trusted copy
+/// for an enforced key), the shared KEK of the sealed composed keys, and the length of the
+/// transport key's modulus.
 struct Wrapping {
     tpub: ObjectHandle,
     kek: Option<ObjectHandle>,
     modulus: usize,
 }
 
-/// One key's blob, and its own wrapped KEK when it has one: an enforced composed key by
-/// `CKM_RSA_AES_KEY_WRAP` under the trusted transport key (OAEP of a fresh AES key, then RFC 5649
-/// under it; split at the modulus length), a sealed one under the shared KEK (RFC 5649) — or as
-/// the enforced one under the transport key when there is none — and the direct method under the
-/// transport key itself.
+/// Wraps one key and returns its blob, with its own wrapped KEK when it has one. An enforced
+/// composed key is wrapped by `CKM_RSA_AES_KEY_WRAP` under the trusted transport key. That
+/// mechanism wraps a fresh AES key with OAEP and then wraps the key under that AES key with RFC
+/// 5649, and the output is split at the modulus length into the KEK and the key blob. A sealed
+/// composed key is wrapped under the shared KEK with RFC 5649. When there is no shared KEK, a sealed
+/// composed key is wrapped as an enforced key is, but under the plain transport key. A key of the
+/// direct method is wrapped under the transport key itself.
 fn wrap(
     from: &Token,
     w: &Wrapping,
@@ -294,8 +314,8 @@ fn wrap(
     }
 }
 
-/// `CKM_RSA_AES_KEY_WRAP` of `h` under the RSA public key `rsa`, with a fresh AES-256 key: a
-/// mechanism only the patched cryptoki names (the `kwp` feature).
+/// Wraps `h` with `CKM_RSA_AES_KEY_WRAP` under the RSA public key `rsa`, with a fresh AES-256 key.
+/// Only the patched cryptoki names this mechanism (the `kwp` feature).
 #[cfg(feature = "kwp")]
 fn rsa_aes_wrap(
     from: &Token,
@@ -318,8 +338,8 @@ fn rsa_aes_wrap(
     Err(cryptoki::error::Error::NotSupported)
 }
 
-/// `CKM_RSA_AES_KEY_WRAP`'s unwrap of `blob` (OAEP of the AES-256 KEK, then RFC 5649 under it)
-/// with the RSA private key `rsa`.
+/// Unwraps `blob` with `CKM_RSA_AES_KEY_WRAP` and the RSA private key `rsa`. The blob holds the
+/// AES-256 KEK wrapped with OAEP, followed by the key wrapped under that KEK with RFC 5649.
 #[cfg(feature = "kwp")]
 fn rsa_aes_unwrap(
     to: &Token,
@@ -344,31 +364,32 @@ fn rsa_aes_unwrap(
     Err(cryptoki::error::Error::NotSupported)
 }
 
-/// Import `b`'s key `e` under `dst` on `to`, unwrapping with the transport key `tr` realised
-/// there, and record it. Before the target is touched: the bundle's type, IDs and commitment
-/// label must be the lock's (the lock is the reviewed truth, the bundle only a carrier), and its
-/// transport key the one `tr` is; the locator must be empty. Whatever fails after something was
-/// created removes everything under the locator again.
+/// Imports the key `e` of `bound` under `dst` on `to`, and records it. The key is unwrapped with
+/// the transport key to which the bundle is bound on `to` (`trust::BoundBundle`: `to`'s own
+/// transport key, as the lock binds it). Before the target is touched, the bundle's type, IDs and
+/// commitment label must equal the lock's, because the lock is the reviewed record and the bundle
+/// only carries the key. The locator must also be empty. When anything fails after an object was
+/// created, the import removes exactly the objects that it created ([`roll_back`]).
 ///
 /// # Errors
 ///
-/// `PreconditionFailed` (14) when the lock pins no IDs for its object, or another type;
-/// `HashMismatch` (10) for bundle IDs, label or transport key that are not the lock's, and —
-/// after the import — material whose identity is not the locked one; `Conflict` (13) for an
-/// occupied locator or blobs the module finds invalid (tampered, or wrapped to another key);
-/// `Unsupported` (15) for an unwrap whose mechanism or template the target refuses, and
-/// `Unavailable` (16) for one the device or session fails, which some modules also say of a
-/// damaged blob ([`unwrap_failure`]); whatever
-/// `ops::lock_import` refuses.
+/// `PreconditionFailed` (14) when the lock pins no IDs for the object, or records another type.
+/// `HashMismatch` (10) for bundle IDs, a commitment label or a transport key that differ from the
+/// lock's, and, after the import, for material whose identity is not the locked one. `Conflict`
+/// (13) for an occupied locator, or for blobs that the module finds invalid (tampered with, or
+/// wrapped to another key). `Unsupported` (15) for an unwrap whose mechanism or template the
+/// target refuses. `Unavailable` (16) for an unwrap that the device or the session fails; some
+/// modules also report a damaged blob in this way ([`unwrap_failure`]). Every error of
+/// `ops::lock_import`.
 pub(crate) fn import(
-    b: &Bundle,
+    bound: &BoundBundle,
     e: &Entry,
     dst: &Target,
     to: &Token,
-    tr: Option<&Target>,
     lock: &mut Lock,
     notes: &mut Notes,
 ) -> Result<Moved> {
+    let (b, tr) = (bound.bundle(), bound.transport());
     if already_there(dst, to, lock, notes)? {
         return Ok(Moved::AlreadyThere);
     }
@@ -377,16 +398,20 @@ pub(crate) fn import(
         let bytes = e.public_value().map_err(|e| KmError::Validation(e.into()))?;
         return crate::public::create(dst, to, &bytes, &b.source.token, lock, notes);
     }
-    // What the record after it asks (the proof's and the commitments' templates included), before
-    // anything is created.
+    // Check what the record after the import will need (including the templates of the proof and
+    // of the commitments) before anything is created.
     ops::check_import(dst, to)?;
-    let ready = preflight(b, e, dst, to, tr, lock, notes)?;
+    let ready = preflight(bound, e, dst, to, lock, notes)?;
     let method = e.method().map_err(|e| KmError::Validation(e.into()))?;
     let mut made = Vec::new();
     let created = create(b, e, dst, to, &ready, &method, &mut made).and_then(|()| {
         let origin =
             Origin { from: b.source.token.clone(), method: e.method.clone(), exposure: e.exposure, declared: false };
+        // When the unwrapped key fails its proof of possession (13), it is not the key that the
+        // lock pins. The error then names the check that only the run decides (`IDENTITY`), as
+        // the error of a mismatched ID (10) does.
         ops::lock_import(dst, to, lock, origin, notes)
+            .map_err(|err| if err.exit_code() == 13 && err.rule().is_none() { err.with_check(IDENTITY) } else { err })
     });
     match created {
         Ok(_) => Ok(Moved::Imported),
@@ -394,22 +419,24 @@ pub(crate) fn import(
     }
 }
 
-/// Everything [`import`] checks before it touches the target (`import --dry-run` stops here):
-/// the bundle against the lock, the transport key realised on the target against the lock, and
-/// an empty locator a logged-in session can see. The transport key's handle, to unwrap with.
+/// Makes every check that [`import`] makes before it touches the target; `import --dry-run` stops
+/// here. It checks the bundle against the lock, checks the transport key realised on the target
+/// against the lock, and checks that the locator is empty, as a logged-in session sees it. It
+/// returns the handle of the transport key for the unwrap, and the handle of a public key object
+/// that already holds the key's public key.
 ///
 /// # Errors
 ///
-/// As [`import`], for everything before the creation.
+/// The same errors as [`import`] for everything before an object is created.
 pub(crate) fn preflight(
-    b: &Bundle,
+    bound: &BoundBundle,
     e: &Entry,
     dst: &Target,
     to: &Token,
-    tr: Option<&Target>,
     lock: &Lock,
     notes: &mut Notes,
 ) -> Result<Preflight> {
+    let (b, tr) = (bound.bundle(), bound.transport());
     check_against_lock(b, e, dst, tr, lock)?;
     if e.method == Method::Public.name() {
         crate::public::preflight(dst, to, &e.public_value().map_err(|e| KmError::Validation(e.into()))?)?;
@@ -420,85 +447,90 @@ pub(crate) fn preflight(
     let unwrapping = to
         .find_key(&tr.object, &tr.on_token.locator, false)?
         .ok_or_else(|| KmError::NotFound(format!("{tr}: the transport key").into()))?;
-    // Per class (`Token::occupied`): a certificate beside the key is no collision, and a public
-    // key object already holding the bundle's public key is the key's public half, reused.
+    // The locator is checked per class (`Token::occupied`). A certificate under the same locator
+    // is not a collision, and a public key object that already holds the bundle's public key is
+    // the key's public half, which the import reuses.
     let spki = e.public_spki().map_err(|e| KmError::Validation(e.into()))?;
     let occupied = free_locator(dst, to, spki.as_deref())?;
     Ok(Preflight { unwrapping: Some(unwrapping), public_half: occupied.public_half })
 }
 
-/// A bundle read from a file (`import --in`) against the binding `dst` records: an EC or Edwards
-/// private key under `token-asserted` is refused (14) before the target is touched.
+/// Checks a key from a bundle file (`import --in`) against the binding that `dst` records. An EC
+/// or Edwards private key under `token-asserted` is refused (14) before the target is touched.
 ///
-/// The transport key is public, so anyone can seal a key of their own to it and set it beside
-/// the lock's IDs and `publicKey`; RFC 5649 authenticates the bytes, not who wrapped them. A
-/// target that keeps no point with an unwrapped EC key (`SoftHSM`) takes the key's identity
-/// from the public half the import creates from that same `publicKey`, so only a `pop-*`
-/// proof ties the unwrapped key to it. An RSA private key carries its modulus, so its identity
-/// is its own; `migrate` makes its bundle in memory from the locked source, so it is not
-/// checked here.
+/// The transport key is public, so anyone can seal a key of their own to it and put it in a bundle
+/// next to the lock's IDs and `publicKey`. RFC 5649 authenticates the bytes, but not who wrapped
+/// them. A target that keeps no EC point with an unwrapped EC key (`SoftHSM`) takes the key's
+/// identity from the public half that the import creates from that same `publicKey`. Therefore,
+/// only a `pop-*` proof ties the unwrapped key to that public key. An RSA private key carries its
+/// modulus, so its identity comes from the key itself. `migrate` makes its bundle in memory from
+/// the locked source, so `migrate` does not call this check.
 ///
 /// # Errors
 ///
-/// `PreconditionFailed` for an EC or Edwards private key whose binding is `token-asserted`.
+/// `PreconditionFailed` (14) for an EC or Edwards private key whose binding is `token-asserted`.
 pub(crate) fn check_carried(e: &Entry, dst: &Target) -> Result<()> {
     let own_identity = !matches!(dst.object.key_type, Some(KeyType::Ec | KeyType::EcEdwards));
     if own_identity || ops::binding(dst) != Some(Binding::TokenAsserted) {
         return Ok(());
     }
-    Err(KmError::PreconditionFailed(
+    Err(KmError::PreconditionFailed(Reason::check(
+        Check::ImportBinding,
         format!(
             "{dst}: binding = \"token-asserted\" proves nothing of the {} key '{}' a bundle file carries: its \
              identity would rest on the public key the bundle itself names; bind it with pop-sign or pop-ecdh \
              there, or move it with `camigrate migrate`",
             dst.object.key_type.map_or_else(String::new, |k| k.to_string()),
             e.object
-        )
-        .into(),
-    ))
+        ),
+    )))
 }
 
-/// What [`preflight`] established: the transport key to unwrap with (none for a public object),
-/// and a public key object already holding the key's public key, reused rather than created.
+/// What [`preflight`] found: the transport key for the unwrap (`None` for a public object), and a
+/// public key object that already holds the key's public key, which the import reuses instead of
+/// creating one.
 pub(crate) struct Preflight {
     pub unwrapping: Option<ObjectHandle>,
     pub public_half: Option<ObjectHandle>,
 }
 
-/// A wrapped key in a bundle whose transport key is not realised on the target.
+/// Returns the error (14) for a wrapped key in a bundle whose transport key is not realised on the
+/// target.
 fn no_transport(dst: &Target) -> KmError {
-    KmError::PreconditionFailed(
+    KmError::PreconditionFailed(Reason::check(
+        Check::LockRealised,
         format!(
             "{dst}: the bundle's transport key is not realised on '{}' under a spec keys.toml names",
             dst.token_name
-        )
-        .into(),
-    )
+        ),
+    ))
 }
 
-/// The bundle's key `e` against the lock: the same type, IDs and commitment label, and — for a
-/// wrapped key — wrapped to the transport key `tr` realises. `dst` realises `e`'s object (the
-/// import picks it by that name).
+/// Checks the bundle's key `e` against the lock. The entry must have the lock's type, IDs and
+/// commitment label, and a wrapped key must be wrapped to the transport key that `tr` realises.
+/// `dst` realises `e`'s object, because the import selects `dst` by the object's name.
 fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: Option<&Target>, lock: &Lock) -> Result<()> {
     let locked = lock.objects.get(dst.object_name).filter(|o| !o.ids.is_empty()).ok_or_else(|| {
-        KmError::PreconditionFailed(
+        KmError::PreconditionFailed(Reason::check(
+            Check::ImportLocked,
             format!(
                 "{dst}: the lock pins no IDs for object '{}', so nothing could check the imported material; \
              lock it on its source first",
                 dst.object_name
-            )
-            .into(),
-        )
+            ),
+        ))
     })?;
     if locked.object_type.as_ref() != Some(&e.object_type) || dst.object.cfg() != &e.object_type {
-        return Err(KmError::PreconditionFailed(
-            format!("{dst}: the bundle carries a {}, the lock and keys.toml another type", e.object_type).into(),
-        ));
+        return Err(KmError::PreconditionFailed(Reason::check(
+            Check::ImportLocked,
+            format!("{dst}: the bundle carries a {}, the lock and keys.toml another type", e.object_type),
+        )));
     }
     let mismatch = |what: &str, expected: String, got: String| KmError::HashMismatch {
         what: format!("{dst}: the bundle's {what}"),
         expected,
         got,
+        check: Check::IdentityMaterial,
     };
     if e.ids != locked.ids {
         return Err(mismatch("IDs", format!("{:?}", locked.ids), format!("{:?}", e.ids)));
@@ -510,7 +542,7 @@ fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: Option<&Target>, 
             format!("{:?}", e.commitment_label),
         ));
     }
-    // A public object is wrapped to nothing.
+    // A public object is not wrapped, so there is no transport key to check.
     if e.wrapped.is_none() {
         return Ok(());
     }
@@ -526,9 +558,10 @@ fn check_against_lock(b: &Bundle, e: &Entry, dst: &Target, tr: Option<&Target>, 
     Ok(())
 }
 
-/// Create the key under `dst` from the bundle's key `e`: a private key's public half first (from
-/// its public key, as `generate` makes it), then the key unwrapped with the target spec's
-/// attributes as its template, less what this module refuses in one (docs/CAMIGRATE.md D6).
+/// Creates the key under `dst` from the bundle's key `e`. For a private key, it first creates the
+/// public half from the entry's public key, as `generate` creates it. It then unwraps the key with
+/// the target spec's attributes as the template, without the attributes that this module refuses
+/// in an unwrap template (docs/CAMIGRATE.md D6).
 fn create(
     b: &Bundle,
     e: &Entry,
@@ -545,13 +578,14 @@ fn create(
     let refused = |what: &str, e: cryptoki::error::Error| {
         unwrap_error(&format!("{dst}: {what} on '{}'", to.name), &e, |m| to.unsupported_for(Topic::Mechanism, m))
     };
-    // The templates as the provider adjusts them, before anything is created.
+    // Build the templates, as the provider adjusts them, before anything is created.
     let template = templates::import_key(
         dst.into(),
         to.policy_template(&unwrap_declared(&dst.spec.attributes, &unwrap_refusals(to)))?,
     )?;
     let template = to.provider.adjusted(&Template::Import(dst.into(), Via::Unwrap), template)?;
-    // A KEK only where one is unwrapped on its own: the composed method with RFC 5649 here.
+    // A KEK template is needed only when the KEK is unwrapped on its own, which happens for the
+    // composed method on a target with RFC 5649.
     let kek_template = match method {
         Method::RsaOaepAesKwp(_) if rfc5649(to).is_some() => to.session_template(SessionKey::ImportKek)?,
         _ => Vec::new(),
@@ -564,13 +598,16 @@ fn create(
     let key = e.wrapped_key().map_err(|e| KmError::Validation(e.into()))?;
     match method {
         Method::RsaOaepAesKwp(hash) => {
-            // An enforced key carries its own (CKM_RSA_AES_KEY_WRAP's); the others share the bundle's.
+            // A key that was wrapped by `CKM_RSA_AES_KEY_WRAP` (for example, an enforced key)
+            // carries its own KEK, the first part of that mechanism's output. The other keys share
+            // the bundle's KEK.
             let kek_blob = match e.wrapped_kek().map_err(|e| KmError::Validation(e.into()))? {
                 Some(own) => own,
                 None => b.wrapped_kek().map_err(|e| KmError::Validation(e.into()))?.unwrap_or_default(),
             };
-            // A target with no RFC 5649 of its own (AWS CloudHSM lists one it refuses [run])
-            // unwraps both in one CKM_RSA_AES_KEY_WRAP: its input is the same two blobs, joined.
+            // A target with no RFC 5649 key wrap of its own (AWS CloudHSM lists one but refuses
+            // it [run]) unwraps both parts with one `CKM_RSA_AES_KEY_WRAP`. The input of that
+            // mechanism is the same two blobs, joined.
             let Some(kwp) = rfc5649(to) else {
                 if !rsa_aes_key_wrap(to) {
                     return Err(to.unsupported_for(
@@ -611,19 +648,30 @@ fn create(
     }
 }
 
-/// What a failed `C_UnwrapKey` says, by the module's return value: only a blob the module finds
-/// invalid says the bundle was tampered with or wrapped to another key.
+/// The first check that a sealed import's dry run cannot decide and that only the real run
+/// decides: whether the blob unwraps. It fails with 13, or with 16 when the module says only that
+/// the unwrap failed, as with a device failure.
+pub(crate) const UNWRAPS: Check = Check::ImportUnwraps;
+
+/// The second check that only the real run decides: whether the unwrapped key is the key that the
+/// lock pins. A mismatch (10) names `identity.material`, and [`crate::Tally`] renames it to this
+/// check. [`import`] renames the 13 of a failed proof of possession to this check in the same way.
+pub(crate) const IDENTITY: Check = Check::ImportIdentity;
+
+/// The kind of failure of a `C_UnwrapKey`, by the module's return value. Only a blob that the
+/// module finds invalid means that the bundle was tampered with or wrapped to another key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UnwrapFailure {
     /// The wrapped or encrypted data is invalid or of the wrong length (13).
     Tampered,
     /// The target refuses the mechanism, its parameters, the unwrapping key or the template (15).
     Refused,
-    /// The module failed and says no more (`CKR_DEVICE_ERROR`, `CKR_GENERAL_ERROR`,
-    /// `CKR_FUNCTION_FAILED`): 16, said as what may be a damaged blob, since that is how some
-    /// modules report one (kryoptic, a tampered RFC 5649 blob \[run\]).
+    /// The module failed and gives no detail (`CKR_DEVICE_ERROR`, `CKR_GENERAL_ERROR` or
+    /// `CKR_FUNCTION_FAILED`). This is exit 16, and the message says that the blob may be damaged,
+    /// because some modules report a damaged blob in this way (kryoptic does so for a tampered RFC
+    /// 5649 blob \[run\]).
     Opaque,
-    /// Anything else: the session, the login (16).
+    /// Any other failure, such as a failure of the session or of the login (16).
     Failed,
 }
 
@@ -656,7 +704,8 @@ fn unwrap_failure(e: &cryptoki::error::Error) -> UnwrapFailure {
             | RvError::AttributeValueInvalid,
             _,
         )
-        // A mechanism this build cannot name (`CKM_RSA_AES_KEY_WRAP` without `kwp`).
+        // A mechanism that this build cannot name (`CKM_RSA_AES_KEY_WRAP` without the `kwp`
+        // feature) counts as the target's refusal.
         | CkError::NotSupported => UnwrapFailure::Refused,
         CkError::Pkcs11(RvError::DeviceError | RvError::GeneralError | RvError::FunctionFailed, _) => {
             UnwrapFailure::Opaque
@@ -665,14 +714,16 @@ fn unwrap_failure(e: &cryptoki::error::Error) -> UnwrapFailure {
     }
 }
 
-/// The error of an unwrap `what` that failed with `e` ([`unwrap_failure`]), carrying its return
-/// value; `unsupported` makes the target's refusal (`Token::unsupported`, with its hint).
+/// Returns the error of the unwrap `what` that failed with `e`, classified by
+/// [`unwrap_failure`], with the return value attached. `unsupported` builds the target's refusal
+/// (`Token::unsupported`, with its hint).
 fn unwrap_error(what: &str, e: &cryptoki::error::Error, unsupported: impl FnOnce(String) -> KmError) -> KmError {
     let rv = cakeys_pkcs11::token::rv_of(e);
     match unwrap_failure(e) {
-        UnwrapFailure::Tampered => {
-            KmError::Conflict(format!("{what}: {e} (the bundle was tampered with, or wrapped to another key)").into())
-        }
+        UnwrapFailure::Tampered => KmError::Conflict(Reason::check(
+            UNWRAPS,
+            format!("{what}: {e} (the bundle was tampered with, or wrapped to another key)"),
+        )),
         UnwrapFailure::Refused => unsupported(format!("{what}: {e}")),
         UnwrapFailure::Opaque => KmError::Unavailable(
             format!(
@@ -680,34 +731,37 @@ fn unwrap_error(what: &str, e: &cryptoki::error::Error, unsupported: impl FnOnce
                  so check that it is the one exported)"
             )
             .into(),
-        ),
+        )
+        .with_check(UNWRAPS),
         UnwrapFailure::Failed => KmError::Unavailable(format!("{what}: {e}").into()),
     }
     .with_rv(rv)
 }
 
-/// A private key's public half under `dst`'s locator, from its canonical SPKI, as `generate`
-/// makes it: the spec's public attributes, `CKA_VERIFY` and public unless declared otherwise.
+/// Creates a private key's public half under `dst`'s locator from its canonical SPKI, as
+/// `generate` creates it: with the spec's public attributes, and with `CKA_VERIFY` and public
+/// unless the spec declares otherwise.
 ///
 /// # Errors
 ///
-/// `Unsupported` when the module will not create it.
+/// `Unsupported` (15) when the module does not create it.
 pub(crate) fn create_public_half(dst: &Target, to: &Token, spki: &[u8]) -> Result<ObjectHandle> {
     let public_policy = to.policy_template(&dst.spec.public_attributes)?;
     let t = templates::public_half(dst.into(), public_policy, Some(public_key(dst, spki)?))?;
     let t = to.provider.adjusted(&Template::PublicHalf(dst.into()), t)?;
-    // As `generate`: a module refusing cakeys' own CKA_PRIVATE = false default gets the half
-    // without it.
+    // As in `generate`, a module that refuses cakeys' own default `CKA_PRIVATE = false` gets the
+    // public half without that attribute.
     let declared = templates::public_declares(dst.spec, "CKA_PRIVATE");
     let create = || {
         with_public_default_dropped(&t, declared, |p| to.raw().create_object(p))
             .map(|(made, _)| made)
-            .map_err(|e| to.unsupported_for(Topic::Create, format!("{dst}: the public half: C_CreateObject: {e}")))
+            .map_err(|e| to.refused_for(Topic::Create, &e, format!("{dst}: the public half: C_CreateObject: {e}")))
     };
     to.managing("creating the public half", create)
 }
 
-/// RSA-OAEP with MGF1 of the same hash and an empty label: what the planner names.
+/// Returns RSA-OAEP with MGF1 of the same hash and an empty label, which is the mechanism that the
+/// planner names.
 fn oaep(hash: OaepHash) -> Mechanism<'static> {
     Mechanism::RsaPkcsOaep(oaep_params(hash))
 }
@@ -716,8 +770,9 @@ fn oaep_params(hash: OaepHash) -> PkcsOaepParams<'static> {
     cakeys_pkcs11::token::oaep_of(hash).0
 }
 
-/// The spec's declared `attributes` less those the target's profile refuses in an unwrap
-/// template (`unwrap.refuse`, [`unwrap_refusals`]): what an unwrapped key's template declares.
+/// Returns the spec's declared `attributes` without those that the target's profile refuses in an
+/// unwrap template (`unwrap.refuse`, [`unwrap_refusals`]). The result is what an unwrapped key's
+/// template declares.
 pub(crate) fn unwrap_declared(
     attributes: &BTreeMap<String, AttrValue>,
     refusals: &[String],
@@ -725,7 +780,8 @@ pub(crate) fn unwrap_declared(
     attributes.iter().filter(|(n, _)| !refusals.contains(n)).map(|(n, v)| (n.clone(), v.clone())).collect()
 }
 
-/// [`rfc5649`]'s twin from what a plan knows of a side: whether it has an RFC 5649 key wrap.
+/// Returns whether a side has an RFC 5649 key wrap. It is the counterpart of [`rfc5649`] for a
+/// plan, which knows a side only by its capabilities.
 pub(crate) fn side_rfc5649(side: &Side) -> bool {
     let has = |m: MechanismType| side.mechanisms.contains(&m.to_string());
     #[cfg(feature = "kwp")]
@@ -735,9 +791,10 @@ pub(crate) fn side_rfc5649(side: &Side) -> bool {
     has(MechanismType::AES_KEY_WRAP_PAD)
 }
 
-/// The RFC 5649 key wrap a token offers, under the name it uses (docs/CAMIGRATE.md spike: one format,
-/// two mechanism IDs): `CKM_AES_KEY_WRAP_PAD`, or `CKM_AES_KEY_WRAP_KWP` where this build can name
-/// it (the `kwp` feature, with the Nix build's patched cryptoki).
+/// Returns the RFC 5649 key wrap that a token offers, under the name that the token uses. Phase 0
+/// in docs/CAMIGRATE.md found one format under two mechanism IDs: `CKM_AES_KEY_WRAP_PAD`, and
+/// `CKM_AES_KEY_WRAP_KWP`, which this build can name only with the `kwp` feature and the Nix
+/// build's patched cryptoki.
 pub(crate) fn rfc5649(tok: &Token) -> Option<Mechanism<'static>> {
     if tok.has(MechanismType::AES_KEY_WRAP_PAD) {
         return Some(Mechanism::AesKeyWrapPad);
@@ -749,8 +806,8 @@ pub(crate) fn rfc5649(tok: &Token) -> Option<Mechanism<'static>> {
     None
 }
 
-/// Whether a token offers `CKM_RSA_AES_KEY_WRAP` this build can name (the `kwp` feature), asked
-/// as [`rfc5649`] asks.
+/// Returns whether a token offers `CKM_RSA_AES_KEY_WRAP` and this build can name it (the `kwp`
+/// feature). It asks the token as [`rfc5649`] does.
 fn rsa_aes_key_wrap(tok: &Token) -> bool {
     #[cfg(feature = "kwp")]
     return tok.has(MechanismType::RSA_AES_KEY_WRAP);
@@ -761,17 +818,18 @@ fn rsa_aes_key_wrap(tok: &Token) -> bool {
     }
 }
 
-/// The smallest RSA transport key, in bits: what it protects is no better guarded than it, and
-/// the planner's direct-OAEP limit (`plan::OAEP_DIRECT_MAX`) assumes at least this.
-pub(crate) const TRANSPORT_MIN_BITS: usize = 2048;
+/// The smallest size of an RSA transport key, in bits. A key that the transport key protects is
+/// only as safe as the transport key, and the planner's limit for direct OAEP
+/// (`plan::OAEP_DIRECT_MAX`) assumes at least this size.
+pub(crate) const TRANSPORT_MIN_BITS: u64 = 2048;
 
-/// Refuse a transport key smaller than [`TRANSPORT_MIN_BITS`].
+/// Refuses a transport key smaller than [`TRANSPORT_MIN_BITS`].
 ///
 /// # Errors
 ///
-/// `Validation` for an SPKI that is no RSA key, or one too small.
+/// `Validation` (17) for an SPKI that is not an RSA key, or that is too small.
 pub(crate) fn check_transport_size(spki: &[u8]) -> Result<()> {
-    let bits = bit_len(&rsa_parts(spki)?.0);
+    let bits = cakeys_core::id::modulus_bits(&rsa_parts(spki)?.0);
     if bits < TRANSPORT_MIN_BITS {
         return Err(KmError::Validation(
             format!("a transport key is an RSA key of at least {TRANSPORT_MIN_BITS} bits; this one has {bits}").into(),
@@ -780,35 +838,29 @@ pub(crate) fn check_transport_size(spki: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// The length in bits of the big-endian `n` (as [`rsa_parts`] trims it): its bytes count whole,
-/// so a 2041-bit modulus is not 2048 (review 2026-11-23 C-20).
-fn bit_len(n: &[u8]) -> usize {
-    let skip = n.iter().take_while(|b| **b == 0).count();
-    n.get(skip).map_or(0, |b| (n.len() - skip) * 8 - b.leading_zeros() as usize)
-}
-
-/// An RSA public key's modulus and public exponent, from its SPKI.
+/// Returns an RSA public key's modulus and public exponent, from its SPKI.
 ///
 /// # Errors
 ///
-/// `Validation` for an SPKI that is no RSA key.
+/// `Validation` (17) for an SPKI that is not an RSA key.
 pub(crate) fn rsa_parts(spki: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     let key = rsa::PublicKey::from_public_key_der(spki)
         .map_err(|e| KmError::Validation(format!("the transport key is no RSA public key: {e}").into()))?;
     Ok((key.n().to_be_bytes_trimmed_vartime().to_vec(), key.e().to_be_bytes_trimmed_vartime().to_vec()))
 }
 
-/// The transport public key's material, for the session object the source wraps to
-/// (`templates::session`'s `TransportKey`).
-fn rsa_public(transport: &TransportKey) -> Result<Vec<Attribute>> {
-    let (n, e) = rsa_parts(&transport.spki)?;
+/// Returns the transport public key's material, for the session object to which the source wraps
+/// (the `TransportKey` template of `templates::session`).
+fn rsa_public(spki: &[u8]) -> Result<Vec<Attribute>> {
+    let (n, e) = rsa_parts(spki)?;
     Ok(vec![Attribute::Modulus(n), Attribute::PublicExponent(e)])
 }
 
-/// Whether an export wraps a key of `method` and `exposure` under the KEK it shares with the
-/// other composed keys: a composed key that is not `enforced` (that one carries its own), from a
-/// source with RFC 5649 and AES key generation (else each goes by `CKM_RSA_AES_KEY_WRAP`, AWS
-/// `CloudHSM` \[run\]). The export and the plan decide it alike.
+/// Returns whether an export wraps a key of `method` and `exposure` under the KEK that it shares
+/// with the other composed keys. This is true for a composed key that is not `enforced` (an
+/// enforced key carries its own KEK), from a source with RFC 5649 and AES key generation.
+/// Otherwise, each key is wrapped by `CKM_RSA_AES_KEY_WRAP`, as on AWS `CloudHSM` \[run\]. The
+/// export and the plan both decide this with this function.
 pub(crate) fn shares_kek(method: &Method, exposure: Exposure, rfc5649: bool, aes_key_gen: bool) -> bool {
     matches!(method, Method::RsaOaepAesKwp(_)) && exposure != Exposure::Enforced && rfc5649 && aes_key_gen
 }
@@ -819,24 +871,25 @@ mod tests {
     use cryptoki::context::Function;
     use cryptoki::error::{Error as CkError, RvError};
 
-    /// A transport key's size is its modulus's bits, not its bytes times eight: a 2041- to
-    /// 2047-bit key is under the 2048 minimum (review 2026-11-23 C-20).
+    /// Checks that a transport key's size is the bit length of its modulus (`id::modulus_bits`),
+    /// not its byte length times eight. A key of 2041 to 2047 bits is under the 2048-bit minimum
+    /// (review 2026-11-23 C-20).
     #[test]
-    fn a_modulus_counts_its_bits() {
-        let modulus = |top: u8| [&[top][..], &[0xff; 255]].concat();
-        assert_eq!(bit_len(&modulus(0x80)), 2048);
-        assert_eq!(bit_len(&modulus(0x7f)), 2047);
-        assert_eq!(bit_len(&modulus(0x01)), 2041);
-        assert_eq!(bit_len(&[&[0, 0][..], &modulus(0x80)].concat()), 2048, "leading zero bytes count nothing");
-        assert_eq!(bit_len(&[0, 0]), 0);
-        assert_eq!(bit_len(&[]), 0);
+    fn a_transport_key_counts_its_bits() {
+        let spki = |top: u8| cakeys_core::id::rsa_spki(&[&[top][..], &[0xff; 255]].concat(), &[1, 0, 1]).unwrap();
+        check_transport_size(&spki(0x80)).unwrap();
+        for top in [0x7f, 0x01] {
+            let e = check_transport_size(&spki(top)).unwrap_err();
+            assert!(e.exit_code() == 17 && e.to_string().contains("this one has 204"), "{top:#x}: {e}");
+        }
     }
 
-    /// A failed unwrap is 13 ("tampered with") only when the module says the blob is bad; a
-    /// refused mechanism, parameter, unwrapping key or template is the target's 15, and the
-    /// device, session or login failing is 16. A module that fails and says no more is 16 said as
-    /// what may be a damaged bundle (kryoptic's `CKR_DEVICE_ERROR` for a tampered blob \[run\]),
-    /// never a PIN or session error. Each keeps the return value it came with.
+    /// Checks that a failed unwrap is 13 ("tampered with") only when the module says that the blob
+    /// is bad. A refused mechanism, parameter, unwrapping key or template is the target's refusal
+    /// (15), and a failure of the device, the session or the login is 16. When a module fails and
+    /// gives no detail, the error is 16, and its message says that the bundle may be damaged
+    /// (kryoptic returns `CKR_DEVICE_ERROR` for a tampered blob \[run\]). A PIN or session error
+    /// never gets that message. Each error keeps the return value that it came with.
     #[test]
     fn an_unwrap_failure_is_tampering_only_when_the_data_is_bad() {
         let unsupported = |m: String| KmError::Unsupported(m.into());
@@ -872,7 +925,8 @@ mod tests {
             assert_eq!(e.to_string().contains("damaged or altered bundle"), opaque.contains(&rv), "{rv:?}: {e}");
             assert_eq!(e.rv(), cakeys_pkcs11::token::rv_value(rv), "{rv:?}");
         }
-        // A mechanism this build cannot name is the target's refusal, not a tampered bundle.
+        // A mechanism that this build cannot name is the target's refusal (15), not a tampered
+        // bundle.
         assert_eq!(unwrap_error("x", &CkError::NotSupported, unsupported).exit_code(), 15);
     }
 }

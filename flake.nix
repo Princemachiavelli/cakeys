@@ -134,6 +134,19 @@
           # What the tests reach, and what they would not notice changing (nix/package-crane.nix):
           # reports, not checks.
           inherit (local.cakeys-crane) coverage mutants spec-coverage;
+          # The mutation gate over reports of cakeys-crane.mutantsTier (nix/mutants-baseline.py,
+          # .github/workflows/mutants.yml), from the checkout the reports were built from:
+          # `nix run .#mutants-gate -- --mode diff <report>...`. Its own tests run as it builds, and
+          # two of them read the committed baseline: it loads within its `max`, and a copy of it
+          # in report mode, once seeded, passes and then fails on one new survivor.
+          mutants-gate = pkgs.runCommand "cakeys-mutants-gate" { meta.mainProgram = "mutants-gate"; } ''
+            ${pkgs.python3}/bin/python3 -I ${./nix/mutants-baseline-tests.py} ${./nix/mutants-baseline.py} \
+              ${./nix/mutants-baseline.toml}
+            mkdir -p $out/bin
+            printf '#!%s\nexec %s -I %s "$@"\n' ${pkgs.runtimeShell} ${pkgs.python3}/bin/python3 \
+              ${./nix/mutants-baseline.py} >$out/bin/mutants-gate
+            chmod +x $out/bin/mutants-gate
+          '';
           # Every check but the fuzz smoke run and the Kani proofs, whose builds cannot reuse
           # crane's dependencies: the gate while working (`nix build .#checks-crane-only`);
           # `nix flake check` adds those two.
@@ -228,6 +241,7 @@
             fuzz
             softhsm-unwrap-value-len-tested
             ;
+          kani-library-lock = local.kani.libraryLock;
           # Every check runs the crane build (packages.cakeys-crane).
           cakeys = local.cakeys-crane;
           demo = local.demo-crane;
@@ -263,6 +277,9 @@
                 local.pkcs11-check
                 # crates/core/spec/lock.qnt, and the model-based test that runs it.
                 quint
+                # The unit tier of the mutation gate, run here: `cargo mutants -p <crate> --in-diff
+                # <(git diff …)` (scripts/mutants-diff.sh runs both tiers on the Linux builder).
+                cargo-mutants
               ]
               # The TPM stack the tpm2 tests and probes run on (nix/tpm2-test-env.sh).
               ++ lib.optionals isLinux [

@@ -240,6 +240,7 @@ dependencies = [
  "cakeys-cli-common",
  "cakeys-core",
  "cakeys-pkcs11",
+ "cakeys-profile",
  "clap",
  "clap_complete",
  "cmac",
@@ -278,9 +279,12 @@ dependencies = [
  "cakeys-tpm2-pkcs11",
  "cakeys-ykcs11",
  "clap",
+ "cryptoki",
+ "p11-fault",
  "serde",
  "serde_json",
  "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -292,6 +296,7 @@ dependencies = [
  "base64",
  "bp256",
  "bp384",
+ "cakeys-names",
  "der",
  "ecdsa",
  "ed25519-dalek",
@@ -333,19 +338,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "cakeys-names"
+version = "0.1.0"
+
+[[package]]
 name = "cakeys-pkcs11"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "aes-kw",
  "cakeys-core",
+ "cakeys-names",
  "cakeys-profile",
+ "cmac",
  "cryptoki",
  "cryptoki-sys",
  "der",
+ "des",
  "getrandom 0.4.3",
+ "hmac",
  "libc",
  "p11-names",
  "rsa",
+ "sha1",
+ "sha2",
  "toml",
  "x509-cert",
  "zeroize",
@@ -355,6 +371,7 @@ dependencies = [
 name = "cakeys-profile"
 version = "0.1.0"
 dependencies = [
+ "cakeys-names",
  "serde",
  "tempfile",
  "toml",
@@ -443,6 +460,7 @@ dependencies = [
  "base64",
  "cakeys-cli-common",
  "cakeys-core",
+ "cakeys-names",
  "cakeys-pkcs11",
  "cakeys-profile",
  "clap",
@@ -452,8 +470,11 @@ dependencies = [
  "des",
  "getrandom 0.4.3",
  "p11-fault",
+ "p256",
+ "rsa",
  "serde",
  "serde_json",
+ "sha1",
  "sha2",
  "toml",
  "x509-cert",
