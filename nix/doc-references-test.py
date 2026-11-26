@@ -163,8 +163,15 @@ class Scripts(Case):
         self.assertTrue(got[1].startswith("nix/demo.sh:3: "), got)
 
     def test_a_script_naming_a_code_passes(self):
-        write(self.root, {"scripts/x.sh": '[ "$rc" = 0 ] || [ "$rc" = 22 ] || exit 17\nargs[1]=x\n'})
+        write(self.root, {"scripts/x.sh": '[ "$rc" = 0 ] || [ "$rc" = 15 ] || exit 17\nargs[1]=x\n'})
         self.assertEqual(self.misses(), [])
+
+    def test_a_script_comparing_with_the_lock_written_code_fails(self):
+        lines = ['[ "$rc" = 22 ]', "[[ $rc == 22 ]]", "[ $rc -eq 22 ]", "[ \"$rc\" -ne '22' ]", "[ $n = 220 ]"]
+        write(self.root, {"scripts/x.sh": "\n".join(lines) + "\n"})
+        got = self.misses()
+        self.assertEqual([m.split(": ")[0] for m in got], [f"scripts/x.sh:{n}" for n in range(1, 5)], got)
+        self.assertIn("compared with 22", got[0])
 
 
 class Lists(Case):
