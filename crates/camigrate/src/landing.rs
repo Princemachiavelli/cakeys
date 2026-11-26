@@ -170,8 +170,10 @@ fn static_checks(p: &mut plan::Plan, dst: &Target, provider: &str, registry: &Re
 /// What a ready plan `p` that lands on the open token `to` now (a move's) must pass there, as
 /// the write asks it of `to` before anything is created: the import's own checks
 /// (`ops::check_import`) and a locator nothing would collide with ([`public::free_locator`];
-/// review 2026-11-24 D-3: only the run asked it, and refused 13 after a ready plan). A pair the
-/// lock records there already is verified by the run, and moves nothing.
+/// review 2026-11-24 D-3: only the run asked it, and refused 13 after a ready plan), and the
+/// public half there to reuse holding the spec's `publicAttributes`, which the run's record
+/// asks (13; the exact twin saw a ready plan refused so on p11-kit). A pair the lock records
+/// there already is verified by the run, and moves nothing.
 fn landed_checks(p: &mut plan::Plan, dst: &Target, to: &Token, lock: &Lock) {
     if !p.ready || lock.realisation(dst.spec_name, dst.token_name).is_some() {
         return;
@@ -184,6 +186,9 @@ fn landed_checks(p: &mut plan::Plan, dst: &Target, to: &Token, lock: &Lock) {
         Err(e) => return p.refuse(e),
     };
     let landed = public::free_locator(dst, to, spki.as_deref()).and_then(|occupied| {
+        if let Some(h) = occupied.public_half {
+            to.check_public_half(h, dst.spec, &dst.on_token.locator, true)?;
+        }
         if p.method == Some(Method::Tpm2Ptool) { host::ptool_free(dst, &occupied) } else { Ok(()) }
     });
     if let Err(e) = landed {

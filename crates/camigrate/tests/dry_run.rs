@@ -2515,7 +2515,8 @@ fn landing_checks_follow_the_spec_named() {
 /// The host path's guards (docs/CAMIGRATE.md D6), into `SoftHSM` behind p11-kit, where the plan
 /// sends an EC key through the host: another key under the target locator is never imported
 /// over (13); a public half of the key already there is reused, and when it is not what the
-/// target spec's `publicAttributes` say, the private key just created is removed again (13);
+/// target spec's `publicAttributes` say, the plan refuses it, dry and real, before anything is
+/// created (13; the run once created the private key, then removed it again);
 /// a target session without login cannot tell the locator is free (16).
 #[test]
 fn host_moves_refuse_what_they_cannot_check() {
@@ -2574,7 +2575,7 @@ fn host_moves_refuse_what_they_cannot_check() {
     // 2026-11-23 C-21).
     assert!(stderr(&o).contains("`cakeys lock --spec hg-dst --token p11kit` records it"), "{}", stderr(&o));
 
-    // The key's own public half, but without CKA_VERIFY: reused, then refused, the import undone.
+    // The key's own public half, but without CKA_VERIFY: refused before the import.
     let source = open_session(&soft.module, soft.token_label, "1234");
     let public = source
         .find_objects(&[Attribute::Class(ObjectClass::PUBLIC_KEY), Attribute::Label(b"hg-src".to_vec())])
@@ -2600,7 +2601,6 @@ fn host_moves_refuse_what_they_cannot_check() {
     drop(t);
     let o = migrate("hg-dst", "p11kit");
     assert_eq!(code(&o), 13, "{}", stderr(&o));
-    assert!(stderr(&o).contains("removed 1 object(s) just imported"), "{}", stderr(&o));
     let left =
         target().find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY), Attribute::Label(b"hg-dst".to_vec())]);
     assert_eq!(left.unwrap().len(), 0, "the imported private key was left on the target");

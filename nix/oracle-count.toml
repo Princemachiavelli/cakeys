@@ -4,7 +4,7 @@
 # with more fails the check, and a file not named here may have none. `--write` lowers each
 # number to the source's and never raises one: a raise is a hand edit, and its commit says why.
 
-"crates/camigrate/tests/dry_run.rs" = 56
+"crates/camigrate/tests/dry_run.rs" = 55
 "crates/camigrate/tests/fault.rs" = 4
 "crates/camigrate/tests/from_files.rs" = 8
 "crates/caprobe/tests/fault.rs" = 1
