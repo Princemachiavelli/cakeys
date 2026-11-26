@@ -163,7 +163,7 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 | `caprobe/tests/supports.rs` | `cargo test --workspace` | `caprobe supports` against the embedded profiles, a layer, a hardware pair, a class and `--profiles` |
 | `packages.coverage` | by hand: `nix build .#coverage`; CI on `main` (the README badge) | `cargo-llvm-cov` over the whole test run, token suites included (the tests spawn instrumented binaries). `result/summary.txt` gives each file's line, region and function coverage; `result/missing.txt` its uncovered line numbers; `result/html/index.html` every source file with the uncovered lines and regions marked; `result/uncovered-functions.txt` the functions no test entered; `result/lcov.info` the same data for an editor. A report, never a check |
 | `apps.coverage-full` | by hand, on the host: `nix run .#coverage-full` (scripts/coverage-full.sh) | the same measurement outside the sandbox (the suites as `scripts/local-tests.sh` runs them), then the opt-in hardware suites into the same report when their variables are set: the YubiKey suites (`CAKEYS_TEST_YUBIKEY_PIN`, `_MGM`; `CAKEYS_YUBIKEY_WIPE=1` empties the test slots 90-95 with scripts/yubikey-empty-slots.py, the management key alone, so camigrate's import runs and cakeys' suite generates every key) and the real-TPM suites (`CAKEYS_FTPM_PROFILE`, `CAKEYS_FTPM_ATTEST=1`), one test at a time, stopping at a failure; the TPM's persistent handles and lockout counter are compared before and after. `target/coverage-full/`, with `suites.txt` naming what ran |
-| `packages.mutants` | by hand: `nix build .#mutants`; CI: the unit tier of `.github/workflows/mutants.yml` (the README badge, monthly) | `cargo-mutants` over the code whose own unit and property tests are its tests (`core`, `profile`, camigrate's planner, bundle, key file and transport file), each package's mutants against that package's tests: `result/<package>/missed.txt` lists the changes no test noticed. `cakeys-crane.mutantsOf { package; files; re ? null; }` does one package's files (`re` keeping only the mutants whose name matches, e.g. one function) against every crate's tests, the token suites included (cargo-nextest, a token set per test; minutes for each mutant no test catches). archive/COVERAGE_PLAN.md lists what is left and why. A report, never a check |
+| `packages.mutants` | by hand: `nix build .#mutants`; CI: `.github/workflows/mutants.yml` on each pull request, weekly and monthly | the unit tier of the mutation gate: cargo-mutants over the unit tier's files of `nix/mutants-scopes.toml`, each package's mutants against that package's own tests. `result/<scope>/missed.txt` lists the mutants that no test caught. The gate itself, its token tier and its baseline are in "Mutation testing" below |
 | `tests/yubikey.rs` | opt-in, never in the Nix build (`CAKEYS_TEST_YUBIKEY_MODULE`, `_PIN`, `_MGM` — file paths; the secrets are only ever read from them) | a real YubiKey, read-write: generate into the scratch PIV slot `0x95` in an SO step, then (back as the user) attest it and prove possession by signing, record, verify; `delete` refused (15) with the realisation kept; re-lock idempotent — each CLI run bounded, so a touch or PIN prompt fails instead of waiting (`rw_lifecycle_generates_attests_proves_and_refuses_delete_without_touch`) |
 | `checks.vm` / `test-nspawn` | QEMU / systemd-nspawn | the CLI flow; in the VM also the pseudo-FOD consumer built in the guest sandbox |
 | `checks.module`, `checks.tpm`, `checks.lib` | QEMU / eval | module, hook, pcscd, TPM ACL, Nix library |
@@ -177,6 +177,7 @@ on. These rules have no exceptions; if a task cannot be done within them, stop a
 | `checks.formatting` | treefmt | `nix fmt` would change nothing: the formatters and linters in `treefmt.nix` (rustfmt with `rustfmt.toml`, nixfmt, taplo, shfmt, rumdl, keep-sorted, statix, deadnix, shellcheck, typos) |
 | `checks.test-count` | sandbox | no test binary has fewer tests in its source than `nix/test-count.toml` says (`nix/test-count.py`, its own tests in `nix/test-count-tests.py` first); "No test goes unnoticed" below |
 | `checks.oracle-count` | sandbox | no integration test file has more prose assertion sites (an assert whose subject is `.contains(…)` on a tool's stderr, stdout or rows) than `nix/oracle-count.toml` gives it, and a file it does not name has none; exit-code sites are counted, not limited (`nix/oracle-count.py`, its fixture tests in `nix/oracle-count-tests.py` first). A refusal asserts its exit, the rule its row names and the state it left through `Workdir::refused` (`crates/cli/tests/common/state.rs`) instead. It also fails on a number above its file's count, so a site removed lowers the manifest in the same diff (as `claims` does); `--write` lowers the numbers, never raises them |
+| `checks.mutants-scopes` | sandbox | every source file of a workspace crate is in a scope of the mutation gate's tiers or is left out with a reason, every pattern in `nix/mutants-scopes.toml` matches a source file, and every part of a scope's `re` matches a function (`nix/mutants-scopes.py`, its fixture tests in `nix/mutants-scopes-tests.py` first). A new crate, a new file, and a renamed file or function fail it until the scopes decide them ("Mutation testing" below) |
 | `scripts/xversion.sh` | by hand, per refactor | a lock recorded by one build verifies, compares and re-records byte-identically with another (every class) |
 
 `tests/yubikey.rs` and the camigrate YubiKey import (`crates/camigrate/tests/yubikey.rs`) are
@@ -213,6 +214,106 @@ variables, and only for that suite's pass.
 fails when a binary that the run's cargo arguments build ran other tests than its source has: a
 binary lost, or a test left out. With nextest arguments, local-tests only reports. Every nextest
 run passes `--no-tests=fail`.
+
+### Mutation testing
+
+A mutant is a small change that cargo-mutants makes to the code, such as `==` replaced by `!=`,
+or a function body replaced by a default value. A test run that fails on the mutant catches it.
+A mutant with which every test still passes is a survivor, and it marks a decision in the code
+that no test checks. The mutation gate compares the survivors with a list of the survivors that
+may stay, so that a change cannot add an unchecked decision without a reason.
+
+**What is mutated.** `nix/mutants-scopes.toml` lists the source files in two tiers, and
+`nix/package-crane.nix` reads it.
+
+- The unit tier holds code whose own package's tests can catch its mutants: `cakeys-core`,
+  `cakeys-names`, `cakeys-profile`, camigrate's plan, bundle, file, transport, side and trust
+  files, the tpm2-pkcs11 attestation (Linux only), kmsp11, aws-cloudhsm and ykcs11's
+  attestation verifier. cargo-mutants runs only the mutated package's tests, so a mutant takes
+  seconds. The tier has about 2,300 mutants.
+- The token tier holds code that only the token suites reach: pkcs11's token operations and
+  rules, camigrate's verbs, caprobe's probes and cli-common. cargo-mutants first runs the
+  mutated package's own tests. For each mutant that those tests miss, it then runs every
+  crate's tests under cargo-nextest with a token set per test, except the kryoptic, p11-kit,
+  surface and harness test binaries. A mutant takes minutes there. The tier has about 1,800
+  mutants.
+- The table `left-out` gives the reason for every other source file.
+- `checks.mutants-scopes` (T0) compares the file with the workspace. A new crate, a new file,
+  and a renamed file or function fail that check until the file lists them.
+
+**The baseline.** `nix/mutants-baseline.toml` lists the survivors that may stay, by file, and
+`nix/mutants-baseline.py` (`nix run .#mutants-gate`) compares a report with it.
+
+- An entry's key is `<function>: <genre> <original>→<replacement>`, with a space and `#k` added
+  for the k-th identical key in one function. The key holds no line number, so an edit above a
+  mutant does not change its key.
+- An entry's value is the reason that the mutant may stay: a string for a reviewed entry, or
+  `{ why = "seeded <date>", reviewed = false }` for an entry that a sweep added and that no one
+  has reviewed yet.
+- The gate fails on a survivor that the baseline does not list. The weekly run also fails on an
+  entry whose mutant it caught, and the monthly sweep also fails on an entry that is no longer a
+  survivor (`--write` removes such entries).
+- The gate fails when the baseline has more entries than `max`. `--write` never raises `max`, so
+  a new entry needs `max` raised by hand in the same diff, with the entry's reason.
+- Timeouts and unviable mutants are listed in the output and never fail the gate.
+- While the baseline says `enforce = false`, the gate is in report mode: it prints what would
+  fail and exits 0. The commit that adds the seeded baseline sets `enforce = true` (the steps
+  are below).
+
+**CI** (`.github/workflows/mutants.yml`, x86_64 Linux):
+
+- On a pull request, the gate mutates only the lines that the change touches (`--in-diff`). The
+  unit tier is the job `unit`, which is to be a required check beside `checks / light`. The
+  token tier is T1, in 4 shards. It fails when the first pass leaves more than 120 mutants,
+  instead of testing a sample: split the change, or run the token tier on a Linux builder
+  (below) and record the run in `Ran:`.
+- Every Monday at 02:00 UTC, both tiers run on the last week's changes to `main`. On the first
+  Monday of a month, the sweep runs instead: every mutant of both tiers, with the unit tier in 4
+  shards, the token tier's first pass in 4 and its second pass in 16. The sweep publishes the
+  README's badge (the caught mutants of the viable ones).
+- Every gate writes `missed.md`: the survivors by file and function, each function with the
+  `Check` and `Rule` variants that it names, and each survivor with its baseline status (new,
+  not reviewed or reviewed). A pull request's and a week's `missed.md` are in the job summary.
+  The sweep uploads its `missed.md` as the artifact `mutants-missed`, and a review starts from it
+  ([REVIEWING.md](REVIEWING.md), "Start from the survivors").
+- By hand: `gh workflow run mutants.yml -f run=sweep`, `-f run=weekly` or `-f run=calibrate`.
+  The calibration runs both passes of the token tier over `crates/pkcs11/src/token/policy.rs`
+  (66 mutants) and writes the time per mutant into the summary of each `tokens` job.
+
+**Locally.**
+
+- `scripts/mutants-diff.sh [--tokens] [BASE]` runs a pull request's gate on this machine's
+  Linux builder, over the diff since BASE (`origin/main` by default): the unit tier, and with
+  `--tokens` the token tier too.
+- On darwin, the unit tier also runs outside Nix, for every crate but cakeys-tpm2-pkcs11, which
+  darwin does not build: `nix develop -c cargo mutants -p <crate> --in-diff <(git diff origin/main)`.
+- `cakeys-crane.mutantsOf { package; files; re ? null; }` runs one scope with the token suites
+  (`nix/package-crane.nix` shows the command).
+
+**When the gate fails on a survivor,** write a test that fails on the mutant, and see it fail by
+applying the mutant by hand. If the mutant changes nothing that a test can observe, add its
+entry with that reason instead, and raise `max` by one in the same commit.
+
+**Seeding the baseline.** This is done once, and the gate stays in report mode until it is done.
+
+1. Run `gh workflow run mutants.yml --ref main -f run=calibrate`, and read the time per mutant
+   in the summaries of its two `tokens` jobs. The sweep's 16 token shards must each end within
+   the job limit of 355 minutes, after a build of about 30 minutes: about 1,800 mutants, less
+   those that the first pass catches, divided by 16, times the time per mutant. If that is more
+   than about 300 minutes, raise the third number in the `sweep` case of the `plan` job
+   (`set -- 4 4 16`) before step 2.
+2. Run `gh workflow run mutants.yml --ref main -f run=sweep`. The sweep's gate passes in report
+   mode, and the job `sweep` uploads the artifacts `mutants-baseline-seeded` (the baseline with
+   every survivor listed as `{ why = "seeded <date>", reviewed = false }` and `max` set to their
+   count) and `mutants-missed`. The job `sweep` runs only when every shard succeeded: if a shard
+   ran out of time, raise that tier's shard count and run the sweep again.
+3. Run `gh run download <run-id> -n mutants-baseline-seeded -D /tmp/seed`. Copy
+   `/tmp/seed/mutants-baseline.toml` over `nix/mutants-baseline.toml`, change
+   `enforce = false` to `enforce = true`, run `nix fmt -- nix/mutants-baseline.toml`, and commit
+   with the run's URL in `Ran:`. Commit it before other Rust changes reach `main`, because the
+   seed lists the survivors of the commit that the sweep ran on.
+4. In the repository's settings, make the job `unit` of the workflow `mutants` a required status
+   check for `main`.
 
 ### Golden files
 
