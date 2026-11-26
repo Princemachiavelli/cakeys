@@ -304,26 +304,17 @@ impl Token {
             KmError::Unsupported(format!("{} commitment ({}): {e}", c.scheme(), commit_mechanism(c)).into())
                 .with_rv(rv_of(&e))
         };
+        let m = operation(c);
         match c {
-            Commit::Hmac(hash) => {
-                let m = match hash {
-                    HmacHash::Sha1 => Mechanism::Sha1Hmac,
-                    HmacHash::Sha224 => Mechanism::Sha224Hmac,
-                    HmacHash::Sha256 => Mechanism::Sha256Hmac,
-                    HmacHash::Sha384 => Mechanism::Sha384Hmac,
-                    HmacHash::Sha512 => Mechanism::Sha512Hmac,
-                };
-                s.sign(&m, h, &input).map_err(fail)
-            }
-            Commit::Cmac => s.sign(&Mechanism::AesCMac, h, &input).map_err(fail),
-            Commit::KcvEcb(cipher) => s.encrypt(&ecb(cipher), h, &input).map_err(fail),
-            Commit::KcvEcbDecrypt(cipher) => s.decrypt(&ecb(cipher), h, &input).map_err(fail),
+            Commit::Hmac(_) | Commit::Cmac => s.sign(&m, h, &input).map_err(fail),
+            Commit::KcvEcb(_) => s.encrypt(&m, h, &input).map_err(fail),
+            Commit::KcvEcbDecrypt(_) => s.decrypt(&m, h, &input).map_err(fail),
             Commit::Kw => {
                 let mut template = self.session_template(SessionKey::KwInput)?;
                 template.push(Attribute::Value(input));
                 let fixed = s.create_object(&template).map_err(fail)?;
                 let fixed = SessionObject::new(s, fixed);
-                s.wrap_key(&Mechanism::AesKeyWrap, h, fixed.handle()).map_err(fail)
+                s.wrap_key(&m, h, fixed.handle()).map_err(fail)
             }
         }
     }
@@ -368,26 +359,27 @@ impl Token {
     }
 }
 
-/// The mechanism a commitment computes with.
+/// The mechanism a commitment computes with: [`Commit::mechanism`]'s, the names table's
+/// (`cakeys_names::CommitKind::mechanism`), as cryptoki has it.
 #[must_use]
 pub fn commit_mechanism(c: Commit) -> MechanismType {
-    match c {
-        Commit::Hmac(HmacHash::Sha1) => MechanismType::SHA1_HMAC,
-        Commit::Hmac(HmacHash::Sha224) => MechanismType::SHA224_HMAC,
-        Commit::Hmac(HmacHash::Sha256) => MechanismType::SHA256_HMAC,
-        Commit::Hmac(HmacHash::Sha384) => MechanismType::SHA384_HMAC,
-        Commit::Hmac(HmacHash::Sha512) => MechanismType::SHA512_HMAC,
-        Commit::Cmac => MechanismType::AES_CMAC,
-        Commit::KcvEcb(cipher) | Commit::KcvEcbDecrypt(cipher) => ecb(cipher).mechanism_type(),
-        Commit::Kw => MechanismType::AES_KEY_WRAP,
-    }
+    operation(c).mechanism_type()
 }
 
-/// The ECB mechanism of a key check value's cipher.
-fn ecb(cipher: BlockCipher) -> Mechanism<'static> {
-    match cipher {
-        BlockCipher::Aes => Mechanism::AesEcb,
-        BlockCipher::Des3 => Mechanism::Des3Ecb,
+/// The operation [`Token::commit`] runs for a commitment, as cryptoki names it: the one place
+/// the token side spells a commitment's mechanism, held to the names table by
+/// `commitment_mechanisms_are_pinned`.
+fn operation(c: Commit) -> Mechanism<'static> {
+    match c {
+        Commit::Hmac(HmacHash::Sha1) => Mechanism::Sha1Hmac,
+        Commit::Hmac(HmacHash::Sha224) => Mechanism::Sha224Hmac,
+        Commit::Hmac(HmacHash::Sha256) => Mechanism::Sha256Hmac,
+        Commit::Hmac(HmacHash::Sha384) => Mechanism::Sha384Hmac,
+        Commit::Hmac(HmacHash::Sha512) => Mechanism::Sha512Hmac,
+        Commit::Cmac => Mechanism::AesCMac,
+        Commit::KcvEcb(BlockCipher::Aes) | Commit::KcvEcbDecrypt(BlockCipher::Aes) => Mechanism::AesEcb,
+        Commit::KcvEcb(BlockCipher::Des3) | Commit::KcvEcbDecrypt(BlockCipher::Des3) => Mechanism::Des3Ecb,
+        Commit::Kw => Mechanism::AesKeyWrap,
     }
 }
 
@@ -417,7 +409,8 @@ mod tests {
         assert_eq!(commit_mechanism(Commit::KcvEcb(BlockCipher::Des3)), MechanismType::DES3_ECB);
         assert_eq!(commit_mechanism(Commit::KcvEcbDecrypt(BlockCipher::Des3)), MechanismType::DES3_ECB);
         assert_eq!(commit_mechanism(Commit::Kw), MechanismType::AES_KEY_WRAP);
-        // The name core filters a declared CKA_ALLOWED_MECHANISMS by is this mechanism's.
+        // The name core filters a declared CKA_ALLOWED_MECHANISMS by, and a profile's `commit.*`
+        // row was measured with (the names table's), is the mechanism the token runs.
         let all = [
             Commit::Cmac,
             Commit::KcvEcb(BlockCipher::Aes),

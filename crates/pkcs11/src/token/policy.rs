@@ -58,8 +58,9 @@ impl Token {
             }
         }
         if let Some(bits) = object.modulus_bits {
-            // A big integer may come with leading zero bytes: they are not part of its size.
-            let size = |m: &[u8]| m.iter().skip_while(|b| **b == 0).count() as u64 * 8;
+            // Its significant bits: a 2047-bit key is no 2048-bit one, whatever its bytes
+            // (review 2026-11-24 B-5).
+            let size = id::modulus_bits;
             match self.attr(h, AttributeType::Modulus)? {
                 Some(Attribute::Modulus(m)) if size(&m) == bits => {}
                 other => {

@@ -367,8 +367,9 @@ and Q14 (one opener for cakeys and camigrate).
   (`templates::public_defaults`; generation and the sealed import share
   `with_public_default_dropped`); the probe's own templates still spell them, which §4(c)
   moves onto `Provider::template`. The probe generates on `Curve::ALL`, core's list, not the
-  baseline's names filtered through `Curve::from_cfg`; the baseline keeps its own spellings,
-  and `the_profiles_name_every_curve_cakeys_has` holds them to core's.
+  baseline's names filtered through `Curve::from_cfg`; the baseline kept its own spellings,
+  held to core's by a test. Since review 2026-11-24 P4 both are the names table's
+  (`crates/names`), core's held to it by `the_curves_are_the_names_tables`.
 - **Q15. Naming**: `EcdsaHash` is also the RSA hash type (about forty uses);
   `RsaPadding::OaepSha512` sits beside `Oaep(OaepHash)` because `OaepHash` names frozen
   transport methods. **Done 2026-11-17, in part:** `EcdsaHash` is `HashAlg`. `OaepSha512`

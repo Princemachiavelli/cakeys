@@ -44,7 +44,7 @@ mod secrets;
 mod wraps;
 
 pub(crate) use asymmetric::RSA_SIZES;
-use asymmetric::{MONTGOMERY, operate, probe_curves, probe_rsa};
+use asymmetric::{montgomery, operate, probe_curves, probe_rsa};
 use bound::probe_bound;
 use scratch::{Scratch, write_probes};
 use wraps::{probe_key_wraps, probe_wrapping, rsa_aes_key_wrap};
@@ -1285,7 +1285,7 @@ mod tests {
     /// that accept the first try, and cakeys would then record a curve it can generate as refused.
     #[test]
     fn a_montgomery_fallback_is_never_stricter_than_the_first_try() {
-        let (public, with_usage, private) = montgomery_templates(MONTGOMERY[0].1);
+        let (public, with_usage, private) = montgomery_templates(montgomery()[0].1);
         let first: Vec<_> = public.iter().chain(&with_usage).collect();
         let fallback: Vec<_> = public.iter().chain(&private).collect();
         for attr in &fallback {

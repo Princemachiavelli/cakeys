@@ -583,17 +583,25 @@ impl Binding {
         }
     }
 
-    /// The name keys.toml and the lock write.
+    /// The proof of possession it is, in the names table the capability profiles share
+    /// (`cakeys_names::Proof`); `None` for `token-asserted`, which proves nothing.
+    #[must_use]
+    pub fn proof(self) -> Option<cakeys_names::Proof> {
+        use cakeys_names::Proof;
+        match self {
+            Binding::PopSign => Some(Proof::PopSign),
+            Binding::PopSignPin => Some(Proof::PopSignPin),
+            Binding::PopEcdh => Some(Proof::PopEcdh),
+            Binding::PopDecrypt => Some(Proof::PopDecrypt),
+            Binding::PopUnwrap => Some(Proof::PopUnwrap),
+            Binding::TokenAsserted => None,
+        }
+    }
+
+    /// The name keys.toml and the lock write: its proof's ([`Binding::proof`]).
     #[must_use]
     pub fn name(self) -> &'static str {
-        match self {
-            Binding::PopSign => "pop-sign",
-            Binding::PopSignPin => "pop-sign-pin",
-            Binding::PopEcdh => "pop-ecdh",
-            Binding::PopDecrypt => "pop-decrypt",
-            Binding::PopUnwrap => "pop-unwrap",
-            Binding::TokenAsserted => "token-asserted",
-        }
+        self.proof().map_or("token-asserted", cakeys_names::Proof::name)
     }
 
     /// The proof a capability row names (`prove.<proof>.…`, docs/CAPROBE.md): the binding's,
@@ -602,8 +610,7 @@ impl Binding {
     pub fn proof_name(self) -> Option<&'static str> {
         match self {
             Binding::PopSignPin => Some(Binding::PopSign.name()),
-            Binding::TokenAsserted => None,
-            proven => Some(proven.name()),
+            proven => proven.proof().map(cakeys_names::Proof::name),
         }
     }
 }
@@ -804,6 +811,20 @@ pub(super) mod tests {
         assert_eq!(Binding::PopDecrypt.rank(), Binding::PopSign.rank());
         assert_eq!(Binding::PopUnwrap.rank(), Binding::PopSign.rank());
         assert_eq!(Binding::TokenAsserted.to_string(), "token-asserted");
+    }
+
+    /// Every proof of the names table is a binding keys.toml and the lock read by that name
+    /// (serde's spelling, which the format freezes, and [`Binding::name`] alike), so a binding,
+    /// its `prove.*` row and the profiles' `Proof` are one name.
+    #[test]
+    fn every_proof_is_a_binding_by_its_name() {
+        for p in cakeys_names::Proof::ALL {
+            let b: Binding = serde_json::from_value(serde_json::json!(p.name())).unwrap();
+            assert_eq!((b.proof(), b.name()), (Some(p), p.name()), "{p:?}");
+            assert_eq!(serde_json::to_value(b).unwrap(), serde_json::json!(b.name()), "{p:?}");
+        }
+        assert_eq!(Binding::TokenAsserted.proof(), None);
+        assert_eq!(serde_json::to_value(Binding::TokenAsserted).unwrap(), "token-asserted");
     }
 
     /// A minimal valid lock with one object and realisation, for the attestation-invariant
