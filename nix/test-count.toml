@@ -5,7 +5,7 @@
 # as it is.
 
 cakeys-aws-cloudhsm = 4
-cakeys-cli-common = 7
+cakeys-cli-common = 8
 "cakeys-cli-common::provider_contract" = 9
 cakeys-core = 110
 "cakeys-core::checks" = 1
@@ -43,7 +43,7 @@ cakeys-ykcs11 = 10
 "cakeys::tpm2" = 23
 "cakeys::validate" = 5
 "cakeys::yubikey" = 2
-camigrate = 53
+camigrate = 54
 "camigrate::dry_run" = 36
 "camigrate::fault" = 8
 "camigrate::from_files" = 5
