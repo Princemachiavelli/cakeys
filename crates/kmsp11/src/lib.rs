@@ -1,15 +1,16 @@
-//! The libkmsp11 provider: Google Cloud KMS keys through PKCS#11 (`docs/CLOUD_HSM.md`). Every key
-//! is bound at creation to one Cloud KMS algorithm (`CKA_KMS_ALGORITHM`), which fixes its curve
-//! or size, its purpose and the mechanisms it serves, and libkmsp11 takes no other attribute and
-//! no public template.
+//! The libkmsp11 provider, which manages Google Cloud KMS keys through PKCS#11
+//! (`docs/CLOUD_HSM.md`). Every key is bound at creation to one Cloud KMS algorithm
+//! (`CKA_KMS_ALGORITHM`). The algorithm fixes the key's curve or size, its purpose and the
+//! mechanisms that it serves. libkmsp11 takes no other attribute and no public template.
 //!
 //! The table (`keys.json`, from libkmsp11 1.9's `algorithm_details.cc` and `kmsp11.h`) holds
-//! every algorithm. [`Kmsp11::generation`] chooses one for a key spec; its `probe` rows are
-//! [`Kmsp11::bound_keys`], which the write probe generates, and they are shared with
-//! `scripts/cloud/gcp/main.tf`, which pre-creates each with a short destroy-scheduled duration
-//! and no version so the probe only adds versions (libkmsp11's
-//! `experimental_create_multiple_versions`). A key libkmsp11 creates itself gets Cloud KMS's
-//! 30-day default, and its label (the `CryptoKey` ID) can never be used again.
+//! every algorithm. [`Kmsp11::generation`] chooses one algorithm for a key spec. The table's
+//! `probe` rows are the keys of [`Kmsp11::bound_keys`], which the write probe generates. These
+//! rows are shared with `scripts/cloud/gcp/main.tf`, which creates each key in advance with a
+//! short duration for scheduled destruction and with no version, so that the probe only adds
+//! versions (libkmsp11's `experimental_create_multiple_versions`). A key that libkmsp11 creates
+//! itself gets Cloud KMS's 30-day default, and its label (the `CryptoKey` ID) can never be used
+//! again.
 
 use cakeys_core::config::{AttrValue, Binding, Locator, ModuleInfo, Object, SpecCfg};
 use cakeys_core::types::{KeyType as Kt, ObjectClass as Class};
@@ -22,12 +23,13 @@ use cryptoki::object::{Attribute, AttributeType};
 /// `CKA_KMS_ALGORITHM` (kmsp11.h: `CKA_VENDOR_DEFINED | 0x1E100 | 0x01`), a `CK_ULONG`.
 pub const CKA_KMS_ALGORITHM: u64 = 0x8001_E101;
 
-/// What every bound key's label starts with. Not the probe's `cakeys-probe-`: these are the
-/// `CryptoKey` IDs `scripts/cloud/gcp/main.tf` has already created, and Cloud KMS never deletes
-/// a key, so renaming them would leave the old set behind (review 2026-11-23 D-17).
+/// The prefix of every bound key's label. It is not the probe's `cakeys-probe-` prefix, because
+/// these labels are the `CryptoKey` IDs that `scripts/cloud/gcp/main.tf` has already created.
+/// Cloud KMS never deletes a key, so a rename would leave the old set of keys behind (review
+/// 2026-11-23 D-17).
 pub const LABEL_PREFIX: &str = "caprobe-";
 
-/// The mechanisms the table names, by their PKCS#11 names.
+/// The mechanisms that the table names, which are looked up by their PKCS#11 names.
 const MECHANISMS: [MechanismType; 21] = [
     MechanismType::ECC_KEY_PAIR_GEN,
     MechanismType::RSA_PKCS_KEY_PAIR_GEN,
@@ -53,7 +55,8 @@ const MECHANISMS: [MechanismType; 21] = [
 ];
 
 fn mechanism(name: &str) -> MechanismType {
-    // CKM_AES_CBC_PAD is served beside CKM_AES_CBC; cakeys only compares its name.
+    // libkmsp11 serves `CKM_AES_CBC_PAD` next to `CKM_AES_CBC`, and cakeys only compares the
+    // name of `CKM_AES_CBC_PAD`.
     if name == "CKM_AES_CBC_PAD" {
         return MechanismType::AES_CBC_PAD;
     }
@@ -76,7 +79,8 @@ impl Row {
     fn template(&self, label: &str) -> Vec<Attribute> {
         vec![
             Attribute::Label(label.as_bytes().to_vec()),
-            // A CK_ULONG: 64 bits on every platform this builds for (LP64).
+            // The value is a `CK_ULONG`, which is 64 bits on every platform that this crate builds
+            // for (LP64).
             Attribute::VendorDefined((AttributeType::VendorDefined(CKA_KMS_ALGORITHM), self.id.to_ne_bytes().to_vec())),
         ]
     }
@@ -90,9 +94,10 @@ impl Row {
     }
 }
 
-/// The table, in its file's order: the first row of a kind, size and purpose is the default.
-/// Parsed once; the file is this crate's own, so a row that does not read is a build-time bug
-/// (`the_table_parses_and_its_probe_rows_are_the_twenty_one`).
+/// Returns the table in the order of its file. The first row for a kind, size and purpose is the
+/// default. The table is parsed once. The file belongs to this crate, so a row that cannot be
+/// parsed is a bug in the build, which the test
+/// `the_table_parses_and_its_probe_rows_are_the_twenty_one` detects.
 fn rows() -> &'static [Row] {
     static ROWS: std::sync::LazyLock<Vec<Row>> = std::sync::LazyLock::new(parse_rows);
     &ROWS
@@ -127,14 +132,16 @@ fn parse_rows() -> Vec<Row> {
         .collect()
 }
 
-/// A Cloud KMS `CryptoKey` ID, what libkmsp11 takes as `CKA_LABEL` (session.cc).
+/// Returns whether `s` is a Cloud KMS `CryptoKey` ID, which is what libkmsp11 takes as
+/// `CKA_LABEL` (session.cc).
 fn is_crypto_key_id(s: &str) -> bool {
     (1..=63).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// What libkmsp11 reports on a key of `row` (object.cc), by attribute, for the private or secret
-/// half and for the public half: a spec declaring anything else would fail cakeys' own check of
-/// the key after creating it, so it is refused before.
+/// Returns what libkmsp11 reports for each attribute of a key of `row` (object.cc), for the
+/// private or secret half or, when `public` is true, for the public half. A spec that declares
+/// anything else would fail cakeys' own check of the key after the key is created, so such a
+/// spec is refused before the creation.
 fn reported(row: &Row, public: bool) -> Vec<(&'static str, bool)> {
     let (signs, decrypts) = (row.signs(), row.decrypts());
     let mut v = vec![
@@ -174,10 +181,10 @@ fn reported(row: &Row, public: bool) -> Vec<(&'static str, bool)> {
     v
 }
 
-/// Refuse a declared attribute libkmsp11 would report otherwise, or not at all. A key's
-/// `CKA_ALLOWED_MECHANISMS` is its algorithm's set: on the private key it chose the row
-/// ([`algorithm_for`]); on the public key it must be that same set (kmsp11 lib.rs F2), never
-/// passed over.
+/// Refuses a declared attribute that libkmsp11 would report with another value or would not
+/// report at all. A key's `CKA_ALLOWED_MECHANISMS` is its algorithm's set of mechanisms. On the
+/// private key, the declared set has already chosen the row ([`algorithm_for`]). On the public
+/// key, the declared set must be that same set (kmsp11 lib.rs F2), and it is never skipped.
 fn check_reported(row: &Row, declared: &std::collections::BTreeMap<String, AttrValue>, public: bool) -> Result<()> {
     let reported = reported(row, public);
     for (name, value) in declared {
@@ -233,14 +240,16 @@ fn check_reported(row: &Row, declared: &std::collections::BTreeMap<String, AttrV
     Ok(())
 }
 
-/// The Cloud KMS algorithm for `object` as `spec` declares it, proven by `binding`, or why none
-/// fits: everything libkmsp11 would make into a key cakeys could not then identify, show as
-/// declared or prove is refused here, before a label is used up.
+/// Returns the Cloud KMS algorithm for `object` as `spec` declares it and as `binding` proves
+/// it, or an error that says why no algorithm fits. When libkmsp11 would make a key that cakeys
+/// then could not identify, show as declared or prove, the request is refused here, before a
+/// label is used up.
 ///
-/// The row: the object's kind and size or curve, then the purpose (`CKA_SIGN` or `CKA_DECRYPT`,
-/// never both: Cloud KMS keys serve one), then the spec's `CKA_ALLOWED_MECHANISMS`, which must
-/// equal one algorithm's set; without it, the table's first row of that purpose (PKCS#1 v1.5 with
-/// SHA-256 for RSA signing, OAEP with SHA-256 for decryption).
+/// The row is chosen by the object's kind and size or curve, then by the purpose (`CKA_SIGN` or
+/// `CKA_DECRYPT`, never both, because a Cloud KMS key serves one purpose), and then by the spec's
+/// `CKA_ALLOWED_MECHANISMS`, which must equal one algorithm's set. Without
+/// `CKA_ALLOWED_MECHANISMS`, the row is the table's first row of that purpose (PKCS#1 v1.5 with
+/// SHA-256 for RSA signing, and OAEP with SHA-256 for decryption).
 fn algorithm_for(object: Object<'_>, spec: &SpecCfg, binding: Option<Binding>) -> Result<&'static Row> {
     let kt = object.key_type().ok_or_else(|| KmError::Unsupported(format!("{} on Cloud KMS", object.class).into()))?;
     let unsupported = |why: String| Err(KmError::Unsupported(why.into()));
@@ -303,8 +312,8 @@ fn algorithm_for(object: Object<'_>, spec: &SpecCfg, binding: Option<Binding>) -
             };
             let names: Vec<String> =
                 candidates.iter().map(|r| format!("{} [{}]", r.algorithm, r.mechanisms.join(", "))).collect();
-            // A set two algorithms share (OAEP with SHA-256 or SHA-512 at 4096 bits) takes the
-            // table's first, the SHA-256 one.
+            // When two algorithms share a set (OAEP with SHA-256 or with SHA-512 at 4096 bits),
+            // the table's first algorithm, the SHA-256 one, is chosen.
             candidates.into_iter().find(fits).ok_or_else(|| {
                 KmError::Unsupported(
                     format!(
@@ -320,13 +329,13 @@ fn algorithm_for(object: Object<'_>, spec: &SpecCfg, binding: Option<Binding>) -
     };
     check_reported(row, &spec.attributes, false)?;
     check_reported(row, &spec.public_attributes, true)?;
-    // The proof cakeys runs on the new key, which only that key's own mechanisms may serve. A
-    // signature and a decryption are proven within them (`pop-sign` by whichever RSA signature
-    // the key allows, `pop-decrypt` by OAEP with the key's hash: cakeys-pkcs11's possession
-    // proofs); nothing here unwraps or derives.
-    // To test on Cloud KMS: `create` of a PSS, a SHA-512 and an OAEP key with their pop-*
-    // bindings (ISSUES.md B11); the proofs are written for these keys, the refusal that stood
-    // here before them was never run against the change.
+    // cakeys runs the binding's proof on the new key, and only that key's own mechanisms may
+    // serve the proof. A signature and a decryption are proven within those mechanisms
+    // (`pop-sign` uses whichever RSA signature the key allows, and `pop-decrypt` uses OAEP with
+    // the key's hash, in cakeys-pkcs11's possession proofs). No key here unwraps or derives.
+    // Still to be tested on Cloud KMS: `create` of a PSS key, a SHA-512 key and an OAEP key with
+    // their pop-* bindings (ISSUES.md B11). The proofs were written for these keys and replaced
+    // the refusal that was here before, but this change has never run against Cloud KMS.
     match binding {
         Some(Binding::PopUnwrap) => {
             unsupported("Cloud KMS keys do not unwrap: binding = \"pop-unwrap\" cannot prove them".into())
@@ -338,7 +347,7 @@ fn algorithm_for(object: Object<'_>, spec: &SpecCfg, binding: Option<Binding>) -
     }
 }
 
-/// libkmsp11, recognised by `C_GetInfo`'s manufacturer.
+/// The libkmsp11 provider, which recognizes the module by the manufacturer in `C_GetInfo`.
 pub struct Kmsp11;
 
 impl Provider for Kmsp11 {
@@ -351,7 +360,8 @@ impl Provider for Kmsp11 {
     }
 
     fn hint(&self, about: Topic) -> Option<&'static str> {
-        // What creating a key commits to: only a refused generation or creation carries it.
+        // The hint describes what the creation of a key commits to, so only a refused generation
+        // or creation carries it.
         matches!(about, Topic::Generate | Topic::Create).then_some(
             "Cloud KMS: a key libkmsp11 creates keeps its versions 30 days scheduled for destruction once \
              deleted, and its label (the CryptoKey ID) can never be used again, unless the key was \
@@ -402,7 +412,8 @@ impl Provider for Kmsp11 {
                     mechanisms: r.mechanisms.iter().map(|m| mechanism(m)).collect(),
                     name: r.algorithm.clone(),
                     label,
-                    // The table gives an AES key's size in bits; a profile row counts its bytes.
+                    // The table gives an AES key's size in bits, but a profile row counts the size
+                    // in bytes.
                     on: match (&kind, r.on.parse::<u32>()) {
                         (KeyKind::Aes, Ok(bits)) => On::Bytes(bits / 8),
                         _ => On::parse(&kind, &r.on),
@@ -420,8 +431,8 @@ mod tests {
     use cakeys_core::config::ObjectCfg;
     use std::collections::BTreeMap;
 
-    /// The destruction note is about creating a key, so only a refused generation or creation
-    /// carries it, never a missing mechanism (review 2026-11-23 B-9).
+    /// The note about destruction concerns the creation of a key, so only a refused generation or
+    /// creation carries it, and a missing mechanism never does (review 2026-11-23 B-9).
     #[test]
     fn the_hint_goes_only_where_it_applies() {
         assert!(Kmsp11.hint(Topic::Generate).is_some_and(|h| h.contains("30 days")));
@@ -474,8 +485,9 @@ mod tests {
     }
 
     /// Every MAC row serves its key type's HMAC (libkmsp11's `algorithm_details.cc`), so a spec
-    /// declaring that mechanism finds it: `HMAC_SHA256` once listed none, and
-    /// `CKA_ALLOWED_MECHANISMS = ["CKM_SHA256_HMAC"]` matched no algorithm (15).
+    /// that declares that mechanism finds the row. Before the fix, `HMAC_SHA256` listed no
+    /// mechanism, and `CKA_ALLOWED_MECHANISMS = ["CKM_SHA256_HMAC"]` matched no algorithm
+    /// (exit 15).
     #[test]
     fn every_mac_row_serves_its_hmac() {
         let macs: Vec<&Row> = rows().iter().filter(|r| r.purpose == "MAC").collect();
@@ -501,7 +513,8 @@ mod tests {
             version: String::new(),
             cryptoki: String::new(),
         };
-        // Unpadded by `token::module_info` (review 2026-11-23 B-26): compared exactly.
+        // `token::module_info` removes the padding (review 2026-11-23 B-26), so the manufacturer
+        // is compared exactly.
         assert!(Kmsp11.matches(&module("Google")));
         assert!(!Kmsp11.matches(&module("Google LLC")));
         assert!(!Kmsp11.matches(&module("SoftHSM")));
@@ -519,7 +532,8 @@ mod tests {
         assert_eq!(pick(&object(Kt::Rsa, None, Some(3072), None), &sign, pop), Ok("RSA_SIGN_PKCS1_3072_SHA256".into()));
         let decrypt = spec(&[yes("CKA_DECRYPT")], &[]);
         let asserted = Some(Binding::TokenAsserted);
-        // At 4096 bits OAEP with SHA-256 and with SHA-512 serve the same set: the first, SHA-256.
+        // At 4096 bits, OAEP with SHA-256 and OAEP with SHA-512 serve the same set, so the first
+        // one, SHA-256, is chosen.
         assert_eq!(
             pick(&object(Kt::Rsa, None, Some(4096), None), &decrypt, asserted),
             Ok("RSA_DECRYPT_OAEP_4096_SHA256".into())
@@ -541,7 +555,8 @@ mod tests {
         );
         let rsa = object(Kt::Rsa, None, Some(2048), None);
         assert_eq!(pick(&rsa, &pss, Some(Binding::TokenAsserted)), Ok("RSA_SIGN_PSS_2048_SHA256".into()));
-        // pop-sign proves an RSA key by a signature the key allows: a PSS key by PSS.
+        // pop-sign proves an RSA key with a signature that the key allows, so it proves a PSS key
+        // with PSS.
         assert_eq!(pick(&rsa, &pss, Some(Binding::PopSign)), Ok("RSA_SIGN_PSS_2048_SHA256".into()));
         let raw = spec(
             &[
@@ -576,15 +591,15 @@ mod tests {
         refused(&ec, &spec(&[yes("CKA_DECRYPT")], &[]), None, "only sign");
         refused(&object(Kt::Ec, Some("secp521r1"), None, None), &spec(&[], &[]), None, "offers: secp256r1, secp384r1");
         refused(&object(Kt::Rsa, None, Some(1024), None), &spec(&[yes("CKA_SIGN")], &[]), None, "no CKK_RSA");
-        // pop-decrypt is proven with the key's own OAEP hash; nothing unwraps.
+        // pop-decrypt is proven with the key's own OAEP hash, and no key unwraps.
         let decrypt = spec(&[yes("CKA_DECRYPT")], &[]);
         assert_eq!(pick(&rsa, &decrypt, Some(Binding::PopDecrypt)), Ok("RSA_DECRYPT_OAEP_2048_SHA256".into()));
         refused(&rsa, &decrypt, Some(Binding::PopUnwrap), "do not unwrap");
         refused(&ec, &spec(&[yes("CKA_DERIVE")], &[]), None, "CKA_DERIVE = false");
         refused(&ec, &spec(&[yes("CKA_SIGN"), yes("CKA_EXTRACTABLE")], &[]), None, "CKA_EXTRACTABLE = false");
         refused(&ec, &spec(&[yes("CKA_SIGN")], &[yes("CKA_PRIVATE")]), None, "on the public key");
-        // The public key's allowed mechanisms are its algorithm's, as the private key's are
-        // (kmsp11 lib.rs F2): another set is refused, not passed over.
+        // The public key's allowed mechanisms are its algorithm's mechanisms, as the private
+        // key's are (kmsp11 lib.rs F2). Another set is refused and is not skipped.
         let allowed =
             |names: &[&str]| ("CKA_ALLOWED_MECHANISMS", AttrValue::mechanisms(names.iter().map(|n| (*n).into())));
         let public = |names: &[&str]| spec(&[yes("CKA_SIGN")], &[allowed(names)]);
