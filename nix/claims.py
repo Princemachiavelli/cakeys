@@ -10,7 +10,8 @@ either
 - registered in the register: an entry whose `says`, a phrase found once in its `doc`
   (whitespace and line breaks aside), is on the claim's line, with
   - `kind = "enforced"` and `tests`, each a `fn` in crates/ or fuzz/ (nix/doc-references.py's
-    index), and optionally the entry `paths` those tests cover; or
+    index) or a check of checks.nix as `checks.<name>` (a NixOS or Nix test), and optionally
+    the entry `paths` those tests cover; or
   - `kind = "descriptive"` and `why` it is no guarantee a test can hold;
 - or unregistered, and counted against the register's `max-unregistered`. More fails, and so
   does fewer, until the register is lowered to the count: the number moves only in a diff a
@@ -139,7 +140,7 @@ def check(root):
         register = tomllib.loads((root / REGISTER).read_text())
     except (OSError, tomllib.TOMLDecodeError) as e:
         return [f"{REGISTER}: {e}"], [], 0
-    fns = doc_references.index(root)[1]
+    fns = doc_references.index(root)[1] | {f"checks.{name}" for name in checks(root)}
     texts = {}
     registered = set()  # (doc, line)
     entries = register.get("claim", [])
@@ -178,7 +179,7 @@ def check(root):
         registered |= lines
         for test in entry.get("tests", []):
             if test not in fns:
-                failures.append(f"{where}: `{test}` is no fn in crates/ or fuzz/")
+                failures.append(f"{where}: `{test}` is no fn in crates/ or fuzz/, nor a check of {CHECKS}")
 
     unregistered = []
     for doc in DOCUMENTS:

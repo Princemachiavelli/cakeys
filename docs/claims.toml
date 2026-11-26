@@ -8,8 +8,8 @@
 # its seed. A new claim is registered with its tests, or softened in its document.
 #
 # Each [[claim]] names its document (`doc`) and a phrase found there once (`says`), and is
-# - kind = "enforced": `tests`, the fns that fail when the claim is false (each one must exist),
-#   and optionally the entry `paths` they cover; or
+# - kind = "enforced": `tests`, the fns that fail when the claim is false (each one must exist;
+#   a Nix check of checks.nix as "checks.<name>"), and optionally the entry `paths` they cover; or
 # - kind = "descriptive": `why` it is no guarantee a test can hold.
 
 max-unregistered = 98

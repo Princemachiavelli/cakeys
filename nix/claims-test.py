@@ -144,6 +144,12 @@ class Entries(Case):
         self.fails(says | {"kind": "descriptive", "why": "x", "tests": ["holds_the_claim"]}, 'kind "descriptive" takes no tests')
         self.fails(says | {"kind": "obvious"}, "kind is 'obvious'")
 
+    def test_an_entry_may_name_a_check_of_the_flake(self):
+        write(self.root, {"checks.nix": "{ }:\n{\n  module = import ./t.nix;\n}\n"})
+        rc, _, err = self.run_with(2, HOLDS | {"says": "Every lock is checked", "tests": ["checks.module"]})
+        self.assertEqual(rc, 0, err)
+        self.fails(HOLDS | {"says": "Every lock is checked", "tests": ["checks.gone"]}, "`checks.gone` is no fn")
+
     def test_tests_is_a_list_of_names(self):
         self.fails(HOLDS | {"says": "Every lock is checked", "tests": "holds_the_claim"}, "tests is a list of fn names")
 
