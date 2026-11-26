@@ -33,7 +33,7 @@ declare -A meaning=(
   [0]="ok" [10]="hash mismatch: prints got:" [11]="not found" [12]="ambiguous"
   [13]="conflict" [14]="precondition failed" [15]="unsupported" [16]="unavailable"
   [17]="invalid config, or no lock" [18]="first use: nothing pinned yet, prints got:"
-  [22]="done, and the lock written: review and commit it"
+  [22]="the lock was written: review and commit it, and retry any failed row"
 )
 
 act() {
@@ -312,8 +312,9 @@ EOF
 echo 'Without a spec, create makes every pair keys.toml says it creates (origin = "create") and the'
 echo "lock does not pin yet, and verifies the ones it pins as check does (shared is adopted, so it"
 echo "is left alone). signing is still the key planted in act 3: the run makes the new keys, records"
-echo "them, then stops there."
-jqf='.[] | {object, token, rfc7093m4: .ids.rfc7093m4}' expect 10 cakeys create --token soft
+echo "them, then stops there, its row 10. The lock was written, so the run exits 22, not 10: a"
+echo "script reviews the new keys, and the rows say what failed."
+jqf='.[] | {object, token, exit, rfc7093m4: .ids.rfc7093m4}' expect 22 cakeys create --token soft
 echo 'movable is born on soft (origin = "create"), so kryo can only import it. A sealed move needs the'
 echo "target to name a transport key: an RSA key there that only unwraps and never leaves it."
 expect 15 camigrate export movable --from soft --to kryo --dry-run

@@ -208,9 +208,10 @@ impl KmError {
     }
 }
 
-/// A run that did what it was asked and wrote the lock: created it (`--new-lock`) or changed
-/// it. Not 0, so a consumer sees every lock change and reviews and commits it (review 2026-11-23
-/// C-16); never over a failure's own code.
+/// A run that wrote the lock: created it (`--new-lock`) or changed it, whatever ended the run.
+/// Not 0, so a consumer sees every lock change and reviews and commits it (review 2026-11-23
+/// C-16); over a failure after the write too, whose row carries its code, which would otherwise
+/// hide the write (review 2026-11-24 L5).
 pub const LOCK_WRITTEN: u8 = 22;
 
 /// Every exit code of the three tools, in order, with what it means: the one table each
@@ -232,7 +233,7 @@ pub const EXIT_CODES: [(u8, &str); 16] = [
     (19, "already exists: create found a key the lock does not pin under the locator"),
     (20, "objects failed: check --token lists each failure with its own code"),
     (21, "the lock cannot be written (read-only, or inside a Nix build)"),
-    (LOCK_WRITTEN, "done, and the lock was written: review and commit it"),
+    (LOCK_WRITTEN, "the lock was written: review and commit it, and retry any failed row"),
 ];
 
 /// A result whose error is a [`KmError`].

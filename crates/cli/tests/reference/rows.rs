@@ -76,3 +76,93 @@ fn every_pair_has_a_row_of_one_shape() {
     let o = e.km(&["delete", "--spec", "a", "--token", "ref"]);
     assert_eq!((code(&o), rows(&o)), (22, vec![row("a", "deleted", 0, None)]), "{}", stderr(&o));
 }
+
+/// A run that wrote the lock exits 22, whatever ended it: `create`, `lock` and `delete` of two
+/// pairs, the first writing the lock (a key made and recorded, one locked, a realisation
+/// removed) and the second refused on the token, each exit 22 with both rows, the refused one's
+/// with its own code and rule, and the lock holding the first pair's write and nothing of the
+/// second's. Each dry run first writes nothing and exits with the refusal's own code. A partial
+/// run once exited with the refusal's code, the lock changed: a script that reviews the lock on
+/// 22 missed the write (review 2026-11-24 L5; CAKEYS.md, "Exit codes").
+#[test]
+fn a_run_that_wrote_the_lock_exits_22_whatever_failed_after() {
+    let Some(e) = env("partial") else { return };
+    // A certificate under taken's locator: create refuses it on the token (13, locator-free).
+    e.session().create_object(&cert_object(ADOPT_CERT, b"partial-taken", None)).unwrap();
+    let key = |name: &str, label: &str, origin: &str| {
+        format!(
+            "[objects.{name}]\nclass = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"\n\n\
+             [specs.{name}]\nobject = \"{name}\"\nattributes = {{ CKA_SIGN = true }}\n\
+             tokens.ref = {{ locator = {{ CKA_LABEL = \"{label}\" }}, origin = \"{origin}\" }}\n\n"
+        )
+    };
+    let mut body = String::new();
+    for (name, origin) in [("a", "create"), ("b", "create"), ("c", "create"), ("taken", "create"), ("lost", "adopt")] {
+        body += &key(name, &format!("partial-{name}"), origin);
+    }
+    e.config(&body);
+    // b and c on the token, unrecorded (each a first use, 18): b for `lock` to record, c for
+    // `delete` to refuse (14, no expected ID).
+    for spec in ["b", "c"] {
+        assert_eq!(e.code(&["create", spec, "--token", "ref", "--no-update-lock"]), 18, "{spec}");
+    }
+    let recorded = |spec: &str| e.lock()["realisations"].get(spec).is_some_and(|r| r.get("ref").is_some());
+    let row = |spec: &str, outcome: &str, exit: u64, rule: Option<&str>| {
+        (spec.to_owned(), outcome.to_owned(), exit, rule.map(str::to_owned))
+    };
+    // (the run, its dry run's rows, the run's rows, the refusal's code, what the lock records
+    // of each spec after the run)
+    let table = [
+        (
+            vec!["create", "a", "taken"],
+            vec![row("a", "create", 0, None), row("taken", "refuse", 13, Some("locator-free"))],
+            vec![row("a", "created", 0, None), row("taken", "failed", 13, Some("locator-free"))],
+            13,
+            [("a", true), ("taken", false)],
+        ),
+        (
+            vec!["lock", "b", "lost"],
+            vec![row("b", "failed", 18, None)],
+            vec![row("b", "locked", 0, None), row("lost", "failed", 11, None)],
+            18,
+            [("b", true), ("lost", false)],
+        ),
+        (
+            vec!["delete", "a", "c"],
+            vec![row("a", "would-delete", 0, None), row("c", "failed", 14, Some("if-match"))],
+            vec![row("a", "deleted", 0, None), row("c", "failed", 14, Some("if-match"))],
+            14,
+            [("a", false), ("c", false)],
+        ),
+    ];
+    // Every verb is run, and what is wrong of each said, before the test fails.
+    let mut wrong = Vec::new();
+    for (verb, dry_rows, run_rows, dry_exit, after) in table {
+        let args = [&verb[..], &["--token", "ref"]].concat();
+        let lock = || std::fs::read(e.dir.join("keys.lock")).unwrap();
+        let before = lock();
+        let o = e.km(&[&args[..], &["--dry-run"]].concat());
+        if (code(&o), rows(&o)) != (dry_exit, dry_rows.clone()) || lock() != before {
+            wrong.push(format!(
+                "{verb:?} --dry-run: exit {}, rows {:?}, the lock written: {}",
+                code(&o),
+                rows(&o),
+                lock() != before
+            ));
+        }
+        let o = e.km(&args);
+        if (code(&o), rows(&o)) != (22, run_rows.clone()) || lock() == before {
+            wrong.push(format!(
+                "{verb:?}: exit {}, rows {:?}, the lock written: {}",
+                code(&o),
+                rows(&o),
+                lock() != before
+            ));
+        }
+        for (spec, want) in after.into_iter().filter(|(spec, want)| recorded(spec) != *want) {
+            wrong.push(format!("{verb:?}: the lock records {spec}: {}, not {want}", !want));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert!(!e.session().labelled("partial-c").is_empty(), "the refused delete destroyed c");
+}

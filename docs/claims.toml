@@ -12,7 +12,7 @@
 #   and optionally the entry `paths` they cover; or
 # - kind = "descriptive": `why` it is no guarantee a test can hold.
 
-max-unregistered = 100
+max-unregistered = 99
 
 # CAMIGRATE.md D5: a bundle's transport key is the target's own (review 2026-11-24 D-8).
 
@@ -110,3 +110,26 @@ doc = "docs/CAKEYS.md"
 says = "`every_pair_has_a_row_of_one_shape`)"
 kind = "enforced"
 tests = ["every_pair_has_a_row_of_one_shape", "a_failure_row_says_its_code_rule_and_device"]
+
+# Review 2026-11-24 L5: a run that wrote the lock exits 22, whatever failed after the write
+# (each run seen exiting the failure's code before its fix).
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "never 0 and never a failure's code"
+kind = "enforced"
+tests = ["a_run_that_wrote_the_lock_exits_22_whatever_failed_after", "a_run_exits_22_exactly_when_it_wrote_the_lock"]
+paths = ["lock", "create", "delete", "lock --dry-run", "create --dry-run", "delete --dry-run"]
+
+[[claim]]
+doc = "docs/CAKEYS.md"
+says = "so a script never misses a written lock"
+kind = "enforced"
+tests = ["a_run_that_wrote_the_lock_exits_22_whatever_failed_after", "create_records_what_it_made_before_a_failure"]
+
+[[claim]]
+doc = "docs/CAMIGRATE.md"
+says = "a written lock is never hidden"
+kind = "enforced"
+tests = ["a_failed_move_leaves_the_others_moving", "a_run_exits_22_exactly_when_it_wrote_the_lock"]
+paths = ["migrate"]

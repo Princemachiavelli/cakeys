@@ -251,7 +251,7 @@ impl Run<'_> {
     /// file (`origin = "file"`), or each of `objects`, from its object's `migrate.file`. Keys
     /// first, so a public key object finds the public half its key's import made. Each on its
     /// own, as a bundle's entries: one that fails leaves nothing, the others still import, the
-    /// lock records them, and the run exits with the first failure.
+    /// lock records them, and the run exits with the first failure, or 22 when it recorded any.
     pub(super) fn import_files(
         &mut self,
         token: &str,

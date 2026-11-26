@@ -70,8 +70,10 @@ fn embedded_count() -> usize {
 }
 
 /// Run a command line's `dispatch`, its notes going to stderr as they are said (review
-/// 2026-11-23 C-7), and map the result to the documented exit code: an error's own, else
-/// [`LOCK_WRITTEN`] when the run wrote the lock, else 0.
+/// 2026-11-23 C-7), and map the result to the documented exit code: [`LOCK_WRITTEN`] when the
+/// run wrote the lock, whatever ended it, else an error's own, else 0. A failure after a write
+/// (a later pair's, whose row carries its code) exits 22 too, and says so: its own code would
+/// hide the written lock from a script that reviews it on 22 (review 2026-11-24 L5).
 pub fn main(dispatch: impl FnOnce(&mut Notes) -> anyhow::Result<()>) -> ExitCode {
     let mut notes = Notes::streaming();
     match dispatch(&mut notes) {
@@ -79,7 +81,15 @@ pub fn main(dispatch: impl FnOnce(&mut Notes) -> anyhow::Result<()>) -> ExitCode
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e:#}");
-            ExitCode::from(e.downcast_ref::<KmError>().map_or(1, KmError::exit_code))
+            let code = e.downcast_ref::<KmError>().map_or(1, KmError::exit_code);
+            if !notes.wrote_lock() {
+                return ExitCode::from(code);
+            }
+            eprintln!(
+                "note: exit {LOCK_WRITTEN}, not {code}: the lock was written before this failure; review and \
+                 commit it, then retry what failed (its row says its exit)"
+            );
+            ExitCode::from(LOCK_WRITTEN)
         }
     }
 }
@@ -356,6 +366,41 @@ mod tests {
         let help = with_exit_codes(clap::Command::new("t")).render_help().to_string();
         for (code, means) in EXIT_CODES {
             assert!(help.contains(&format!("{code:>2}  {means}")), "{code} is not in\n{help}");
+        }
+    }
+
+    /// A run exits 22 exactly when it wrote the lock: done, or ended by a failure after the write
+    /// (a later pair's, whose row carries its code), never 0 and never the failure's own code,
+    /// which would hide the write from a script that reviews the lock on 22 (review 2026-11-24
+    /// L5: a multi-pair `lock`, `create`, `delete` or camigrate move that failed part-way exited
+    /// with the failure's code, the lock changed). A run that wrote nothing exits as it ended.
+    #[test]
+    fn a_run_exits_22_exactly_when_it_wrote_the_lock() {
+        let path = Path::new("keys.lock");
+        let failure = |code: u8| match code {
+            13 => Some(anyhow::Error::from(KmError::Conflict("pair 2".into()))),
+            21 => Some(KmError::LockUnwritable("pair 2".into()).into()),
+            1 => Some(anyhow::anyhow!("pair 2: no KmError")),
+            _ => None,
+        };
+        for (wrote, failed, want) in [
+            (false, 0, 0),
+            (true, 0, LOCK_WRITTEN),
+            (false, 13, 13),
+            (true, 13, LOCK_WRITTEN),
+            (false, 21, 21),
+            (true, 21, LOCK_WRITTEN),
+            (false, 1, 1),
+            (true, 1, LOCK_WRITTEN),
+        ] {
+            let code = main(|notes| {
+                if wrote {
+                    notes.lock_written(path);
+                }
+                failure(failed).map_or(Ok(()), Err)
+            });
+            let want = format!("{:?}", ExitCode::from(want));
+            assert_eq!(format!("{code:?}"), want, "wrote the lock: {wrote}, failed with {failed}");
         }
     }
 

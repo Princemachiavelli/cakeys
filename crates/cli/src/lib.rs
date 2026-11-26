@@ -491,7 +491,8 @@ impl Run<'_> {
     /// when it changed it, before the next pair; the first failure ends the run, after what was
     /// done before it, and its row is pushed too ([`Outcome::failed`]), so the caller prints every
     /// pair's outcome, in one shape, whatever ended the run (review 2026-11-23 C-7, 2026-11-24
-    /// C-1).
+    /// C-1). A run whose earlier pair wrote the lock exits 22, the failure its row's
+    /// (`cakeys_cli_common::main`, review 2026-11-24 L5).
     fn each(
         &mut self,
         at: &Addresses,

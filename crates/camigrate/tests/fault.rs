@@ -343,9 +343,10 @@ fn an_export_opens_its_target_once() {
 }
 
 /// Each object of a `migrate` moves on its own, as a bundle's keys import (review D8): the one
-/// the module fails is undone and the run exits with its failure, the others still move and
-/// the lock records them. Two certificates on kryoptic move into `SoftHSM`, which says the
-/// first is of another type than X.509 once created (13); the second moves.
+/// the module fails is undone, its row says its failure, the others still move and the lock
+/// records them, so the run exits 22 (review 2026-11-24 L5: it exited with the failure, the lock
+/// written). Two certificates on kryoptic move into `SoftHSM`, which says the first is of
+/// another type than X.509 once created (13); the second moves.
 #[test]
 fn a_failed_move_leaves_the_others_moving() {
     let name = "fault-migrate-rest";
@@ -382,7 +383,7 @@ fn a_failed_move_leaves_the_others_moving() {
     let lie = "[[rule]]\nfn = \"C_GetAttributeValue\"\nof_label = \"f-c1\"\nattribute = \"CKA_CERTIFICATE_TYPE\"\n\
                value = \"0100000000000000\"\n";
     let (code, said, _) = faulted(&e, "rest", lie, &["migrate", "--from", "kryoptic", "--to", "softhsm"]);
-    assert_eq!(code, 13, "{said}");
+    assert_eq!(code, 22, "{said}");
     assert!(said.contains("just imported for 'c1'"), "{said}");
     let on_target = |label: &str| open_session(&real, "kmtest", "1234").labelled(label).len();
     assert_eq!((on_target("f-c1"), on_target("f-c2")), (0, 1), "{said}");

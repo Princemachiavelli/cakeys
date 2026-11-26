@@ -339,8 +339,9 @@ fn a_tokens_own_answers_decide_before_its_profile() {
 }
 
 /// `create` over tokens of one module (`ref` and `ref-anon` share it) opens each in turn; a pair
-/// that fails — opening its token included — leaves what was created before it recorded; and a
-/// name that selects nothing is refused (17), never an empty success.
+/// that fails — opening its token included — leaves what was created before it recorded, and the
+/// run exits 22, the lock written (the failure's code is its row's); and a name that selects
+/// nothing is refused (17), never an empty success.
 #[test]
 fn create_records_what_it_made_before_a_failure() {
     let Some(e) = env("create_failure") else { return };
@@ -357,11 +358,14 @@ fn create_records_what_it_made_before_a_failure() {
         )
     };
     let recorded = |spec: &str| e.lock()["realisations"][spec]["ref"].is_table();
+    // The rows say what the exit no longer does: the first created, the second failed with 16.
+    let exits = |o: &Output| state::rows(o).iter().map(|r| (r.spec.clone(), r.exit)).collect::<Vec<_>>();
 
     // The second token cannot be opened at all: the first key is recorded anyway.
     e.config(&body("one", "gone"));
     let o = e.km(&["create"]);
-    assert_eq!(code(&o), 16, "{}", stderr(&o));
+    assert_eq!(code(&o), 22, "{}", stderr(&o));
+    assert_eq!(exits(&o), [("a-one".to_owned(), 0), ("b-second".to_owned(), 16)], "{}", stderr(&o));
     assert!(recorded("a-one"), "{}", e.lock());
 
     // The second token is another token of the same module: it opens, refuses to create where a
@@ -370,7 +374,8 @@ fn create_records_what_it_made_before_a_failure() {
     let o = e.km(&["create"]);
     let err = stderr(&o);
     assert!(!err.contains("already been initialized"), "{err}");
-    assert_eq!(code(&o), 16, "{err}");
+    assert_eq!(code(&o), 22, "{err}");
+    assert_eq!(exits(&o), [("a-two".to_owned(), 0), ("b-second".to_owned(), 16)], "{err}");
     assert!(err.contains("cannot see private objects"), "{err}");
     assert!(recorded("a-two"), "{}", e.lock());
 
