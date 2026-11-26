@@ -23,3 +23,31 @@ fn object_matrix_is_the_committed_one() {
         workers: std::thread::available_parallelism().map_or(4, |n| n.get().min(8)),
     });
 }
+
+/// Every committed table keeps the properties (`object_matrix/properties.rs`): no token, so on
+/// every build and platform, the tables of tokens this one is not included.
+#[test]
+fn every_committed_table_keeps_the_properties() {
+    let tables = object_matrix::properties::committed();
+    assert!(tables.len() >= 3, "{:?}", tables.iter().map(|(n, _)| n).collect::<Vec<_>>());
+    for (name, table) in tables {
+        let broken = object_matrix::properties::violations(&table);
+        assert!(broken.is_empty(), "spec-coverage/objects/{name}:\n{}", broken.join("\n"));
+    }
+}
+
+/// Each property fails on its row flipped in a copy of this token's committed table, and only
+/// the flip makes it fail: none holds vacuously.
+#[test]
+fn each_property_fails_on_its_row_flipped() {
+    let path = format!("spec-coverage/objects/{}.toml", REF.provider);
+    let (_, table) =
+        object_matrix::properties::committed().into_iter().find(|(n, _)| path.ends_with(n.as_str())).unwrap();
+    for (property, row, outcome) in object_matrix::properties::FLIPS {
+        let broken = object_matrix::properties::violations(&object_matrix::properties::flipped(&table, row, outcome));
+        assert!(
+            broken.iter().any(|b| b.starts_with(&format!("{property}: "))),
+            "{path}: {row:?} = {outcome:?} breaks no {property}: {broken:?}"
+        );
+    }
+}

@@ -8,7 +8,7 @@
 //! then without either.
 
 use cakeys_profile::profile::Mode;
-use cakeys_profile::{Capability, Effective, Move, Profile, Set, Verdict, regenerate};
+use cakeys_profile::{By, Capability, Effective, Move, Profile, Set, Verdict, regenerate};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -223,4 +223,74 @@ fn regenerating_fails_and_a_difference_says_where() {
     let e = pinned_or_written("a\n", &path, false, false).unwrap_err();
     assert!(e.contains("line 2 (1 lines now, 2 pinned)") && e.contains("now:    <end>\n  pinned: \"b\""), "{e}");
     std::fs::remove_file(&path).unwrap();
+}
+
+/// The profiles profiles/LEDGER.toml says every build regenerates (`verified-by`), and those it
+/// records as runs on hardware or a cloud (`[artifact.probed]`); its fixtures and locks aside.
+fn ledger_profiles() -> (Vec<String>, Vec<String>) {
+    let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../profiles/LEDGER.toml"));
+    let ledger: toml::Table = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let (mut regenerated, mut hardware) = (Vec::new(), Vec::new());
+    for a in ledger["artifact"].as_array().unwrap().iter().filter_map(toml::Value::as_table) {
+        let file = a["path"].as_str().unwrap().to_owned();
+        if !file.starts_with("profiles/") {
+            continue;
+        }
+        if a.contains_key("verified-by") {
+            regenerated.push(file);
+        } else if a.contains_key("probed") {
+            hardware.push(file);
+        }
+    }
+    (regenerated, hardware)
+}
+
+/// What is wrong with the provenance of `text`'s yes rows (review 2026-11-24 §3.1): a profile
+/// every build regenerates says of each yes whether the host checked it (`host`) or only the
+/// module said so (`unverified`); a yes of no recorded provenance (legacy) stands only in a
+/// profile last probed on hardware, which the ledger owes a run.
+fn yes_provenance(path: &str, text: &str, regenerated: &[String], hardware: &[String]) -> Vec<String> {
+    let profile = Profile::from_toml(text).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let regenerated = regenerated.iter().any(|r| r == path);
+    let mut out = Vec::new();
+    for (cap, row) in profile.capabilities.iter().filter(|(c, r)| c.probed() && r.answer.yes()) {
+        match row.by {
+            Some(By::Host | By::Unverified) => {}
+            Some(by) => out.push(format!("{path}: {cap} = yes by {by:?}")),
+            None if regenerated => out.push(format!("{path}: {cap} = yes, of no provenance, in a regenerated profile")),
+            None if !hardware.iter().any(|h| h == path) => {
+                out.push(format!("{path}: {cap} = yes, of no provenance, and the ledger records no run of it"));
+            }
+            None => {}
+        }
+    }
+    out
+}
+
+#[test]
+fn every_regenerated_yes_says_by_whom() {
+    let (regenerated, hardware) = ledger_profiles();
+    assert_eq!(regenerated.len(), 3, "the software profiles every build regenerates: {regenerated:?}");
+    let embedded: Vec<&str> = cakeys_profile::embedded::PROFILE_FILES.iter().map(|(p, _)| *p).collect();
+    for path in regenerated.iter().chain(&hardware) {
+        assert!(embedded.contains(&path.as_str()), "{path}: in the ledger, not embedded");
+    }
+    let wrong: Vec<String> = cakeys_profile::embedded::PROFILE_FILES
+        .iter()
+        .flat_map(|(path, text)| yes_provenance(path, text, &regenerated, &hardware))
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    // Seen failing: a regenerated profile's yes stripped of its `by`, and a hardware profile's
+    // legacy yes in a profile the ledger does not record.
+    let softhsm =
+        cakeys_profile::embedded::PROFILE_FILES.iter().find(|(p, _)| p.ends_with("softhsm/2.7.toml")).unwrap();
+    let stripped = softhsm.1.replacen(
+        "\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\", by = \"host\" }",
+        "\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\" }",
+        1,
+    );
+    assert_ne!(stripped, softhsm.1);
+    assert_eq!(yes_provenance(softhsm.0, &stripped, &regenerated, &hardware).len(), 1);
+    let ykcs11 = cakeys_profile::embedded::PROFILE_FILES.iter().find(|(p, _)| p.ends_with("ykcs11/2.7.toml")).unwrap();
+    assert!(!yes_provenance(ykcs11.0, ykcs11.1, &[], &[]).is_empty(), "ykcs11/2.7 holds no legacy yes to refuse");
 }

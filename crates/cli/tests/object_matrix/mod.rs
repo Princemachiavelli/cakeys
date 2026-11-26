@@ -19,6 +19,8 @@
 //! tpm2-pkcs11 over a software TPM (tests/tpm2.rs), each with [`check`].
 #![expect(unreachable_pub, reason = "its crate is a test binary: pub and pub(crate) say the same")]
 
+pub mod properties;
+
 use crate::common::*;
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, CertificateType, KeyType, ObjectClass};
@@ -814,6 +816,9 @@ pub fn check(t: &Target<'_>) {
     }
     std::fs::write(t.dir.join("report.txt"), said).unwrap();
     let file = format!("{}.toml", t.name);
+    // Whatever the committed table says: a table that breaks a property is wrong (review
+    // 2026-11-24 C-8), and a regeneration is written first, to be read.
+    let keeps = || properties::assert_kept(t.name, &text, &t.dir.join("report.txt"));
     // The directory to rewrite the table in: the repository's, from wherever the test runs
     // (scripts/local-tests.sh runs a copy of the tree).
     if let Some(dir) = std::env::var_os("CAKEYS_UPDATE_OBJECTS") {
@@ -822,8 +827,10 @@ pub fn check(t: &Target<'_>) {
         let written = cakeys_profile::regenerate::write(&rewritten, &text, cakeys_profile::regenerate::accepted());
         // Said in the log: a run with the variable set compares nothing (review object_matrix F2).
         eprintln!("{}, not compared (CAKEYS_UPDATE_OBJECTS is set)", written.unwrap());
+        keeps();
         return;
     }
+    keeps();
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec-coverage/objects").join(&file);
     let committed = std::fs::read_to_string(&path).unwrap_or_default();
     assert!(

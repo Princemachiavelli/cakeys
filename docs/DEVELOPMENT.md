@@ -233,6 +233,14 @@ error (review 2026-11-24 C-8). What stands in front of them:
   `CAKEYS_ACCEPT=1` (for a test or a script); otherwise the text goes beside it as `<file>.new`,
   which git ignores and `golden-rows.py --stub` reads. The baseline is formatted after it is
   written: stub it once accepted and formatted.
+- **Properties stand in front of the tables and profiles.** What a golden file must say whatever
+  the code makes of it, derived from PKCS #11, DESIGN.md or the module's own documentation, never
+  from the file: `crates/cli/tests/object_matrix/properties.rs` for the object matrix (each
+  token's fresh table before it is compared or regenerated, and every committed table without a
+  token), `crates/profile/tests/properties.rs` for the software tokens' profiles, and
+  `every_regenerated_yes_says_by_whom` for their provenance. Each is seen failing on its row
+  flipped in a copy. A property that a regeneration breaks is a finding, never a property to
+  change to fit it.
 
 ## Verification beyond tests
 
