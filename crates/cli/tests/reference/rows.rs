@@ -77,17 +77,19 @@ fn every_pair_has_a_row_of_one_shape() {
     assert_eq!((code(&o), rows(&o)), (22, vec![row("a", "deleted", 0, None)]), "{}", stderr(&o));
 }
 
-/// A run that wrote the lock exits 22, whatever ended it: `create`, `lock` and `delete` of two
-/// pairs, the first writing the lock (a key made and recorded, one locked, a realisation
-/// removed) and the second refused on the token, each exit 22 with both rows, the refused one's
-/// with its own code and rule, and the lock holding the first pair's write and nothing of the
-/// second's. Each dry run first writes nothing and exits with the refusal's own code. A partial
-/// run once exited with the refusal's code, the lock changed: a script that reviews the lock on
-/// 22 missed the write (review 2026-11-24 L5; CAKEYS.md, "Exit codes").
+/// This test checks that a run that wrote the lock exits 22 even if a later pair fails. It runs
+/// `create`, `lock` and `delete` on two pairs each. The first pair writes the lock (a key is
+/// created and recorded, a key is locked, a realisation is removed), and the token refuses the
+/// second pair. Each run must exit 22 and print both rows, the refused row with its own exit code
+/// and rule, and the lock must hold the first pair's change and nothing for the second pair. Each
+/// dry run must write nothing and exit with the refusal's code. Before review 2026-11-24 L5, such
+/// a run exited with the refusal's code, so a script that reviews the lock on exit 22 missed the
+/// change (CAKEYS.md, "Exit codes").
 #[test]
 fn a_run_that_wrote_the_lock_exits_22_whatever_failed_after() {
     let Some(e) = env("partial") else { return };
-    // A certificate under taken's locator: create refuses it on the token (13, locator-free).
+    // Put a certificate under the locator of `taken`, so that `create` of `taken` is refused on
+    // the token with 13 (rule locator-free).
     e.session().create_object(&cert_object(ADOPT_CERT, b"partial-taken", None)).unwrap();
     let key = |name: &str, label: &str, origin: &str| {
         format!(
@@ -101,8 +103,9 @@ fn a_run_that_wrote_the_lock_exits_22_whatever_failed_after() {
         body += &key(name, &format!("partial-{name}"), origin);
     }
     e.config(&body);
-    // b and c on the token, unrecorded (each a first use, 18): b for `lock` to record, c for
-    // `delete` to refuse (14, no expected ID).
+    // Create b and c on the token without recording them in the lock (each run exits 18, a first
+    // use). The `lock` run records b, and the `delete` run refuses c with 14 because the lock has
+    // no expected ID for it.
     for spec in ["b", "c"] {
         assert_eq!(e.code(&["create", spec, "--token", "ref", "--no-update-lock"]), 18, "{spec}");
     }
@@ -110,8 +113,8 @@ fn a_run_that_wrote_the_lock_exits_22_whatever_failed_after() {
     let row = |spec: &str, outcome: &str, exit: u64, rule: Option<&str>| {
         (spec.to_owned(), outcome.to_owned(), exit, rule.map(str::to_owned))
     };
-    // (the run, its dry run's rows, the run's rows, the refusal's code, what the lock records
-    // of each spec after the run)
+    // Each entry holds the run's arguments, the dry run's rows, the run's rows, the dry run's
+    // exit code, and whether the lock records each spec after the run.
     let table = [
         (
             vec!["create", "a", "taken"],
@@ -135,7 +138,7 @@ fn a_run_that_wrote_the_lock_exits_22_whatever_failed_after() {
             [("a", false), ("c", false)],
         ),
     ];
-    // Every verb is run, and what is wrong of each said, before the test fails.
+    // Run every verb and collect every mismatch, so that the failure message lists all of them.
     let mut wrong = Vec::new();
     for (verb, dry_rows, run_rows, dry_exit, after) in table {
         let args = [&verb[..], &["--token", "ref"]].concat();
@@ -164,5 +167,5 @@ fn a_run_that_wrote_the_lock_exits_22_whatever_failed_after() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    assert!(!e.session().labelled("partial-c").is_empty(), "the refused delete destroyed c");
+    assert!(!e.session().labelled("partial-c").is_empty(), "the refused delete destroyed the object of c");
 }

@@ -44,12 +44,13 @@ row's `create`, `verify`, `skip`, `refuse`; or `failed`), `exit` (0, or the fail
 `rule` (the rule that refused it, where one did), `device` (whether its PKCS#11 return value
 says the device, token or session failed), `error`, a dry run's `deferred`, and the verb's own
 fields beside them (the realisation `lock` recorded or `create` made, as `resolve` prints it).
-The run's exit follows from the rows: 22 when it wrote the lock, a pair's failure after the
-write included (that row carries the failure's code); else 0, the one failure's code, or 20 for
-several refusals of a plan (`validate`, `create`), each listed on stderr led by its code. A run
-that wrote the lock exits 22, never 0 and never a failure's code (see "Exit codes"), and
-`--dry-run` (`lock`, `delete`, `gc`, `create`) writes nothing; `create --no-update-lock` creates
-without recording.
+The exit code of a run follows from its rows. It is 22 if the run wrote the lock, even if a
+pair failed after the write; the failed pair's row then shows the failure's code. Otherwise it
+is 0, the code of the one failure, or 20 for several refusals of a plan (`validate`, `create`),
+each listed on stderr after its code. A run that wrote the lock
+exits 22, never 0 and never a failure's code (see "Exit codes"). `--dry-run` (`lock`, `delete`,
+`gc`, `create`) writes nothing, and `create --no-update-lock` creates keys without recording
+them.
 
 | Verb | Semantics |
 |---|---|
@@ -82,7 +83,7 @@ mapped onto an error programs already handle. The codes are frozen (DESIGN §10)
 | 19 | already exists: `create` found a key the lock does not pin under the locator and made nothing | `EEXIST`, 412 | no | `create --no-update-lock` run twice; a key something else put there (`lock` records it) |
 | 20 | objects failed: `check --token` found objects on the token that fail their check, or a plan (`validate`, `create`) was refused more than once; each is listed on stderr with its own code | 207 | per object | any of 10–18 for one of the token's objects, or for one pair of the plan |
 | 21 | lock cannot be written | 507, `EROFS` | after fixing the path | a writing run whose lock or its directory is read-only, or inside a Nix build sandbox (refused before any token is touched; `--dry-run` compares instead); a save that failed part-way, after which the token may hold what the lock does not record (`lock` records it) |
-| 22 | the lock was written: review and commit it, and retry any failed row | 201 | only its failed rows | a writing run (`lock`, `create`, `delete`, `gc`, camigrate's `import` and `migrate`) that recorded or removed something; 0 when it changed nothing. 22 wins over a failure after the write (a later pair's, whose row carries its code), so a script never misses a written lock (`a_run_that_wrote_the_lock_exits_22_whatever_failed_after`) |
+| 22 | the lock was written: review and commit it, and retry any failed row | 201 | only its failed rows | a writing run (`lock`, `create`, `delete`, `gc`, camigrate's `import` and `migrate`) that recorded or removed something; 0 when it changed nothing. A run that fails after it wrote the lock also exits 22, and the failed pair's row shows the failure's code, so a script never misses a written lock (`a_run_that_wrote_the_lock_exits_22_whatever_failed_after`) |
 | 1 | I/O or other | 500 | sometimes | the lock unreadable |
 | 2 | command-line usage | — | no | bad arguments |
 

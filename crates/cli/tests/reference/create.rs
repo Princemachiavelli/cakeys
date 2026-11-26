@@ -339,9 +339,9 @@ fn a_tokens_own_answers_decide_before_its_profile() {
 }
 
 /// `create` over tokens of one module (`ref` and `ref-anon` share it) opens each in turn; a pair
-/// that fails — opening its token included — leaves what was created before it recorded, and the
-/// run exits 22, the lock written (the failure's code is its row's); and a name that selects
-/// nothing is refused (17), never an empty success.
+/// that fails, including a failure to open its token, leaves the keys created before it recorded
+/// in the lock. The run then exits 22 because it wrote the lock, and the failed pair's row shows
+/// the failure's code. A name that selects nothing is refused (17), never an empty success.
 #[test]
 fn create_records_what_it_made_before_a_failure() {
     let Some(e) = env("create_failure") else { return };
@@ -358,7 +358,8 @@ fn create_records_what_it_made_before_a_failure() {
         )
     };
     let recorded = |spec: &str| e.lock()["realisations"][spec]["ref"].is_table();
-    // The rows say what the exit no longer does: the first created, the second failed with 16.
+    // The exit code is 22, so the rows must show the failure: the first pair was created and the
+    // second pair failed with 16.
     let exits = |o: &Output| state::rows(o).iter().map(|r| (r.spec.clone(), r.exit)).collect::<Vec<_>>();
 
     // The second token cannot be opened at all: the first key is recorded anyway.

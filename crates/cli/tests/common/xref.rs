@@ -152,8 +152,9 @@ impl Env {
         let out = self.run_once(bin, r, args);
         if let Some(dry) = twin {
             let real = out.status.code().unwrap();
-            // Rows are read where the exits alone do not keep the promise, and after a write (22),
-            // which a later pair's failure may have ended (`gc --json` prints names, no rows).
+            // Read the rows when the exit codes alone do not show whether the run kept the dry
+            // run's result, and also after exit 22, because a pair may have failed after the
+            // write. `gc --json` prints names instead of rows, so a parse failure gives no rows.
             let rows = if !stdout_is_rows(&out) {
                 vec![]
             } else if !dry.kept_by(real, &[]) {
@@ -294,8 +295,8 @@ impl Dry {
     /// refused as the lock's to record, 18 or 14, is the lock `lock` writes), unless a row ends
     /// with a failure of the device, which no dry run foresees, or with a rule this dry run named
     /// as deferred. Never by what the run says (review 2026-11-24 L3: a phrase of stderr admitted
-    /// a 16 after a dry 0). A run that wrote the lock and then failed exits 22: its failed row's
-    /// exit is then its verdict (review 2026-11-24 L5).
+    /// a 16 after a dry 0). A run that wrote the lock and then failed exits 22, so in that case
+    /// the exit code of its failed row is compared instead of 22 (review 2026-11-24 L5).
     pub fn kept_by(&self, real: i32, rows: &[Row]) -> bool {
         let real = match rows.iter().find(|r| r.exit != 0) {
             Some(failed) if real == 22 => i32::from(failed.exit),

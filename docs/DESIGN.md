@@ -192,11 +192,11 @@ alone can compute, such as a TPM Name). If they return, they get their own names
 - **Every pair a verb reaches has a row, of one shape** (`Outcome`, cli-common; review
   2026-11-24 C-1): its outcome, its exit code, the rule that refused it and whether the device
   failed, so a caller, and the dry-run twin, read what happened to each from the rows alone. The
-  run's exit follows from them: 22 when the lock was written, whatever failed after (the
-  failed row carries its code: review 2026-11-24 L5); else 0, the one failure's code, or 20 for
-  a plan refused more than once. camigrate's `import` and `migrate` print the same rows (with
-  the `method`), and exit with the first failure, or 22 when they recorded a move (review
-  2026-11-24 D-9).
+  run's exit code follows from them. It is 22 when the lock was written, even if a pair failed
+  after the write, and the failed row then shows the failure's code (review 2026-11-24 L5).
+  Otherwise it is 0, the code of the one failure, or 20 for a plan refused more than once.
+  camigrate's `import` and `migrate` print the same rows (with the `method`) and exit with the
+  code of the first failure, or with 22 when they recorded a move (review 2026-11-24 D-9).
 - **A dry run is held to its run** (review 2026-11-24 §1.4, C-4): the test harness's twin runs
   camigrate's moves and cakeys' `create`, `delete`, `lock` and `gc` dry first, which
   must leave the lock and the tokens as they were, then for real, and the run must end as the

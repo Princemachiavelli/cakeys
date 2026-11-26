@@ -208,10 +208,11 @@ impl KmError {
     }
 }
 
-/// A run that wrote the lock: created it (`--new-lock`) or changed it, whatever ended the run.
-/// Not 0, so a consumer sees every lock change and reviews and commits it (review 2026-11-23
-/// C-16); over a failure after the write too, whose row carries its code, which would otherwise
-/// hide the write (review 2026-11-24 L5).
+/// The exit code of a run that wrote the lock, which means that it created the lock
+/// (`--new-lock`) or changed it. The code is not 0, so that a consumer notices every change to
+/// the lock and reviews and commits it (review 2026-11-23 C-16). A run that fails after it wrote
+/// the lock also exits with this code, and the failed pair's row holds the failure's code;
+/// otherwise the failure's code would hide the written lock (review 2026-11-24 L5).
 pub const LOCK_WRITTEN: u8 = 22;
 
 /// Every exit code of the three tools, in order, with what it means: the one table each

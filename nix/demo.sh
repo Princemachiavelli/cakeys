@@ -312,8 +312,8 @@ EOF
 echo 'Without a spec, create makes every pair keys.toml says it creates (origin = "create") and the'
 echo "lock does not pin yet, and verifies the ones it pins as check does (shared is adopted, so it"
 echo "is left alone). signing is still the key planted in act 3: the run makes the new keys, records"
-echo "them, then stops there, its row 10. The lock was written, so the run exits 22, not 10: a"
-echo "script reviews the new keys, and the rows say what failed."
+echo "them, and then stops at signing, whose row shows exit 10. The run wrote the lock, so it exits"
+echo "22, not 10: a script then reviews the new keys, and the rows show which pair failed."
 jqf='.[] | {object, token, exit, rfc7093m4: .ids.rfc7093m4}' expect 22 cakeys create --token soft
 echo 'movable is born on soft (origin = "create"), so kryo can only import it. A sealed move needs the'
 echo "target to name a transport key: an RSA key there that only unwraps and never leaves it."

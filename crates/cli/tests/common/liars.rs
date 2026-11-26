@@ -95,9 +95,9 @@ pub struct Lie {
 pub struct Expect {
     /// The exit: one of these.
     pub exit: Vec<i32>,
-    /// The refused row's exit where the run's is 22: a pair refused after an earlier one wrote
-    /// the lock, which the run's exit must not hide (review 2026-11-24 L5). None: the refused
-    /// row's exit is the run's, a failure's own.
+    /// The exit code that the refused pair's row must show when the run itself exits 22. This
+    /// applies when an earlier pair of the same run wrote the lock and a later pair is refused
+    /// (review 2026-11-24 L5). When it is `None`, the refused row's exit code is the run's.
     pub refused: Option<i32>,
     /// The rule the refused row names; none: it names none.
     pub rule: Option<String>,
@@ -471,25 +471,28 @@ impl Table {
         out
     }
 
-    /// What is wrong with cell `id`'s `refused` (a pair refused after an earlier one wrote): the
-    /// run exits 22, its verb prints rows of several pairs, and the lock changed.
+    /// Returns what is wrong with the `refused` expectation of cell `id`. A cell with `refused`
+    /// must expect exit 22, its verb must print rows for two or more pairs, and its `changed`
+    /// list must include the lock.
     fn partial_cell(id: &str, e: &Expect, verb: &Verb) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(r) = e.refused {
             if matches!(r, 0 | 22) || e.exit != [22] || verb.pairs < 2 || !verb.rows {
-                out.push(format!("{id}: refused {r} after a write: of a verb of rows and pairs, exit 22"));
+                out.push(format!(
+                    "{id}: `refused = {r}` requires a verb that prints rows for two or more pairs and an expected exit of 22"
+                ));
             }
             if !e.changed.iter().any(|k| k == "lock") {
-                out.push(format!("{id}: refused after a write, and the lock is not changed"));
+                out.push(format!("{id}: `refused` is set, but `changed` does not include the lock"));
             }
         }
         out
     }
 
-    /// The runner's invariant (exit 22 exactly when the lock changed) over a partial run: where
-    /// an honest run of a verb of rows writes the lock, a cell of `cells` writes it and then
-    /// refuses a later pair. None did, and a multi-pair run that wrote and then failed exited
-    /// with the failure's code, the lock changed (review 2026-11-24 L5).
+    /// Requires a cell that tests a partial run, if any verb that prints rows writes the lock
+    /// when no fault is injected. A partial run writes the lock for one pair and then refuses a
+    /// later pair, and the runner checks that it exits 22. No such cell existed before review
+    /// 2026-11-24 L5, so the runner never saw that such a run exited with the failure's code.
     fn partial(&self, cells: &[Cell]) -> Option<String> {
         let writes = self
             .verbs
@@ -497,8 +500,8 @@ impl Table {
             .filter(|(_, v)| v.rows)
             .any(|(verb, _)| self.objects.keys().any(|object| Fixture::honest_exit(self, verb, object) == 22));
         (writes && !cells.iter().any(|c| c.expect.refused.is_some())).then(|| {
-            "no cell refuses a pair after an earlier one wrote the lock (`refused`): the invariant \
-             exit 22 <=> the lock changed is never held over a partial run"
+            "no cell sets `refused`, so no cell checks that a run that writes the lock for one pair \
+             and then refuses another pair exits 22"
                 .to_owned()
         })
     }
@@ -805,9 +808,10 @@ impl Fixture {
         table.verbs[verb].args.iter().map(|a| a.replace("{spec}", object).replace("{token}", token)).collect()
     }
 
-    /// The exit an honest run of `verb` on `object` has: the object's own ([`Object::honest`]),
-    /// else 22 for a verb that writes (a delete, a creation of an object not made, not dry
-    /// runs), by its arguments, else 0.
+    /// Returns the exit code of a run of `verb` on `object` when no fault is injected. That is
+    /// the object's own code ([`Object::honest`]) if it has one. Otherwise it is 22 for a run
+    /// that writes the lock, which the verb's arguments decide: `delete`, or `create` of an
+    /// object that does not exist yet, without `--dry-run`. Every other run exits 0.
     fn honest_exit(table: &Table, verb: &str, object: &str) -> i32 {
         let o = &table.objects[object];
         let args = &table.verbs[verb].args;
@@ -884,8 +888,8 @@ impl Fixture {
                 wrong.push(format!("the {what} {is}"));
             }
         }
-        // The refused row's exit: the run's, a failure's own, or where an earlier pair wrote the
-        // lock, the cell's `refused` (the run's is 22).
+        // The exit code that the refused row must show. It is the cell's `refused` value when an
+        // earlier pair wrote the lock (the run then exits 22), and otherwise the run's own code.
         let refusal = e.refused.or_else(|| exit.filter(|x| !matches!(x, 0 | 22)));
         if verb.rows {
             match serde_json::from_slice::<Vec<Row>>(&out.stdout) {
@@ -1000,7 +1004,8 @@ pub fn run_cells(table: &Table, cells: &[Cell], f: &Fixture) -> Vec<String> {
     for (verb, object) in &reads {
         wrong.extend(f.honest(table, verb, object));
     }
-    // Each from the fixture: two writes may make one object (a partial run's and its pair's).
+    // Restore the fixture before each write, because two writes can create the same object (the
+    // first pair of a partial run and the later run of that pair).
     for (verb, object) in met.iter().filter(|(v, o)| Fixture::honest_exit(table, v, o) == 22) {
         f.restore(table);
         wrong.extend(f.honest(table, verb, object));

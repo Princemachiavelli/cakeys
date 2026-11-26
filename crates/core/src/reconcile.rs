@@ -106,8 +106,9 @@ impl Notes {
         &self.lines
     }
 
-    /// The run wrote the lock (created or changed it), at `path`: said, and the run exits
-    /// [`LOCK_WRITTEN`](crate::LOCK_WRITTEN), not 0, whatever ends it after.
+    /// Records that the run wrote (created or changed) the lock at `path` and reports it on
+    /// stderr. The run then exits with [`LOCK_WRITTEN`](crate::LOCK_WRITTEN) (22), not 0, even if
+    /// it fails afterwards.
     pub fn lock_written(&mut self, path: &std::path::Path) {
         self.lock_written = true;
         self.say(format!("updated {}", path.display()));

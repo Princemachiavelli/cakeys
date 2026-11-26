@@ -343,10 +343,11 @@ fn an_export_opens_its_target_once() {
 }
 
 /// Each object of a `migrate` moves on its own, as a bundle's keys import (review D8): the one
-/// the module fails is undone, its row says its failure, the others still move and the lock
-/// records them, so the run exits 22 (review 2026-11-24 L5: it exited with the failure, the lock
-/// written). Two certificates on kryoptic move into `SoftHSM`, which says the first is of
-/// another type than X.509 once created (13); the second moves.
+/// the module fails is undone and its row shows the failure's code, and the others still move
+/// and the lock records them. Because the lock was written, the run exits 22 (before review
+/// 2026-11-24 L5, it exited with the failure's code although the lock had changed). Two
+/// certificates on kryoptic move into `SoftHSM`; `SoftHSM` reports the first one as a type other
+/// than X.509 after it is created (13), and the second one moves.
 #[test]
 fn a_failed_move_leaves_the_others_moving() {
     let name = "fault-migrate-rest";

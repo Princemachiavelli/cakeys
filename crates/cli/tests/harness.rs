@@ -41,7 +41,8 @@ fn workspace_tests() -> Vec<(PathBuf, String)> {
 /// The dry-run twin's oracle (review 2026-11-24 phase 1, T-1): a real run keeps its dry run's
 /// promise by the same exit (0 and 22 alike), by a device failure, or by a rule the dry run named
 /// as deferred; never by another refusal, and never by what it says. A run that wrote the lock
-/// and then failed exits 22 (review 2026-11-24 L5): its failed row is its verdict, never the 22.
+/// and then failed exits 22 (review 2026-11-24 L5), so the oracle judges it by the exit code of
+/// its failed row and never treats the 22 as a success.
 #[test]
 fn the_twin_holds_a_run_to_its_dry_runs_exit_and_deferred_rules() {
     use common::xref::Dry;
@@ -66,13 +67,20 @@ fn the_twin_holds_a_run_to_its_dry_runs_exit_and_deferred_rules() {
     assert!(refused.kept_by(17, &[row(17, Some("placement"), false)]));
     assert!(!refused.kept_by(13, &[row(13, Some("locator-free"), false)]), "refused by one rule, then another");
     assert!(!refused.kept_by(0, &[]) && !refused.kept_by(22, &[]), "refused, then done");
-    // A write, then a pair's failure: the run's 22 is no success, its failed row the verdict.
+    // A run that writes the lock for one pair and then fails another pair exits 22. The oracle
+    // must judge it by the failed row's code and must not treat the 22 as a success.
     let wrote_then = |r: Row| [Row::passed("o", "s", "t", "created"), r];
     let partial = |dry: &Dry, failed: Row| dry.kept_by(22, &wrote_then(failed));
-    assert!(partial(&Dry::new(13, vec![]), row(13, Some("locator-free"), false)), "the refusal its dry run said");
-    assert!(!partial(&ready, row(13, Some("locator-free"), false)), "a write, then a rule it did not defer");
-    assert!(partial(&ready, row(13, Some("unwraps"), false)), "a write, then a rule it deferred");
-    assert!(partial(&ready, row(16, None, true)), "a write, then the device");
+    assert!(
+        partial(&Dry::new(13, vec![]), row(13, Some("locator-free"), false)),
+        "the dry run refused with the same code and rule"
+    );
+    assert!(
+        !partial(&ready, row(13, Some("locator-free"), false)),
+        "a write, then a refusal by a rule the dry run did not defer"
+    );
+    assert!(partial(&ready, row(13, Some("unwraps"), false)), "a write, then a refusal by a rule the dry run deferred");
+    assert!(partial(&ready, row(16, None, true)), "a write, then a device failure");
     assert!(!partial(&refused, row(13, Some("locator-free"), false)), "refused by one rule, then another");
 }
 

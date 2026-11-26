@@ -6,8 +6,8 @@
 #
 # A cell's `expect`:
 #   exit      the run's exit, or a list it is one of;
-#   refused   the refused row's exit where the run's is 22: a pair refused after an earlier one
-#             wrote the lock (`pairs` > 1), whose write the exit must not hide;
+#   refused   the exit code that the refused pair's row must show when the run exits 22, which
+#             happens when an earlier pair of the run wrote the lock (`pairs` > 1);
 #   rule      the rule its refused row names (cakeys_pkcs11::ops::Rule); absent, it names none;
 #   device    whether that row says the device failed (default false);
 #   outcome   a passing row's outcome; deferred: a rule a passing dry run's row defers;
@@ -113,7 +113,8 @@ rows = true
 args = ["create", "--spec", "{spec}", "--token", "{token}", "--dry-run"]
 rows = true
 
-# A partial run: `new` made and recorded, then the object's pair. Two pairs, the first writing.
+# A partial run with two pairs: the first pair creates and records `new`, which writes the lock,
+# and the second pair is the cell's object.
 [verbs."create --spec new --spec"]
 args = ["create", "--spec", "new", "--spec", "{spec}", "--token", "{token}"]
 rows = true
@@ -1008,7 +1009,8 @@ fn = "C_GenerateKey"
 rv = "CKR_DEVICE_ERROR"
 '''
 
-# A secret key's generation fails at the device, a key pair's does not.
+# The generation of a secret key (C_GenerateKey) fails with a device error. The generation of a
+# key pair (C_GenerateKeyPair) is not affected.
 [lies."dev.generate.secret"]
 class = "DEV"
 plan = '''
@@ -1178,8 +1180,9 @@ verbs = ["create"]
 objects = ["new", "new-aes"]
 expect = { exit = 15 }
 
-# A partial run: `new` is made and recorded, then new-aes's generation fails. The run exits 22,
-# the lock written, and new-aes's row says 16 (review 2026-11-24 L5: it exited 16).
+# A partial run: `new` is created and recorded, and then the generation of new-aes fails. The run
+# exits 22 because it wrote the lock, and the row of new-aes shows 16 (before review 2026-11-24
+# L5, the run exited 16).
 [[block]]
 lies = ["dev.generate.secret"]
 verbs = ["create --spec new --spec"]
@@ -1187,7 +1190,7 @@ objects = ["new-aes"]
 expect = { exit = 22, refused = 16, device = true, changed = [
   "lock",
   "token",
-], why = "the first pair's key is made and recorded before the second pair's generation fails" }
+], why = "the first pair's key is created and recorded before the generation of the second pair's key fails" }
 
 [[block]]
 lies = ["dev.derive"]
@@ -1482,7 +1485,7 @@ why = "nothing but a delete destroys, and a login is the token's, made before an
 classes = "*"
 verbs = ["create --spec new --spec"]
 objects = "*"
-why = "the partial run's: a pair refused after an earlier one wrote the lock, once; each lie's own verdict is create's cells"
+why = "this verb exists only to test one partial run (a write, then a refused pair); the cells of the verb create already test each fault"
 
 [[na]]
 classes = ["LOSS"]

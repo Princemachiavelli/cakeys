@@ -6,9 +6,10 @@
 use cakeys_core::KmError;
 use serde::{Deserialize, Serialize};
 
-/// One pair's row. The process exit follows from the rows: 22 when the lock was written, a
-/// failure after the write included (its row carries the code); else 0, the one failure's code,
-/// or 20 for several ([`refused`]).
+/// One pair's row. The process exit code follows from the rows. It is 22 if the lock was
+/// written, even if a pair failed after the write; in that case the failed pair's row holds the
+/// failure's code. Otherwise it is 0, the code of the one failure, or 20 for several failures
+/// ([`refused`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Outcome {
     /// The object the spec realises.
