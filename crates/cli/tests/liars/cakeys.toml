@@ -1095,10 +1095,6 @@ verbs = ["check"]
 objects = ["ec-sign", "aes"]
 expect = { exit = 16 }
 
-[[block.override]]
-objects = ["aes"]
-expect = { exit = 16, red = "L4a-1: a commitment's device failure is said unsupported (15), its row device: token/identity.rs commit maps every module error to Unsupported" }
-
 [[block]]
 lies = ["refused.sign"]
 verbs = ["check"]
@@ -1309,7 +1305,7 @@ expect = { exit = 16 }
 lies = ["loss.removed"]
 verbs = ["check"]
 objects = ["aes"]
-expect = { exit = 16, red = "L4a-1: a commitment's device failure is said unsupported (15), its row device: token/identity.rs commit maps every module error to Unsupported" }
+expect = { exit = 16 }
 
 [[block]]
 lies = ["loss.removed"]
@@ -1318,12 +1314,6 @@ objects = ["new", "new-aes"]
 expect = { exit = 16, device = true, changed = [
   "token",
 ], why = "the module is gone before the undo: what it made stays on the token, and the run says so" }
-
-[[block.override]]
-objects = ["new-aes"]
-expect = { exit = 16, device = true, changed = [
-  "token",
-], why = "the module is gone before the undo: what it made stays on the token, and the run says so", red = "L4a-1: a commitment's device failure is said unsupported (15), its row device: token/identity.rs commit maps every module error to Unsupported" }
 
 [[block]]
 lies = ["loss.destroy"]

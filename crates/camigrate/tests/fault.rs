@@ -127,6 +127,7 @@ fn a_move_the_module_fails_is_refused_and_undone() {
         |function: &str, more: &str| format!("[[rule]]\nfn = \"{function}\"\n{more}rv = \"CKR_DEVICE_ERROR\"\n");
     let bad =
         |function: &str, more: &str| format!("[[rule]]\nfn = \"{function}\"\n{more}rv = \"CKR_WRAPPED_KEY_INVALID\"\n");
+    let refuses = |function: &str| format!("[[rule]]\nfn = \"{function}\"\nrv = \"CKR_MECHANISM_INVALID\"\n");
     let out: &[&str] = &["migrate", "ek", "--from", "softhsm", "--to", "kryoptic"];
     let into: &[&str] = &["migrate", "kk", "--from", "kryoptic", "--to", "softhsm"];
     let host: &[&str] = &["migrate", "ks", "--from", "kryoptic", "--to", "softhsm", "--allow-host-plaintext"];
@@ -134,15 +135,18 @@ fn a_move_the_module_fails_is_refused_and_undone() {
     let wrong_type =
         "[[rule]]\nfn = \"C_GetAttributeValue\"\nattribute = \"CKA_CERTIFICATE_TYPE\"\nvalue = \"0100000000000000\"\n";
     // `C_Sign` is asked the length first: the second call of a signature is the one that signs,
-    // and it fails after the real call, which ends the operation (docs/FAULT_SHIM.md).
+    // and it fails after the real call, which ends the operation (docs/FAULT_SHIM.md). A step
+    // that fails as a device (`CKR_DEVICE_ERROR`) is 16, the step it was at named; only the
+    // module's refusal of the step is 15 (review 2026-11-24 L4a-1: the device's were 15 too).
     let cases: Vec<(&str, &[&str], String, i32, &str)> = vec![
         // The source (softhsm) wraps: its key-encryption key, the transport key it loads, each wrap.
-        ("kek", out, fails("C_GenerateKey", ""), 15, "making the KEK"),
-        ("transport", out, fails("C_CreateObject", ""), 15, "loading the transport key"),
+        ("kek", out, fails("C_GenerateKey", ""), 16, "making the KEK"),
+        ("kek-refused", out, refuses("C_GenerateKey"), 15, "making the KEK"),
+        ("transport", out, fails("C_CreateObject", ""), 16, "loading the transport key"),
         // `C_WrapKey` too is asked the length first: calls 1 and 2 wrap the KEK to the transport
         // key (OAEP), 3 is the first of the key's own wrap under the KEK (RFC 5649) [run].
-        ("wrap-kek", out, fails("C_WrapKey", "call = 1\n"), 15, "wrapping the KEK"),
-        ("wrap-key", out, fails("C_WrapKey", "call = 3\n"), 15, "wrapping the key"),
+        ("wrap-kek", out, fails("C_WrapKey", "call = 1\n"), 16, "wrapping the KEK"),
+        ("wrap-key", out, fails("C_WrapKey", "call = 3\n"), 16, "wrapping the key"),
         // The target (softhsm) unwraps (after its transport key proved possession by unwrapping,
         // twice: calls 1 and 2), then proves possession of what it unwrapped. A module that fails
         // the unwrap is 16, said as what may be a damaged bundle; one that says the blob is bad,
@@ -154,8 +158,9 @@ fn a_move_the_module_fails_is_refused_and_undone() {
         // to 4, the length then the MAC); `kk`'s own proof is then calls 5 and 6 (ECDSA) [run].
         ("proof", into, fails("C_Sign", "call = 6\nwhen = \"after\"\n"), 16, "just imported for 'kk'"),
         // The host path into softhsm: the creation, then the commitment of what was created.
-        ("create", host, fails("C_CreateObject", ""), 15, "creating the key"),
-        ("commit", host, fails("C_Sign", "call = 2\nwhen = \"after\"\n"), 15, "just imported for 'ks'"),
+        ("create", host, fails("C_CreateObject", ""), 16, "creating the key"),
+        ("create-refused", host, refuses("C_CreateObject"), 15, "creating the key"),
+        ("commit", host, fails("C_Sign", "call = 2\nwhen = \"after\"\n"), 16, "just imported for 'ks'"),
         // A certificate created on softhsm, which then says it is of another type than X.509.
         ("cert-type", cert, wrong_type.to_owned(), 13, "just imported for 'crt'"),
     ];
