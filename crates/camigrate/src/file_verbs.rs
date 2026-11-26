@@ -133,7 +133,7 @@ impl Run<'_> {
         let certificate = keyfile::key_certificate(&certificates, &spki);
         let method_name = method.name();
         if dry_run {
-            let target = opener.open(token, Access::Read, notes)?;
+            let target = opener.open(token, Access::DryWrite, notes)?;
             let paired = certificate.as_deref().map(|c| (c, cert_target.as_ref()));
             self.plan_key_file(&target, &dst, (&spki, &method), paired, input, &mut tally, notes);
             return tally.finish(self, notes);
@@ -289,7 +289,7 @@ impl Run<'_> {
         // Keys first: a public key object then finds the public half its key's import made.
         wanted.sort_by_key(|o| !cfg.objects[*o].class.is_key() || cfg.objects[*o].class == Class::PublicKey);
         specs_select(cfg, specs, wanted.iter().copied(), token, FROM_FILE)?;
-        let access = if how.dry_run { Access::Read } else { Access::Write };
+        let access = if how.dry_run { Access::DryWrite } else { Access::Write };
         let target = self.opener.open(token, access, notes)?;
         let mut tally = Tally::default();
         for object in wanted {

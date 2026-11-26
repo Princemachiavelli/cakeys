@@ -115,7 +115,7 @@ pub(crate) fn create_as(
     let public_half = preflight(dst, to, bytes)?;
     let create = || {
         to.raw().create_object(&template).map_err(|e| {
-            to.unsupported_for(Topic::Create, format!("{dst}: importing into '{}': C_CreateObject: {e}", to.name))
+            to.refused_for(Topic::Create, &e, format!("{dst}: importing into '{}': C_CreateObject: {e}", to.name))
         })
     };
     let created = match public_half {
