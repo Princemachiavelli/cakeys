@@ -390,3 +390,47 @@ fn a_failed_move_leaves_the_others_moving() {
     let realised = |spec: &str| lock["realisations"].get(spec).is_some_and(|r| r.get("softhsm").is_some());
     assert_eq!((realised("c1-dst"), realised("c2-dst")), (false, true), "{lock}");
 }
+
+/// A write-protected target (`CKF_WRITE_PROTECTED`) is refused (15) by every entry path that
+/// would write there, the dry run as the run (review 2026-11-24 L4a-3: the dry runs opened their
+/// target read-only and passed it): a `migrate`, whose plan takes the target from the lock when
+/// it does not open, an `import` of a bundle and one of a key file. Nothing changes, and the lie
+/// fires; without it, each dry run passes.
+#[test]
+fn a_write_protected_target_is_refused_by_each_dry_run_as_by_its_run() {
+    let Some((e, real)) = tokens("write-protected") else { return };
+    let (soft, kry) = (&e.refs[0], &e.refs[1]);
+    // What the imports take, made before: a bundle of kk for softhsm, and kk as a key file.
+    let (bundle, file, pass) = (e.dir.join("kk.bundle.toml"), e.dir.join("kk.p8"), e.dir.join("pass"));
+    std::fs::write(&pass, "correct horse\n").unwrap();
+    let (bundle, file, pass) = (bundle.to_str().unwrap(), file.to_str().unwrap(), pass.to_str().unwrap());
+    let plaintext = ["--passphrase-file", pass, "--allow-host-plaintext"];
+    for args in [
+        &["export", "kk", "--from", "kryoptic", "--to", "softhsm", "--out", bundle][..],
+        &[&["export", "kk", "--from", "kryoptic", "--to-key-file", "pkcs8", "--out", file][..], &plaintext].concat(),
+    ] {
+        let o = e.km_alone(kry, args);
+        assert_eq!(code(&o), 0, "{args:?}: {}", stderr(&o));
+    }
+    let protected = "[[rule]]\nfn = \"C_GetTokenInfo\"\nset_flags = [\"CKF_WRITE_PROTECTED\"]\n";
+    let lock = e.dir.join("keys.lock");
+    let views = [state::TokenView { module: &real, ..soft.view() }, kry.view()];
+    let now = || state::snapshot(&[&lock], &views);
+    let runs: [Vec<&str>; 3] = [
+        vec!["migrate", "kk", "--from", "kryoptic", "--to", "softhsm"],
+        vec!["import", "--to", "softhsm", "--in", bundle],
+        [&["import", "--to", "softhsm", "--in", file][..], &plaintext].concat(),
+    ];
+    for (i, run) in runs.iter().enumerate() {
+        let dry = [&run[..], &["--dry-run"]].concat();
+        for (j, args) in [&run[..], &dry[..]].into_iter().enumerate() {
+            let before = now();
+            let (code, said, fired) = faulted(&e, &format!("protected-{i}-{j}"), protected, args);
+            assert_eq!(code, 15, "{args:?}: {said}");
+            assert!(fired > 0, "{args:?}: the token was never asked its flags");
+            state::assert_unchanged(&before, &now(), &format!("{args:?}"));
+        }
+        let (code, said, _) = faulted(&e, &format!("honest-{i}"), "", &dry);
+        assert_eq!(code, 0, "{dry:?}: {said}");
+    }
+}

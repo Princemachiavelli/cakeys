@@ -618,17 +618,13 @@ expect = { exit = 15 }
 lies = ["flag.write-protected"]
 verbs = ["delete --dry-run"]
 objects = ["ec-sign"]
-expect = { exit = 15, red = "L4a-3: a dry run opens its token to read, and does not refuse a write-protected token the run refuses (15)" }
+expect = { exit = 15 }
 
 [[block]]
 lies = ["flag.write-protected"]
 verbs = ["create", "create --dry-run"]
 objects = ["new"]
 expect = { exit = 15 }
-
-[[block.override]]
-verbs = ["create --dry-run"]
-expect = { exit = 15, red = "L4a-3: a dry run opens its token to read, and does not refuse a write-protected token the run refuses (15)" }
 
 [[block]]
 lies = ["flag.write-protected"]

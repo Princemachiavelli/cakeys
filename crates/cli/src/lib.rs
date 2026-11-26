@@ -358,7 +358,7 @@ impl Run<'_> {
                     )
                     .into());
                 }
-                let access = if *dry_run { Access::Read } else { Access::Write };
+                let access = if *dry_run { Access::DryWrite } else { Access::Write };
                 let mut deleted = Vec::new();
                 let result = self.each(at, &mut deleted, notes, |opener, lock, t, notes| {
                     let tok = opener.open(t.token_name, access, notes)?;
@@ -615,12 +615,13 @@ impl Run<'_> {
         }
         if how.dry_run {
             // What the run refuses once a token opens: each pair it would make or verify, on
-            // its token opened read-only, asked as the write asks it (review 2026-11-24 C-4). A
+            // its token opened read-only and refused where the write's open refuses it (a
+            // write-protected token, 15: L4a-3), asked as the write asks it (review 2026-11-24 C-4). A
             // run the profiles stop opens none, and neither does its dry run. A token that fails
             // (its open, a login, a search) ends it at that pair as it ends the run (16), the
             // pair's row saying so (review 2026-11-24 L4a-2).
             if !stopped {
-                let open = |name: &str, notes: &mut Notes| opener.open(name, Access::Read, notes);
+                let open = |name: &str, notes: &mut Notes| opener.open(name, Access::DryWrite, notes);
                 ops::plan_on_tokens(cfg, &mut planned, &open, &self.lock, notes);
             }
             let rows: Vec<Outcome> = planned.iter().map(dry_row).collect::<anyhow::Result<_>>()?;

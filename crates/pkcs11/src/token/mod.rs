@@ -76,6 +76,11 @@ pub enum Access {
     /// allows it, since AWS `CloudHSM` refuses even a session object in a read-only session
     /// (`CKR_SESSION_READ_ONLY` \[run\]); read-only on a write-protected token.
     Scratch,
+    /// The dry run of a write (`create --dry-run`, `delete --dry-run`, camigrate's into a
+    /// token): a read-only session, so it writes nothing, on a token [`Access::Write`] would
+    /// open, so it refuses a write-protected one as its run does (15; review 2026-11-24 L4a-3:
+    /// the dry runs opened [`Access::Read`] and passed it).
+    DryWrite,
 }
 
 /// An open token: its module and the session cakeys works in, with the provider that handles
@@ -342,7 +347,7 @@ impl Token {
     pub fn extra_session(&self, access: Access) -> Result<Session> {
         let ctx = &self.library.0;
         match access {
-            Access::Read => ctx.open_ro_session(self.slot).map_err(ck("C_OpenSession (read-only)")),
+            Access::Read | Access::DryWrite => ctx.open_ro_session(self.slot).map_err(ck("C_OpenSession (read-only)")),
             Access::Scratch if ctx.get_token_info(self.slot).is_ok_and(|i| i.write_protected()) => {
                 ctx.open_ro_session(self.slot).map_err(ck("C_OpenSession (read-only)"))
             }
