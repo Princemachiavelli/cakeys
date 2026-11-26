@@ -1,23 +1,27 @@
-//! The liar matrix (docs/archive/REVIEW-2026-11-24/phase2-3-design.md §1.4–1.6): a table of the
-//! lies a module can tell, each a p11-fault plan (`docs/FAULT_SHIM.md`), of the verbs each lie
-//! meets and of the objects it is told about, expanded into cells with one expectation per block
-//! of them (review 2026-11-24 C-6: lies were told to 3 of 7 verbs and one class of object).
+//! The liar matrix (docs/archive/REVIEW-2026-11-24/phase2-3-design.md §1.4–1.6). A liar table
+//! lists the false answers that a module can give, each as a p11-fault plan
+//! (`docs/FAULT_SHIM.md`), the verbs into whose runs each fault is injected, and the objects that
+//! the fault concerns. The runner expands the table into cells, with one expectation for each
+//! block of cells (review 2026-11-24 C-6: faults were injected into only 3 of 7 verbs and one
+//! class of object).
 //!
-//! A cell's oracle is what the run did, never an exit code and a phrase alone (C-9): the exit;
-//! the rule and the device bit its row names (`rule` absent: the row names none); the lock and
-//! the token as they were, unless the table says which changed and why ([`super::state`]); and
-//! whether the lie fired, from the shim's trace. Every run, the honest ones too, also holds two
-//! invariants of the runner's own: it exits 22 exactly when it changed the lock (CAKEYS.md: "a
-//! run that wrote the lock exits 22, never 0"), and a `check` changes nothing, whatever the
-//! table says (CAKEYS.md: "it never writes").
+//! A cell is judged by what the run did, never by an exit code and a phrase alone (C-9). The
+//! runner checks the exit code; the rule and the device bit that the cell's row names (when
+//! `rule` is absent, the row must name no rule); that the lock and the token are unchanged,
+//! unless the table says which one changed and why ([`super::state`]); and, from the shim's
+//! trace, whether the fault fired. Every run, including each run without a fault, must also keep
+//! two invariants of the runner: the run exits 22 exactly when it changed the lock (CAKEYS.md: "a
+//! run that wrote the lock exits 22, never 0"), and a `check` changes nothing, whatever the table
+//! says (CAKEYS.md: "it never writes").
 //!
-//! `tests/liars.rs` runs cakeys' table, one test per lie class ([`run_class`]); camigrate's and
-//! caprobe's own `tests/liars.rs` run theirs through the same runner ([`run_table`]), each tool's
-//! fixture the one part of a cell's run that is the tool's ([`Tool`]). The lint
-//! (`tests/liar_lint.rs`) holds every table to its rules with no token: no rule of the plan without
-//! a cell that fires it, a unit test that does, or an exemption ([`Table::uncovered`]); every
-//! (lie class, verb, object class) covered or decided ([`Table::gaps`]); and the table's own
-//! form ([`Table::problems`]).
+//! `tests/liars.rs` runs the cakeys table, with one test for each fault class ([`run_class`]). The
+//! `tests/liars.rs` files of camigrate and caprobe run their own tables through the same runner
+//! ([`run_table`]). Each tool provides its own fixture, which is the only part of a cell's run
+//! that is specific to the tool ([`Tool`]). The lint (`tests/liar_lint.rs`) checks every table
+//! against its rules without a token: every rule of the plan has a cell that fires it, a unit test
+//! that fires it, or an exemption ([`Table::uncovered`]); every (fault class, verb, object class)
+//! is covered by a cell or decided ([`Table::gaps`]); and the table has the correct form
+//! ([`Table::problems`]).
 
 use super::state::{Row, Snapshot, TokenView, changes, snapshot};
 use super::{Workdir, code, fault_shim, open_session, stderr, stdout, suite_var};
@@ -28,84 +32,97 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-/// The classes of lie (§1.1), each the name of one test (`liars_<class>`).
+/// The fault classes (§1.1). Each class is the name of one test (`liars_<class>`).
 pub const CLASSES: [&str; 8] = ["OK", "OTHER", "FLAG", "CHANGE", "FORGE", "BLOB", "DEV", "LOSS"];
 
-/// What a cell's state oracle can name, unless the table says otherwise (`state`): the lock file
-/// and the token.
+/// The parts of the state that a cell's state check can name, unless the table lists its own
+/// (`state`): the lock file and the token.
 pub const STATE: [&str; 2] = ["lock", "token"];
 
-/// One liar table, as read ([`Table::load`]).
+/// One liar table, as [`Table::load`] reads it.
 pub struct Table {
-    /// The file, for what is said of it.
+    /// The path of the table file, which the messages about the table name.
     pub path: PathBuf,
-    /// The objects a cell may name, by name: the spec, and its locator's `CKA_LABEL`.
+    /// The objects that a cell may name, by name. The name is both the spec and the `CKA_LABEL`
+    /// of the spec's locator.
     pub objects: BTreeMap<String, Object>,
     /// The verbs (entry paths), by name.
     pub verbs: BTreeMap<String, Verb>,
-    /// The lies, by name.
+    /// The faults (the table's `lies`), by name.
     pub lies: BTreeMap<String, Lie>,
     /// The blocks of cells.
     pub blocks: Vec<Block>,
-    /// The (lie class, verb, object class) points decided without a cell.
+    /// The (fault class, verb, object class) points that are decided without a cell.
     pub na: Vec<Na>,
-    /// The rules a unit test fires instead of a cell.
+    /// The rules that a unit test fires instead of a cell.
     pub units: Vec<Unit>,
-    /// The rules no cell or unit test fires, each with why.
+    /// The rules that no cell or unit test fires, each with the reason.
     pub exempt: BTreeMap<String, String>,
-    /// The most exemptions there may be: raising it is a visible diff.
+    /// The maximum number of exemptions. A table that raises it shows the change in its diff.
     pub exempt_max: usize,
-    /// What a cell's state oracle names ([`STATE`] unless the table lists its own).
+    /// The parts of the state that a cell's state check names ([`STATE`], unless the table lists
+    /// its own).
     pub state: Vec<String>,
     /// The checks (`cakeys_core::Check`) that the table's cells must name as a rule or as
-    /// deferred: those that only the tool's runs decide.
+    /// deferred. These are the checks that only the tool's runs decide.
     pub covers: Vec<String>,
 }
 
 /// An object of the fixture.
 pub struct Object {
-    /// Its class in the completeness grid: `private`, `secret`, `certificate`, `data`, `public`.
+    /// The object's class in the completeness grid: `private`, `secret`, `certificate`, `data`
+    /// or `public`.
     pub class: String,
-    /// The token its spec is placed on.
+    /// The token on which the object's spec is placed.
     pub token: String,
-    /// Whether the fixture makes it; one it does not is `create`'s to make.
+    /// Whether the fixture makes the object. When the fixture does not make it, only `create`
+    /// makes it.
     pub made: bool,
-    /// Whether it is put on the token through the module and recorded by `lock`, never
-    /// created (a certificate, a data object, a public key).
+    /// Whether the object is put on the token through the module and recorded by `lock`, and
+    /// never created by cakeys (a certificate, a data object, a public key).
     pub adopted: bool,
-    /// The exit every honest run on it has, where that is not the verb's own ([`Fixture::honest`]):
-    /// a refusal of its token's options, which no lie changes, or a lock of one not yet locked.
+    /// The exit code of a run on this object when the fault shim injects no fault, if that code
+    /// differs from the default that [`Fixture::honest_exit`] expects (22 for `delete` and for
+    /// `create` of an object that does not exist yet, 0 for every other verb). Set it when the
+    /// token's configuration makes the verb refuse, because no injected fault changes that
+    /// refusal, or when the object is not locked yet, because `lock` then writes the lock and
+    /// exits 22.
     pub honest: Option<i32>,
 }
 
-/// A verb: an entry path a cell runs.
+/// A verb: an entry path that a cell runs.
 pub struct Verb {
-    /// Its arguments, `{spec}` and `{token}` filled per object (and what else a tool's fixture
-    /// fills, [`Tool::args`]).
+    /// The verb's arguments. `{spec}` and `{token}` are filled in for each object, and a tool's
+    /// fixture may fill in other placeholders ([`Tool::fill`]).
     pub args: Vec<String>,
-    /// What it prints for the oracle to read.
+    /// What the verb prints for the runner to check.
     pub form: Form,
-    /// Whether the runner puts `--json` before its arguments (default: a [`Form::Rows`] verb).
+    /// Whether the runner puts `--json` before the verb's arguments (by default, true for a
+    /// [`Form::Rows`] verb).
     pub json: bool,
-    /// The pairs it runs (default 1): a refused run's rows end at the refused one, the rows
-    /// before it passing; a passing run prints one per pair.
+    /// The number of pairs that the verb runs (default 1). The rows of a refused run end at the
+    /// refused pair, and the rows before it pass. A run that passes prints one row for each pair.
     pub pairs: usize,
 }
 
-/// What a verb prints that the oracle reads (`rows = true`, or `form = "<form>"`).
+/// What a verb prints for the runner to check (`rows = true`, or `form = "<form>"` in the table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Form {
-    /// Nothing: refused, it prints nothing at all (`check`, a real `export`).
+    /// The verb prints nothing that the runner checks, and when it is refused, it prints nothing
+    /// at all (`check`, or an `export` without `--dry-run`).
     Nothing,
-    /// A row per pair (`cakeys_cli_common::Outcome`): the rule and the device bit there.
+    /// One row for each pair (`cakeys_cli_common::Outcome`), which holds the rule and the device
+    /// bit.
     Rows,
-    /// camigrate's plan (`--json`, a dry run): per object its method, exposure and deferrals.
+    /// camigrate's plan (`--json`, a dry run), with the method, the exposure and the deferrals of
+    /// each object.
     Plan,
-    /// caprobe's profile, as TOML: its capability rows and its `[untested]` entries.
+    /// caprobe's profile, as TOML, with its capability rows and its `[untested]` entries.
     Profile,
 }
 
-/// A profile row a cell expects (`row`): `answer` and `by` as written, or `absent`.
+/// A profile row that a cell expects (`row`): either `answer` and `by` exactly as written, or
+/// `absent`.
 #[derive(Clone, Debug)]
 pub struct RowWant {
     pub cap: String,
@@ -114,65 +131,69 @@ pub struct RowWant {
     pub absent: bool,
 }
 
-/// A lie: its class, and its plan, with `{label}`, `{other}` (`{label}-other`) and
-/// `{seq:C_X}` (the process's first call of `C_X` in the cell's run, found by a probe run that
-/// fails that call) filled per cell.
+/// A fault: its class and its p11-fault plan. The runner fills in `{label}`, `{other}`
+/// (`{label}-other`) and `{seq:C_X}` for each cell. `{seq:C_X}` becomes the process's first call
+/// of `C_X` in the cell's run, which the runner finds with a probe run that fails that call.
 pub struct Lie {
     pub class: String,
     pub plan: String,
 }
 
-/// What a cell must do.
+/// The expected result of a cell.
 #[derive(Clone, Debug)]
 pub struct Expect {
-    /// The exit: one of these.
+    /// The allowed exit codes. The run must exit with one of them.
     pub exit: Vec<i32>,
     /// The exit code that the refused pair's row must show when the run itself exits 22. This
     /// applies when an earlier pair of the same run wrote the lock and a later pair is refused
     /// (review 2026-11-24 L5). When it is `None`, the refused row's exit code is the run's.
     pub refused: Option<i32>,
-    /// The rule the refused row names; none: it names none.
+    /// The rule that the refused row names. When it is `None`, the row must name no rule.
     pub rule: Option<String>,
-    /// A rule the passing dry run's row lists as deferred.
+    /// A rule that the row of the passing dry run lists as deferred.
     pub deferred: Option<String>,
-    /// Whether the refused row says the device failed.
+    /// Whether the refused row reports that the device failed.
     pub device: bool,
     /// The passing row's outcome.
     pub outcome: Option<String>,
-    /// Whether the lie fires (the trace has a line its rule changed).
+    /// Whether the fault fires (the trace has a line that its rule changed).
     pub fired: bool,
-    /// What the run changes ([`STATE`]), each a change the oracle asserts; the rest it asserts
-    /// unchanged.
+    /// The parts of the state that the run changes ([`STATE`]). The runner asserts that each of
+    /// them changed, and that the other parts did not change.
     pub changed: Vec<String>,
-    /// Why it changes what it does.
+    /// The reason why the run changes the parts in `changed`.
     pub why: Option<String>,
-    /// A cell known to fail its expectation, which stays what cakeys should do: the finding it
-    /// waits on. Its run must still fail ([`run_class`]): one that passes has its mark taken off.
+    /// For a cell that is known to fail its expectation, the finding that the fix waits on. The
+    /// expectation still describes what cakeys should do. The cell's run must still fail
+    /// ([`run_class`]), and when it passes, the mark must be removed.
     pub red: Option<String>,
-    /// The methods the plan's row must not name ([`Form::Plan`]): a plan with none passes.
+    /// The methods that the plan's row must not name ([`Form::Plan`]). A plan that names none of
+    /// them passes.
     pub method_not: Vec<String>,
-    /// The exposures the plan's row must not name ([`Form::Plan`]).
+    /// The exposures that the plan's row must not name ([`Form::Plan`]).
     pub exposure_not: Vec<String>,
     /// The profile rows ([`Form::Profile`]).
     pub rows: Vec<RowWant>,
-    /// The `[untested]` entries the profile must hold ([`Form::Profile`]).
+    /// The `[untested]` entries that the profile must hold ([`Form::Profile`]).
     pub untested: Vec<String>,
 }
 
-/// A block: every (lie, verb, object) of its lists is a cell, with its expectation, but where an
-/// override names it.
+/// A block of cells. Every (fault, verb, object) combination of its lists is a cell with the
+/// block's expectation, except where an override names the cell.
 pub struct Block {
     pub lies: Vec<String>,
     pub verbs: Vec<String>,
     pub objects: Vec<String>,
     pub expect: Expect,
     pub overrides: Vec<Override>,
-    /// Runs under the cell's plan before its verb ([`Tool::before`]), each its arguments, filled
-    /// as a verb's: the lie told to an earlier step, whose state the verb then meets.
+    /// Runs under the cell's plan before its verb ([`Tool::before`]). Each entry is a list of
+    /// arguments, filled in as a verb's arguments are. The fault is injected into this earlier
+    /// step, and the verb then runs on the state that the step left.
     pub before: Vec<Vec<String>>,
 }
 
-/// A subset of a block's cells with an expectation of their own: a list left out is the block's.
+/// A subset of a block's cells with their own expectation. When the override leaves out a list,
+/// the block's list applies.
 pub struct Override {
     pub lies: Option<Vec<String>>,
     pub verbs: Option<Vec<String>>,
@@ -180,8 +201,8 @@ pub struct Override {
     pub expect: Expect,
 }
 
-/// Grid points decided without a cell: `*`, or a list, of lie classes, verbs and object
-/// classes.
+/// Grid points that are decided without a cell. The fault classes, the verbs and the object
+/// classes are each `*` (any) or a list.
 pub struct Na {
     pub classes: Option<Vec<String>>,
     pub verbs: Option<Vec<String>>,
@@ -189,26 +210,27 @@ pub struct Na {
     pub why: String,
 }
 
-/// A rule a test of its own fires (`test`, a `fn` in `crates/`), where no lie can.
+/// A rule that a separate test fires (`test`, a `fn` in `crates/`), where no injected fault can
+/// fire it.
 pub struct Unit {
     pub rule: String,
     pub test: String,
     pub why: String,
 }
 
-/// One cell: a lie told to a verb about an object, and what it must do.
+/// One cell: a fault injected into a verb's run on an object, and the expected result.
 #[derive(Clone, Debug)]
 pub struct Cell {
     pub lie: String,
     pub verb: String,
     pub object: String,
     pub expect: Expect,
-    /// Its block's `before` steps.
+    /// The `before` steps of the cell's block.
     pub before: Vec<Vec<String>>,
 }
 
 impl Cell {
-    /// `<lie>/<verb>/<object>`.
+    /// Returns `<lie>/<verb>/<object>`.
     pub fn id(&self) -> String {
         format!("{}/{}/{}", self.lie, self.verb, self.object)
     }
@@ -225,7 +247,7 @@ fn list(v: Option<&toml::Value>, what: &str) -> Vec<String> {
     }
 }
 
-/// `*` (any) or a list.
+/// Reads `*` (any, returned as `None`) or a list.
 fn any_of(v: Option<&toml::Value>, what: &str) -> Option<Vec<String>> {
     match v {
         Some(toml::Value::String(s)) if s == "*" => None,
@@ -294,7 +316,7 @@ fn expect(v: &toml::Value, what: &str) -> Expect {
     }
 }
 
-/// A `row` of an expectation: `{ cap, answer, by }` or `{ cap, absent = true }`.
+/// Reads a `row` of an expectation: `{ cap, answer, by }` or `{ cap, absent = true }`.
 fn row_want(t: &toml::Table, what: &str) -> RowWant {
     if let Some(k) = t.keys().find(|k| !["cap", "answer", "by", "absent"].contains(&k.as_str())) {
         panic!("{what}: a row has no {k}");
@@ -308,7 +330,7 @@ fn row_want(t: &toml::Table, what: &str) -> RowWant {
     }
 }
 
-/// Block `what` of a table.
+/// Reads block `what` of a table.
 fn block(v: &toml::Value, what: &str) -> Block {
     let t = v.as_table().unwrap_or_else(|| panic!("{what}"));
     let overrides = t
@@ -345,11 +367,12 @@ fn block(v: &toml::Value, what: &str) -> Block {
 }
 
 impl Table {
-    /// The table at `path` (relative to the cakeys crate, `crates/cli`).
+    /// Reads the table at `path` (relative to the cakeys crate, `crates/cli`).
     ///
     /// # Panics
     ///
-    /// When it cannot be read, or is not of the table's shape.
+    /// Panics when the file cannot be read, or when its content does not have the form of a
+    /// table.
     pub fn load(path: &str) -> Table {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("cli").join(path);
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
@@ -474,12 +497,13 @@ impl Table {
         out
     }
 
-    /// The cells of lie class `class`.
+    /// Returns the cells of fault class `class`.
     pub fn cells_of(&self, class: &str) -> Vec<Cell> {
         self.cells().into_iter().filter(|c| self.lies.get(&c.lie).is_some_and(|l| l.class == class)).collect()
     }
 
-    /// What is wrong with the table's form: each a sentence naming where.
+    /// Returns the problems with the table's form, each as a sentence that names where the
+    /// problem is.
     pub fn problems(&self) -> Vec<String> {
         let mut out = Vec::new();
         for (name, lie) in &self.lies {
@@ -542,7 +566,8 @@ impl Table {
         out.extend(
             self.exempt.iter().filter(|(_, why)| why.trim().is_empty()).map(|(r, _)| format!("exempt {r}: no why")),
         );
-        // An exemption a cell or a unit row has come to cover is stale: it goes, and `max` with it.
+        // An exemption for a rule that a cell or a unit row now names is stale. The exemption
+        // must be removed, and `max` must be lowered with it.
         let cells = self.cells();
         for r in self.exempt.keys() {
             let rule = |c: &Cell| c.expect.rule.as_ref() == Some(r) || c.expect.deferred.as_ref() == Some(r);
@@ -572,8 +597,8 @@ impl Table {
         out
     }
 
-    /// What is wrong with one cell: what its expectation names that its verb cannot show, a
-    /// change without its why, an object the verb never meets.
+    /// Returns the problems with one cell: an expectation that the cell's verb cannot show, a
+    /// change without a reason, or an object that the verb never runs on.
     fn cell_problems(&self, c: &Cell) -> Vec<String> {
         let mut out = Vec::new();
         let id = c.id();
@@ -635,8 +660,8 @@ impl Table {
         })
     }
 
-    /// The (lie class, verb, object class) points no cell covers and no `na` decides, and each
-    /// `na` that decides none.
+    /// Returns the (fault class, verb, object class) points that no cell covers and no `na`
+    /// decides, and each `na` that decides no point.
     pub fn gaps(&self) -> Vec<String> {
         let covered: BTreeSet<(String, String, String)> = self
             .cells()
@@ -667,7 +692,8 @@ impl Table {
                 }
             }
         }
-        // An `na` whose every point a cell covers is stale: its why no longer decides anything.
+        // An `na` whose points are all covered by cells is stale, because its reason no longer
+        // decides anything.
         out.extend(
             used.iter()
                 .enumerate()
@@ -677,8 +703,8 @@ impl Table {
         out
     }
 
-    /// The names of `rules` (the plan's, `Rule::ALL`) that no cell names as its rule or deferred,
-    /// no unit row fires and no exemption excuses.
+    /// Returns the names in `rules` (the plan's rules, `Rule::ALL`) that no cell names as its
+    /// rule or as deferred, that no unit row fires, and that no exemption excuses.
     pub fn uncovered<'a>(&self, rules: &[&'a str]) -> Vec<&'a str> {
         let cells = self.cells();
         let named = |r: &str| {
@@ -689,24 +715,26 @@ impl Table {
         rules.iter().copied().filter(|r| !named(r)).collect()
     }
 
-    /// The rules the table names (cells, unit rows, exemptions), for the check that each is one.
+    /// Returns the rules that the table names (in cells, unit rows and exemptions), so that the
+    /// lint can check that each name is a rule or a check.
     pub fn named_rules(&self) -> BTreeSet<String> {
         let cells = self.cells().into_iter().flat_map(|c| [c.expect.rule, c.expect.deferred]).flatten();
         cells.chain(self.units.iter().map(|u| u.rule.clone())).chain(self.exempt.keys().cloned()).collect()
     }
 }
 
-/// The token a fixture plants on, with every object it makes and its decoy, on the shim.
+/// The token on which a fixture plants its objects, behind the shim, with every object that the
+/// fixture makes and the object's decoy.
 pub struct Fixture {
     pub w: Workdir,
     /// The module behind the shim.
     pub real: String,
-    /// The lock as the fixture left it: each cell starts from it.
+    /// The lock as the fixture left it. Each cell starts from this lock.
     pub planted: Vec<u8>,
 }
 
-/// The keys.toml of an object of the fixture: its class and type lines, and its spec's
-/// attributes and the rest of its `tokens.<token>` table.
+/// Returns the keys.toml parts of an object of the fixture: its class and type lines, its spec's
+/// attributes, and the rest of its `tokens.<token>` table.
 fn declared(name: &str) -> (&'static str, &'static str, &'static str) {
     let ec = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_EC\"\ncurve = \"secp256r1\"";
     let rsa = "class = \"CKO_PRIVATE_KEY\"\nkeyType = \"CKK_RSA\"\nmodulusBits = 2048";
@@ -744,17 +772,18 @@ fn declared(name: &str) -> (&'static str, &'static str, &'static str) {
 }
 
 impl Fixture {
-    /// The table's objects planted on the token behind the shim, as test `name`'s: the keys made
-    /// by `cakeys create`, the certificate, the data objects and the public key put there through
-    /// the module and recorded by `cakeys lock`, all with no plan; and beside each a decoy of its
-    /// kind under `<name>-other`, which no spec names, made through the module. `None` (skipped)
-    /// without `P11_FAULT_MODULE`. Each run that writes the lock is held to the runner's
-    /// invariants into `wrong`; with `record`, every one is traced there with the public values
-    /// (`P11_FAULT_RECORD_VALUES = public`).
+    /// Plants the table's objects on the token behind the shim, for test `name`. `cakeys create`
+    /// makes the keys. The certificate, the data objects and the public key are put on the token
+    /// through the module and recorded by `cakeys lock`. None of these runs uses a plan. Next to
+    /// each object, the function makes a decoy of the same kind under `<name>-other` through the
+    /// module, and no spec names the decoy. It returns `None` (the test is skipped) without
+    /// `P11_FAULT_MODULE`. The function checks each run that writes the lock against the runner's
+    /// invariants, and adds each violation to `wrong`. With `record`, it traces every such run to
+    /// that file with the public values (`P11_FAULT_RECORD_VALUES = public`).
     ///
     /// # Panics
     ///
-    /// When a planting step fails.
+    /// Panics when a planting step fails.
     pub fn plant(name: &str, table: &Table, record: Option<&Path>, wrong: &mut Vec<String>) -> Option<Fixture> {
         let real = suite_var("P11_FAULT_MODULE", "CAKEYS_FAULT_REQUIRE", name)?;
         let w = Workdir::new(name);
@@ -788,8 +817,9 @@ impl Fixture {
         Some(Fixture { planted: std::fs::read(f.lock()).unwrap(), ..f })
     }
 
-    /// What the module holds beside the keys cakeys makes: the certificate, the data objects and
-    /// the public key under their own labels, and every decoy.
+    /// Puts on the token, through the module, the objects other than the keys that cakeys makes:
+    /// the certificate, the data objects and the public key under their own labels, and every
+    /// decoy.
     fn put(s: &super::TestSession, table: &Table) {
         let label = |n: &str| Attribute::Label(n.as_bytes().to_vec());
         let token = Attribute::Token(true);
@@ -820,7 +850,8 @@ impl Fixture {
         let cert = |name: &str, der: &[u8]| {
             s.create_object(&super::cert_object(der, name.as_bytes(), None)).unwrap();
         };
-        // A public key object alone under its label: the pair's private half under another.
+        // A public key object alone under its label. The private half of the pair is under
+        // another label (`<name>-key`).
         let public = |name: &str| {
             let public = [vec![token.clone(), label(name), Attribute::Verify(true)], ec(super::P384)].concat();
             s.generate_key_pair(&Mechanism::EccKeyPairGen, &public, &[token.clone(), label(&format!("{name}-key"))])
@@ -855,7 +886,8 @@ impl Fixture {
                         _ => vec![Attribute::Sign(true), Attribute::AlwaysAuthenticate(true)],
                     };
                     let (_, private) = pair(&other, rsa(), usage, &Mechanism::RsaPkcsKeyPairGen);
-                    // The public key the module asserts for it (SoftHSM sets none, and takes any).
+                    // Set the public key that the module reports for the key (SoftHSM sets none,
+                    // and accepts any).
                     let asserted = Attribute::PublicKeyInfo(super::oracle_spki(s, &other));
                     s.update_attributes(private, &[asserted]).unwrap();
                 }
@@ -882,7 +914,9 @@ impl Fixture {
         }
     }
 
-    /// The shim's module, for each run: the process's `P11_FAULT_MODULE` is the liar suite's only.
+    /// Returns the `P11_FAULT_MODULE` setting that each run passes to the shim: the fixture's
+    /// module. Each run sets it, because the process's own `P11_FAULT_MODULE` names the liar
+    /// suite's module only, and a fixture such as the one in `tests/tpm2.rs` has another module.
     fn module(&self) -> (&'static str, &Path) {
         ("P11_FAULT_MODULE", Path::new(&self.real))
     }
@@ -892,14 +926,16 @@ impl Fixture {
         self.w.dir.join("keys.lock")
     }
 
-    /// The token as a snapshot sees it: through the module itself, not the shim.
+    /// Returns the view of the token that a snapshot uses, through the module itself and not
+    /// through the shim.
     pub fn view(&self) -> TokenView<'_> {
         TokenView { name: "kmtest", module: &self.real, label: "kmtest", env: &[], db: vec![] }
     }
 
-    /// `args` run through the shim under `plan` (none: no plan), traced to `trace`, and the
-    /// runner's invariants over it: it exits 22 exactly when it changed the lock, and a `check`
-    /// changed nothing. Returns the run, and what broke an invariant.
+    /// Runs `args` through the shim under `plan` (a plan file and the trace file; `None` means
+    /// no plan), and checks the runner's invariants: the run exits 22 exactly when it changed the
+    /// lock, and a `check` changed nothing. Without a plan, `record` traces the run with the
+    /// public values. Returns the run, and each invariant that the run broke.
     pub fn held(&self, args: &[&str], plan: Option<(&Path, &Path)>, record: Option<&Path>) -> (Output, Vec<String>) {
         let mut env: Vec<(&str, &Path)> = Vec::new();
         if let Some((plan, trace)) = plan {
@@ -927,18 +963,18 @@ impl Tool for Fixture {
         args.iter().map(|a| a.replace("{spec}", object).replace("{token}", token)).collect()
     }
 
-    /// Each run names the shim's module itself ([`Fixture::module`]).
+    /// Each run sets the shim's module itself ([`Fixture::module`]).
     fn run(&self, args: &[&str], env: &[(&str, &Path)]) -> Output {
         let env: Vec<(&str, &Path)> = std::iter::once(self.module()).chain(env.iter().copied()).collect();
         self.w.km_env(args, &env)
     }
 
-    /// The lock and the token, now.
+    /// Returns a snapshot of the lock and the token as they are now.
     fn state(&self) -> Snapshot {
         snapshot(&[&self.lock()], &[self.view()])
     }
 
-    /// Which of [`STATE`] a change named by [`changes`] is.
+    /// Returns the part of [`STATE`] to which a change that [`changes`] names belongs.
     fn kind(&self, what: &str) -> String {
         if what == self.lock().display().to_string() { "lock" } else { "token" }.to_owned()
     }
@@ -955,7 +991,8 @@ impl Tool for Fixture {
         o.honest.unwrap_or(if writes { 22 } else { 0 })
     }
 
-    /// It exits 22 exactly when it changed the lock, and a `check` changes nothing.
+    /// Checks that the run exits 22 exactly when it changed the lock, and that a `check` changes
+    /// nothing.
     fn invariants(&self, args: &[&str], exit: Option<i32>, changed: &BTreeSet<String>) -> Vec<String> {
         let mut wrong = lock_invariant(args, exit, changed);
         if args.contains(&"check") && !changed.is_empty() {
@@ -964,8 +1001,8 @@ impl Tool for Fixture {
         wrong
     }
 
-    /// Every cell starts from the fixture: the lock as planted, and nothing `create` made left
-    /// on the token.
+    /// Puts the fixture back, so that every cell starts from it: the lock as planted, and no
+    /// object that `create` made left on the token.
     fn restore(&self, table: &Table) {
         std::fs::write(self.lock(), &self.planted).unwrap();
         let unmade: Vec<&str> = table.objects.iter().filter(|(_, o)| !o.made).map(|(n, _)| n.as_str()).collect();
@@ -975,40 +1012,45 @@ impl Tool for Fixture {
     }
 }
 
-/// What a tool's runner does that is the tool's own: how a cell's verb runs, what state it may
-/// change, the exit an honest run has, the invariants every run holds, and how a cell's state is
-/// put back. The rest of a cell — its plan, the lie's firing, the exit and the output's oracle
-/// by the verb's [`Form`] — is the runner's ([`judge`]).
+/// The parts of a cell's run that are specific to a tool: how a cell's verb runs, which state it
+/// may change, the exit code of a run without a fault, the invariants that every run must keep,
+/// and how a cell's state is restored. The shared runner ([`judge`]) does the rest of a cell: its
+/// plan, the check that the fault fired, and the checks of the exit code and of the output
+/// according to the verb's [`Form`].
 pub trait Tool {
     /// Where the cells' plans and traces are written.
     fn dir(&self) -> &Path;
-    /// `args` (a verb's, or a `before` step's) filled for `object` on this fixture.
+    /// Returns `args` (a verb's arguments, or a `before` step's arguments) filled in for `object`
+    /// on this fixture.
     fn fill(&self, table: &Table, args: &[String], object: &str) -> Vec<String>;
-    /// `args` run with `env` (the shim's plan and trace; none: an honest run).
+    /// Runs `args` with `env` (the shim's plan and trace; an empty `env` means a run without a
+    /// fault).
     fn run(&self, args: &[&str], env: &[(&str, &Path)]) -> Output;
-    /// A block's `before` step (its arguments filled as a verb's), under the cell's plan.
+    /// Runs a block's `before` step (its arguments filled in as a verb's are) under the cell's
+    /// plan.
     fn before(&self, args: &[&str], env: &[(&str, &Path)]) -> Output {
         self.run(args, env)
     }
-    /// The state the oracle compares, now.
+    /// Returns a snapshot of the state that the runner compares.
     fn state(&self) -> Snapshot;
-    /// Which of the table's `state` a change named by [`changes`] is.
+    /// Returns the part of the table's `state` to which a change that [`changes`] names belongs.
     fn kind(&self, what: &str) -> String;
-    /// The exit an honest run of `verb` on `object` has.
+    /// Returns the exit code of a run of `verb` on `object` when no fault is injected.
     fn honest_exit(&self, table: &Table, verb: &str, object: &str) -> i32;
-    /// What a run of `args` exiting `exit` broke of the runner's invariants, given the state it
-    /// changed ([`Tool::kind`]s).
+    /// Returns each invariant of the runner that a run of `args` with exit code `exit` broke,
+    /// given the parts of the state that the run changed (each a [`Tool::kind`]).
     fn invariants(&self, args: &[&str], exit: Option<i32>, changed: &BTreeSet<String>) -> Vec<String>;
-    /// Put the fixture back as it was planted.
+    /// Puts the fixture back as it was planted.
     fn restore(&self, table: &Table);
-    /// The shim's plan and trace variables (a tagged shim's own, `docs/FAULT_SHIM.md`).
+    /// Returns the names of the shim's plan and trace variables (a tagged shim has its own,
+    /// `docs/FAULT_SHIM.md`).
     fn vars(&self) -> (&'static str, &'static str) {
         ("P11_FAULT_PLAN", "P11_FAULT_TRACE")
     }
 }
 
-/// The invariant of a run that writes a lock (CAKEYS.md: "a run that wrote the lock exits 22,
-/// never 0"): it exits 22 exactly when it changed the lock.
+/// Checks the invariant of a run that writes a lock (CAKEYS.md: "a run that wrote the lock exits
+/// 22, never 0"): the run exits 22 exactly when it changed the lock.
 pub fn lock_invariant(args: &[&str], exit: Option<i32>, changed: &BTreeSet<String>) -> Vec<String> {
     let lock = changed.contains("lock");
     if (exit == Some(22)) == lock {
@@ -1018,7 +1060,8 @@ pub fn lock_invariant(args: &[&str], exit: Option<i32>, changed: &BTreeSet<Strin
     }
 }
 
-/// `args` run by `tool` with `env`, and what it broke of the tool's invariants.
+/// Runs `args` with `tool` and `env`, and returns the output and each invariant of the tool that
+/// the run broke.
 pub fn held(tool: &impl Tool, args: &[&str], env: &[(&str, &Path)]) -> (Output, Vec<String>) {
     let before = tool.state();
     let out = tool.run(args, env);
@@ -1027,8 +1070,9 @@ pub fn held(tool: &impl Tool, args: &[&str], env: &[(&str, &Path)]) -> (Output, 
     (out, wrong)
 }
 
-/// `verb` on `object` with no plan through the shim: it exits as an honest run does, and
-/// changes nothing unless it writes. What is wrong.
+/// Runs `verb` on `object` through the shim with no plan. The run must exit with the code that
+/// [`Tool::honest_exit`] gives, and it must keep the tool's invariants, so it changes the lock
+/// only when it writes. Returns each problem.
 pub fn honest(tool: &impl Tool, table: &Table, verb: &str, object: &str) -> Vec<String> {
     let args = tool.fill(table, &table.verbs[verb].args, object);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -1040,7 +1084,8 @@ pub fn honest(tool: &impl Tool, table: &Table, verb: &str, object: &str) -> Vec<
     wrong
 }
 
-/// Run `cell` with `tool` and judge it. What is wrong, each line naming the cell.
+/// Runs `cell` with `tool` and checks the result. Returns each problem, in a line that names the
+/// cell.
 pub fn judge(tool: &impl Tool, table: &Table, cell: &Cell, n: usize) -> Vec<String> {
     let id = cell.id();
     let e = &cell.expect;
@@ -1055,8 +1100,8 @@ pub fn judge(tool: &impl Tool, table: &Table, cell: &Cell, n: usize) -> Vec<Stri
     let (plan, trace) = (dir.join(format!("cell-{n}.toml")), dir.join(format!("cell-{n}.jsonl")));
     let other = format!("{}-other", cell.object);
     let mut text = table.lies[&cell.lie].plan.replace("{label}", &cell.object).replace("{other}", &other);
-    // `{seq:C_X}`: where the run first calls C_X, found by a run that fails that call, after
-    // which the fixture is restored.
+    // Replace `{seq:C_X}` with the `seq` of the run's first call of C_X. A probe run that fails
+    // that call finds it, and the fixture is restored after the probe.
     while let Some(at) = text.find("{seq:") {
         let end = at + text[at..].find('}').unwrap();
         let function = text[at + 5..end].to_owned();
@@ -1119,10 +1164,11 @@ pub fn judge(tool: &impl Tool, table: &Table, cell: &Cell, n: usize) -> Vec<Stri
     wrong.into_iter().map(|w| format!("{id}: {w}: {}", said())).collect()
 }
 
-/// The rows of a verb that prints a row per pair, one per pair it runs ([`Verb::pairs`]): a
-/// refused run's end at the refused one, which names the cell's rule and device bit, the rows
-/// before it passing; a passing run's each name its outcome and deferrals. `refusal` is the exit
-/// code that the refused row must show, or `None` when no pair may be refused.
+/// Checks the rows of a verb that prints one row for each pair that it runs ([`Verb::pairs`]).
+/// The rows of a refused run end at the refused pair, whose row must name the cell's rule and
+/// device bit, and the rows before it must pass. Each row of a run that passes must name the
+/// cell's outcome and deferral. `refusal` is the exit code that the refused row must show, or
+/// `None` when no pair may be refused.
 fn judge_rows(e: &Expect, out: &Output, refusal: Option<i32>, pairs: usize) -> Vec<String> {
     let mut wrong = Vec::new();
     match serde_json::from_slice::<Vec<Row>>(&out.stdout) {
@@ -1159,8 +1205,8 @@ fn judge_rows(e: &Expect, out: &Output, refusal: Option<i32>, pairs: usize) -> V
     wrong
 }
 
-/// The one plan of camigrate's dry run (`--json`): the methods and exposures it must not name,
-/// and the rule it must defer.
+/// Checks the one plan of camigrate's dry run (`--json`): the methods and exposures that it must
+/// not name, and the rule that it must defer.
 fn judge_plan(e: &Expect, out: &Output) -> Vec<String> {
     let report: serde_json::Value = match serde_json::from_slice(&out.stdout) {
         Ok(r) => r,
@@ -1187,8 +1233,8 @@ fn judge_plan(e: &Expect, out: &Output) -> Vec<String> {
     wrong
 }
 
-/// caprobe's profile (TOML on stdout): each row as the cell says, each `[untested]` entry there.
-/// A refused probe prints no profile.
+/// Checks caprobe's profile (TOML on stdout): each row must be as the cell expects, and each
+/// expected `[untested]` entry must be present. A refused probe must print no profile.
 fn judge_profile(e: &Expect, out: &Output, refused: bool) -> Vec<String> {
     if refused {
         return if out.stdout.is_empty() { vec![] } else { vec![format!("a refusal printed {:?}", stdout(out))] };
@@ -1219,8 +1265,8 @@ fn judge_profile(e: &Expect, out: &Output, refused: bool) -> Vec<String> {
     wrong
 }
 
-/// The lines of `trace` whose rule fired: a lie that matched nothing would pass a cell for the
-/// wrong reason.
+/// Returns the lines of `trace` whose rule fired. The runner checks them, because a fault that
+/// matched nothing would let a cell pass for the wrong reason.
 pub fn fired(trace: &Path) -> Vec<serde_json::Value> {
     let text = std::fs::read_to_string(trace).unwrap_or_default();
     text.lines()
@@ -1229,27 +1275,29 @@ pub fn fired(trace: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// The test of lie class `class` over cakeys' table ([`run_table`]).
+/// Runs the test of fault class `class` over the cakeys table ([`run_table`]).
 ///
 /// # Panics
 ///
-/// When anything is wrong, listing all of it.
+/// Panics when anything is wrong, and lists every problem.
 pub fn run_class(class: &str) {
     let table = Table::cakeys();
     run_table(&table, class, |name, wrong| Fixture::plant(name, &table, None, wrong));
 }
 
-/// The test of lie class `class` over `table`: the fixture planted afresh (`plant`, given the
-/// test's name; `None`: skipped); every (verb, object) its cells meet run honestly first and
-/// again after them, each as an honest run ends (so every refusal below was the lie's); each cell
-/// judged from the planted state, a cell marked red ([`Expect::red`]) held to failing; and last,
-/// the writes the cells refused done honestly, which change what the cells held unchanged (so
-/// the comparison can fail). Every cell is run before any is judged: one run names every wrong
-/// one.
+/// Runs the test of fault class `class` over `table`. The function plants a new fixture
+/// (`plant`, given the test's name; `None` means that the test is skipped). It runs every (verb,
+/// object) pair that the cells use without a fault, first before the cells and again after them,
+/// and each such run must end as a run without a fault ends, so every refusal in the cells came
+/// from the fault. It judges each cell from the planted state, and a cell marked red
+/// ([`Expect::red`]) must still fail. Last, it runs without a fault the writes that the cells
+/// refused. These writes change the state that the cells kept unchanged, which shows that the
+/// comparison in the cells can detect a change. The function runs every cell before it asserts,
+/// so one run of the test names every wrong cell.
 ///
 /// # Panics
 ///
-/// When anything is wrong, listing all of it.
+/// Panics when anything is wrong, and lists every problem.
 pub fn run_table<T: Tool>(table: &Table, class: &str, plant: impl FnOnce(&str, &mut Vec<String>) -> Option<T>) {
     let cells = table.cells_of(class);
     assert!(!cells.is_empty(), "no cell of class {class}: its points are na, and its test goes");
@@ -1265,9 +1313,10 @@ pub fn run_table<T: Tool>(table: &Table, class: &str, plant: impl FnOnce(&str, &
     );
 }
 
-/// [`run_table`]'s runs of `cells` on the fixture `f` planted of `table`, with no assertion: what
-/// is wrong. What an honest run leaves as it was (every run but a write, a refusal too) is run
-/// before and after the cells; the writes last, `f` restored after each.
+/// Does the runs of [`run_table`] for `cells` on the fixture `f` planted from `table`, without an
+/// assertion, and returns each problem. The runs without a fault that leave the state unchanged
+/// (every run except a write, including a run that is refused) run before and after the cells.
+/// The writes run last, and `f` is restored before and after each write.
 pub fn run_cells<T: Tool>(table: &Table, cells: &[Cell], f: &T) -> Vec<String> {
     let mut wrong = Vec::new();
     let met: BTreeSet<(&str, &str)> = cells.iter().map(|c| (c.verb.as_str(), c.object.as_str())).collect();

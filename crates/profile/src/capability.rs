@@ -1,29 +1,34 @@
-//! What a token answers about one of cakeys' own operations (docs/CAPROBE.md, review 2026-11-15
-//! §4 (d)): one row type, `"<capability>" = { answer, evidence, via }`, keyed by a
-//! [`Capability`] that names the operation. A new capability is a variant here and the
-//! operation that tests it; the emitter, the diff and the stack algebra do not change. An
-//! absent row is unknown: never probed, never claimed.
+//! The rows that record whether a token can perform one of cakeys' own operations
+//! (docs/CAPROBE.md, review 2026-11-15 §4 (d)). Every row has one type,
+//! `"<capability>" = { answer, evidence, via }`, and its key is a [`Capability`] that names the
+//! operation. To add a new capability, add a variant here and the probe operation that tests it.
+//! The emitter, the diff and the code that combines profiles into a stack do not change. An
+//! absent row means that the answer is unknown: the capability was never probed and never
+//! claimed.
 
 use crate::names::{KeyKind, Proof};
 use std::collections::BTreeMap;
 
-/// The OAEP hashes the wrap probe tries: the `wrap.rsa-oaep.*` rows this cakeys reads.
+/// The OAEP hashes that the wrap probe tries. They are the `wrap.rsa-oaep.*` rows that this
+/// version of cakeys reads.
 pub const WRAP_OAEP: [&str; 2] = ["SHA-1", "SHA-256"];
 
-/// The OAEP hashes the decryption probe tries: the `decrypt.rsa-oaep.*` rows this cakeys reads.
+/// The OAEP hashes that the decryption probe tries. They are the `decrypt.rsa-oaep.*` rows that
+/// this version of cakeys reads.
 pub const DECRYPT_OAEP: [&str; 3] = ["SHA-1", "SHA-256", "SHA-512"];
 
-/// The attributes the unwrap probe puts in a template: the `unwrap.template.*` rows this cakeys
-/// reads.
+/// The attributes that the unwrap probe puts in a template. They are the `unwrap.template.*` rows
+/// that this version of cakeys reads.
 pub const UNWRAP_TEMPLATE: [&str; 1] = ["CKA_VALUE_LEN"];
 
-/// The hash of a `rsa-oaep.<hash>` row: any one name, known or not.
+/// Returns the hash of a `rsa-oaep.<hash>` row. The hash may be any single name, known or not.
 fn oaep_hash(rest: &str) -> Option<String> {
     rest.strip_prefix("rsa-oaep.").filter(|h| !h.is_empty() && !h.contains('.')).map(str::to_owned)
 }
 
-/// What a generation, import or export is of: a curve (or parameter set), or a size in the
-/// unit of the key type's own attribute (`docs/archive/CAPROBE_MIGRATION.md`, M1).
+/// The curve, parameter set or size of the key that a generation, import or export row is
+/// about. A size is in the unit of the key type's own attribute
+/// (`docs/archive/CAPROBE_MIGRATION.md`, M1).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum On {
     /// A curve or parameter set, by name.
@@ -35,9 +40,10 @@ pub enum On {
 }
 
 impl On {
-    /// What a row's last part names for `key_type`: a size in RSA's bits or a secret key's
-    /// bytes, else a curve. A profile's row keys go through [`Capability::parse`], which also
-    /// refuses a size not written as [`On`] writes it back (`02048`, `+2048`).
+    /// Parses the last part of a row's key for `key_type`. A number is a size, in bits for RSA
+    /// or in bytes for a secret key. Any other text is a curve. A profile's row keys go through
+    /// [`Capability::parse`], which also refuses a size that is not written in the form in which
+    /// [`On`] writes it back (for example, `02048` or `+2048`).
     #[must_use]
     pub fn parse(key_type: &KeyKind, on: &str) -> On {
         match on.parse() {
@@ -46,8 +52,9 @@ impl On {
         }
     }
 
-    /// A size of a key of `key_type`, in the unit its attribute takes: bits for RSA
-    /// (`CKA_MODULUS_BITS`), bytes for any other (`CKA_VALUE_LEN`). What a row reads back as.
+    /// Returns a size of a key of `key_type`, in the unit that its attribute takes: bits for RSA
+    /// (`CKA_MODULUS_BITS`), and bytes for any other key type (`CKA_VALUE_LEN`). A row's size is
+    /// read back as this value.
     #[must_use]
     pub fn size(key_type: &KeyKind, n: u32) -> On {
         if matches!(key_type, KeyKind::Rsa) { On::Bits(n) } else { On::Bytes(n) }
@@ -66,10 +73,11 @@ impl std::fmt::Display for On {
 /// Which way a key leaves a token (`export.*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Way {
-    /// To this process, by RFC 5649 under a key the host drew (`Token::extract`): `export.host.*`.
+    /// The key leaves to this process, wrapped with RFC 5649 under a key that the host generated
+    /// (`Token::extract`): `export.host.*`.
     Host,
-    /// Toward another token's RSA key (`CKM_RSA_AES_KEY_WRAP`, or RSA-OAEP for a secret key):
-    /// `export.sealed.*`.
+    /// The key leaves wrapped to another token's RSA key (`CKM_RSA_AES_KEY_WRAP`, or RSA-OAEP for
+    /// a secret key): `export.sealed.*`.
     Sealed,
 }
 
@@ -84,23 +92,24 @@ impl Way {
     }
 }
 
-/// The public object classes `create.*` rows name without a key type.
+/// The public object classes that `create.*` rows name without a key type.
 pub const CREATE_CLASSES: [&str; 2] = ["CKO_CERTIFICATE", "CKO_DATA"];
 
-/// A way keys move (docs/CAMIGRATE.md D2, D10): this repo's claims, never probe output, so the
-/// probe preserves them across regenerations like `[migration]` and the diff never compares
-/// them.
+/// A way in which keys move between tokens (docs/CAMIGRATE.md D2, D10). These rows are claims
+/// that this repository makes, and the probe never writes them. The probe therefore keeps them
+/// unchanged when it regenerates a profile, as it does with `[migration]`, and the diff never
+/// compares them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Move {
-    /// The module wraps a key out (`C_WrapKey`): ykcs11 and tpm2-pkcs11 never.
+    /// The module wraps a key out of the token (`C_WrapKey`). ykcs11 and tpm2-pkcs11 never do.
     Export,
-    /// The module unwraps a key in (`C_UnwrapKey`).
+    /// The module unwraps a key into the token (`C_UnwrapKey`).
     Unwrap,
-    /// A secret key it unwraps reports its length (`CKA_VALUE_LEN`), which the import's type
-    /// check reads: `SoftHSM` leaves it 0.
+    /// A secret key that the module unwraps reports its length (`CKA_VALUE_LEN`), which the
+    /// import's type check reads. `SoftHSM` leaves the length at 0.
     SecretUnwrap,
-    /// A `CKA_WRAP_WITH_TRUSTED` key leaves toward a transport key the SO marked trusted
-    /// (`enforced`): kryoptic cannot.
+    /// A `CKA_WRAP_WITH_TRUSTED` key can be wrapped to a transport key that the SO marked as
+    /// trusted (`enforced`). kryoptic cannot do this.
     TrustedWrap,
 }
 
@@ -120,34 +129,35 @@ impl Move {
 /// One of cakeys' operations a token can be asked about.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Capability {
-    /// Generating a key of `key_type` (`CKK_*`) on a curve or of a size:
-    /// `generate.CKK_EC.secp256r1`, `generate.CKK_RSA.2048`. `via = "by-name"`: only with
-    /// `CKA_EC_PARAMS` naming the curve (PKCS#11 3.0's `PrintableString` form), never by OID.
+    /// The generation of a key of `key_type` (`CKK_*`) on a curve or of a size:
+    /// `generate.CKK_EC.secp256r1`, `generate.CKK_RSA.2048`. `via = "by-name"` means that the
+    /// generation works only when `CKA_EC_PARAMS` names the curve (the `PrintableString` form of
+    /// PKCS#11 3.0), and never when it gives the curve's OID.
     Generate {
         /// The key type, by `CKK_*` name.
         key_type: KeyKind,
         /// The curve, parameter set or size.
         on: On,
     },
-    /// Wrapping a key to an RSA key with RSA-OAEP of this hash, MGF1 of the same, round-trip:
-    /// `wrap.rsa-oaep.SHA-1`.
+    /// The wrapping of a key to an RSA key with RSA-OAEP of this hash and MGF1 of the same hash,
+    /// checked by a round trip: `wrap.rsa-oaep.SHA-1`.
     WrapOaep(String),
-    /// Decrypting with the private key what the host encrypted to it with RSA-OAEP of this hash
-    /// (`pop-decrypt`): `decrypt.rsa-oaep.SHA-256`.
+    /// The decryption, with the private key, of data that the host encrypted to that key with
+    /// RSA-OAEP of this hash (`pop-decrypt`): `decrypt.rsa-oaep.SHA-256`.
     DecryptOaep(String),
-    /// Unwrapping with this attribute in the template: `unwrap.template.CKA_VALUE_LEN`; `no`
-    /// is the module refusing it there (`SoftHSM`).
+    /// An unwrap with this attribute in the template: `unwrap.template.CKA_VALUE_LEN`. The answer
+    /// `no` means that the module refuses the attribute in an unwrap template (`SoftHSM` does).
     UnwrapTemplate(String),
-    /// ECDH into a sealed (non-extractable) secret, which `pop-ecdh` MACs with on the token:
-    /// `derive.ecdh.sealed`. ykcs11 derives only into an extractable one.
+    /// ECDH into a sealed (non-extractable) secret, which `pop-ecdh` then uses on the token to
+    /// compute a MAC: `derive.ecdh.sealed`. ykcs11 derives only into an extractable secret.
     DeriveSealed,
-    /// ECDH in a read-only session: `derive.ecdh.read-only`. tpm2-pkcs11 keeps derived secrets
-    /// as store rows, so it refuses there.
+    /// ECDH in a read-only session: `derive.ecdh.read-only`. tpm2-pkcs11 stores derived secrets
+    /// as rows in its store, so it refuses ECDH in a read-only session.
     DeriveReadOnly,
     /// A way keys move: `move.export`, `move.unwrap`, `move.secret-unwrap`, `move.trusted-wrap`.
     Move(Move),
-    /// Proving possession of a private key of `key_type` on a curve or of a size, by
-    /// `binding`, as the verbs prove it: `prove.pop-ecdh.CKK_EC.secp256r1`,
+    /// The proof of possession of a private key of `key_type` on a curve or of a size, by
+    /// `binding`, done as the verbs do it: `prove.pop-ecdh.CKK_EC.secp256r1`,
     /// `prove.pop-decrypt.CKK_RSA.2048`.
     Prove {
         /// The proof, by its `binding` name.
@@ -157,9 +167,10 @@ pub enum Capability {
         /// The curve or size.
         on: On,
     },
-    /// Bringing a key of `key_type` in from the host's plaintext, the token then showing that
-    /// key: `import.CKK_EC.secp256r1`, `import.CKK_AES.32`. `via` is the path that worked:
-    /// `create-object`, or the provider's own (`tpm2-ptool`, `piv-import`).
+    /// The import of a key of `key_type` from plaintext on the host, after which the token
+    /// presents that same key: `import.CKK_EC.secp256r1`, `import.CKK_AES.32`. `via` names the
+    /// import path that worked: `create-object`, or the provider's own path (`tpm2-ptool`,
+    /// `piv-import`).
     Import {
         /// The key type, by `CKK_*` name.
         key_type: KeyKind,
@@ -174,8 +185,9 @@ pub enum Capability {
         /// A public key's key type and curve or size.
         key: Option<(KeyKind, On)>,
     },
-    /// An extractable key of `key_type` leaving `way`, and arriving as the same material:
-    /// `export.host.CKK_EC.secp256r1`, `export.sealed.CKK_RSA.2048`. `via` is the mechanism.
+    /// The export of an extractable key of `key_type` in the direction `way`, where the key
+    /// arrives as the same material: `export.host.CKK_EC.secp256r1`,
+    /// `export.sealed.CKK_RSA.2048`. `via` names the mechanism.
     Export {
         /// To the host, or toward another token.
         way: Way,
@@ -184,20 +196,22 @@ pub enum Capability {
         /// The curve or size.
         on: On,
     },
-    /// `C_UnwrapKey` bringing a key of `key_type` in as the material wrapped:
-    /// `unwrap.CKK_AES.32`. `via` is the mechanism.
+    /// A `C_UnwrapKey` that brings in a key of `key_type` with the same material that was
+    /// wrapped: `unwrap.CKK_AES.32`. `via` names the mechanism.
     Unwrap {
         /// The key type, by `CKK_*` name.
         key_type: KeyKind,
         /// The curve or size.
         on: On,
     },
-    /// `C_DestroyObject` really removing an object of the class (`CKO_*`): `delete.CKO_PRIVATE_KEY`.
+    /// A `C_DestroyObject` that actually removes an object of the class (`CKO_*`):
+    /// `delete.CKO_PRIVATE_KEY`.
     Delete(String),
-    /// A secret key's commitment, the operation `kind` names (`cakeys_core::id::Commit::
-    /// profile_kind`: `hmac-sha256`, `cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`), working on a key of
-    /// `key_type` of `bytes`: `commit.hmac-sha256.CKK_GENERIC_SECRET.32`. A check value's cipher
-    /// is the key type's (`commit.kcv-ecb.CKK_DES3.24`).
+    /// A secret key's commitment, computed by the operation that `kind` names
+    /// (`cakeys_core::id::Commit::profile_kind`: `hmac-sha256`, `cmac`, `kcv-ecb`, `kcv-ecb-dec`,
+    /// `kw`) on a key of `key_type` that is `bytes` long:
+    /// `commit.hmac-sha256.CKK_GENERIC_SECRET.32`. A check value uses the cipher of the key's own
+    /// type (`commit.kcv-ecb.CKK_DES3.24`).
     Commit {
         /// The commitment kind.
         kind: String,
@@ -206,8 +220,9 @@ pub enum Capability {
         /// The key's length in bytes.
         bytes: u32,
     },
-    /// A symmetric mode (`CKM_AES_CBC`, `CKM_AES_GCM`...) encrypting and decrypting back on a
-    /// key of `key_type` of `bytes`: `crypt.CKM_AES_CTR.CKK_AES.32`.
+    /// A symmetric mode (`CKM_AES_CBC`, `CKM_AES_GCM` and others) that encrypts and then decrypts
+    /// the result again, with a key of `key_type` that is `bytes` long:
+    /// `crypt.CKM_AES_CTR.CKK_AES.32`.
     Crypt {
         /// The mechanism, by `CKM_*` name.
         mechanism: String,
@@ -224,16 +239,16 @@ pub enum Capability {
         /// The base key's type, by `CKK_*` name.
         key_type: KeyKind,
     },
-    /// ECDH between keys of `key_type` on a curve, beyond the curves `prove.pop-ecdh.*` covers
-    /// (Montgomery): `derive.ecdh.CKK_EC_MONTGOMERY.curve25519`.
+    /// ECDH between keys of `key_type` on a curve that the `prove.pop-ecdh.*` rows do not cover
+    /// (the Montgomery curves): `derive.ecdh.CKK_EC_MONTGOMERY.curve25519`.
     DeriveEcdh {
         /// The key type, by `CKK_*` name.
         key_type: KeyKind,
         /// The curve.
         on: On,
     },
-    /// Signing and verifying back on the token with a mechanism no `prove.*` row stands for
-    /// (post-quantum, XEdDSA): `sign.CKM_ML_DSA.CKK_ML_DSA.CKP_ML_DSA_65`.
+    /// Signing on the token, and verifying the signature on the token, with a mechanism that no
+    /// `prove.*` row covers (post-quantum, XEdDSA): `sign.CKM_ML_DSA.CKK_ML_DSA.CKP_ML_DSA_65`.
     Sign {
         /// The mechanism, by `CKM_*` name.
         mechanism: String,
@@ -242,7 +257,7 @@ pub enum Capability {
         /// The parameter set or curve.
         on: On,
     },
-    /// `C_EncapsulateKey` then `C_DecapsulateKey` agreeing on a secret:
+    /// A `C_EncapsulateKey` followed by a `C_DecapsulateKey` that produce the same secret:
     /// `encapsulate.CKK_ML_KEM.CKP_ML_KEM_768`.
     Encapsulate {
         /// The key type, by `CKK_*` name.
@@ -250,11 +265,13 @@ pub enum Capability {
         /// The parameter set.
         on: On,
     },
-    /// An attribute the verbs set or read, on a key of `key_type`:
-    /// `attr.set.CKA_ALLOWED_MECHANISMS.CKK_EC` (a template carries it, a read-back shows it) or
-    /// `attr.read.CKA_LOCAL.CKK_AES` (the module returns it, truthfully).
+    /// An attribute that the verbs set or read, on a key of `key_type`. For
+    /// `attr.set.CKA_ALLOWED_MECHANISMS.CKK_EC`, a template carries the attribute, and a later
+    /// read returns the value that was set. For `attr.read.CKA_LOCAL.CKK_AES`, the module returns
+    /// the attribute with a correct value.
     Attr {
-        /// Read (the module reports it) rather than set (the template carries it).
+        /// True for a read row (the module reports the attribute), and false for a set row (the
+        /// template carries the attribute).
         read: bool,
         /// The attribute, by `CKA_*` name.
         attr: String,
@@ -263,9 +280,9 @@ pub enum Capability {
     },
 }
 
-/// `<CKK_*>.<curve or size>`, as `generate.*` and the rows like it end. A size is written as
-/// its number alone: `02048` or `+2048` would read as 2048 and be written back as `2048`, so two
-/// keys could name one row.
+/// Parses `<CKK_*>.<curve or size>`, which is the end of a `generate.*` key and of the keys with
+/// the same form. A size must be written as its plain number. `02048` or `+2048` would be read
+/// as 2048 and written back as `2048`, so two different keys could name the same row.
 fn key_and_on(rest: &str) -> Option<(KeyKind, On)> {
     let (kt, text) = rest.split_once('.').filter(|(k, o)| k.starts_with("CKK_") && !o.is_empty())?;
     let kt = KeyKind::from(kt);
@@ -273,20 +290,21 @@ fn key_and_on(rest: &str) -> Option<(KeyKind, On)> {
     (on.to_string() == text).then_some((kt, on))
 }
 
-/// `CKM_*.<CKK_*>`: a mechanism and a key type, no size.
+/// Parses `CKM_*.<CKK_*>`: a mechanism and a key type, without a size.
 fn mechanism_and_key(rest: &str) -> Option<(String, KeyKind)> {
     let (mechanism, kt) = rest.split_once('.').filter(|(m, k)| m.starts_with("CKM_") && k.starts_with("CKK_"))?;
     (!kt.contains('.')).then(|| (mechanism.to_owned(), KeyKind::from(kt)))
 }
 
-/// `CKM_*.<CKK_*>.<curve, set or size>`.
+/// Parses `CKM_*.<CKK_*>.<curve, set or size>`.
 fn mechanism_key_and_on(rest: &str) -> Option<(String, KeyKind, On)> {
     let (mechanism, rest) = rest.split_once('.').filter(|(m, _)| m.starts_with("CKM_"))?;
     let (kt, on) = key_and_on(rest)?;
     Some((mechanism.to_owned(), kt, on))
 }
 
-/// The mechanism that generates a key of `key_type`, as `generate.*` rows measure it.
+/// Returns the mechanism that generates a key of `key_type`. The `generate.*` rows measure this
+/// mechanism.
 #[must_use]
 pub fn generation_mechanism(key_type: &str) -> Option<&'static str> {
     Some(match key_type {
@@ -311,15 +329,17 @@ pub fn generation_mechanism(key_type: &str) -> Option<&'static str> {
     })
 }
 
-/// The mechanism a commitment of `kind` computes with on a key of `key_type`: the names table's
-/// (`cakeys_names::CommitKind::mechanism`, which core's `Commit::mechanism` reads too); `None`
-/// for a kind this cakeys does not know.
+/// Returns the mechanism with which a commitment of `kind` is computed on a key of `key_type`.
+/// The mechanism comes from the names table (`cakeys_names::CommitKind::mechanism`), which core's
+/// `Commit::mechanism` also reads. Returns `None` for a kind that this version of cakeys does not
+/// know.
 #[must_use]
 pub fn commit_mechanism(kind: &str, key_type: &str) -> Option<&'static str> {
     cakeys_names::CommitKind::from_name(kind).map(|k| k.mechanism(key_type))
 }
 
-/// A key length: bytes, whatever the key type.
+/// Returns the key length in bytes. A commitment row or a cipher row always gives its key's
+/// length in bytes, so a size in bits (an RSA key) or a curve returns `None`.
 fn bytes_of(on: &On) -> Option<u32> {
     match on {
         On::Bytes(n) => Some(*n),
@@ -328,11 +348,11 @@ fn bytes_of(on: &On) -> Option<u32> {
 }
 
 impl Capability {
-    /// Parse a row's key.
+    /// Parses a row's key.
     ///
     /// # Errors
     ///
-    /// The key names no capability.
+    /// Returns an error when the key names no capability.
     pub fn parse(key: &str) -> Result<Capability, String> {
         let bad = || format!("capabilities: {key:?} names no capability (docs/CAPROBE.md)");
         let (head, rest) = key.split_once('.').ok_or_else(bad)?;
@@ -366,9 +386,10 @@ impl Capability {
             ("delete", class) if class.starts_with("CKO_") && !class.contains('.') => {
                 Capability::Delete(class.to_owned())
             }
-            // A hash, attribute or proof this cakeys does not know loads as read and answers
-            // nothing, like an unknown key type (ISSUES.md Q28, review D4): only the shape is
-            // held, so a profile from a newer cakeys loads.
+            // A hash, attribute or proof that this version of cakeys does not know is loaded as
+            // it was read, and it answers no query, as an unknown key type does (ISSUES.md Q28,
+            // review D4). The parser checks only the form of the key, so a profile from a newer
+            // cakeys still loads.
             ("wrap", rest) => Capability::WrapOaep(oaep_hash(rest).ok_or_else(bad)?),
             ("decrypt", rest) => Capability::DecryptOaep(oaep_hash(rest).ok_or_else(bad)?),
             ("unwrap", rest) => {
@@ -427,9 +448,9 @@ impl Capability {
         })
     }
 
-    /// The mechanisms this row is the measurement of: what an `[untested]` entry must not
-    /// name, and what the probe counts as tried. `via` is the mechanism an export, unwrap or
-    /// import took, where it is one.
+    /// Returns the mechanisms that this row measures. An `[untested]` entry must not name these
+    /// mechanisms, and the probe counts them as tried. `via` is the mechanism that an export,
+    /// unwrap or import used, and it is added when it names a mechanism.
     #[must_use]
     pub fn mechanisms(&self, via: Option<&str>) -> Vec<String> {
         let mut m: Vec<String> = match self {
@@ -456,8 +477,8 @@ impl Capability {
         m
     }
 
-    /// Whether the probe measures it: a [`Capability::Move`] is a claim, preserved across
-    /// regenerations and never compared.
+    /// Returns whether the probe measures this capability. A [`Capability::Move`] is a claim, so
+    /// a regeneration keeps it unchanged and the diff never compares it.
     #[must_use]
     pub fn probed(&self) -> bool {
         !matches!(self, Capability::Move(_))
@@ -494,13 +515,13 @@ impl std::fmt::Display for Capability {
     }
 }
 
-/// Yes or no; an absent row is unknown.
+/// Yes or no. An absent row means that the answer is unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Answer {
-    /// It does.
+    /// The token can perform the operation.
     Yes,
-    /// It does not.
+    /// The token cannot perform the operation.
     No,
 }
 
@@ -529,19 +550,22 @@ impl Answer {
 
 pub use cakeys_names::{DEVICE_FAILED_RV, names_device_failure};
 
-/// Who showed a row's answer (`by`, review 2026-11-24 E-2..E-4): what the row is worth. A row
-/// without one is legacy, written before provenance was recorded.
+/// The party that established a row's answer (`by`, review 2026-11-24 E-2..E-4). It tells how
+/// far a reader can trust the row. A row without `by` is a legacy row, which was written before
+/// the probe recorded provenance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum By {
-    /// The module refused with a `CKR_*` that is neither a device failure
-    /// ([`DEVICE_FAILED_RV`]) nor a busy session: a `no` only.
+    /// The module refused with a `CKR_*` code that is neither a device failure
+    /// ([`DEVICE_FAILED_RV`]) nor a busy session. This value is valid only with the answer `no`.
     Module,
-    /// cakeys checked the result on the host: a signature verified, a key compared, a value
-    /// computed again. A `yes`, or a `no` for a result the host found wrong.
+    /// cakeys checked the result on the host: it verified a signature, compared a key, or
+    /// computed a value again. This value goes with a `yes`, or with a `no` for a result that the
+    /// host found to be wrong.
     Host,
-    /// The module said `CKR_OK` and nothing outside it checked (a round trip on one module): a
-    /// `yes` only, which a cross-token plan cannot rest on.
+    /// The module returned `CKR_OK`, and nothing outside the module checked the result (for
+    /// example, a round trip on one module). This value is valid only with the answer `yes`, and
+    /// a plan that moves keys between tokens cannot rely on it.
     Unverified,
 }
 
@@ -557,40 +581,44 @@ impl By {
     }
 }
 
-/// One answer, with what shows it and how the operation succeeded.
+/// One answer, with its provenance, its evidence, and the way in which the operation succeeded.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Row {
     /// Yes or no.
     pub answer: Answer,
-    /// Who showed it; `None`: legacy, provenance unknown.
+    /// The party that established the answer. `None` marks a legacy row whose provenance is
+    /// unknown.
     #[serde(default)]
     pub by: Option<By>,
-    /// What shows it: the failure, the source, the run.
+    /// The evidence for the answer: the failure, the source or the run.
     #[serde(default)]
     pub evidence: Option<String>,
-    /// How it succeeded where the operation has more than one way (a hint for the next try).
+    /// The way in which the operation succeeded, when the operation has more than one way. It
+    /// serves as a hint for the next attempt.
     #[serde(default)]
     pub via: Option<String>,
 }
 
 impl Row {
-    /// A bare answer, of no recorded provenance.
+    /// Returns a row that holds only an answer, without provenance or evidence.
     #[must_use]
     pub fn new(answer: Answer) -> Row {
         Row { answer, by: None, evidence: None, via: None }
     }
 
-    /// The device failure a legacy `no` cites as its evidence: such a row is no answer of the
-    /// module's, and reads unknown, which refuses (phase1-design §2.4, §9.1).
+    /// Returns the device failure that a legacy `no` row cites as its evidence. Such a row is not
+    /// a real answer from the module, so it is read as unknown, and an unknown answer causes a
+    /// refusal (phase1-design §2.4, §9.1).
     #[must_use]
     pub fn device_failed(&self) -> Option<&'static str> {
         (self.by.is_none() && self.answer == Answer::No)
             .then(|| self.evidence.as_deref().and_then(names_device_failure))?
     }
 
-    /// What is wrong with the row's provenance: `module` answers only no, `unverified` only yes,
-    /// and the module's no never cites a device failure.
+    /// Returns what is wrong with the row's provenance, if anything. `by = "module"` is valid
+    /// only with `no`, and `by = "unverified"` is valid only with `yes`. A `no` from the module
+    /// must not cite a device failure.
     fn problem(&self) -> Option<String> {
         match (self.by?, self.answer) {
             (By::Module, Answer::Yes) => Some("by = \"module\" answers only no".into()),
@@ -608,8 +636,9 @@ impl Row {
 /// The rows of a profile, by capability.
 pub type Rows = BTreeMap<Capability, Row>;
 
-/// `[capabilities]` as TOML writes it: string keys, parsed into [`Capability`]. Two keys that
-/// name one capability are refused, never one silently kept.
+/// Reads `[capabilities]` as TOML writes it, with string keys, and parses each key into a
+/// [`Capability`]. Two keys that name the same capability are refused. The function never
+/// silently keeps only one of them.
 pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Rows, D::Error> {
     let raw: BTreeMap<String, Row> = serde::Deserialize::deserialize(d)?;
     let mut rows = Rows::new();
@@ -630,9 +659,9 @@ pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Rows
 mod tests {
     use super::*;
 
-    /// A size not written as it reads back is refused, so no two keys of one profile name one
-    /// row; and were they to, the profile is refused rather than one row kept (review
-    /// capability.rs F1).
+    /// A size that is not written in the form in which it is read back is refused, so no two
+    /// keys of one profile can name the same row. If two keys did name the same row, the profile
+    /// would be refused instead of keeping one of the rows (review capability.rs F1).
     #[test]
     fn one_row_has_one_key() {
         for bad in [
@@ -748,18 +777,19 @@ mod tests {
             assert!(Capability::parse(bad).is_err(), "{bad}");
         }
         assert!(!Capability::Move(Move::Export).probed() && Capability::DeriveSealed.probed());
-        // Every proof this cakeys knows reads back as itself, not as a name kept as read.
+        // Every proof that this version of cakeys knows is read back as its known variant, not as
+        // an unknown name.
         for name in Proof::NAMES {
             let key = format!("prove.{name}.CKK_EC.secp256r1");
             let Ok(Capability::Prove { binding, .. }) = Capability::parse(&key) else { panic!("{key}") };
             assert!(!matches!(binding, Proof::Other(_)), "{key}");
         }
-        // The key type names the size's unit: RSA in bits, a secret key in bytes.
+        // The key type determines the unit of the size: bits for RSA and bytes for a secret key.
         assert_eq!(
             Capability::parse("import.CKK_RSA.2048"),
             Ok(Capability::Import { key_type: "CKK_RSA".into(), on: On::Bits(2048) })
         );
-        // A newer cakeys's names load as read (ISSUES.md Q28, review D4).
+        // The names of a newer cakeys load as they were read (ISSUES.md Q28, review D4).
         for (key, row) in [
             (
                 "prove.pop-later.CKK_EC.secp256r1",

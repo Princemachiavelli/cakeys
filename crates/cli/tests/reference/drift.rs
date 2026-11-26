@@ -1,5 +1,5 @@
-//! Conflicts and drift: ambiguity, swapped and forged objects, policy and spec changes (H1, S3,
-//! S4, S8) and downgrades.
+//! Tests of conflicts and drift: ambiguity, swapped and forged objects, policy and spec changes
+//! (H1, S3, S4, S8) and downgrades.
 
 use super::*;
 
@@ -40,7 +40,7 @@ tokens.ref = { locator = { CKA_LABEL = "typed" }, origin = "adopt" }
 "#,
     );
     assert_eq!(e.code(&["create", "--spec", "k-sign", "--token", "ref"]), 22);
-    // Same locator, different policy: the live object doesn't satisfy the spec.
+    // The same locator with a different policy: the live object does not satisfy the spec (13).
     assert_eq!(e.code(&["lock", "--spec", "k-nosign", "--token", "ref", "--dry-run"]), 13);
 
     let s = e.session();
@@ -56,7 +56,7 @@ tokens.ref = { locator = { CKA_LABEL = "typed" }, origin = "adopt" }
     }
     assert_eq!(e.code(&["resolve", "--spec", "k-dup", "--token", "ref"]), 12);
 
-    // Same class, different key type under the locator: the object type must match.
+    // The same class with a different key type under the locator: the object type must match.
     s.generate_key(
         &Mechanism::AesKeyGen,
         &[
@@ -88,8 +88,9 @@ tokens.ref = { locator = { CKA_LABEL = "downgrade" }, origin = "create" }
 "#,
     );
     assert_eq!(e.code(&["create", "--spec", "d-wrap", "--token", "ref"]), 22);
-    // Pretend the lock was recorded with a stronger mode than is now achievable: edited as TOML,
-    // so a change of the writer's layout cannot leave it as it was (review drift.rs F1).
+    // Make the lock say that it was recorded with a stronger mode than is now achievable. The
+    // test edits the lock as TOML, so that a change in the writer's layout cannot make the edit
+    // miss and leave the lock unchanged (review drift.rs F1).
     let mut lock = e.lock();
     let mode = &mut lock["realisations"]["d-wrap"]["ref"]["mode"];
     assert_eq!(mode.as_str(), Some("wrap-rebind"), "the realisation's recorded mode");
@@ -98,8 +99,9 @@ tokens.ref = { locator = { CKA_LABEL = "downgrade" }, origin = "create" }
     assert_eq!(e.code(&["check", "--spec", "d-wrap", "--token", "ref"]), 14);
 }
 
-/// A consumer that picks the private key by `CKA_ID` (OpenSSH) must get this one: with a login,
-/// another private key under the same `CKA_ID` is ambiguous. The lock records the session kind.
+/// A consumer that picks the private key by `CKA_ID` (OpenSSH) must get this key, so with a
+/// login, another private key under the same `CKA_ID` is ambiguous. The lock records the kind of
+/// session.
 #[test]
 fn a_second_private_key_under_the_same_id_is_ambiguous() {
     let Some(e) = env("dup_id") else { return };
@@ -132,12 +134,14 @@ fn a_second_private_key_under_the_same_id_is_ambiguous() {
     let o = e.km(&["check", "--spec", "k", "--token", "ref"]);
     assert_eq!(code(&o), 12);
     assert!(stderr(&o).contains("share CKA_ID %77"), "{}", stderr(&o));
-    // A public session cannot see the other private key: it passes, as the lock says it would.
+    // A public session cannot see the other private key, so the check passes, as the lock says
+    // that it would.
     assert_eq!(e.code(&["check", "--spec", "k-pub", "--token", "ref-anon"]), 0);
 }
 
-/// The lock records every boolean attribute the object shows (declared or not) and its creation
-/// facts: a later change on the token is reviewed, and a replaced object is refused outright.
+/// The lock records every boolean attribute that the object shows (declared or not) and the facts
+/// of its creation. A later change on the token is a change to review (14), and a replaced object
+/// is refused (14) even by a `lock` that would record changes.
 #[test]
 #[expect(clippy::many_single_char_names, reason = "the env/session/handle fixture bindings stay short")]
 fn policy_drift_and_replaced_objects_are_refused() {
@@ -156,7 +160,8 @@ fn policy_drift_and_replaced_objects_are_refused() {
     assert_eq!(real["immutables"]["CKA_LOCAL"].as_bool(), Some(true));
     assert_eq!(real["immutables"]["CKA_KEY_GEN_MECHANISM"].as_str(), Some("CKM_AES_KEY_GEN"));
 
-    // An undeclared attribute changed on the token: a change to review, then re-record.
+    // An undeclared attribute changed on the token: this is a change to review (14), and `lock`
+    // then records it again.
     let s = e.session();
     let find = || {
         s.find_objects(&[Attribute::Class(ObjectClass::SECRET_KEY), Attribute::Label(b"policy".to_vec())]).unwrap()[0]
@@ -170,7 +175,7 @@ fn policy_drift_and_replaced_objects_are_refused() {
     assert_eq!(e.code(&r), 22);
     assert_eq!(e.code(&verify), 0);
 
-    // The same material re-imported: the IDs match, but it is no longer CKA_LOCAL.
+    // The same material, imported again: the IDs match, but the key is no longer CKA_LOCAL.
     let value = match s.get_attributes(h, &[AttributeType::Value]).unwrap().remove(0) {
         Attribute::Value(v) => v,
         a => panic!("{a:?}"),
@@ -194,9 +199,9 @@ fn policy_drift_and_replaced_objects_are_refused() {
     assert_eq!(e.code(&r), 14, "also when updating");
 }
 
-/// P2-10: `CKA_ALLOWED_MECHANISMS` and `publicAttributes` are set when generating, checked on
-/// the object (and on the public half), and a mechanism list the spec no longer names is a
-/// conflict like any other attribute mismatch.
+/// P2-10: `CKA_ALLOWED_MECHANISMS` and `publicAttributes` are set when the key is generated, and
+/// they are checked on the object (and on the public half). A mechanism list that the spec no
+/// longer names is a conflict, like any other attribute mismatch.
 #[test]
 fn allowed_mechanisms_and_public_attributes() {
     let Some(e) = env("attrs") else { return };
@@ -210,15 +215,16 @@ fn allowed_mechanisms_and_public_attributes() {
              tokens.ref = {{ locator = {{ CKA_LABEL = \"attrs\" }}, origin = \"create\" }}\n"
         )
     };
-    // A list without the proof's mechanism is an invalid spec (17); one the proof can use but
-    // naming a mechanism the token does not offer is refused before anything is created (15).
+    // A list without the proof's mechanism is an invalid spec (17). A list that the proof can
+    // use, but that names a mechanism that the token does not offer, is refused before anything
+    // is created (15).
     e.config(&spec("\"CKM_BOGUS\"", "CKA_VERIFY = false"));
     assert_eq!(e.code(&["create", "--spec", "k", "--token", "ref", "--no-update-lock"]), 17);
     e.config(&spec("\"CKM_ECDSA\", \"CKM_BOGUS\"", "CKA_VERIFY = false"));
     e.refused(&["create", "--spec", "k", "--token", "ref", "--no-update-lock"], 15, "templates");
 
-    // Created with the restriction; the public half honors publicAttributes (the default
-    // CKA_VERIFY = true is left out where they override it).
+    // The key is created with the restriction, and the public half has the publicAttributes (the
+    // default CKA_VERIFY = true is left out where publicAttributes override it).
     e.config(&spec("\"CKM_ECDSA\", \"CKM_ECDSA_SHA256\"", "CKA_VERIFY = false"));
     assert_eq!(e.code(&["create", "--spec", "k", "--token", "ref"]), 22);
     let digest = e.lock()["realisations"]["k"]["ref"]["specDigest"].as_str().unwrap().to_owned();
@@ -233,19 +239,22 @@ fn allowed_mechanisms_and_public_attributes() {
     assert!(!*verify, "publicAttributes = {{ CKA_VERIFY = false }}");
     assert_eq!(e.code(&["check", "--spec", "k", "--token", "ref"]), 0);
 
-    // The same set in another order is the same spec: same digest, no change to review.
+    // The same set in another order is the same spec: the digest is the same, and there is no
+    // change to review.
     e.config(&spec("\"CKM_ECDSA_SHA256\", \"CKM_ECDSA\"", "CKA_VERIFY = false"));
     assert_eq!(e.code(&["check", "--spec", "k", "--token", "ref"]), 0);
     assert_eq!(e.lock()["realisations"]["k"]["ref"]["specDigest"].as_str(), Some(digest.as_str()));
 
-    // A different set does not satisfy the object: a conflict naming the attribute.
+    // A different set does not satisfy the object, so the check is a conflict (13) whose message
+    // names the attribute.
     e.config(&spec("\"CKM_ECDSA_SHA256\"", "CKA_VERIFY = false"));
     let o = e.km(&["check", "--spec", "k", "--token", "ref"]);
     assert_eq!(code(&o), 13);
     assert!(stderr(&o).contains("CKA_ALLOWED_MECHANISMS"));
     e.config(&spec("\"CKM_ECDSA\", \"CKM_ECDSA_SHA256\"", "CKA_VERIFY = false"));
 
-    // A changed public half is a conflict; without it publicAttributes cannot be checked (11).
+    // A changed public half is a conflict (13). Without the public half, publicAttributes cannot
+    // be checked (11).
     s.update_attributes(public, &[Attribute::Verify(true)]).unwrap();
     assert_eq!(e.code(&["check", "--spec", "k", "--token", "ref"]), 13);
     s.update_attributes(public, &[Attribute::Verify(false)]).unwrap();
@@ -253,9 +262,9 @@ fn allowed_mechanisms_and_public_attributes() {
     assert_eq!(e.code(&["check", "--spec", "k", "--token", "ref"]), 11);
 }
 
-/// P2-10: `CKA_ALLOWED_MECHANISMS` joins the observed policy vector. It is read-only once set
-/// (PKCS#11 3.2 §4), so it cannot drift on the token; a lock recorded before cakeys observed it
-/// still verifies, with a note, and `lock` records it.
+/// P2-10: `CKA_ALLOWED_MECHANISMS` is part of the observed policy vector. It is read-only once it
+/// is set (PKCS#11 3.2 §4), so it cannot drift on the token. A lock that was recorded before
+/// cakeys observed the attribute still verifies, with a note, and `lock` then records it.
 #[test]
 fn an_undeclared_mechanism_list_is_observed_policy() {
     let Some(e) = env("attrs-drift") else { return };
@@ -281,7 +290,8 @@ fn an_undeclared_mechanism_list_is_observed_policy() {
     let policy = &e.lock()["realisations"]["k"]["ref"]["policy"];
     assert_eq!(policy.get("CKA_ALLOWED_MECHANISMS").map(|m| m.as_array().unwrap().len()), Some(2), "{policy}");
 
-    // A lock that does not record the list (e.g. written by an older cakeys) still verifies.
+    // A lock that does not record the list (for example, a lock written by an older cakeys)
+    // still verifies.
     let mut lock = e.lock();
     let policy = lock["realisations"]["k"]["ref"]["policy"].as_table_mut().unwrap();
     assert!(policy.remove("CKA_ALLOWED_MECHANISMS").is_some());
@@ -294,8 +304,8 @@ fn an_undeclared_mechanism_list_is_observed_policy() {
 }
 
 /// H1 (docs/archive/REVIEW-2026-11-11.md): `SoftHSM` EC private keys expose no public key, so their
-/// identity is read from the public key object under the same locator. Replace the private key,
-/// keep the public object: a conflict (`assert_swapped_key_conflict`).
+/// identity is read from the public key object under the same locator. When the private key is
+/// replaced and the public object is kept, the result is a conflict (`assert_swapped_key_conflict`).
 #[test]
 fn h1_a_private_key_beside_an_unbound_public_object_is_a_conflict() {
     let Some(e) = env("gap_h1") else { return };
@@ -305,17 +315,18 @@ fn h1_a_private_key_beside_an_unbound_public_object_is_a_conflict() {
     let usage = [Attribute::Sign(true), Attribute::Sensitive(true), Attribute::Extractable(false)];
     let p256 = [Attribute::EcParams(P256.to_vec())];
     swap_private_key(&e.session(), "gap-a", &Mechanism::EccKeyPairGen, &p256, &usage, &[]);
-    // Different private key under the locator, same public object.
+    // A different private key is under the locator, with the same public object.
     assert_swapped_key_conflict(&e.km(&["check", "--spec", "signing-soft", "--token", "ref"]));
-    // So is deleting: If-Match must not pass on the public object alone.
+    // A delete is a conflict too, because If-Match must not pass on the public object alone.
     assert_eq!(e.code(&["delete", "--spec", "signing-soft", "--token", "ref"]), 13);
 }
 
-/// The live object must be the declared type, and its public half must be one public key it
-/// shows: another RSA size, another secret length or another certificate type is a conflict
-/// (13); an EC key with no public key anywhere is not found (11) and one beside two public key
-/// objects ambiguous (12); a public key object cakeys cannot read beside an RSA key is a
-/// conflict (13), since a consumer selecting the public half by the locator could get it.
+/// The live object must have the declared type, and its public half must be exactly one public
+/// key that the object shows. Another RSA size, another secret length or another certificate type
+/// is a conflict (13). An EC key with no public key anywhere is not found (11), and an EC key next
+/// to two public key objects is ambiguous (12). A public key object that cakeys cannot read, next
+/// to an RSA key, is a conflict (13), because a consumer that selects the public half by the
+/// locator could get that object.
 #[test]
 fn the_live_object_must_be_what_the_spec_says() {
     let Some(e) = env("live-type") else { return };
@@ -351,16 +362,16 @@ fn the_live_object_must_be_what_the_spec_says() {
     let (other, _) = ec_pair("ec-other", p256).unwrap();
     s.update_attributes(other, &[label("ec-two")]).unwrap();
     rsa_pair("rsa-odd");
-    // A public key cakeys does not read, under the RSA key's locator: P-224 where the module
-    // makes it (SoftHSM), else an X25519 key (kryoptic).
+    // Put a public key that cakeys does not read under the RSA key's locator: a P-224 key where
+    // the module makes one (SoftHSM), and otherwise an X25519 key (kryoptic).
     let p224 = [0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x21];
     let x25519 = [0x06, 0x03, 0x2b, 0x65, 0x6e];
     let (odd, _) = ec_pair("odd", &p224)
         .or_else(|_| pair(&Mechanism::EccMontgomeryKeyPairGen, "odd", &x25519, Attribute::Derive(true)))
         .unwrap();
     s.update_attributes(odd, &[label("rsa-odd")]).unwrap();
-    // An RSA pair beside a second public key of another pair, and one whose public half is
-    // another pair's: what a spec declaring publicAttributes checks first.
+    // An RSA pair next to a second public key of another pair, and an RSA pair whose public half
+    // belongs to another pair. A spec that declares publicAttributes checks these cases first.
     rsa_pair("pub-two");
     let (extra, _) = rsa_pair("pub-extra");
     s.update_attributes(extra, &[label("pub-two")]).unwrap();
@@ -406,9 +417,11 @@ fn the_live_object_must_be_what_the_spec_says() {
     refused("odd", 13, "exposes no key material");
     refused("pub-two", 12, "several public key objects share the locator");
     refused("pub-swap", 13, "the public key object under the locator holds another key");
-    // Adopted publicOnly, the public key object itself carries the publicAttributes.
+    // When the key is adopted with publicOnly, the public key object itself holds the
+    // publicAttributes.
     assert_eq!(e.code(&["lock", "--spec", "pub-only", "--token", "ref", "--dry-run"]), 18);
-    // kryoptic's EC private key carries its own CKA_PUBLIC_KEY_INFO; SoftHSM's carries no public key.
+    // kryoptic's EC private key holds its own CKA_PUBLIC_KEY_INFO, and SoftHSM's holds no public
+    // key.
     if REF.provider == "softhsm" {
         refused("alone", 11, "no public key object, CKA_PUBLIC_KEY_INFO or certificate under the locator");
     } else {
@@ -418,7 +431,7 @@ fn the_live_object_must_be_what_the_spec_says() {
 
 /// H1b (report "Cakeys lock file design review"): `SoftHSM` lets a user set `CKA_PUBLIC_KEY_INFO` on a
 /// private key without checking it. cakeys reads the key material first and only cross-checks the
-/// asserted SPKI, so a different RSA private key carrying the old SPKI is a conflict.
+/// claimed SPKI, so a different RSA private key that holds the old SPKI is a conflict.
 #[test]
 fn h1b_a_forged_public_key_info_is_a_conflict() {
     let Some(e) = env("gap_h1b") else { return };
@@ -439,7 +452,7 @@ fn h1b_a_forged_public_key_info_is_a_conflict() {
     assert!(stderr(&o).contains("disagrees with the key material"));
 }
 
-/// S3: a (spec, token) pair the lock has never recorded does not verify on object IDs alone.
+/// S3: a (spec, token) pair that the lock has never recorded does not verify on object IDs alone.
 #[test]
 fn s3_an_unrecorded_token_is_a_precondition_failure() {
     let Some(e) = env("gap_s3") else { return };
@@ -458,7 +471,7 @@ fn s3_an_unrecorded_token_is_a_precondition_failure() {
     assert_eq!(e.code(&verify), 0);
 }
 
-/// S4: turning publicOnly on is a change to keys.toml, also for a spec without attributes.
+/// S4: turning publicOnly on is a change to keys.toml, even for a spec without attributes.
 #[test]
 fn s4_a_public_only_flip_is_a_spec_change() {
     let Some(e) = env("gap_s4") else { return };
@@ -494,7 +507,7 @@ fn s8_a_retargeted_spec_is_a_spec_change() {
     let verify = e.km(&["check", "--spec", "sa", "--token", "ref"]);
     assert_eq!(code(&verify), 14);
     assert!(stderr(&verify).contains("object 'a' -> 'b'"));
-    // The same object under another locator: also a change to review.
+    // The same object under another locator is also a change to review.
     e.config(&body.replace("CKA_LABEL = \"s8-a\"", "CKA_LABEL = \"s8-b\""));
     assert_eq!(e.code(&["check", "--spec", "sa", "--token", "ref"]), 14);
 }

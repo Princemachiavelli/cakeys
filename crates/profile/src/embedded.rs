@@ -1,6 +1,7 @@
-//! The files this build ships (docs/CAPROBE.md D11): committed under profiles/, embedded so
-//! the binary answers without the checkout, and listed explicitly — a new profile is an entry
-//! here plus the file, and nothing else.
+//! The profile files that this build ships (docs/CAPROBE.md D11). They are committed under
+//! profiles/ and embedded in the binary, so the binary can answer queries without the source
+//! checkout. They are listed explicitly. To add a new profile, add its file and an entry here,
+//! and nothing else.
 
 /// The embedded baselines: (path for messages, content).
 pub const BASELINE_FILES: &[(&str, &str)] =
@@ -15,12 +16,14 @@ pub const PROFILE_FILES: &[(&str, &str)] = &[
         "profiles/modules/aws-cloudhsm/5.18+hsm2m-fips.toml",
         include_str!("../../../profiles/modules/aws-cloudhsm/5.18+hsm2m-fips.toml"),
     ),
-    // After its FIPS twin: PKCS#11 reports no mode, so the two tie, and a tie takes the first.
+    // This profile comes after the FIPS profile of the same module. PKCS#11 reports no FIPS
+    // mode, so the two profiles match a module equally, and resolution then selects the first.
     (
         "profiles/modules/aws-cloudhsm/5.18+hsm2m-non-fips.toml",
         include_str!("../../../profiles/modules/aws-cloudhsm/5.18+hsm2m-non-fips.toml"),
     ),
-    // The FIPS build first, as for CloudHSM: the two builds report the same C_GetInfo and tie.
+    // The FIPS build comes first, as for CloudHSM. The two builds report the same C_GetInfo, so
+    // they match equally, and resolution selects the first.
     ("profiles/modules/kmsp11/1.9+hsm-fips.toml", include_str!("../../../profiles/modules/kmsp11/1.9+hsm-fips.toml")),
     ("profiles/modules/kmsp11/1.9+hsm.toml", include_str!("../../../profiles/modules/kmsp11/1.9+hsm.toml")),
     ("profiles/modules/kryoptic/1.5.toml", include_str!("../../../profiles/modules/kryoptic/1.5.toml")),

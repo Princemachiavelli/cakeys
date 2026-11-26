@@ -1,11 +1,14 @@
-//! The names a profile row carries, as types (ISSUES.md Q28): the ones this cakeys knows as
-//! variants, any other (a newer cakeys's) kept as read, so a profile still loads and writes
-//! back unchanged. Each compares, hashes and orders by its name, as the text it replaced did:
-//! rows keep their order, and a known name read as text is the known value.
+//! The names that a profile row holds, represented as types (ISSUES.md Q28). Each name that this
+//! version of cakeys knows is an enum variant. Any other name, such as a name from a newer
+//! cakeys, is kept as it was read, so the profile still loads and is written back unchanged. Each
+//! type compares, hashes and orders by its name, as the strings that it replaced did. As a
+//! result, rows keep their order, and a known name that is read as text becomes the known
+//! variant.
 
-/// A name this cakeys does not know, as read: only `From` makes one, after the known names did
-/// not match, so an `Other` never holds a known name and a pattern on a variant sees every value
-/// of it (review names.rs F1).
+/// A name that this version of cakeys does not know, kept as it was read. Only the `From`
+/// implementations create one, and only after none of the known names matched. As a result, an
+/// `Other` never holds a known name, and a pattern that matches a variant matches every value
+/// with that variant's name (review names.rs F1).
 #[derive(Debug, Clone)]
 pub struct Unknown(String);
 
@@ -109,8 +112,9 @@ macro_rules! named {
 }
 
 named! {
-    /// A key type a row names (`CKK_*`): every one the profiles measure, the Montgomery curves'
-    /// included, which keys.toml does not take (`cakeys_core::types::KeyType`).
+    /// A key type that a row names (`CKK_*`). The enum includes every key type that the profiles
+    /// measure. That includes the key type of the Montgomery curves, which keys.toml does not
+    /// accept (`cakeys_core::types::KeyType`).
     KeyKind {
         Rsa = "CKK_RSA",
         Ec = "CKK_EC",
@@ -133,9 +137,10 @@ named! {
 }
 
 named! {
-    /// A proof of possession a `prove.*` row names, by its `binding` (`cakeys_core::config::Binding`):
-    /// the names table's proofs (`cakeys_names::Proof`), kept as read when another
-    /// (`proofs_are_the_names_tables`).
+    /// A proof of possession that a `prove.*` row names, by its `binding`
+    /// (`cakeys_core::config::Binding`). The known variants are the proofs of the names table
+    /// (`cakeys_names::Proof`), and the test `proofs_are_the_names_tables` keeps the two lists
+    /// equal. Any other proof name is kept as it was read.
     Proof {
         PopSign = "pop-sign",
         PopSignPin = "pop-sign-pin",
@@ -149,12 +154,14 @@ named! {
 mod tests {
     use super::*;
 
-    /// A known name read as text is the known value, an unknown one is kept as read, and both
-    /// order by their names, as the strings they replace did.
+    /// A known name that is read as text becomes the known variant, and an unknown name is kept
+    /// as it was read. Both kinds of value order by their names, as the strings that they replace
+    /// did.
     #[test]
     fn names_are_values_and_order_as_text() {
         assert!(matches!(KeyKind::from("CKK_EC"), KeyKind::Ec));
-        // Every way to a value goes through the known names: a known one is never `Other`.
+        // Every conversion into a value checks the known names first, so a known name never
+        // becomes `Other`.
         for name in KeyKind::NAMES {
             assert!(!matches!(KeyKind::from(*name), KeyKind::Other(_)), "{name}");
             assert!(!matches!(KeyKind::from((*name).to_owned()), KeyKind::Other(_)), "{name}");
@@ -176,9 +183,10 @@ mod tests {
         assert_eq!(Proof::from("pop-ecdh").to_string(), "pop-ecdh");
     }
 
-    /// The proofs a row knows are the names table's, in its order: a proof added to either
-    /// fails here until the other has it, so a `prove.*` row core asks about is never read as
-    /// another cakeys's name.
+    /// The proofs that a row knows are the proofs of the names table, in the same order. A proof
+    /// that is added to only one of the two lists fails this test until the other list has it
+    /// too. As a result, a `prove.*` row that core asks about is never read as an unknown name
+    /// from another version of cakeys.
     #[test]
     fn proofs_are_the_names_tables() {
         assert_eq!(Proof::NAMES, cakeys_names::Proof::NAMES.as_slice());

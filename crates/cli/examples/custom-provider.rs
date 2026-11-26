@@ -18,9 +18,10 @@ impl Provider for Acme {
         m.manufacturer == "Acme Corp"
     }
 
-    /// An override of an operation receives a request the token has checked: where the key may
-    /// go (`placement`) was asked, and the session the module writes in (`manages_as_so`)
-    /// entered, before it is called. It wraps the default here.
+    /// An override of an operation receives a request that the token has already checked.
+    /// Before the override is called, the token has asked where the key may go (`placement`),
+    /// and it has entered the session in which the module writes (`manages_as_so`). Here the
+    /// override only calls the default implementation.
     fn create(&self, tok: &Token, req: &Checked<Create<'_>>) -> Result<Option<CreateNote>> {
         tok.create_declared(req)
     }

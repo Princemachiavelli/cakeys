@@ -1,12 +1,15 @@
 //! cakeys' liar matrix (`tests/liars/cakeys.toml`, run by `tests/common/liars.rs`;
-//! docs/archive/REVIEW-2026-11-24/phase2-3-design.md §1): `SoftHSM` behind p11-fault, told one lie
-//! per cell, each verb of cakeys meeting it about each kind of object; one test per class of lie,
-//! each on a token of its own. Every cell asserts its exit, the rule and device bit its row names,
-//! what it left of the lock and the token, and that the lie fired; every run, the honest ones
-//! too, exits 22 exactly when it changed the lock, and a `check` changes nothing.
+//! docs/archive/REVIEW-2026-11-24/phase2-3-design.md §1). `SoftHSM` runs behind p11-fault, and
+//! each cell injects one fault, so that each verb of cakeys meets each fault for each kind of
+//! object. There is one test per fault class, and each test uses a token of its own. Every cell
+//! asserts its exit code, the rule and the device bit that its row names, what the run left of
+//! the lock and the token, and that the injected fault fired. Every run, including the runs
+//! without an injected fault, exits 22 exactly when it changed the lock, and a `check` changes
+//! nothing.
 //!
-//! Needs what `tests/fault.rs` needs: `P11_FAULT_MODULE` naming `SoftHSM`, which the per-test
-//! runner (nix/test-tokens.sh) sets, and `libp11_fault.so` built beside the test binaries.
+//! The tests need what `tests/fault.rs` needs: `P11_FAULT_MODULE` naming `SoftHSM`, which the
+//! per-test runner (nix/test-tokens.sh) sets, and `libp11_fault.so` built next to the test
+//! binaries.
 
 mod common;
 
@@ -15,63 +18,68 @@ use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
 use common::liars::{Fixture, Table, run_class};
 use common::*;
 
-// One test per class of lie, written out (nix/test-count.py counts no test a macro makes):
-// nextest runs them at once, each on a token of its own, and a failure names its class.
+// There is one test per fault class, written out by hand, because nix/test-count.py does not
+// count a test that a macro makes. nextest runs the tests in parallel, each on a token of its
+// own, and the name of a failing test names its class.
 
-/// Class OK ([`run_class`]): a call answered `CKR_OK`, and nothing done.
+/// Class OK ([`run_class`]): a call returns `CKR_OK`, but the module does nothing.
 #[test]
 fn liars_ok() {
     run_class("OK");
 }
 
-/// Class OTHER ([`run_class`]): another object than the one asked for.
+/// Class OTHER ([`run_class`]): a call returns another object than the one that was asked for.
 #[test]
 fn liars_other() {
     run_class("OTHER");
 }
 
-/// Class FLAG ([`run_class`]): what the token says of itself or of an object, hidden or flipped.
+/// Class FLAG ([`run_class`]): the module hides or flips something that it reports about the
+/// token or about an object, such as a token flag, a mechanism or an attribute.
 #[test]
 fn liars_flag() {
     run_class("FLAG");
 }
 
-/// Class CHANGE ([`run_class`]): a value that changes between two reads of one run.
+/// Class CHANGE ([`run_class`]): a value changes between two reads in one run.
 #[test]
 fn liars_change() {
     run_class("CHANGE");
 }
 
-/// Class FORGE ([`run_class`]): an output the key did not make.
+/// Class FORGE ([`run_class`]): the module returns an output that the key did not produce.
 #[test]
 fn liars_forge() {
     run_class("FORGE");
 }
 
-/// Class BLOB ([`run_class`]): a blob the module round-trips that is not what it made.
+/// Class BLOB ([`run_class`]): in a round trip, the module returns a blob that is not the blob
+/// that it produced.
 #[test]
 fn liars_blob() {
     run_class("BLOB");
 }
 
-/// Class DEV ([`run_class`]): a call failing as a device, and the same call refused by the module.
+/// Class DEV ([`run_class`]): a call fails with a device error (`CKR_DEVICE_ERROR`), or the
+/// module refuses the same call.
 #[test]
 fn liars_dev() {
     run_class("DEV");
 }
 
-/// Class LOSS ([`run_class`]): the device or the session gone from one call of a run on.
+/// Class LOSS ([`run_class`]): the device or the session is lost from one call of a run onward.
 #[test]
 fn liars_loss() {
     run_class("LOSS");
 }
 
-/// The lock holds hashes of what a token shows, never the values (docs/DESIGN.md §8.1, "The lock
-/// never holds token outputs"): planted and then checked and re-locked with every public value a
-/// module returned recorded (`P11_FAULT_RECORD_VALUES = public`: every key's point, modulus and
-/// public key info, each certificate), the lock has none of them, as hex or base64. The values
-/// shorter than 16 bytes (a curve's OID, an RSA exponent) are left out: a hash may hold their
-/// few characters by chance.
+/// The lock holds hashes of the values that a token returns, never the values themselves
+/// (docs/DESIGN.md §8.1, "The lock never holds token outputs"). The test plants the objects, and
+/// then checks and locks them again while p11-fault records every public value that the module
+/// returns (`P11_FAULT_RECORD_VALUES = public`: every key's point, modulus and public key info,
+/// and each certificate). The lock must hold none of those values, as hex or as base64. Values
+/// shorter than 16 bytes (a curve's OID, an RSA exponent) are left out, because a hash may contain
+/// their few characters by chance.
 #[test]
 fn a_lock_holds_no_token_output() {
     let table = Table::cakeys();
@@ -100,7 +108,8 @@ fn a_lock_holds_no_token_output() {
         .filter_map(|v| v[1].as_str().map(str::to_owned))
         .filter(|hex| hex.len() >= 32)
         .collect();
-    // One value at least for each made object with public material: a key pair's, a certificate's.
+    // Expect at least one value for each made object with public material: a key pair or a
+    // certificate.
     let public =
         table.objects.values().filter(|o| o.made && ["private", "public", "certificate"].contains(&o.class.as_str()));
     assert!(values.len() >= public.count(), "too few values recorded to say anything: {values:?}");

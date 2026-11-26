@@ -1,4 +1,5 @@
-//! `delete` and `gc`: only what was identified is removed, from the token and from the lock.
+//! Tests of `delete` and `gc`: only what was identified is removed, from the token and from the
+//! lock.
 
 use super::*;
 
@@ -9,23 +10,26 @@ fn ec_lifecycle() {
     let r = ["lock", "--spec", "signing-soft", "--token", "ref", "--dry-run"];
     let c = ["create", "--spec", "signing-soft", "--token", "ref", "--no-update-lock"];
 
-    // Only `create` creates: `lock` and `check` find nothing, and name it.
+    // Only `create` creates objects. `lock` and `check` find nothing (11), and the message of
+    // `lock` names `cakeys create`.
     let absent = e.km(&r);
     assert_eq!(code(&absent), 11);
     assert!(stderr(&absent).contains("`cakeys create` makes it"), "{}", stderr(&absent));
     assert_eq!(e.code(&["check", "signing"]), 11);
     assert!(e.session().labelled("ec-lifecycle").is_empty(), "lock and check never create");
-    // First use: creates, then fails like a FOD with a fake hash.
+    // First use: `create` creates the key and then exits 18, because the lock pins no identity
+    // yet. The message gives the key's identity after `got:`.
     let first = e.km(&c);
     assert_eq!(code(&first), 18);
     let got = got_hash(&first);
-    // Re-running finds the same object: same hash, no duplicate (else exit 12, ambiguous).
+    // A second run finds the same object with the same hash, so there is no duplicate (a
+    // duplicate would give exit 12, ambiguous).
     let again = e.km(&r);
     assert_eq!(code(&again), 18);
     assert_eq!(got_hash(&again), got);
     assert_eq!(e.code(&["resolve", "--spec", "signing-soft", "--token", "ref"]), 0);
 
-    // Record it; now lock is a no-op success.
+    // Record the identity. After that, `lock` succeeds without changing anything.
     assert_eq!(e.code(&recording(&r)), 22);
     assert_eq!(e.locked_id("signing", "rfc7093m4"), got);
     assert_eq!(e.code(&r), 0);
@@ -44,19 +48,21 @@ fn ec_lifecycle() {
     assert_eq!(stdout(&check), stdout(&verify));
     assert_eq!(e.code(&["check", "signing.id.commitment"]), 15);
 
-    // The module and PIN only on request: the default output stays the locator.
+    // The module path and the PIN are added only on request, so the default output is the bare
+    // locator.
     assert!(!stdout(&check).contains('?'), "{}", stdout(&check));
 
-    // DELETE + If-Match.
+    // Delete with If-Match.
     let del = ["delete", "--spec", "signing-soft", "--token", "ref"];
     e.refused(&[&del[..], &["--if-match", "sha256-AAAA"]].concat(), 14, "if-match");
     assert_eq!(e.code(&["check", "--spec", "signing-soft", "--token", "ref"]), 0);
-    // The right one deletes (review delete.rs F1: only a wrong one was tested).
+    // The correct identity deletes the key (review delete.rs F1: only a wrong identity was
+    // tested).
     let right = e.km(&[&del[..], &["--if-match", &got]].concat());
     assert_eq!(code(&right), 22, "{}", stderr(&right));
     assert_eq!(e.code(&del), 0, "delete of an absent object succeeds, and changes nothing");
     assert_eq!(e.code(&["check", "--spec", "signing-soft", "--token", "ref"]), 11);
-    // Both halves gone from the token, not only unfound (review delete.rs F3).
+    // Both halves are gone from the token, and not only unfound (review delete.rs F3).
     assert_eq!(e.session().labelled("ec-lifecycle"), []);
     assert!(e.lock().get("realisations").and_then(|r| r.get("signing-soft")).is_none());
 
@@ -65,7 +71,8 @@ fn ec_lifecycle() {
     std::fs::remove_file(e.dir.join("keys.lock")).unwrap();
     assert_eq!(e.code(&["--new-lock", "delete", "--spec", "signing-soft", "--token", "ref"]), 0);
     assert!(!e.dir.join("keys.lock").exists());
-    // ...but a present object with no expected identity is never deleted blindly, nor planned.
+    // ...but a present object with no expected identity is never deleted without a check, and a
+    // dry run does not plan its deletion either.
     let fresh = e.km(&[&["--new-lock"][..], &c].concat());
     assert_eq!(code(&fresh), 18);
     let unlocked = ["--new-lock", "delete", "--spec", "signing-soft", "--token", "ref"];
@@ -73,7 +80,7 @@ fn ec_lifecycle() {
     e.refused(&[&unlocked[..], &["--dry-run"]].concat(), 14, "if-match");
     assert_eq!(e.code(&["check", "--spec", "signing-soft", "--token", "ref"]), 17, "no lock");
     assert_eq!(e.code(&["--new-lock", "check", "--spec", "signing-soft", "--token", "ref"]), 18);
-    // `--if-match` is the expected identity where no lock gives one.
+    // `--if-match` gives the expected identity when no lock gives one.
     let o = e.km(&[&unlocked[..], &["--if-match", &got_hash(&fresh)]].concat());
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(e.session().labelled("ec-lifecycle"), []);
@@ -87,8 +94,8 @@ fn ec_lifecycle() {
     )
     .unwrap();
 
-    // A re-created key is new material: the lock pins the old identity, so `create` is
-    // refused up front (D1) and regeneration can never satisfy it.
+    // A re-created key would be new material. The lock pins the old identity, so `create` is
+    // refused before it starts (D1), because a newly generated key can never match that identity.
     e.refused(&c, 14, "pinned-lost");
     assert_eq!(e.code(&r), 11);
     assert_eq!(e.code(&del), 0, "nothing was created, so absent is success again");
@@ -105,7 +112,7 @@ fn gc_prints_then_removes_stale_entries() {
     let id = e.locked_id("signing", "rfc7093m4");
     let key = || e.lock()["realisations"]["signing-soft"]["ref"]["observation"].as_str().unwrap().to_owned();
 
-    // Nothing stale: prints nothing, and gc writes nothing.
+    // When nothing is stale, `gc` prints nothing and writes nothing.
     for args in [&["gc", "--dry-run"][..], &["gc"][..]] {
         let o = e.km(args);
         assert_eq!(code(&o), 0, "{args:?}");
@@ -114,9 +121,9 @@ fn gc_prints_then_removes_stale_entries() {
     assert!(e.lock()["realisations"]["signing-soft"]["ref"].is_table());
     assert_eq!(e.locked_id("signing", "rfc7093m4"), id);
 
-    // The spec is gone: its realisation is stale, printed as the table name, and so is the
-    // observation only it named; gc removes both but keeps the object's ids (the material may
-    // live on elsewhere).
+    // When the spec is gone, its realisation is stale and is printed as its table name. The
+    // observation that only this realisation named is stale too. `gc` removes both, but it keeps
+    // the object's ids, because the material may still exist elsewhere.
     e.config(object);
     let stale = format!("realisations.signing-soft.ref\nobservations.\"{}\"", key());
     let o = e.km(&["gc", "--dry-run"]);
@@ -130,7 +137,8 @@ fn gc_prints_then_removes_stale_entries() {
     assert_eq!(e.locked_id("signing", "rfc7093m4"), id);
     assert!(e.lock().get("observations").is_none());
 
-    // Re-recorded, then the spec loses the token: the same realisation is stale again.
+    // The realisation is recorded again, and then the spec loses the token, so the same
+    // realisation is stale again.
     let spec_body = "[specs.signing-soft]\nobject = \"signing\"\nattributes = { CKA_SIGN = true, CKA_SENSITIVE = true, CKA_EXTRACTABLE = false }\n";
     let spec_no_token = format!("{spec_body}tokens = {{}}\n");
     let spec_full =
@@ -143,7 +151,7 @@ fn gc_prints_then_removes_stale_entries() {
     assert_eq!(e.code(&["gc"]), 22);
     assert!(e.lock().get("realisations").and_then(|r| r.get("signing-soft")).is_none());
 
-    // The object too is gone from keys.toml: its record is collected.
+    // When the object is also gone from keys.toml, `gc` collects its record too.
     e.config("");
     assert_eq!(stdout(&e.km(&["gc", "--dry-run"])), "objects.signing");
     assert!(e.lock()["objects"]["signing"].is_table(), "not removed by --dry-run");
@@ -152,12 +160,12 @@ fn gc_prints_then_removes_stale_entries() {
     assert_eq!(stdout(&e.km(&["gc", "--dry-run"])), "");
 }
 
-/// A public key object of another key under a private key's locator is a conflict (13) for
-/// every verb that resolves: a consumer selecting the public half by the locator would get it.
-/// `delete` still removes only what it identified — the private key, and its public half only
-/// when that holds the same key — so the foreign object and, once the private key is gone, a lone
-/// public key are left. A session without login cannot see the private key, so it never reports
-/// it absent (16).
+/// A public key object of another key under a private key's locator is a conflict (13) for every
+/// verb that resolves, because a consumer that selects the public half by the locator would get
+/// the wrong key. `delete` still removes only what it identified: the private key, and its public
+/// half only when the public half holds the same key. The foreign object therefore stays, and so
+/// does a lone public key after the private key is gone. A session without login cannot see the
+/// private key, so it never reports the key as absent (16).
 #[test]
 fn a_foreign_public_key_conflicts_and_is_never_deleted() {
     let Some(e) = env("delete_identified") else { return };
@@ -212,7 +220,7 @@ tokens.ref = { locator = { CKA_LABEL = "del-other" }, origin = "create" }
     assert_eq!(e.code(&["check", "k", "--token", "ref"]), 13);
 
     let del = |token| e.km(&["delete", "--spec", "k", "--token", token]);
-    // Nothing deleted unseen: the token as it was.
+    // Nothing is deleted without being seen, so the token stays as it was.
     e.refused(&["delete", "--spec", "k", "--token", "ref-anon"], 16, "needs-login");
 
     let o = del("ref");
@@ -223,7 +231,8 @@ tokens.ref = { locator = { CKA_LABEL = "del-other" }, origin = "create" }
     assert_eq!(left.len(), 1);
     assert_eq!(modulus(left[0]), modulus(other), "the planted key is the one left");
 
-    // Absent now: success, and the lone public key is still not identified, so it stays.
+    // The private key is absent now, so `delete` succeeds. The lone public key is still not
+    // identified, so it stays.
     assert_eq!(code(&del("ref")), 0);
     assert_eq!(of_class(ObjectClass::PUBLIC_KEY, "del-rsa").len(), 1);
 }

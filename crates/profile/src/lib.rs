@@ -1,17 +1,19 @@
-//! Capability profiles (docs/CAPROBE.md): what a vendor PKCS#11 module can actually do, as
-//! data. One profile per vendor SO version, one per layer between cakeys and the token, and a
-//! spec baseline generated from the OASIS headers — queried statically, no token touched, so
-//! a config and a vendor SO version answer "is 512 HMAC supported?" before a key exists
-//! anywhere.
+//! Capability profiles (docs/CAPROBE.md) record, as data, what a vendor PKCS#11 module can
+//! actually do. There is one profile for each vendor SO version, one profile for each layer
+//! between cakeys and the token, and one spec baseline that is generated from the OASIS headers.
+//! The profiles are queried statically, without access to any token, so a config and a vendor SO
+//! version can answer a question such as "is SHA-512 HMAC supported?" before any key exists.
 //!
-//! The crate is deliberately independent of the rest of cakeys ([`Baseline`], [`Profile`],
-//! [`Set`] and [`Effective`] are pure data and algebra over TOML): `cakeys-pkcs11` resolves a
-//! token's stack from them when it opens one.
+//! The crate is deliberately independent of the rest of cakeys. [`Baseline`], [`Profile`],
+//! [`Set`] and [`Effective`] are plain data that is read from TOML, together with the functions
+//! that combine that data. `cakeys-pkcs11` resolves a token's stack from them when it opens a
+//! token.
 //!
-//! The three artifacts: [`Baseline`] (one spec revision's members and classes),
-//! [`Profile`] (a module's observed deltas, or a layer's subtractions) and [`Effective`]
-//! (their intersection, what [`Verdict`] answers). [`Set`] loads the committed files this
-//! build embeds, plus any a caller adds from a directory (D11).
+//! The crate has three artifacts. A [`Baseline`] holds the members and classes of one spec
+//! revision. A [`Profile`] holds the deltas that were observed for a module, or the subtractions
+//! of a layer. An [`Effective`] is the intersection of a baseline and its profiles, and it answers
+//! each query with a [`Verdict`]. A [`Set`] loads the committed files that this build embeds, plus
+//! any files that a caller adds from a directory (D11).
 
 pub mod baseline;
 pub mod capability;
@@ -33,15 +35,17 @@ pub use profile::{
 use std::path::Path;
 use std::sync::OnceLock;
 
-/// The process's profile set ([`Set::active`]).
+/// The profile set of this process, which [`Set::active`] returns.
 static ACTIVE: OnceLock<Set> = OnceLock::new();
 
-/// The loaded profiles: the embedded set, plus any a caller added. Profiles replace by name
-/// (an added "softhsm/2.7" replaces the embedded one), and [`Set::find`] selects by exact name
-/// or by family when only one version of it is loaded.
+/// The loaded profiles: the embedded set, plus any profiles that a caller added. A profile
+/// replaces a loaded profile of the same name (an added "softhsm/2.7" replaces the embedded one).
+/// [`Set::find`] selects a profile by its exact name, or by its family when only one version of
+/// that family is loaded.
 pub struct Set {
-    /// The one baseline used: the embedded one, or a directory's of its name (review 2026-11-23
-    /// A-13: one is ever allowed, so one is stored).
+    /// The one baseline that the set uses: the embedded baseline, or a baseline of the same name
+    /// from a directory. Only one baseline is ever allowed, so the set stores only one (review
+    /// 2026-11-23 A-13).
     baseline: Option<Baseline>,
     profiles: Vec<Profile>,
 }
@@ -51,8 +55,9 @@ impl Set {
     ///
     /// # Errors
     ///
-    /// [`Profile::from_toml`] errors for each file that fails, prefixed with its path: an
-    /// embedded profile that no longer parses is a commit-time bug, not a runtime condition.
+    /// Returns the [`Profile::from_toml`] error of the first file that does not parse, prefixed
+    /// with the file's path. An embedded profile that no longer parses is a bug in the commit,
+    /// not a condition that can arise at run time.
     pub fn embedded() -> Result<Set, String> {
         let mut set = Set { baseline: None, profiles: Vec::new() };
         for (path, text) in embedded::BASELINE_FILES {
@@ -68,28 +73,31 @@ impl Set {
         Ok(set)
     }
 
-    /// Load every `.toml` under `dir` (recursively) and add it, replacing a loaded profile, or
-    /// the baseline, of the same name. The order within the directory is stable (sorted by
-    /// path), so which file replaces which does not depend on filesystem order.
+    /// Loads every `.toml` file under `dir` (recursively) and adds it. A file replaces a loaded
+    /// profile, or the baseline, of the same name. The files are read in a stable order (sorted
+    /// by path), so the file that replaces another does not depend on the order of the
+    /// filesystem.
     ///
     /// # Errors
     ///
-    /// The IO error reading the directory, each file's parse error prefixed with its path, or a
-    /// baseline of another name than the loaded one.
+    /// Returns the IO error from reading the directory, the parse error of a file prefixed with
+    /// its path, or an error for a baseline whose name differs from the loaded baseline's name.
     pub fn with_dir(self, dir: &Path) -> Result<Set, String> {
         self.load_dir(dir, true)
     }
 
-    /// Load every module profile under `dir` (recursively) as [`Set::with_dir`] does, but only
-    /// to add: what keys.toml's `profileDirs` name at run time. A file there may bring a new
-    /// module profile, and with it a new family, never a baseline, a layer or hardware profile,
-    /// or a name already loaded: the embedded profiles are this repository's, each measured as
-    /// profiles/LEDGER.toml records, and a file outside the build must not silently stand in
-    /// for one.
+    /// Loads every module profile under `dir` (recursively) as [`Set::with_dir`] does, but only
+    /// adds profiles and never replaces one. This loads the directories that keys.toml's
+    /// `profileDirs` names at run time. A file there may add a new module profile, and with it a
+    /// new family. It may not add a baseline, a layer profile or a hardware profile, and it may
+    /// not use a name that is already loaded. The embedded profiles belong to this repository,
+    /// and profiles/LEDGER.toml records the measurement of each one, so a file from outside the
+    /// build must not silently replace one of them.
     ///
     /// # Errors
     ///
-    /// As [`Set::with_dir`], and for each file that would replace or is not a module profile.
+    /// Returns the errors of [`Set::with_dir`], and an error for a file that would replace a
+    /// loaded profile or that is not a module profile.
     pub fn adding_dir(self, dir: &Path) -> Result<Set, String> {
         self.load_dir(dir, false)
     }
@@ -106,9 +114,10 @@ impl Set {
                 if !replace {
                     return Err(at(&"a baseline: only the build's own may be loaded"));
                 }
-                // One baseline is used ([`Set::baseline`]): a directory's replaces the one of its
-                // name (a regenerated pkcs11-3.2), and one of another name is refused rather
-                // than loaded and never read.
+                // The set uses only one baseline ([`Set::baseline`]). A baseline from a directory
+                // replaces the loaded baseline of the same name (for example, a regenerated
+                // pkcs11-3.2). A baseline of another name is refused, because it would otherwise
+                // be loaded and never read.
                 let b = Baseline::from_toml(&text).map_err(|e| at(&e))?;
                 match &mut self.baseline {
                     Some(loaded) if loaded.baseline == b.baseline => *loaded = b,
@@ -138,14 +147,14 @@ impl Set {
         Ok(self)
     }
 
-    /// The set every token open resolves against, built once per process by [`Set::activate`]
-    /// or [`Set::activate_embedded`] (ISSUES.md Q24): never built here behind the caller's back,
-    /// so an activation that comes too late is an error where the set was first wanted, not a
-    /// silently different set.
+    /// Returns the set against which every token open resolves. [`Set::activate`] or
+    /// [`Set::activate_embedded`] builds it once per process (ISSUES.md Q24). This function never
+    /// builds the set itself. As a result, an activation that comes too late causes an error at
+    /// the place that first asked for the set, instead of silently producing a different set.
     ///
     /// # Errors
     ///
-    /// No set activated yet.
+    /// Returns an error if no set has been activated yet.
     pub fn active() -> Result<&'static Set, String> {
         ACTIVE.get().ok_or_else(|| {
             "no capability profile set is active: the tool activates it (Set::activate) right after \
@@ -154,22 +163,23 @@ impl Set {
         })
     }
 
-    /// Build the active set: the embedded profiles plus every module profile under `dirs`
-    /// ([`Set::adding_dir`]). Once per process, before the first token is opened.
+    /// Builds the active set: the embedded profiles plus every module profile under `dirs`
+    /// ([`Set::adding_dir`]). A process calls this once, before it opens the first token.
     ///
     /// # Errors
     ///
-    /// What loading refuses, or the set already being in use.
+    /// Returns the error of a file that loading refuses, or an error if a set is already active.
     pub fn activate(dirs: &[std::path::PathBuf]) -> Result<&'static Set, String> {
         Set::activate_replacing(dirs, None)
     }
 
-    /// [`Set::activate`], then every profile under `replacing` loaded over it
-    /// ([`Set::with_dir`]): caprobe's `--profiles`, which measures profiles not yet committed.
+    /// Does what [`Set::activate`] does, and then loads every profile under `replacing` over
+    /// the result ([`Set::with_dir`]). This implements caprobe's `--profiles`, which measures
+    /// profiles that are not yet committed.
     ///
     /// # Errors
     ///
-    /// What loading refuses, or the set already being in use.
+    /// Returns the error of a file that loading refuses, or an error if a set is already active.
     pub fn activate_replacing(dirs: &[std::path::PathBuf], replacing: Option<&Path>) -> Result<&'static Set, String> {
         let mut set = Set::embedded()?;
         for dir in dirs {
@@ -182,13 +192,13 @@ impl Set {
         Set::active()
     }
 
-    /// The embedded set as the active one, for a process that loads no profile directory (the
-    /// tests, caprobe): the set already active when there is one, so it may be called more than
-    /// once.
+    /// Activates the embedded set, for a process that loads no profile directory (the tests and
+    /// caprobe). If a set is already active, it returns that set, so a process may call it more
+    /// than once.
     ///
     /// # Errors
     ///
-    /// [`Set::embedded`]'s parse error.
+    /// Returns the parse error of [`Set::embedded`].
     pub fn activate_embedded() -> Result<&'static Set, String> {
         if let Some(set) = ACTIVE.get() {
             return Ok(set);
@@ -204,26 +214,27 @@ impl Set {
         }
     }
 
-    /// The baseline: the embedded one, or the file of its name a [`Set::with_dir`] directory
-    /// replaced it with (a directory adds no other).
+    /// Returns the baseline: the embedded baseline, or the file of the same name with which a
+    /// [`Set::with_dir`] directory replaced it. A directory cannot add a second baseline.
     ///
     /// # Errors
     ///
-    /// When no baseline was loaded.
+    /// Returns an error when no baseline was loaded.
     pub fn baseline(&self) -> Result<&Baseline, String> {
         self.baseline.as_ref().ok_or_else(|| "no baseline loaded".to_owned())
     }
 
-    /// Every loaded profile, in load order: what resolution iterates to match modules and
-    /// forwarders by their `match` rows.
+    /// Returns every loaded profile, in load order. Resolution iterates over this list to match
+    /// modules and forwarders by their `match` rows.
     #[must_use]
     pub fn all(&self) -> &[Profile] {
         &self.profiles
     }
 
-    /// The families of the module profiles (`mode = "observed"`) whose `[match] manufacturer` is
-    /// `manufacturer`: how a module that no provider code claims is recognised, and named, from
-    /// data alone (docs/CAPROBE.md: a module with no fix-ups needs no Rust). Layers never count.
+    /// Returns the families of the module profiles (`mode = "observed"`) whose
+    /// `[match] manufacturer` is `manufacturer`. This is how cakeys recognizes and names a module
+    /// that no provider code claims, from data alone (docs/CAPROBE.md: a module that needs no
+    /// fix-ups needs no Rust code). Layer profiles are never counted.
     #[must_use]
     pub fn module_families(&self, manufacturer: &str) -> Vec<&str> {
         let mut out: Vec<&str> = self
@@ -237,8 +248,8 @@ impl Set {
         out
     }
 
-    /// Every module profile family loaded, sorted: what a keys.toml `provider` may name besides
-    /// the providers with code.
+    /// Returns every loaded module profile family, sorted. A keys.toml `provider` may name one of
+    /// these families in addition to the providers that have code.
     #[must_use]
     pub fn module_family_names(&self) -> Vec<&str> {
         let mut out: Vec<&str> =
@@ -248,13 +259,15 @@ impl Set {
         out
     }
 
-    /// The profile named `name`, by its exact name ("softhsm/2.7") or, when only one version of
-    /// the family is loaded, by its family ("softhsm") — what a keys.toml `provider` names.
+    /// Returns the profile named `name`, by its exact name ("softhsm/2.7") or, when only one
+    /// version of the family is loaded, by its family ("softhsm"). A keys.toml `provider` names a
+    /// profile in one of these two ways.
     ///
     /// # Errors
     ///
-    /// When nothing matches (with the loaded names), or a family matches several versions
-    /// (naming the one wanted).
+    /// Returns an error that lists the loaded names when nothing matches. Returns an error that
+    /// lists the matching versions when a family matches several versions, so that the user can
+    /// name one exactly.
     pub fn find(&self, name: &str) -> Result<&Profile, String> {
         if let Some(p) = self.profiles.iter().find(|p| p.profile == name) {
             return Ok(p);
@@ -274,10 +287,10 @@ impl Set {
     }
 }
 
-/// Every `.toml` file under `dir`, recursively. Symlinked directories are followed (a Nix
-/// `symlinkJoin` of profile directories is one), each real directory once: a link back to an
-/// ancestor, or a second link to one already read, adds nothing, so a loop ends and no file
-/// loads twice.
+/// Collects every `.toml` file under `dir`, recursively. It follows symlinked directories (a Nix
+/// `symlinkJoin` of profile directories consists of them), but it reads each real directory only
+/// once. A link back to an ancestor, or a second link to a directory that was already read, adds
+/// nothing, so a symlink loop ends and no file loads twice.
 fn collect(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
     collect_once(dir, out, &mut std::collections::BTreeSet::new())
 }
@@ -290,7 +303,8 @@ fn collect_once(
     if !seen.insert(std::fs::canonicalize(dir)?) {
         return Ok(());
     }
-    // Sorted, so which of two links to one directory is read does not depend on the filesystem.
+    // The entries are sorted, so the choice of which of two links to one directory is read does
+    // not depend on the order of the filesystem.
     let mut paths = std::fs::read_dir(dir)?.map(|e| e.map(|e| e.path())).collect::<std::io::Result<Vec<_>>>()?;
     paths.sort();
     for path in paths {
@@ -307,10 +321,11 @@ fn collect_once(
 mod tests {
     use super::*;
 
-    /// No set is active until one is activated (ISSUES.md Q24): asking first is an error, not a
-    /// silent embedded set that a later activation would then fail against. The embedded
-    /// activation may repeat; a second activation of directories is refused. The only test here
-    /// that activates: this test binary's set is this test's.
+    /// No set is active until a caller activates one (ISSUES.md Q24). A request for the set
+    /// before activation is an error. It does not silently return the embedded set, because a
+    /// later activation would then fail. The embedded activation may repeat, but a second
+    /// activation with directories is refused. This is the only test in this binary that
+    /// activates a set, because the active set is global to the test binary.
     #[test]
     fn the_set_is_activated_before_it_is_asked_for() {
         assert!(Set::active().err().unwrap().contains("no capability profile set is active"));
@@ -320,8 +335,8 @@ mod tests {
         assert!(Set::activate(&[]).err().unwrap().contains("already in use"));
     }
 
-    /// The embedded set is the committed state of the world: everything parses, every name is
-    /// unique, and the answers the checks rely on hold.
+    /// The embedded set holds the committed profiles. This test checks that every file parses,
+    /// that every name is unique, and that the answers on which other checks rely still hold.
     #[test]
     fn embedded_profiles_load_and_answer() {
         let set = Set::embedded().unwrap();
@@ -344,7 +359,8 @@ mod tests {
                 "ykcs11/2.7"
             ]
         );
-        // find: exact name, unique family, a family of none, an unknown name.
+        // `find` by an exact name, by a unique family, by a family that has no profile, and by
+        // an unknown name.
         assert_eq!(set.find("softhsm/2.7").unwrap().profile, "softhsm/2.7");
         assert_eq!(set.find("softhsm").unwrap().profile, "softhsm/2.7");
         assert!(set.find("yubikey").unwrap_err().starts_with("no profile 'yubikey' (loaded: "));
@@ -356,17 +372,19 @@ mod tests {
         let layers = [p11];
         let eff = Effective::new(b, Some(softhsm), &layers);
         assert!(matches!(eff.mechanism("CKM_AES_KEY_WRAP"), Verdict::No { by, .. } if by == "p11-kit/0.26"));
-        // The probe-verified profile carries the full `C_GetMechanismList`, so SHA-512 HMAC is
-        // decided Yes where the partial hand profile once left it Unknown.
+        // The profile that the probe verified holds the full `C_GetMechanismList`, so SHA-512
+        // HMAC is decided as Yes. The earlier partial profile, written by hand, left it Unknown.
         assert!(matches!(eff.mechanism("CKM_SHA512_HMAC"), Verdict::Yes { .. }));
         assert_eq!(set.find("softhsm/2.7").unwrap().wrap_oaep().as_deref(), Some(["SHA-1".to_owned()].as_slice()));
-        // A partial module profile (no advertisement recorded) answers Unknown, never a guess.
+        // A partial module profile (one that records no mechanism list) answers Unknown, and
+        // never guesses.
         let partial = Profile::from_toml("profile = \"m/1\"\nmode = \"observed\"\npartial = true\n").unwrap();
         let eff = Effective::new(b, Some(&partial), &[]);
         assert!(matches!(eff.mechanism("CKM_SHA512_HMAC"), Verdict::Unknown { .. }));
 
-        // The cryptoki layer kills the SHA-512 HMAC key type in an unpatched binding [run];
-        // whether this build's binding is patched is crates/pkcs11's runtime check.
+        // The cryptoki layer removes the SHA-512 HMAC key type, which an unpatched binding cannot
+        // handle [run]. Whether this build's binding is patched is a check that crates/pkcs11
+        // makes at run time.
         let cryptoki = set.find("cryptoki/0.12").unwrap();
         let cryptoki_layers = [cryptoki];
         let eff = Effective::new(b, Some(softhsm), &cryptoki_layers[..]);
@@ -389,8 +407,9 @@ mod tests {
             eff.generate("CKK_RSA", None, Some(4096)),
             Verdict::No { by, .. } if by == "swtpm"
         ));
-        // The pair profile decides on its own what the probe observed: the refused size and the
-        // curves; sizes it never tried answer unknown, not the range the module reports.
+        // The pair profile alone decides what the probe observed: the refused size and the
+        // curves. A size that the probe never tried answers Unknown. It does not answer from the
+        // range that the module reports.
         let pair = Effective::new(b, Some(tpm2), &[]);
         assert!(matches!(pair.generate("CKK_RSA", None, Some(4096)), Verdict::No { .. }));
         assert!(matches!(pair.generate("CKK_RSA", None, Some(2048)), Verdict::Yes { .. }));
@@ -398,8 +417,9 @@ mod tests {
         assert!(matches!(pair.curve("secp256k1"), Verdict::No { .. }));
     }
 
-    /// Probed rows that all answer no answer no; absent ones are unprobed and answer
-    /// unknown. (That the emitter keeps the difference is caprobe's test.)
+    /// If every probed row answers no, the query answers No. If the rows are absent, the
+    /// capability was not probed, and the query answers Unknown. (A test in caprobe checks that
+    /// the emitter keeps this difference.)
     #[test]
     fn probed_empty_is_not_unprobed() {
         let set = Set::embedded().unwrap();
@@ -415,9 +435,10 @@ mod tests {
         assert!(matches!(Effective::new(b, Some(&unprobed), &[]).oaep()[0].1, Verdict::Unknown { .. }));
     }
 
-    /// The committed profiles name only what this cakeys knows (review D4): a profile from a newer
-    /// cakeys loads with names this one does not, so a misspelt name in a committed one would load
-    /// too, and answer nothing.
+    /// The committed profiles name only rows that this version of cakeys knows (review D4). A
+    /// profile from a newer cakeys loads even when it has names that this version does not know.
+    /// A misspelled name in a committed profile would therefore also load, and it would answer
+    /// nothing, so this test checks the names.
     #[test]
     fn the_committed_profiles_name_only_known_rows() {
         use crate::capability::{DECRYPT_OAEP, UNWRAP_TEMPLATE, WRAP_OAEP};
@@ -446,9 +467,9 @@ mod tests {
         assert!(seen > 100, "{seen} rows");
     }
 
-    /// A profile from a newer cakeys, naming a proof, hashes and a template attribute this one
-    /// does not know, loads (ISSUES.md Q28, review D4), and those rows answer nothing: what this
-    /// cakeys asks is answered as without them.
+    /// A profile from a newer cakeys that names a proof, hashes and a template attribute that
+    /// this version does not know still loads (ISSUES.md Q28, review D4). Those unknown rows
+    /// answer nothing: each query of this version gets the same answer as it would without them.
     #[test]
     fn a_newer_cakeys_names_load_and_answer_nothing() {
         let rows = "[capabilities]\n\"wrap.rsa-oaep.SHA-1\" = { answer = \"yes\" }\n\"decrypt.rsa-oaep.SHA-256\" = { answer = \"no\" }\n\"unwrap.template.CKA_VALUE_LEN\" = { answer = \"yes\" }\n";
@@ -463,8 +484,8 @@ mod tests {
         assert_eq!(known.wrap_oaep(), Some(vec!["SHA-1".to_owned()]));
     }
 
-    /// A misspelled key in any section is refused, never ignored: a `[match]` that lost its
-    /// version would match by manufacturer alone.
+    /// A misspelled key in any section is refused and never ignored. For example, a `[match]`
+    /// section whose version key is misspelled would otherwise match by manufacturer alone.
     #[test]
     fn a_misspelled_key_is_refused_in_every_section() {
         let head = "profile = \"m/1\"\nmode = \"observed\"\n";
@@ -479,9 +500,9 @@ mod tests {
         }
     }
 
-    /// A directory's symlinks to directories are followed, each real directory once: a link to
-    /// an ancestor ends (review lib.rs F1), and a second link to a directory already read loads
-    /// nothing twice.
+    /// The loader follows a directory's symlinks to directories, and it reads each real directory
+    /// once. A link to an ancestor does not loop forever (review lib.rs F1), and a second link to
+    /// a directory that was already read does not load any file twice.
     #[test]
     fn a_symlink_loop_in_a_directory_ends() {
         let dir = tempfile::tempdir().unwrap();
@@ -497,13 +518,15 @@ mod tests {
         collect(dir.path(), &mut paths).unwrap();
         let names: Vec<_> = paths.iter().map(|p| p.strip_prefix(dir.path()).unwrap().to_owned()).collect();
         assert_eq!(names, [Path::new("again/m.toml"), Path::new("linked/n.toml")]);
-        // Loading it adds each profile once: no "already loaded" from a second path to it.
+        // Loading the directory adds each profile once, so a second path to a profile does not
+        // cause an "already loaded" error.
         let set = Set::embedded().unwrap().adding_dir(dir.path()).unwrap();
         assert!(set.find("m/1").is_ok() && set.find("n/1").is_ok());
     }
 
-    /// A directory's baseline replaces the loaded one of its name and is the one answered with;
-    /// one of another name is refused, never loaded and left unread (review lib.rs F2).
+    /// A baseline from a directory replaces the loaded baseline of the same name, and queries
+    /// then use it. A baseline of another name is refused, so it is never loaded and left unread
+    /// (review lib.rs F2).
     #[test]
     fn a_directory_baseline_is_used_or_refused() {
         let dir = tempfile::tempdir().unwrap();
@@ -520,9 +543,9 @@ mod tests {
         assert!(e.contains("baseline 'pkcs11-9.9': only one baseline is used (pkcs11-3.2)"), "{e}");
     }
 
-    /// A `--profiles` directory, read recursively: a baseline replaces the embedded one, a
-    /// profile of a loaded name replaces it, a new one is added, and a file that is neither is
-    /// refused by name.
+    /// A `--profiles` directory is read recursively. A baseline replaces the embedded baseline,
+    /// a profile with a loaded name replaces the loaded profile, a new profile is added, and a
+    /// file that is neither a baseline nor a profile is refused with its name in the error.
     #[test]
     fn a_directory_adds_and_replaces() {
         let dir = std::env::temp_dir().join(format!("cakeys-profile-dir-{}", std::process::id()));
@@ -544,8 +567,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// keys.toml's `profileDirs` only add module profiles: a new family loads, and replacing an
-    /// embedded profile, a layer or a baseline is refused.
+    /// keys.toml's `profileDirs` only add module profiles. A new family loads. A file that
+    /// replaces an embedded profile, or that holds a layer or a baseline, is refused.
     #[test]
     fn a_runtime_directory_only_adds_module_profiles() {
         let dir = std::env::temp_dir().join(format!("cakeys-profile-add-{}", std::process::id()));
@@ -570,10 +593,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A secret key's generation is decided by the lengths in bytes the probe tried: exactly, never
-    /// by interpolation for AES (its lengths are discrete), between two that generated for a type
-    /// whose length is free; a layer's `restrict` bounds are in bits, so a length times eight;
-    /// and a profile with no row says unknown, never yes from the mechanism alone.
+    /// The verdict on a secret key's generation is decided by the lengths in bytes that the
+    /// probe tried. For AES, only an exact match counts, because AES lengths are discrete. For a
+    /// type whose length is free, a length between two lengths that generated also counts. A
+    /// layer's `restrict` bounds are in bits, so the check multiplies a length by eight. A
+    /// profile with no row answers Unknown, and never Yes from the mechanism alone.
     #[test]
     fn a_secret_keys_generation_is_decided_by_lengths_in_bytes() {
         let set = Set::embedded().unwrap();
@@ -589,9 +613,10 @@ mod tests {
         let verdict = |kt: &str, n: Option<u32>| eff.generate_secret(kt, n);
         assert!(matches!(verdict("CKK_AES", Some(16)), Verdict::Yes { .. }));
         assert!(matches!(verdict("CKK_AES", Some(8)), Verdict::No { .. }));
-        // Between two that generated, but AES has no length there.
+        // 24 bytes lies between two lengths that generated, but AES lengths are discrete, so the
+        // verdict is Unknown.
         assert!(matches!(verdict("CKK_AES", Some(24)), Verdict::Unknown { .. }));
-        // No length asked: some length generated.
+        // No length is asked for, and at least one length generated.
         assert!(matches!(verdict("CKK_AES", None), Verdict::Yes { .. }));
         // No row for the type at all.
         assert!(matches!(verdict("CKK_DES3", Some(24)), Verdict::Unknown { .. }));
@@ -602,11 +627,11 @@ mod tests {
         let eff = Effective::new(b, Some(&free), &[]);
         assert!(matches!(eff.generate_secret("CKK_GENERIC_SECRET", Some(32)), Verdict::Yes { .. }));
         assert!(matches!(eff.generate_secret("CKK_GENERIC_SECRET", Some(128)), Verdict::Unknown { .. }));
-        // Every length refused: the type is no.
+        // Every length was refused, so the type answers No.
         let none = module("\"generate.CKK_SHA256_HMAC.16\" = { answer = \"no\" }\n");
         let eff = Effective::new(b, Some(&none), &[]);
         assert!(matches!(eff.generate_secret("CKK_SHA256_HMAC", None), Verdict::No { .. }));
-        // A layer bounds a size in bits: 32 bytes is 256 bits, 48 bytes is not.
+        // A layer bounds a size in bits: 32 bytes is 256 bits, and 48 bytes is 384 bits.
         let layer =
             Profile::from_toml("profile = \"l/1\"\nmode = \"delta\"\n[[restrict]]\noperation = \"generate\"\nkey-type = \"CKK_AES\"\nmax-bits = 256\n")
                 .unwrap();
@@ -616,8 +641,8 @@ mod tests {
         assert!(matches!(eff.generate_secret("CKK_AES", Some(48)), Verdict::No { by, .. } if by == "l/1"));
     }
 
-    /// Data detection: the families whose module profiles name a manufacturer; layers (p11-kit)
-    /// never count.
+    /// Detection from data returns the families whose module profiles name a manufacturer.
+    /// Layer profiles (p11-kit) never count.
     #[test]
     fn module_families_come_from_observed_profiles() {
         let set = Set::embedded().unwrap();

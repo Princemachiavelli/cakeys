@@ -1,7 +1,7 @@
-//! A capability profile (docs/CAPROBE.md D2, D3): how one vendor SO version (`observed`
-//! mode) or one layer between cakeys and the token (`delta` mode) deviates from what it
-//! advertises. The rows committed today carry this repo's \[run\] evidence; the probe (phase 3)
-//! regenerates them and fills the `advertise` lists.
+//! A capability profile (docs/CAPROBE.md D2, D3) records how one vendor SO version (`observed`
+//! mode) or one layer between cakeys and the token (`delta` mode) differs from what it
+//! advertises. The rows that are committed today hold this repository's \[run\] evidence. The
+//! probe (phase 3) regenerates them and fills the `advertise` lists.
 
 use crate::capability::{Answer, By, Capability, DECRYPT_OAEP, Move, On, Row, Rows, UNWRAP_TEMPLATE, WRAP_OAEP};
 use crate::names::KeyKind;
@@ -11,26 +11,27 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
-    /// A module profile: deltas against the module's own advertisement, which the probe
-    /// records in `advertise` (D2).
+    /// A module profile. It holds deltas against the module's own advertised list, which the
+    /// probe records in `advertise` (D2).
     Observed,
-    /// A layer between cakeys and the token: open-world, it forwards everything except what
-    /// it subtracts (p11-kit's RPC, the cryptoki binding, the hardware under the module).
+    /// A layer between cakeys and the token (p11-kit's RPC, the cryptoki binding, or the
+    /// hardware under the module). A layer forwards everything except what it subtracts.
     Delta,
 }
 
-/// D9/D10: how a profile is matched to a token. A profile is observed on one module *and*
-/// the hardware under it (`tpm2-pkcs11/1.10+swtpm`): the module's manufacturer and expressed
-/// version come from `C_GetInfo` (never a module digest), the token's model and firmware from
-/// `C_GetTokenInfo`. A module that hides its version (kryoptic reports 0.0) records no
-/// `module-version`; its firmware is then the version evidence. Resolution prefers the profile
-/// matching the most keys and flags anything short of all of them.
+/// How a profile is matched to a token (D9, D10). A profile is observed on one module *and* the
+/// hardware under it (`tpm2-pkcs11/1.10+swtpm`). The module's manufacturer and the version that
+/// it reports come from `C_GetInfo` (never from a digest of the module file). The token's model
+/// and firmware come from `C_GetTokenInfo`. A module that hides its version (kryoptic reports
+/// 0.0) records no `module-version`, and its firmware is then the evidence of its version.
+/// Resolution prefers the profile that matches the most keys, and it reports a warning for any
+/// match that does not match all of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatchInfo {
     /// The module's manufacturer, as `C_GetInfo` reports it.
     pub manufacturer: Option<String>,
-    /// The module's version, as `C_GetInfo` expresses it (`module-version`).
+    /// The module's version, as `C_GetInfo` reports it (`module-version`).
     #[serde(rename = "module-version")]
     pub module_version: Option<String>,
     /// The token's model, as `C_GetTokenInfo` reports it.
@@ -39,8 +40,8 @@ pub struct MatchInfo {
     pub firmware: Option<String>,
 }
 
-/// What a profile subtracts: capabilities the module advertises but cannot use, or that a
-/// layer does not carry.
+/// What a profile subtracts: capabilities that the module advertises but cannot use, or that a
+/// layer does not forward.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Subtract {
@@ -50,22 +51,23 @@ pub struct Subtract {
     /// Key types, by `CKK_*` name (`key-types`).
     #[serde(default, rename = "key-types")]
     pub key_types: Vec<String>,
-    /// One note for the whole subtraction (each entry may still get its own under `notes`).
+    /// One note for the whole subtraction. Each entry may still have its own note under `notes`.
     #[serde(default)]
     pub note: Option<String>,
 }
 
-/// A finding a person made rather than the probe (`[manual.<key>]`): a fact the probe cannot
-/// observe, or one it does not reach yet. Kept apart from the probe's rows so a reader always
-/// knows which is which: the probe preserves the section across regenerations like
-/// `[migration]`, and the diff never compares it.
+/// A finding that a person made, not the probe (`[manual.<key>]`): a fact that the probe cannot
+/// observe, or one that it does not test yet. These findings are kept apart from the probe's
+/// rows, so that a reader always knows which is which. The probe keeps the section unchanged
+/// when it regenerates the profile, as it does with `[migration]`, and the diff never compares
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manual {
     /// What was found.
     pub finding: String,
-    /// How: the command or source that shows it, with its date and an evidence tag (`\[run\]`,
-    /// `\[src\]`, `[spec]`).
+    /// How it was found: the command or source that shows it, with its date and an evidence tag
+    /// (`\[run\]`, `\[src\]`, `[spec]`).
     pub evidence: String,
 }
 
@@ -73,32 +75,38 @@ pub struct Manual {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Why {
-    /// The binding has no constant or parameter type for it, and the probe cannot build the call
-    /// by hand; the cryptoki layer carries the same note.
+    /// The binding has no constant or parameter type for the mechanism, and the probe cannot
+    /// build the call by hand. The cryptoki layer profile has the same note.
     Cryptoki,
-    /// A mechanism ID the baseline does not name: no known parameters, so no meaningful call.
+    /// A mechanism ID that the baseline does not name. Its parameters are unknown, so the probe
+    /// cannot make a meaningful call.
     Vendor,
-    /// Testing needs state or a risk the probe's rules forbid (a scratch slot, the real TPM).
+    /// A test needs state or carries a risk that the probe's rules forbid (a scratch slot, or the
+    /// real TPM).
     Hardware,
-    /// Testing needs a service that was not run for this profile.
+    /// A test needs a service that was not run for this profile.
     Cloud,
-    /// Decided out of scope: the tools never use it (`spec-coverage/manual.toml`).
+    /// The mechanism was decided to be out of scope, because the tools never use it
+    /// (`spec-coverage/manual.toml`).
     Scope,
     /// No probe tries it yet.
     Unprobed,
-    /// Tried, and the module said `CKR_OK`, but nothing outside it could check the result (a
-    /// signature the host has no verifier for): never yes (review 2026-11-24 E-4).
+    /// The probe tried it, and the module returned `CKR_OK`, but nothing outside the module could
+    /// check the result (for example, a signature for which the host has no verifier). Such an
+    /// entry is never yes (review 2026-11-24 E-4).
     Unverified,
-    /// A capability (the key is a row's) the module failed on with a device failure
-    /// ([`crate::DEVICE_FAILED_RV`]): no answer of the module's, so unknown, which refuses.
+    /// A capability (the entry's key has the form of a row's key) on which the module failed
+    /// with a device failure ([`crate::DEVICE_FAILED_RV`]). That is not a real answer from the
+    /// module, so the capability is unknown, and an unknown capability causes a refusal.
     Device,
-    /// A capability cakeys or its provider refused before the module was asked (no verifier on
-    /// the host, a template the provider refuses): no answer of the module's either.
+    /// A capability that cakeys or its provider refused before the module was asked (because the
+    /// host has no verifier, or because the provider refuses the template). This is not a real
+    /// answer from the module either.
     Cakeys,
 }
 
 impl Why {
-    /// The word the table writes.
+    /// The word that the `[untested]` table holds.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -114,89 +122,94 @@ impl Why {
         }
     }
 
-    /// Whether the entry is a capability's the probe could not decide (its key is a row's).
+    /// Returns whether the entry is for a capability that the probe could not decide. The key of
+    /// such an entry has the form of a row's key.
     #[must_use]
     pub fn undecided(self) -> bool {
         matches!(self, Why::Device | Why::Cakeys)
     }
 }
 
-/// One advertised mechanism the probe did not try (`[untested]`): probe output, regenerated
-/// with the profile, never a claim.
+/// One advertised mechanism that the probe did not try (`[untested]`). The probe writes these
+/// entries and regenerates them with the profile. They are never claims.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Untested {
     /// Why it was not tried.
     pub why: Why,
-    /// What to know of it: the reason in words.
+    /// The reason, in words.
     #[serde(default)]
     pub note: Option<String>,
 }
 
-/// What `C_GetMechanismInfo` reports for one mechanism (`[mechanism-info."CKM_X"]`): a claim the
-/// probe records and checks against what it measured, never evidence.
+/// What `C_GetMechanismInfo` reports for one mechanism (`[mechanism-info."CKM_X"]`). This is a
+/// claim that the probe records and checks against what it measured. It is never evidence.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MechanismInfo {
-    /// The smallest key size it reports (bits or bytes, as the module counts).
+    /// The smallest key size that the module reports (in bits or bytes, as the module counts).
     pub min: u64,
-    /// The largest.
+    /// The largest key size that the module reports.
     pub max: u64,
-    /// The operations it flags.
+    /// The operations that the module flags for the mechanism.
     #[serde(default)]
     pub flags: Vec<String>,
 }
 
-/// The key sizes a module reports for one key type (`[reported."CKK_RSA"]`): the inclusive range
-/// `C_GetMechanismInfo` gives, or a hand claim. What the module did with a size is a
-/// [`Capability::Generate`] row.
+/// The key sizes that a module reports for one key type (`[reported."CKK_RSA"]`): the inclusive
+/// range that `C_GetMechanismInfo` gives, or a claim written by hand. What the module actually
+/// did with a size is recorded in a [`Capability::Generate`] row.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Reported {
-    /// The smallest modulus it reports, in bits (`min-bits`).
+    /// The smallest modulus that the module reports, in bits (`min-bits`).
     #[serde(default, rename = "min-bits")]
     pub min_bits: Option<u32>,
-    /// The largest modulus it reports, in bits (`max-bits`).
+    /// The largest modulus that the module reports, in bits (`max-bits`).
     #[serde(default, rename = "max-bits")]
     pub max_bits: Option<u32>,
 }
 
-/// What a module generates for one key type, as its rows say ([`Profile::generation`]): the
-/// curves (or parameter sets) that generated and that did not, the modulus sizes likewise, the
-/// curves that generate only by name, and the range the module reports. What none of them
-/// decides answers unknown (D5), never a guess.
+/// What a module generates for one key type, according to its rows ([`Profile::generation`]).
+/// It holds the curves (or parameter sets) that generated and those that did not, the modulus
+/// sizes that generated and those that did not, the curves that generate only by name, and the
+/// range that the module reports. A question that none of these decides answers unknown (D5),
+/// and never a guess.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GenerateRow {
-    /// What it generates: curves, or parameter sets.
+    /// The curves or parameter sets that the module generates.
     pub can: Vec<String>,
-    /// What it does not generate, although it may list them.
+    /// The curves or parameter sets that the module does not generate, although it may list
+    /// them.
     pub cannot: Vec<String>,
-    /// The smallest RSA modulus it reports, in bits.
+    /// The smallest RSA modulus that the module reports, in bits.
     pub min_bits: Option<u32>,
-    /// The largest RSA modulus it reports, in bits.
+    /// The largest RSA modulus that the module reports, in bits.
     pub max_bits: Option<u32>,
     /// RSA modulus sizes that generated.
     pub can_bits: Vec<u32>,
-    /// RSA modulus sizes refused.
+    /// RSA modulus sizes that the module refused.
     pub cannot_bits: Vec<u32>,
-    /// Secret-key lengths that generated, in bytes (`CKA_VALUE_LEN`: the unit the key types
-    /// with a length read, never the bits of an RSA modulus).
+    /// Secret-key lengths that generated, in bytes. `CKA_VALUE_LEN` gives the length of a key
+    /// type with a length in bytes, never in the bits of an RSA modulus.
     pub can_bytes: Vec<u32>,
-    /// Secret-key lengths refused, in bytes.
+    /// Secret-key lengths that the module refused, in bytes.
     pub cannot_bytes: Vec<u32>,
-    /// Curves in `can` that generate only when `CKA_EC_PARAMS` names them (PKCS#11 3.0's
-    /// `PrintableString` form), never by OID: ykcs11's Edwards and Montgomery curves \[src\].
+    /// The curves in `can` that generate only when `CKA_EC_PARAMS` names them (the
+    /// `PrintableString` form of PKCS#11 3.0), and never by OID. ykcs11's Edwards and Montgomery
+    /// curves behave this way \[src\].
     pub by_name: Vec<String>,
 }
 
-/// A layer's numeric restriction, intersected with every other layer's (D3): swtpm refuses
-/// 4096-bit RSA generation, whatever tpm2-pkcs11's module profile says.
+/// A layer's numeric restriction, which applies together with every other layer's restriction
+/// (D3). For example, swtpm refuses 4096-bit RSA generation, whatever tpm2-pkcs11's module
+/// profile says.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Restrict {
-    /// What the restriction applies to; only "generate" exists today, and an operation of a
-    /// newer cakeys restricts nothing here. A plain name: one value needs no enum (review
-    /// 2026-11-23 A-13).
+    /// The operation to which the restriction applies. Only "generate" exists today, and an
+    /// operation from a newer cakeys restricts nothing here. The field is a plain string, because
+    /// one value needs no enum (review 2026-11-23 A-13).
     pub operation: String,
     /// The key type it restricts (`key-type`).
     #[serde(rename = "key-type")]
@@ -207,12 +220,13 @@ pub struct Restrict {
     /// The largest size allowed, in bits (`max-bits`).
     #[serde(default, rename = "max-bits")]
     pub max_bits: Option<u32>,
-    /// Why, shown in verdicts.
+    /// The reason for the restriction, which verdicts show.
     #[serde(default)]
     pub note: Option<String>,
 }
 
-/// How plaintext material gets into a token (the `host` paths), as data.
+/// The way in which plaintext key material is imported into a token (the `host` paths), as
+/// data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PlaintextKind {
@@ -225,7 +239,7 @@ pub enum PlaintextKind {
 }
 
 impl PlaintextKind {
-    /// The name a profile writes: `plaintext-import`, and an `import.*` row's `via`.
+    /// The name that a profile writes in `plaintext-import` and in an `import.*` row's `via`.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -236,17 +250,17 @@ impl PlaintextKind {
     }
 }
 
-/// One row of what a module's import paths take: a class, and optionally only some key types,
-/// curves, or an inclusive RSA modulus range (empty: any).
+/// One row of what a module's import paths accept: a class, and optionally a limit to some key
+/// types, some curves, or an inclusive RSA modulus range. An empty limit accepts any value.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AcceptRow {
     /// The object class, by `CKO_*` name.
     pub class: String,
-    /// The key types, by `CKK_*` name (`key-types`; empty: any).
+    /// The key types, by `CKK_*` name (`key-types`). An empty list accepts any key type.
     #[serde(default, rename = "key-types")]
     pub key_types: Vec<String>,
-    /// The curves, by name (empty: any).
+    /// The curves, by name. An empty list accepts any curve.
     #[serde(default)]
     pub curves: Vec<String>,
     /// The smallest RSA modulus, in bits (`min-bits`).
@@ -257,95 +271,101 @@ pub struct AcceptRow {
     pub max_bits: Option<u32>,
 }
 
-/// What a module's import paths take (docs/CAMIGRATE.md D2/D10), as data: this repo's claims.
-/// Absent fields mean a spec-compliant PKCS#11 module: it imports public objects and plaintext
-/// keys with `C_CreateObject`. Whether it exports, unwraps, keeps a secret's length and wraps
-/// toward a trusted key are [`Capability::Move`] rows; the OAEP hashes `wrap.rsa-oaep.*`.
+/// What a module's import paths accept (docs/CAMIGRATE.md D2/D10), as data. These are claims
+/// that this repository makes. Absent fields describe a spec-compliant PKCS#11 module, which
+/// imports public objects and plaintext keys with `C_CreateObject`. Whether the module exports,
+/// unwraps, keeps a secret key's length, and wraps to a trusted key is recorded in
+/// [`Capability::Move`] rows. The OAEP hashes are recorded in `wrap.rsa-oaep.*` rows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Migration {
-    /// How plaintext private and secret keys get in, if at all.
+    /// The way in which plaintext private keys and secret keys are imported, if they can be.
     #[serde(default, rename = "plaintext-import")]
     pub plaintext_import: Option<PlaintextKind>,
-    /// What the plaintext import takes.
+    /// What the plaintext import accepts.
     #[serde(default, rename = "plaintext-accepts")]
     pub plaintext_accepts: Vec<AcceptRow>,
-    /// Public objects `C_CreateObject` takes; the spec-compliant classes when empty.
+    /// The public objects that `C_CreateObject` accepts. When the list is empty, the module
+    /// accepts the classes that the spec requires.
     #[serde(default, rename = "public-accepts")]
     pub public_accepts: Vec<AcceptRow>,
-    /// Keys it takes in by no import at all, sealed or host, whatever its mechanisms say: AWS
-    /// `CloudHSM` holds Ed25519 as `CKK_EC` and refuses a `CKK_EC_EDWARDS` template \[run\].
+    /// The keys that the module accepts by no import path at all, neither sealed nor from the
+    /// host, whatever its mechanisms suggest. For example, AWS `CloudHSM` holds Ed25519 as
+    /// `CKK_EC` and refuses a `CKK_EC_EDWARDS` template \[run\].
     #[serde(default)]
     pub refuses: Vec<AcceptRow>,
 }
 
-/// One capability profile: `profile` names it ("family/version"), `mode` picks its semantics,
-/// and the rest are its rows.
+/// One capability profile. `profile` names it ("family/version"), `mode` selects how its rows
+/// are interpreted, and the other fields are its rows.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
-    /// The profile's name, "family/version" (e.g. "softhsm/2.7"): what `--profile` selects.
+    /// The profile's name, "family/version" (for example, "softhsm/2.7"). `--profile` selects a
+    /// profile by this name.
     pub profile: String,
     /// A module's observed set, or a layer's subtraction.
     pub mode: Mode,
-    /// The advertisement list has not been recorded yet (the probe, phase 3): mechanism
-    /// membership questions answer unknown rather than guessing.
+    /// True when the advertised list has not been recorded yet (the probe, phase 3). A question
+    /// about whether the module has a mechanism then answers unknown instead of guessing.
     #[serde(default)]
     pub partial: bool,
-    /// A passthrough (p11-kit) that hides the module behind it: no claim of that module applies
-    /// until keys.toml names its `provider`, so a plan through it warns. `notes."requires-provider"`
-    /// says what the passthrough does carry.
+    /// True for a passthrough (p11-kit) that hides the module behind it. No claim about that
+    /// module applies until keys.toml names its `provider`, so a plan through the passthrough
+    /// warns. `notes."requires-provider"` says what the passthrough does forward.
     #[serde(default, rename = "requires-provider")]
     pub requires_provider: bool,
     /// How the profile is matched to a token (`[match]`).
     #[serde(default)]
     pub r#match: MatchInfo,
-    /// What `C_GetMechanismList` returns; the drift baseline once the probe records it.
+    /// What `C_GetMechanismList` returns. Once the probe records it, drift detection compares
+    /// against it.
     #[serde(default)]
     pub advertise: Vec<String>,
-    /// What it advertises that the probe did not try, and why (`[untested]`): an answer for
-    /// one of these is unknown, never yes.
+    /// The advertised mechanisms that the probe did not try, and why (`[untested]`). The answer
+    /// for one of these is unknown, and never yes.
     #[serde(default)]
     pub untested: BTreeMap<String, Untested>,
-    /// What it subtracts (`[subtract]`).
+    /// What the profile subtracts (`[subtract]`).
     #[serde(default)]
     pub subtract: Subtract,
-    /// Mechanisms usable although the module does not list them.
+    /// Mechanisms that are usable although the module does not list them.
     #[serde(default)]
     pub add: Vec<String>,
-    /// What the module answers about cakeys' operations (`[capabilities]`): one row type for
-    /// generation, wrapping, decryption, unwrap templates, ECDH and moves.
+    /// Whether the module can perform each of cakeys' operations (`[capabilities]`). One row
+    /// type covers generation, wrapping, decryption, unwrap templates, ECDH and moves.
     #[serde(default, deserialize_with = "crate::capability::deserialize")]
     pub capabilities: Rows,
-    /// The key sizes the module reports, per key type (`[reported."CKK_RSA"]`).
+    /// The key sizes that the module reports, per key type (`[reported."CKK_RSA"]`).
     #[serde(default)]
     pub reported: BTreeMap<String, Reported>,
-    /// What `C_GetMechanismInfo` reports, per mechanism the probe has rows for
-    /// (`[mechanism-info."CKM_X"]`): claims, never compared.
+    /// What `C_GetMechanismInfo` reports, for each mechanism for which the probe has rows
+    /// (`[mechanism-info."CKM_X"]`). These are claims, and the diff never compares them.
     #[serde(default, rename = "mechanism-info")]
     pub mechanism_info: BTreeMap<String, MechanismInfo>,
-    /// What the module and token report of themselves, `name -> value` (`[claims]`): token
-    /// flags and limits, the interface version, the hardware features and profiles objects.
-    /// Reported, never probed, never compared.
+    /// What the module and the token report about themselves, as `name -> value` (`[claims]`):
+    /// token flags and limits, the interface version, the hardware features and the profile
+    /// objects. These values are reported, never probed, and never compared.
     #[serde(default)]
     pub claims: BTreeMap<String, String>,
-    /// What the module's import paths take (docs/CAMIGRATE.md), when it deviates from a
+    /// What the module's import paths accept (docs/CAMIGRATE.md), when the module differs from a
     /// spec-compliant module.
     #[serde(default)]
     pub migration: Option<Migration>,
     /// A layer's numeric restrictions (`[[restrict]]`).
     #[serde(default)]
     pub restrict: Vec<Restrict>,
-    /// Freeform evidence, keyed by the name each note explains (shown in verdicts).
+    /// Free-form evidence, keyed by the name that each note explains. Verdicts show these notes.
     #[serde(default)]
     pub notes: BTreeMap<String, String>,
-    /// What people found by hand ([`Manual`]): never probe output.
+    /// What people found by hand ([`Manual`]). The probe never writes these entries.
     #[serde(default)]
     pub manual: BTreeMap<String, Manual>,
 }
 
 impl Profile {
-    /// A profile named `profile` of `mode` with no rows: what a probe starts from.
+    /// Returns a profile named `profile`, of `mode`, with no rows. A probe starts from this
+    /// profile.
     #[must_use]
     pub fn new(profile: String, mode: Mode) -> Profile {
         Profile {
@@ -369,28 +389,29 @@ impl Profile {
         }
     }
 
-    /// Parse a profile file.
+    /// Parses a profile file.
     ///
     /// # Errors
     ///
-    /// The message carries the TOML error with its line, for the loader to prefix with the
-    /// file's path.
+    /// Returns the TOML error, with its line, as a message. The loader prefixes the message with
+    /// the file's path.
     pub fn from_toml(text: &str) -> Result<Profile, String> {
         toml::from_str(text).map_err(|e| e.to_string())
     }
 
-    /// What is wrong with the `[untested]` table, one line each: an entry the module does not
-    /// advertise, one a row measures, or one the module was found to refuse. A profile that
-    /// records `[untested]` at all (the probe writes it whole) is closed by it: every advertised
-    /// name is measured or listed, so what the table lacks, the rows and the operation probes
-    /// decided.
+    /// Returns what is wrong with the `[untested]` table, one line for each problem: an entry for
+    /// a mechanism that the module does not advertise, an entry that a row measures, or an entry
+    /// for a mechanism that the module was found to refuse. A profile that records `[untested]`
+    /// at all is complete, because the probe writes the whole table. Every advertised name is
+    /// then either measured or listed, so the rows and the operation probes decided every
+    /// mechanism that the table does not list.
     #[must_use]
     pub fn untested_problems(&self) -> Vec<String> {
         let measured: std::collections::BTreeSet<String> =
             self.capabilities.iter().flat_map(|(c, r)| c.mechanisms(r.via.as_deref())).collect();
         let mut out = Vec::new();
         for (name, u) in &self.untested {
-            // A capability's entry: the probe tried it and could not decide (E-2).
+            // An entry for a capability: the probe tried it and could not decide (E-2).
             if let Ok(c) = Capability::parse(name) {
                 if !u.why.undecided() {
                     out.push(format!(
@@ -419,15 +440,17 @@ impl Profile {
         out
     }
 
-    /// The profile's family: `softhsm/2.7` -> `softhsm`, what a keys.toml `provider` names.
+    /// Returns the profile's family, which a keys.toml `provider` names: `softhsm/2.7` becomes
+    /// `softhsm`.
     #[must_use]
     pub fn family(&self) -> &str {
         self.profile.split_once('/').map_or(&self.profile, |(family, _)| family)
     }
 
-    /// The answer to `c`, if the profile has one. What the probe could not decide ([`Self::unknown`])
-    /// answers no: unknown is never planned as yes, and refuses as an unsupported capability
-    /// does (15), its evidence naming the re-probe (phase1-design §9.1).
+    /// Returns the answer to `c`, if the profile has one. A capability that the probe could not
+    /// decide ([`Self::unknown`]) answers no. A plan never treats an unknown as yes, so it
+    /// refuses as it does for an unsupported capability (exit 15), and its evidence asks for a
+    /// new probe run (phase1-design §9.1).
     #[must_use]
     pub fn answer(&self, c: &Capability) -> Option<bool> {
         if self.unknown(c).is_some() {
@@ -436,9 +459,10 @@ impl Profile {
         self.capabilities.get(c).map(|r| r.answer.yes())
     }
 
-    /// Why `c` is unknown although the profile speaks of it: a legacy `no` citing a device
-    /// failure ([`Row::device_failed`]), or an `[untested]` entry of the capability's (the probe
-    /// tried and could not decide). `None` for a row that answers, or no word at all.
+    /// Returns why `c` is unknown although the profile mentions it. That is the case for a
+    /// legacy `no` that cites a device failure ([`Row::device_failed`]), and for an `[untested]`
+    /// entry for the capability (the probe tried it and could not decide). Returns `None` for a
+    /// row that answers, and when the profile does not mention `c` at all.
     #[must_use]
     pub fn unknown(&self, c: &Capability) -> Option<String> {
         const REPROBE: &str = "re-probe it (T2, profiles/LEDGER.toml)";
@@ -457,9 +481,10 @@ impl Profile {
         ))
     }
 
-    /// What shows the answer to `c`: why it is unknown, else its row's evidence, with how far
-    /// it is shown ([`Self::provenance`]), else the note an older profile kept for it under
-    /// `note` (the curve, or `"<key type> at <bits>"`).
+    /// Returns the evidence for the answer to `c`. That is the reason why it is unknown, if it
+    /// is. Otherwise, it is the row's evidence with its provenance ([`Self::provenance`]), or,
+    /// failing that, the note that an older profile kept for it under the key `note` (the curve,
+    /// or `"<key type> at <bits>"`).
     #[must_use]
     pub fn evidence(&self, c: &Capability, note: &str) -> Option<String> {
         let shown = self.provenance(c);
@@ -473,10 +498,11 @@ impl Profile {
             .or_else(|| shown.map(str::to_owned))
     }
 
-    /// How little `c`'s row shows, for a note beside its answer (phase1-design §2.4): a probed
-    /// row without `by` is legacy, a yes only the module vouches for is unverified. `None` for
-    /// a row the host checked or the module refused, a hand-written claim (`move.*`, a layer's
-    /// rows), and no row.
+    /// Returns a warning about weak provenance of `c`'s row, for a note next to its answer
+    /// (phase1-design §2.4). A probed row without `by` is a legacy row, and a yes that only the
+    /// module reports is unverified. Returns `None` for a row that the host checked or that the
+    /// module refused, for a claim written by hand (`move.*`, or a layer's rows), and when there
+    /// is no row.
     #[must_use]
     pub fn provenance(&self, c: &Capability) -> Option<&'static str> {
         let row = self.capabilities.get(c).filter(|_| c.probed() && self.mode == Mode::Observed)?;
@@ -487,32 +513,35 @@ impl Profile {
         }
     }
 
-    /// Set the row of `c`.
+    /// Sets the row of `c`.
     pub fn set(&mut self, c: Capability, row: Row) {
         self.capabilities.insert(c, row);
     }
 
-    /// Of `asked`, the ones whose row answers yes; `None` when none of them has a row (never
-    /// probed), `Some([])` when every row there says no.
+    /// Returns the members of `asked` whose row answers yes. Returns `None` when none of them has
+    /// a row (they were never probed), and `Some([])` when every row that exists answers no.
     fn yes_of(&self, asked: &[&str], cap: impl Fn(String) -> Capability) -> Option<Vec<String>> {
         let rows: Vec<(&str, bool)> =
             asked.iter().filter_map(|a| self.answer(&cap((*a).to_owned())).map(|y| (*a, y))).collect();
         (!rows.is_empty()).then(|| rows.into_iter().filter(|(_, y)| *y).map(|(a, _)| a.to_owned()).collect())
     }
 
-    /// The OAEP hashes a wrap round-trips with; `None`: never probed.
+    /// Returns the OAEP hashes with which a wrap completes a round trip, or `None` if the wrap
+    /// was never probed.
     #[must_use]
     pub fn wrap_oaep(&self) -> Option<Vec<String>> {
         self.yes_of(&WRAP_OAEP, Capability::WrapOaep)
     }
 
-    /// The OAEP hashes its private keys decrypt with (`pop-decrypt`); `None`: never probed.
+    /// Returns the OAEP hashes with which the module's private keys decrypt (`pop-decrypt`), or
+    /// `None` if decryption was never probed.
     #[must_use]
     pub fn decrypt_oaep(&self) -> Option<Vec<String>> {
         self.yes_of(&DECRYPT_OAEP, Capability::DecryptOaep)
     }
 
-    /// The attributes it refuses in an unwrap template; `None`: never probed.
+    /// Returns the attributes that the module refuses in an unwrap template, or `None` if this
+    /// was never probed.
     #[must_use]
     pub fn unwrap_refuse(&self) -> Option<Vec<String>> {
         let rows: Vec<(&str, bool)> = UNWRAP_TEMPLATE
@@ -522,35 +551,39 @@ impl Profile {
         (!rows.is_empty()).then(|| rows.into_iter().filter(|(_, y)| !y).map(|(a, _)| a.to_owned()).collect())
     }
 
-    /// Whether a way of moving keys works; `None`: no claim (a spec-compliant module's answer).
+    /// Returns whether a way of moving keys works. `None` means that there is no claim, and the
+    /// module is assumed to behave as the spec requires.
     #[must_use]
     pub fn moves(&self, m: Move) -> Option<bool> {
         self.answer(&Capability::Move(m))
     }
 
-    /// Whether the module unwraps a key in at all: yes when any probed `unwrap.<key type>` row
-    /// says so, no when they all say no, else its `move.unwrap` claim; `None`: neither.
+    /// Returns whether the module can unwrap any key into the token. The answer is yes when any
+    /// probed `unwrap.<key type>` row answers yes, and no when all of them answer no. Without
+    /// such rows, the `move.unwrap` claim decides. The result is `None` when neither exists.
     #[must_use]
     pub fn unwraps(&self) -> Option<bool> {
         self.any_of(|c| matches!(c, Capability::Unwrap { .. })).or_else(|| self.moves(Move::Unwrap))
     }
 
-    /// Whether the module creates public key objects at all: yes when any probed
-    /// `create.CKO_PUBLIC_KEY.*` row says so, no when they all say no; `None`: no such row.
+    /// Returns whether the module can create any public key object. The answer is yes when any
+    /// probed `create.CKO_PUBLIC_KEY.*` row answers yes, and no when all of them answer no. The
+    /// result is `None` when there is no such row.
     #[must_use]
     pub fn creates_public_keys(&self) -> Option<bool> {
         self.any_of(|c| matches!(c, Capability::Create { class, .. } if class == "CKO_PUBLIC_KEY"))
     }
 
-    /// Whether any row `matching` picks says yes; `None` when it picks none.
+    /// Returns whether any row that `matching` selects answers yes, or `None` when `matching`
+    /// selects no row.
     fn any_of(&self, matching: impl Fn(&Capability) -> bool) -> Option<bool> {
         let mut rows = self.capabilities.iter().filter(|(c, _)| matching(c)).peekable();
         rows.peek()?;
         Some(rows.any(|(_, r)| r.answer.yes()))
     }
 
-    /// The key types the profile says anything about generating: those [`Self::generation`]
-    /// answers `Some` for.
+    /// Returns the key types for which the profile records anything about generation. These are
+    /// the key types for which [`Self::generation`] returns `Some`.
     #[must_use]
     pub fn generation_key_types(&self) -> std::collections::BTreeSet<&str> {
         let rows = self.capabilities.keys().filter_map(|c| match c {
@@ -564,9 +597,9 @@ impl Profile {
         rows.chain(undecided).chain(self.reported.keys().map(String::as_str)).collect()
     }
 
-    /// What it generates of `key_type`, as its rows and reported range say; `None` when it
-    /// says nothing about the key type. A secret key's lengths are the `can_bytes` and
-    /// `cannot_bytes`, apart from an RSA modulus's bits.
+    /// Returns what the module generates for `key_type`, according to its rows and its reported
+    /// range, or `None` when the profile records nothing about the key type. A secret key's
+    /// lengths go into `can_bytes` and `cannot_bytes`, separate from the bits of an RSA modulus.
     #[must_use]
     pub fn generation(&self, key_type: &str) -> Option<GenerateRow> {
         let mut row = GenerateRow::default();
@@ -580,7 +613,8 @@ impl Profile {
                 continue;
             }
             any = true;
-            // A legacy row citing a device failure is a `no` already: it refuses, as unknown.
+            // A legacy row that cites a device failure is already a `no`, so it causes a refusal,
+            // as an unknown answer does.
             match (on, r.answer) {
                 (On::Item(i), Answer::Yes) => {
                     row.can.push(i.clone());
@@ -591,13 +625,15 @@ impl Profile {
                 (On::Item(i), Answer::No) => row.cannot.push(i.clone()),
                 (On::Bits(b), Answer::Yes) => row.can_bits.push(*b),
                 (On::Bits(b), Answer::No) => row.cannot_bits.push(*b),
-                // A secret key's length is in bytes, kept apart from an RSA modulus's bits.
+                // A secret key's length is in bytes, and it is kept separate from the bits of an
+                // RSA modulus.
                 (On::Bytes(b), Answer::Yes) => row.can_bytes.push(*b),
                 (On::Bytes(b), Answer::No) => row.cannot_bytes.push(*b),
             }
         }
-        // What the probe could not decide refuses as well, and stops interpolation past it: an
-        // undecided size between two that generated is no evidence the one between works.
+        // A size that the probe could not decide also causes a refusal, and interpolation does
+        // not cross it. If an undecided size lies between two sizes that generated, there is no
+        // evidence that the sizes between them work.
         for (name, _) in self.untested.iter().filter(|(_, u)| u.why.undecided()) {
             let Ok(Capability::Generate { key_type: kt, on }) = Capability::parse(name) else { continue };
             if kt != key_type {
@@ -613,11 +649,12 @@ impl Profile {
         any.then_some(row)
     }
 
-    /// Record what the probe saw `key_type` generate: each curve or size as a row (`via =
-    /// "by-name"` for the curves only their name generates), the reported range apart. `notes`
-    /// gives a row its evidence, by the curve or by `"<key type> at <bits>"`. A size or curve
-    /// that generated is the host's (the pair found under the locator it asked for), one
-    /// refused the module's: the probe puts nothing else in `row`.
+    /// Records what the probe saw `key_type` generate. Each curve or size becomes a row, with
+    /// `via = "by-name"` for the curves that generate only by name, and the reported range is
+    /// stored separately. `notes` gives a row its evidence, keyed by the curve or by
+    /// `"<key type> at <bits>"`. A size or curve that generated gets `by = "host"`, because the
+    /// host found the key pair under the locator that it asked for. A refused size or curve gets
+    /// `by = "module"`. The probe puts nothing else in `row`.
     pub fn set_generation(&mut self, key_type: &str, row: &GenerateRow) {
         let kind = KeyKind::from(key_type);
         let generate = |on| Capability::Generate { key_type: kind.clone(), on };
@@ -634,15 +671,15 @@ impl Profile {
         for i in &row.cannot {
             self.set(generate(On::Item(i.clone())), probed(Answer::No, None));
         }
-        // A size in the unit the row reads back in (`On::size`): never a bits row that a re-read
-        // would take for bytes.
+        // Each size is written in the unit in which the row is read back (`On::size`). A size in
+        // bits is never written for a key type whose rows are read back as bytes.
         for b in &row.can_bits {
             self.set(generate(On::size(&kind, *b)), probed(Answer::Yes, None));
         }
         for b in &row.cannot_bits {
             self.set(generate(On::size(&kind, *b)), probed(Answer::No, None));
         }
-        // A secret key's length is bytes whatever the key type (`generate.CKK_AES.32`).
+        // A secret key's length is in bytes, whatever the key type (`generate.CKK_AES.32`).
         for b in &row.can_bytes {
             self.set(generate(On::Bytes(*b)), probed(Answer::Yes, None));
         }
@@ -663,8 +700,9 @@ mod tests {
         Profile::from_toml(&format!("profile = \"m/1\"\nmode = \"observed\"\n[capabilities]\n{rows}")).unwrap()
     }
 
-    /// `generation` speaks for every row a profile keeps, each size in the unit its key type
-    /// reads: an AES length is bytes, apart from an RSA modulus's bits (review profile.rs F1).
+    /// `generation` covers every row that a profile keeps, with each size in the unit that its
+    /// key type uses. An AES length is in bytes, separate from the bits of an RSA modulus (review
+    /// profile.rs F1).
     #[test]
     fn generation_speaks_for_the_rows_it_keeps() {
         let p = profile(
@@ -677,7 +715,7 @@ mod tests {
         assert_eq!(p.generation("CKK_EC").map(|r| r.cannot), Some(vec!["secp256r1".to_owned()]));
         assert_eq!(p.generation("CKK_DES3"), None);
         assert_eq!(p.generation_key_types().into_iter().collect::<Vec<_>>(), ["CKK_AES", "CKK_EC"]);
-        // Over every committed profile, the two agree.
+        // In every committed profile, `generation` and `generation_key_types` agree.
         for p in crate::Set::embedded().unwrap().all() {
             for kt in KeyKind::NAMES {
                 assert_eq!(p.generation(kt).is_some(), p.generation_key_types().contains(kt), "{} {kt}", p.profile);
@@ -685,9 +723,10 @@ mod tests {
         }
     }
 
-    /// What a note says of how far a row is shown (phase1-design §2.4): a probed row without
-    /// `by` is legacy, an unverified yes says so, and a row the host or the module showed, a
-    /// hand-written claim and a layer's row say nothing more.
+    /// A note states the provenance of a row (phase1-design §2.4). A probed row without `by` is
+    /// marked as legacy, and an unverified yes is marked as unverified. A row that the host
+    /// checked or that the module refused, a claim written by hand, and a layer's row get no
+    /// extra note.
     #[test]
     fn a_note_says_how_far_its_row_is_shown() {
         let p = profile(
@@ -712,8 +751,9 @@ mod tests {
         assert_eq!(layer.evidence(&rsa(1024), "").as_deref(), Some("CKR_KEY_SIZE_RANGE"));
     }
 
-    /// A row's `by` holds only with the answers it can show: the module's is a no and never a
-    /// device failure, an unverified one a yes. Each wrong pair is refused at load, never read.
+    /// A row's `by` is valid only with the answers that it can support. `by = "module"` goes with
+    /// a no that does not cite a device failure, and `by = "unverified"` goes with a yes. Each
+    /// invalid pair is refused when the profile loads, so it is never read.
     #[test]
     fn provenance_holds_only_with_its_answers() {
         let load = |row: &str| {
@@ -741,10 +781,11 @@ mod tests {
         }
     }
 
-    /// What the probe could not decide is unknown, which refuses as an unsupported capability
-    /// does and names the re-probe (phase1-design §2.4, §9.1): a legacy no citing a device
-    /// failure, and an `[untested]` entry keyed by the capability. Neither interpolates: a size
-    /// between two that generated, across an undecided one, is not yes.
+    /// A capability that the probe could not decide is unknown. It causes a refusal, as an
+    /// unsupported capability does, and its evidence asks for a new probe run (phase1-design
+    /// §2.4, §9.1). This applies to a legacy no that cites a device failure, and to an
+    /// `[untested]` entry keyed by the capability. Neither one allows interpolation: a size
+    /// between two sizes that generated is not yes when an undecided size lies between them.
     #[test]
     fn what_the_probe_could_not_decide_refuses_as_unknown() {
         let p = Profile::from_toml(
@@ -773,13 +814,13 @@ mod tests {
                 "{c}: {why}"
             );
         }
-        // The module's own no, and a yes, are what they say.
+        // The module's own no stays a no, and a yes stays a yes.
         assert_eq!(p.unknown(&rsa(4096)), None);
         assert_eq!(p.answer(&rsa(2048)), Some(true));
         assert_eq!(p.answer(&rsa(8192)), None);
         let g = p.generation("CKK_RSA").unwrap();
         assert!(g.cannot_bits.contains(&1536) && g.cannot_bits.contains(&3072), "{g:?}");
-        // An undecided entry is a capability's only, and never also a row.
+        // An undecided entry may only be keyed by a capability, and it must not also be a row.
         let wrong = |untested: &str| {
             let mut q = p.clone();
             q.untested = toml::from_str(untested).unwrap();
@@ -790,9 +831,10 @@ mod tests {
         assert_eq!(wrong("\"CKM_X\" = { why = \"cakeys\" }").len(), 1);
     }
 
-    /// Which committed rows load as unknown: the legacy device failures of the hardware profiles
-    /// the probe cannot re-run here (phase1-design §2.4), and no other. A new one fails here
-    /// until it is listed, and the cloud profiles have none.
+    /// This test lists the committed rows that load as unknown. They are the legacy device
+    /// failures of the hardware profiles, for which the probe cannot run again here
+    /// (phase1-design §2.4), and no others. A new such row fails this test until it is added to
+    /// the list. The cloud profiles have none.
     #[test]
     fn the_committed_device_failures_are_these() {
         let mut found: Vec<String> = Vec::new();
@@ -813,8 +855,8 @@ mod tests {
             "import.CKK_RSA.3072",
             "import.CKK_RSA.4096",
         ];
-        // The software profiles, probed again with provenance (phase1-design §9.6), have none:
-        // their device failures are `[untested]` entries.
+        // The software profiles were probed again with provenance (phase1-design §9.6), so they
+        // have none. Their device failures are `[untested]` entries.
         let mut expected: Vec<String> = [
             "tpm2-pkcs11/1.10+amd-ftpm derive.ecdh.sealed",
             "tpm2-pkcs11/1.10+amd-ftpm generate.CKK_EC.secp521r1",
@@ -830,8 +872,8 @@ mod tests {
         assert_eq!(found, expected);
     }
 
-    /// Every row `set_generation` writes reads back as itself from its key, for any key type:
-    /// a size is in the unit its key type reads (review profile.rs F2).
+    /// Every row that `set_generation` writes is read back from its key as the same row, for any
+    /// key type, because each size is in the unit that its key type uses (review profile.rs F2).
     #[test]
     fn written_generation_rows_read_back() {
         let row = GenerateRow {
@@ -853,8 +895,8 @@ mod tests {
         let mut rsa = profile("");
         rsa.set_generation("CKK_RSA", &row);
         assert_eq!(rsa.generation("CKK_RSA"), Some(row));
-        // A secret key's lengths are bytes rows (never read as an RSA modulus's bits), for each
-        // secret key type, and read back as bytes.
+        // For each secret key type, a secret key's lengths are written as rows in bytes (never
+        // read as the bits of an RSA modulus), and they are read back as bytes.
         let secret = GenerateRow { can_bytes: vec![16, 32], cannot_bytes: vec![8], ..GenerateRow::default() };
         for kt in ["CKK_AES", "CKK_GENERIC_SECRET", "CKK_DES3", "CKK_SHA256_HMAC"] {
             let mut p = profile("");

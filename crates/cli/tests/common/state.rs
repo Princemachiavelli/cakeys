@@ -1,22 +1,24 @@
-//! "Nothing changed" (review 2026-11-24 C-9: the one such oracle was private to the dry-run twin):
-//! a [`Snapshot`] of the files and the tokens a run must leave as they were, and
-//! [`assert_unchanged`], which names what changed. The dry-run twin ([`super::xref`]) takes its
-//! snapshots here, and so does the refusal oracle ([`Workdir::refused`]): the exit, the rule
-//! the refused row names, and the lock and the token as they were. It costs one argument more
-//! than an exit and a phrase of stderr, so the strongest assertion is also the cheapest.
+//! Checks that nothing changed (review 2026-11-24 C-9: the only such check was private to the
+//! dry-run twin). A [`Snapshot`] records the files and the tokens that a run must leave as they
+//! were, and [`assert_unchanged`] names what changed. The dry-run twin ([`super::xref`]) takes its
+//! snapshots here, and so does the refusal check ([`Workdir::refused`]), which asserts the exit
+//! code, the rule that the refused row names, and that the lock and the token are as they were.
+//! The refusal check takes only one more argument than an assertion of an exit code and a phrase
+//! of stderr, so the strongest assertion is also the easiest one to write.
 
 use super::{Suite, Workdir, code, stderr, stdout};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// A row of a per-object verb (`lock`, `create`, `delete`), as it prints them.
+/// A row of a per-object verb (`lock`, `create`, `delete`), as the verb prints it.
 pub type Row = cakeys_cli_common::Outcome;
 
-/// The rows a per-object verb printed on stdout (a JSON array); none where it printed nothing.
+/// Returns the rows that a per-object verb printed on stdout (a JSON array), or no rows when it
+/// printed nothing.
 ///
 /// # Panics
 ///
-/// When stdout is something else.
+/// Panics when stdout holds something else.
 pub fn rows(o: &Output) -> Vec<Row> {
     if o.stdout.trim_ascii().is_empty() {
         return Vec::new();
@@ -24,14 +26,14 @@ pub fn rows(o: &Output) -> Vec<Row> {
     serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("stdout is no rows ({e}): {}", stdout(o)))
 }
 
-/// A refusal's oracle, over `run`, which `what` names: it exits `exit`, the row it refused (the
-/// first that did not pass) names `rule` and the same exit, and `files` and `tokens` are as they
-/// were before it. Returns the rows. [`Workdir::refused`] runs it on the tool; the harness's own
-/// tests hand it runs that change what they must not.
+/// Checks a refusal by `run`, which `what` names. The run must exit `exit`, the row that it
+/// refused (the first row that did not pass) must name `rule` and the same exit code, and `files`
+/// and `tokens` must be as they were before the run. Returns the rows. [`Workdir::refused`] runs
+/// it on the tool, and the harness's own tests give it runs that change what they must not change.
 ///
 /// # Panics
 ///
-/// When any of the three does not hold.
+/// Panics when any of the three conditions does not hold.
 pub fn refusal(
     files: &[&Path],
     tokens: &[TokenView],
@@ -52,14 +54,14 @@ pub fn refusal(
 }
 
 impl Workdir {
-    /// Run `args`, with `--json`, as a refusal ([`refusal`]): it exits `exit`, the row it refused
-    /// names `rule`, and the lock (keys.lock, or `--lock`'s) is as it was; a token suite's token
-    /// too ([`Suite::refused`]). Returns the rows.
+    /// Runs `args`, with `--json`, as a refusal ([`refusal`]). The run must exit `exit`, the row
+    /// that it refused must name `rule`, and the lock (keys.lock, or the file that `--lock` names)
+    /// must be as it was. [`Suite::refused`] also checks a token suite's token. Returns the rows.
     pub fn refused(&self, args: &[&str], exit: i32, rule: &str) -> Vec<Row> {
         self.refused_on(&[], args, exit, rule)
     }
 
-    /// [`Self::refused`], `tokens` as they were too.
+    /// Does what [`Self::refused`] does, and also checks that `tokens` are as they were.
     pub fn refused_on(&self, tokens: &[TokenView], args: &[&str], exit: i32, rule: &str) -> Vec<Row> {
         let lock = args.iter().position(|a| *a == "--lock").and_then(|i| args.get(i + 1));
         let lock = lock.map_or_else(|| self.dir.join("keys.lock"), PathBuf::from);
@@ -69,61 +71,63 @@ impl Workdir {
 }
 
 impl Suite {
-    /// Its token `kmtest` (`ref` and `ref-anon` of [`super::reference_tokens`]), as a snapshot
-    /// sees it.
+    /// Returns the suite's token `kmtest` (`ref` and `ref-anon` of [`super::reference_tokens`]),
+    /// as a snapshot sees it.
     pub fn token_view(&self) -> TokenView<'_> {
         TokenView { name: "kmtest", module: &self.module, label: "kmtest", env: &[], db: database(&self.module, &[]) }
     }
 
-    /// [`Workdir::refused`], the suite's token ([`Self::token_view`]) as it was too: it shadows
-    /// [`Workdir::refused`].
+    /// Does what [`Workdir::refused`] does, and also checks that the suite's token
+    /// ([`Self::token_view`]) is as it was. It shadows [`Workdir::refused`].
     pub fn refused(&self, args: &[&str], exit: i32, rule: &str) -> Vec<Row> {
         self.refused_on(&[self.token_view()], args, exit, rule)
     }
 }
 
-/// What a run must leave as it was, each with its name: a file's bytes, a token's objects
+/// What a run must leave as it was, each item with its name: a file's bytes, and a token's objects
 /// ([`objects`]).
 pub struct Snapshot(Vec<(String, String)>);
 
 /// A token as a [`Snapshot`] sees it ([`objects`]).
 pub struct TokenView<'a> {
-    /// What a change to it is reported as.
+    /// The name under which a change to the token is reported.
     pub name: &'a str,
     pub module: &'a str,
     pub label: &'a str,
-    /// The environment its module is loaded in.
+    /// The environment in which the token's module is loaded.
     pub env: &'a [(&'a str, &'a str)],
-    /// The files the token is, compared by content instead of listed: kryoptic's ([`database`]).
+    /// The files that hold the token, which are compared by content instead of by a list of
+    /// objects. Only kryoptic has them ([`database`]).
     pub db: Vec<PathBuf>,
 }
 
-/// `files` (by bytes; a missing one is `None`) and `tokens` (by their objects), as they are now.
+/// Records `files` (by bytes; a missing file is `None`) and `tokens` (by their objects), as they
+/// are now.
 pub fn snapshot(files: &[&Path], tokens: &[TokenView]) -> Snapshot {
     let file = |f: &&Path| (f.display().to_string(), format!("{:?}", std::fs::read(f).ok()));
     let token = |t: &TokenView| (format!("token {}", t.name), objects(t));
     Snapshot(files.iter().map(file).chain(tokens.iter().map(token)).collect())
 }
 
-/// `after` is `before`: else the panic names `context` (the run), what changed and the lines
-/// that differ.
+/// Asserts that `after` equals `before`. Otherwise the panic names `context` (the run), what
+/// changed, and the lines that differ.
 ///
 /// # Panics
 ///
-/// When a file or a token changed, or the two snapshots are not of the same things.
+/// Panics when a file or a token changed, or when the two snapshots are not of the same things.
 pub fn assert_unchanged(before: &Snapshot, after: &Snapshot, context: &str) {
     if let Some((what, lines)) = changes(before, after, context).first() {
         panic!("{context} changed {what}:\n{lines}");
     }
 }
 
-/// What changed from `before` to `after` in `context` (the run): each thing's name (a file's
-/// path, `token <name>`) and the lines that differ. For a caller that judges each thing by
-/// itself, or names every wrong cell of a table before it fails ([`super::liars`]).
+/// Returns what changed from `before` to `after` in `context` (the run): each item's name (a
+/// file's path, or `token <name>`) and the lines that differ. It is for a caller that judges each
+/// item separately, or that names every wrong cell of a table before it fails ([`super::liars`]).
 ///
 /// # Panics
 ///
-/// When the two snapshots are not of the same things.
+/// Panics when the two snapshots are not of the same things.
 pub fn changes(before: &Snapshot, after: &Snapshot, context: &str) -> Vec<(String, String)> {
     let names = |s: &Snapshot| s.0.iter().map(|(what, _)| what.clone()).collect::<Vec<_>>();
     assert_eq!(names(before), names(after), "{context}: two snapshots of different things");
@@ -138,15 +142,16 @@ pub fn changes(before: &Snapshot, after: &Snapshot, context: &str) -> Vec<(Strin
     out
 }
 
-/// What a run must leave as it was on token `t`: every object as `pkcs11-tool` lists it, logged
-/// in — a process of its own, so no module is initialized twice in the test's. kryoptic's login
-/// alone takes over a second (its PIN's key derivation \[run\]), which made the dry-run twin cost
-/// ten times the suite: its token is its one database file ([`TokenView::db`]), compared by
+/// Returns what a run must leave as it was on token `t`: every object as `pkcs11-tool` lists it
+/// after a login. `pkcs11-tool` runs in a process of its own, so no module is initialized twice in
+/// the test's process. kryoptic's login alone takes over a second (because of its PIN's key
+/// derivation \[run\]), which made the dry-run twin cost ten times as much time as the suite. For
+/// kryoptic, the token is therefore its one database file ([`TokenView::db`]), which is compared by
 /// content instead.
 ///
 /// # Panics
 ///
-/// When `pkcs11-tool` cannot list the token.
+/// Panics when `pkcs11-tool` cannot list the token.
 pub fn objects(t: &TokenView) -> String {
     if !t.db.is_empty() {
         let hash = |db: &PathBuf| {
@@ -163,9 +168,10 @@ pub fn objects(t: &TokenView) -> String {
         .output()
         .expect("pkcs11-tool (opensc) lists a reference token's objects for a snapshot");
     assert!(out.status.success(), "pkcs11-tool on {}: {}", t.name, String::from_utf8_lossy(&out.stderr));
-    // Sorted by line: a module may list its objects in another order each time (kryoptic [run]).
-    // A data object's line carries its handle, which SoftHSM numbers afresh in each process (the
-    // same objects listed twice came out as "Data object 6" and "Data object 8" [run]): left out.
+    // Sort by line, because a module may list its objects in a different order each time
+    // (kryoptic [run]). A data object's line holds its handle, which SoftHSM numbers anew in each
+    // process (the same objects listed twice came out as "Data object 6" and "Data object 8"
+    // [run]), so the handle is left out.
     let text = String::from_utf8_lossy(&out.stdout);
     let mut lines: Vec<&str> =
         text.lines().map(|l| if l.starts_with("Data object ") { "Data object" } else { l }).collect();
@@ -173,12 +179,12 @@ pub fn objects(t: &TokenView) -> String {
     lines.join("\n")
 }
 
-/// The database files of a token on `module`, where the token is in them: the kryoptic
-/// reference's (`module` is `$CAKEYS_KRYOPTIC_MODULE`), every `dbargs` of its `KRYOPTIC_CONF`:
-/// the one `env` sets for its runs, else the process's (nix/package-common.nix). Every slot's,
-/// since the configuration does not say which slot holds the token's label. Review 2026-11-24
-/// L3: a reference with a configuration of its own had the process's database compared, not its
-/// own.
+/// Returns the database files of a token on `module`, when the token is stored in such files. Only
+/// the kryoptic reference (`module` is `$CAKEYS_KRYOPTIC_MODULE`) has them: every `dbargs` of its
+/// `KRYOPTIC_CONF`, which is the one that `env` sets for its runs, or else the process's
+/// (nix/package-common.nix). It returns the files of every slot, because the configuration does not
+/// say which slot holds the token's label. Review 2026-11-24 L3: for a reference with a
+/// configuration of its own, the process's database was compared instead of its own.
 pub fn database(module: &str, env: &[(&str, &str)]) -> Vec<PathBuf> {
     if std::env::var_os("CAKEYS_KRYOPTIC_MODULE").is_none_or(|k| k != module) {
         return vec![];

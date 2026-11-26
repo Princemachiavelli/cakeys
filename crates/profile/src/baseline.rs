@@ -1,20 +1,22 @@
-//! The spec baseline (docs/CAPROBE.md): the universe and taxonomy of one PKCS#11 revision,
-//! generated from the OASIS header files vendored under profiles/baselines/headers/.
+//! The spec baseline (docs/CAPROBE.md) lists every member of one PKCS#11 revision and sorts the
+//! members into classes. It is generated from the OASIS header files that are vendored under
+//! profiles/baselines/headers/.
 //!
-//! A baseline never claims what any vendor supports. It names the spec's members — mechanisms,
-//! key types, attributes, objects, functions, parameter sets, and the other constant families:
-//! return values, flags, user and certificate types, … — with their numeric IDs, groups
-//! them into classes for by-class queries ("which PQ mechanisms?"), and validates the names a
-//! profile or a query uses. The committed TOML is generated, never edited: caprobe generates it
-//! (crates/caprobe/src/emit.rs), and its pinned test regenerates it from the headers and
-//! compares (D1).
+//! A baseline never claims what any vendor supports. It names the members of the spec with
+//! their numeric IDs: mechanisms, key types, attributes, objects, functions, parameter sets, and
+//! the other constant families (return values, flags, user types, certificate types and more).
+//! It groups the members into classes for queries by class ("which PQ mechanisms?"), and it
+//! validates the names that a profile or a query uses. The committed TOML is generated and is
+//! never edited by hand. caprobe generates it (crates/caprobe/src/emit.rs), and caprobe's pinned
+//! test regenerates it from the headers and compares the result with the committed file (D1).
 
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The curves cakeys names (`cakeys_names::Curve`, not spec constants: pkcs11t.h carries no
-/// curve names), so curve queries validate against the same spellings as keys.toml. The
-/// Montgomery curves (`CKK_EC_MONTGOMERY`, PKCS#11 3.0's `curve25519`/`curve448` names) are
-/// probed and queried, not yet keys.toml objects: core has no Montgomery key type.
+/// The curves that cakeys names (`cakeys_names::Curve`). These names are not spec constants,
+/// because pkcs11t.h holds no curve names. Curve queries therefore validate against the same
+/// spellings as keys.toml. The Montgomery curves (`CKK_EC_MONTGOMERY`, with the PKCS#11 3.0 names
+/// `curve25519` and `curve448`) are probed and queried, but they cannot yet be keys.toml objects,
+/// because core has no Montgomery key type.
 pub const CURVES: [&str; 10] = cakeys_names::Curve::NAMES;
 
 /// One member group of a baseline class.
@@ -52,12 +54,14 @@ pub struct Baseline {
     /// Conformance profiles (`CKP_*`, the Profiles standard) and their IDs.
     #[serde(rename = "conformance-profiles")]
     pub conformance_profiles: BTreeMap<String, u64>,
-    // The constant families below default to empty, so a hand-written test baseline names only
-    // what it uses; caprobe's pinned test requires each of them in the committed file.
+    // The constant families below default to empty, so a test baseline that is written by hand
+    // needs to name only what it uses. caprobe's pinned test requires each of them in the
+    // committed file.
     /// Return values (`CKR_*`).
     #[serde(default, rename = "return-values")]
     pub return_values: BTreeMap<String, u64>,
-    /// Flags (`CKF_*`): token, slot, session, mechanism and other flag words share the prefix.
+    /// Flags (`CKF_*`). The token, slot, session, mechanism and other flag words all use this
+    /// prefix.
     #[serde(default)]
     pub flags: BTreeMap<String, u64>,
     /// User types (`CKU_*`).
@@ -92,7 +96,7 @@ pub struct Baseline {
     pub validation_types: BTreeMap<String, u64>,
     /// The curves cakeys names ([`CURVES`]).
     pub curves: BTreeSet<String>,
-    /// Curated member groups for by-class queries: pq, hmac, key-wrap, oaep.
+    /// Member groups, chosen by hand, for queries by class: pq, hmac, key-wrap and oaep.
     pub class: BTreeMap<String, ClassMembers>,
 }
 
@@ -151,7 +155,8 @@ impl Baseline {
         tables!(self, name, &)
     }
 
-    /// [`Baseline::table`], to fill.
+    /// Returns the same table as [`Baseline::table`], but mutable, so that the generator can
+    /// fill it.
     pub fn table_mut(&mut self, name: &str) -> Option<&mut BTreeMap<String, u64>> {
         tables!(self, name, &mut)
     }
@@ -160,8 +165,8 @@ impl Baseline {
     ///
     /// # Errors
     ///
-    /// The message carries the TOML error with its line, for the loader to prefix with the
-    /// file's path.
+    /// Returns the TOML error, with its line, as a message. The loader prefixes the message with
+    /// the file's path.
     pub fn from_toml(text: &str) -> Result<Baseline, String> {
         toml::from_str(text).map_err(|e| e.to_string())
     }
@@ -171,8 +176,9 @@ impl Baseline {
 mod tests {
     use super::*;
 
-    /// A misspelt key, at the top or in a class, is refused rather than read as an empty list
-    /// (review baseline.rs F1), as in every profile section; the committed baseline loads.
+    /// A misspelled key, at the top level or in a class, is refused instead of being read as an
+    /// empty list (review baseline.rs F1), as in every profile section. The committed baseline
+    /// loads.
     #[test]
     fn a_misspelt_baseline_key_is_refused() {
         let committed = crate::embedded::BASELINE_FILES[0].1;

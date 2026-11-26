@@ -1,13 +1,14 @@
-//! The rows a per-object verb prints (`lock`, `create`, `delete`, and their dry runs): one shape
-//! for every pair, whether it passed or failed, so a caller reads what happened to each from the
-//! rows alone (review 2026-11-24 C-1).
+//! Tests of the rows that a per-object verb prints (`lock`, `create`, `delete`, and their dry
+//! runs). Every pair gets a row of the same form, whether it passed or failed, so a caller can
+//! read what happened to each pair from the rows alone (review 2026-11-24 C-1).
 
 use super::*;
 
-/// The keys every row carries, a passing one's and a failing one's.
+/// The keys that every row holds, whether the row passed or failed.
 const ROW: [&str; 6] = ["object", "spec", "token", "outcome", "exit", "device"];
 
-/// Each row of `o`'s JSON array, checked to carry [`ROW`]: (spec, outcome, exit, rule).
+/// Returns each row of `o`'s JSON array as (spec, outcome, exit, rule), after it checks that the
+/// row holds every key of [`ROW`].
 fn rows(o: &Output) -> Vec<(String, String, u64, Option<String>)> {
     let rows: Vec<serde_json::Value> =
         serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", stdout(o)));
@@ -24,10 +25,11 @@ fn rows(o: &Output) -> Vec<(String, String, u64, Option<String>)> {
         .collect()
 }
 
-/// `lock`, `create` and `delete`, each once passing and once failing, and their dry runs: every
-/// pair has its row, the failing one with its exit code and the rule that refused it; the run
-/// exits with that code. A `lock` and a `delete` row once lacked `exit`, a passing `lock` row
-/// `outcome` too, and `create` printed no row for a failure (review 2026-11-24 C-1).
+/// `lock`, `create` and `delete` each run once with a passing pair and once with a failing pair,
+/// and so do their dry runs. Every pair has its row, and the failing pair's row holds its exit
+/// code and the rule that refused it. The run exits with that code. Earlier, `lock` and `delete`
+/// rows lacked `exit`, a passing `lock` row also lacked `outcome`, and `create` printed no row for
+/// a failure (review 2026-11-24 C-1).
 #[test]
 fn every_pair_has_a_row_of_one_shape() {
     let Some(e) = env("rows") else { return };
@@ -47,7 +49,7 @@ fn every_pair_has_a_row_of_one_shape() {
         (spec.to_owned(), outcome.to_owned(), exit, rule.map(str::to_owned))
     };
 
-    // create: a passing pair, then one refused on the token, and its dry run.
+    // create: a passing pair, then a pair that the token refuses, and its dry run.
     let o = e.km(&["create", "--spec", "a", "--token", "ref"]);
     assert_eq!((code(&o), rows(&o)), (22, vec![row("a", "created", 0, None)]), "{}", stderr(&o));
     let o = e.km(&["create", "--spec", "a", "--token", "ref"]);
@@ -59,7 +61,7 @@ fn every_pair_has_a_row_of_one_shape() {
         assert_eq!((code(&o), rows(&o)), (13, vec![want]), "dry {dry}: {}", stderr(&o));
     }
 
-    // lock: two pairs, the passing one's row before the failing one's.
+    // lock: two pairs, with the passing pair's row before the failing pair's row.
     for dry in [true, false] {
         let args = ["lock", "a", "lost", "--token", "ref"];
         let o = e.km(if dry { [&args[..], &["--dry-run"]].concat() } else { args.to_vec() }.as_slice());
@@ -68,7 +70,7 @@ fn every_pair_has_a_row_of_one_shape() {
         assert_eq!(got.iter().map(|r| (r.0.as_str(), r.2)).collect::<Vec<_>>(), [("a", 0), ("lost", 11)], "{got:?}");
     }
 
-    // delete: refused by If-Match, then done.
+    // delete: first refused by If-Match, and then carried out.
     let o = e.km(&["delete", "--spec", "a", "--token", "ref", "--if-match", "sha256-AAAA"]);
     assert_eq!((code(&o), rows(&o)), (14, vec![row("a", "failed", 14, Some("if-match"))]), "{}", stderr(&o));
     let o = e.km(&["delete", "--spec", "a", "--token", "ref", "--dry-run"]);

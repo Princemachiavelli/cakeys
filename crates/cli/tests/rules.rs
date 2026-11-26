@@ -1,10 +1,11 @@
-//! Each rule a plan asks before a write (`cakeys_pkcs11::ops::Rule`) on every entry path that
-//! can meet it (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4, T-4): the static gate
-//! (`validate`, `create`'s plan), the live checks before a write (`create`, `lock`, an import's
-//! `check_import`) and the token's own creation, each refusing with the same exit code and naming
-//! the rule (`KmError::rule`). A provider's rules are held with a provider of the test's own on
-//! `SoftHSM`, through the library: the binary links the default providers only. Skipped without
-//! `CAKEYS_TEST_MODULE`, unless `CAKEYS_TEST_REQUIRE=1`.
+//! Tests of each rule that a plan asks before a write (`cakeys_pkcs11::ops::Rule`), on every entry
+//! path that can meet the rule (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4, T-4). The
+//! paths are the static gate (`validate`, `create`'s plan), the live checks before a write
+//! (`create`, `lock`, an import's `check_import`) and the token's own creation. Each path must
+//! refuse with the same exit code and name the rule (`KmError::rule`). A provider's rules are
+//! tested with a provider that the test defines, on `SoftHSM`, through the library, because the
+//! binary links only the default providers. The tests are skipped without `CAKEYS_TEST_MODULE`,
+//! unless `CAKEYS_TEST_REQUIRE=1` is set.
 
 mod common;
 
@@ -18,7 +19,7 @@ use cryptoki::session::SessionState;
 use std::sync::{Arc, Mutex};
 
 /// A provider that places a key nowhere ([`Provider::placement`]) and overrides nothing else, so
-/// no `create` override of its own asks the rule (review 2026-11-24 B-2).
+/// that no `create` override of its own asks the rule (review 2026-11-24 B-2).
 struct PlacesNothing;
 
 impl Provider for PlacesNothing {
@@ -37,8 +38,8 @@ impl Provider for PlacesNothing {
 
 /// A provider whose module creates and destroys objects only as Security Officer
 /// ([`Provider::manages_as_so`]), with `create` and `destroy` overrides that never enter that
-/// session themselves (review 2026-11-24 B-2): each records the session state it ran in, and
-/// writes nothing.
+/// session themselves (review 2026-11-24 B-2). Each override records the session state in which
+/// it ran, and writes nothing.
 struct SoOnly(Arc<Mutex<Vec<SessionState>>>);
 
 impl SoOnly {
@@ -71,8 +72,8 @@ impl Provider for SoOnly {
     }
 }
 
-/// A provider whose `destroy` claims every handle destroyed and destroys none, as a module whose
-/// `C_DestroyObject` returns `CKR_OK` and leaves the object (review 2026-11-24 B-13).
+/// A provider whose `destroy` reports every handle as destroyed but destroys none. It acts like a
+/// module whose `C_DestroyObject` returns `CKR_OK` and leaves the object (review 2026-11-24 B-13).
 struct KeepsAll;
 
 impl Provider for KeepsAll {
@@ -89,16 +90,17 @@ impl Provider for KeepsAll {
     }
 }
 
-/// The profile set is the process's, set once: no test here names `profileDirs`.
+/// The profile set belongs to the process and is set once. No test here names `profileDirs`.
 static PROFILES: std::sync::Once = std::sync::Once::new();
 
-/// Login state is the process's, per token (PKCS#11 §5.6): an SO step in one test logs every
-/// other test's session out, so the tests here take the token one at a time.
+/// Login state belongs to the process, per token (PKCS#11 §5.6). An SO step in one test logs out
+/// every other test's session, so the tests here use the token one at a time.
 static TOKEN: Mutex<()> = Mutex::new(());
 
-/// A test's directory and keys.toml: the `SoftHSM` token as `t`, with provider `provider` and
-/// its SO PIN as `soCredentialFile`, and again as `plain` with the generic provider, and `body`;
-/// `None` (skipped) without the module. The guard holds the token for the test.
+/// Returns a test's directory and keys.toml. keys.toml holds the `SoftHSM` token as `t`, with the
+/// provider `provider` and its SO PIN as `soCredentialFile`, the same token again as `plain` with
+/// the generic provider, and `body`. Returns `None` (the test is skipped) without the module. The
+/// guard holds the token for the test.
 fn suite(name: &str, provider: &str, body: &str) -> Option<(Workdir, Config, std::sync::MutexGuard<'static, ()>)> {
     let module = suite_var(SOFTHSM.module_var, SOFTHSM.require_var, name)?;
     let guard = TOKEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -119,12 +121,12 @@ fn suite(name: &str, provider: &str, body: &str) -> Option<(Workdir, Config, std
     Some((w, cfg, guard))
 }
 
-/// The token `name` of `cfg`, opened read-write with `registry`.
+/// Opens the token `name` of `cfg` read-write with `registry`.
 fn open(cfg: &Config, name: &str, registry: &Registry) -> Token {
     Token::open(name, &cfg.tokens[name], None, registry, Access::Write, ChainTime::Unchecked).unwrap()
 }
 
-/// What a refused path reported: its exit code and the rule it named.
+/// Returns what a refused path reported: its exit code and the rule that it named.
 fn refused<T>(what: &str, r: cakeys_core::Result<T>) -> (u8, Option<Rule>) {
     match r {
         Ok(_) => panic!("{what}: not refused"),
@@ -141,9 +143,9 @@ fn ec_key(label: &str) -> String {
     )
 }
 
-/// Placement (17) on every path that puts a key on a token, for a provider that overrides
-/// `placement` alone: the static gate, `create` and an import's check all refuse, naming the
-/// rule, and nothing is created.
+/// Placement (17) on every path that puts a key on a token, for a provider that overrides only
+/// `placement`. The static gate, `create` and an import's check all refuse and name the rule, and
+/// nothing is created.
 #[test]
 fn placement_holds_on_every_path() {
     let label = "rules-placement";
@@ -154,7 +156,7 @@ fn placement_holds_on_every_path() {
     let lock = Lock { version: cakeys_core::config::LOCK_VERSION, ..Lock::default() };
     let want = (17, Some(Rule::Placement));
 
-    // The static gate, as `validate` and `create`'s plan ask it.
+    // The static gate, in the way that `validate` and `create`'s plan ask it.
     let stack = cakeys_pkcs11::gate::stack("t", &cfg.tokens["t"], &lock).unwrap();
     let v = cakeys_pkcs11::gate::check(&t, mode, &stack, &registry, ops::Verb::Create).unwrap();
     let rules: Vec<(u8, Rule)> = v.refusals.iter().map(|r| (r.error.exit_code(), r.rule)).collect();
@@ -168,15 +170,15 @@ fn placement_holds_on_every_path() {
     assert_eq!(refused("an import's check", ops::check_import(&t, &tok)), want);
 
     // The token's own creation, which every creation goes through (camigrate's public halves,
-    // caprobe's probes): placement before the provider is asked to create.
+    // caprobe's probes): placement is checked before the provider is asked to create.
     assert_eq!(refused("Token::create", tok.create(t.object, t.spec, &t.on_token.locator, None)), want);
     assert!(tok.find_any(&t.on_token.locator).unwrap().is_empty(), "Token::create made a key it may not place");
 }
 
 /// A module that writes only as SO: `Token::create` and the destroys run the provider's
-/// overrides in the SO session, whether or not an override enters it, and the user's session is
-/// back after each. The session's state is read after each login (review 2026-11-24,
-/// lead-found through the Phase 2 design): the SO one and the user's again.
+/// overrides in the SO session, whether or not an override enters that session, and the user's
+/// session is restored after each. The session's state is read after each login, the SO login and
+/// the user's login again (review 2026-11-24, lead-found through the Phase 2 design).
 #[test]
 fn a_provider_override_runs_as_so_where_the_module_needs_it() {
     let label = "rules-so";
@@ -191,11 +193,12 @@ fn a_provider_override_runs_as_so_where_the_module_needs_it() {
     tok.create(t.object, t.spec, &t.on_token.locator, None).unwrap();
     assert_eq!(user(), SessionState::RwUser, "the user's session is back after the creation");
 
-    // Something to destroy, made with a provider that writes as the user.
+    // Make something to destroy, with a provider that writes as the user.
     let generic = open(&cfg, "plain", &Registry::new());
     generic.create(t.object, t.spec, &t.on_token.locator, None).unwrap();
     let handles = generic.find_any(&t.on_token.locator).unwrap();
-    // The override destroys nothing, and the look after it says so (review 2026-11-24 B-13).
+    // The override destroys nothing, and the search after it reports that (review 2026-11-24
+    // B-13).
     let kept = tok.destroy_handles(&cfg.objects["k"], &t.on_token.locator, &handles).err();
     assert_eq!(kept.map(|e| e.rule()), Some(Some(Rule::DeleteKept)));
     assert_eq!(user(), SessionState::RwUser, "the user's session is back after the destroy");
@@ -204,9 +207,9 @@ fn a_provider_override_runs_as_so_where_the_module_needs_it() {
     assert_eq!(*seen.lock().unwrap(), [SessionState::RwSecurityOfficer; 2], "create, then destroy");
 }
 
-/// What a delete destroyed is looked for again: a key still under its locator after the provider
-/// said it was destroyed is `delete-kept` (16), and the lock keeps its realisation; a dry run
-/// claims nothing either way.
+/// After a delete, the deleted objects are searched for again. A key that is still under its
+/// locator after the provider reported it as destroyed is `delete-kept` (16), and the lock keeps
+/// its realisation. A dry run claims nothing either way.
 #[test]
 fn a_delete_the_module_did_not_do_keeps_the_lock() {
     let Some((_w, cfg, _token)) = suite("kept", "keeps-all", &ec_key("rules-kept")) else { return };
@@ -228,15 +231,16 @@ fn a_delete_the_module_did_not_do_keeps_the_lock() {
     open(&cfg, "plain", &Registry::new()).destroy(&t.object, &t.on_token.locator).unwrap();
 }
 
-/// A module profile that measured `C_DestroyObject` leaving private keys behind (`delete.<class>
-/// = no`, as tpm2-pkcs11's on swtpm) refuses the delete before anything is destroyed, a dry run
-/// as the delete (`delete-refused`, 15), and the key and the lock stay (review 2026-11-24 B-13).
-/// `SoftHSM`'s profile is given the row here; tests/tpm2.rs holds it on tpm2-pkcs11's own.
+/// A module profile that measured that `C_DestroyObject` leaves private keys behind
+/// (`delete.<class> = no`, as tpm2-pkcs11's profile on swtpm does) refuses the delete before
+/// anything is destroyed. A dry run refuses in the same way as the delete (`delete-refused`, 15),
+/// and the key and the lock stay (review 2026-11-24 B-13). This test gives `SoftHSM`'s profile the
+/// row, and tests/tpm2.rs tests the rule with tpm2-pkcs11's own profile.
 #[test]
 fn a_profile_row_that_says_the_module_keeps_keys_refuses_the_delete() {
     use cakeys_profile::{Answer, By, Capability, Row};
     let Some((_w, mut cfg, _token)) = suite("row", "generic", &ec_key("rules-row")) else { return };
-    // The module's own profile, as a token with no provider named resolves it.
+    // Use the module's own profile, as a token without a named provider resolves it.
     let tc = cfg.tokens.get_mut("t").unwrap();
     (tc.provider, tc.module_profile) = (None, Some("softhsm/2.7".into()));
     let t = Target::new(&cfg, "s", "t").unwrap();
@@ -261,11 +265,11 @@ fn a_profile_row_that_says_the_module_keeps_keys_refuses_the_delete() {
     open(&cfg, "plain", &Registry::new()).destroy(&t.object, &t.on_token.locator).unwrap();
 }
 
-/// Where each rule is held on the entry paths that meet it (docs/archive/REVIEW-2026-11-24/
-/// phase1-design.md §1.4, T-4), as `<file> <test>`: a `match` with no wildcard, so a rule added
-/// without its tests fails to compile here. Each test refuses with the rule's exit code and
-/// name, or defers it by name, on its paths; camigrate's paths are Phase 2's, in a rules suite
-/// of its own.
+/// Returns the tests that check each rule on the entry paths that meet it
+/// (docs/archive/REVIEW-2026-11-24/phase1-design.md §1.4, T-4), as `<file> <test>`. It is a
+/// `match` with no wildcard, so a rule that is added without its tests fails to compile here.
+/// Each test refuses with the rule's exit code and name, or defers the rule by name, on its
+/// paths. camigrate's paths belong to Phase 2 and are tested in a rules suite of their own.
 fn held(rule: Rule) -> &'static [&'static str] {
     match rule {
         Rule::Placement => &["rules.rs placement_holds_on_every_path"],
@@ -305,8 +309,8 @@ fn held(rule: Rule) -> &'static [&'static str] {
     }
 }
 
-/// Every rule names tests that hold it ([`held`]), and each of them is in the tree, in a file of
-/// that name.
+/// Every rule names tests that check it ([`held`]), and each of those tests is in the tree, in a
+/// file with the name that the entry gives.
 #[test]
 fn every_rule_names_the_tests_that_hold_it() {
     fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
