@@ -130,7 +130,7 @@ fn commit_row(made: &mut Made, profile: &mut Draft, kt: Kt, c: Commit, bytes: u3
             Ok(h) => h,
             Err(e) => {
                 made.undetermined.push(format!("no distinctness check of {cap}: {}", refused(made.tok, &e)));
-                profile.yes(cap, Checked::Unverified, None);
+                profile.yes(cap, Checked::unverified(), None);
                 return Ok(());
             }
         };
@@ -141,7 +141,7 @@ fn commit_row(made: &mut Made, profile: &mut Draft, kt: Kt, c: Commit, bytes: u3
     }
     // Stable and distinct, but never compared with a value the host computed (review
     // 2026-11-24 E-3): the module's word.
-    profile.yes(cap, Checked::Unverified, None);
+    profile.yes(cap, Checked::unverified(), None);
     Ok(())
 }
 
@@ -250,7 +250,7 @@ fn crypt_row(
                         format!("refused the first parameters tried (CKR_MECHANISM_PARAM_INVALID); works with {label}"),
                     );
                 }
-                profile.yes(cap, Checked::Unverified, None);
+                profile.yes(cap, Checked::unverified(), None);
             }
             Err(e) if token::rv_is(e.rv(), RvError::MechanismParamInvalid) && i + 1 < variants.len() => continue,
             // `round_trip`'s own findings carry no return value: the host's check.
@@ -488,8 +488,10 @@ fn run_derivations(made: &mut Made, profile: &mut Draft, tries: &[Derivation]) {
         }
         let cap = Capability::Kdf { mechanism: mt.to_string(), key_type: d.key_type.clone() };
         match derived_value(made.session, &d.mechanism, d.base, d.len) {
-            Ok(v) if v == d.expected => profile.yes(cap, Checked::Host, None),
-            Ok(v) => profile.wrong(cap, format!("it derives {} bytes that are not what the host computes", v.len())),
+            Ok(v) => match Checked::same(&v, &d.expected) {
+                Some(checked) => profile.yes(cap, checked, None),
+                None => profile.wrong(cap, format!("it derives {} bytes that are not what the host computes", v.len())),
+            },
             Err(e) => profile.refused(&mut made.undetermined, cap, e.rv(), e.to_string()),
         }
     }

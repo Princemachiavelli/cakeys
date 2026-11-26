@@ -474,3 +474,97 @@ fn a_probe_an_error_ends_destroys_what_it_made() {
         (1..=99).map(|n| format!("cakeys-probe-{n:02}")).filter(|l| !s.labelled(l).is_empty()).collect();
     assert!(left.is_empty(), "left on the token: {left:?}\n{said}");
 }
+
+/// Checks that a probe run on a scratch slot writes the slot's mark certificate as its last write
+/// (CAPROBE.md, "SO-only modules"; review 2026-11-24 E-6). The token is `SoftHSM` behind the fault
+/// shim, configured with `provider = "ykcs11"`, as the scratch guard test in the reference suite
+/// configures it. `SoftHSM`'s Security Officer cannot create keys, so the only write that the
+/// module accepts in such a run is the mark certificate.
+///
+/// The first part runs the probe twice on slot 05 with no fault. In the first run, the last call
+/// that writes to the token, whether the module accepts it or not, must be the `C_CreateObject`
+/// of the mark certificate, and the second run must exit 0 because the slot holds its mark. The
+/// second part runs the probe on slot 06 with a plan that fails the mark's `C_CreateObject` with
+/// `CKR_DEVICE_ERROR`. That run leaves the slot without a mark. The next run on slot 06 must
+/// exit 17 before it writes anything, and the objects in the slot must stay the same.
+#[test]
+fn a_slot_run_writes_its_mark_last() {
+    let name = "fault-probe-mark";
+    let Some(real) = suite_var("P11_FAULT_MODULE", "CAKEYS_FAULT_REQUIRE", name) else { return };
+    let w = Workdir::new(name);
+    std::fs::write(w.dir.join("so-pin"), "5678\n").unwrap();
+    let slot = |token: &str, id: &str| {
+        format!(
+            "[tokens.{token}]\nmodule = \"{}\"\ntokenLabel = \"kmtest\"\nprovider = \"ykcs11\"\npinFile = \"{}\"\n\
+             soCredentialFile = \"{}\"\nprobe = {{ scratchId = \"{id}\" }}\n\n",
+            fault_shim(),
+            w.dir.join("pin").display(),
+            w.dir.join("so-pin").display(),
+        )
+    };
+    w.write_config(&[slot("clean", "05"), slot("cut", "06")].concat());
+    // This closure runs the write probes on `token` under the fault plan `plan`. It returns the
+    // exit code, the standard error, and the calls that the shim recorded in its trace.
+    let run = |token: &str, plan: &str| {
+        let (path, trace) = (w.dir.join(format!("{token}.toml")), w.dir.join(format!("{token}.jsonl")));
+        std::fs::write(&path, plan).unwrap();
+        let _ = std::fs::remove_file(&trace);
+        let args = ["probe", "--token", token, "--write-probes", "--rsa-max-bits", "2048"];
+        let o = w.km_env(&args, &[("P11_FAULT_PLAN", &path), ("P11_FAULT_TRACE", &trace)]);
+        let text = std::fs::read_to_string(&trace).unwrap_or_default();
+        let calls: Vec<serde_json::Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        (code(&o), stderr(&o), calls)
+    };
+    let writes = [
+        "C_CreateObject",
+        "C_CopyObject",
+        "C_GenerateKey",
+        "C_GenerateKeyPair",
+        "C_UnwrapKey",
+        "C_DeriveKey",
+        "C_DestroyObject",
+        "C_SetAttributeValue",
+    ];
+    // The shim records the CKA_CLASS values of a template as numbers, and CKO_CERTIFICATE is 1.
+    let certificate = |c: &&serde_json::Value| c["fn"] == "C_CreateObject" && c["class"] == serde_json::json!([1]);
+    let (exit, said, calls) = run("clean", "");
+    assert_eq!(exit, 0, "The first probe run on slot 05 failed: {said}");
+    let written: Vec<&serde_json::Value> = calls.iter().filter(|c| writes.iter().any(|f| c["fn"] == *f)).collect();
+    assert!(
+        written.last().is_some_and(certificate),
+        "The last write call of the run on slot 05 is not the C_CreateObject of the mark certificate: {:?}",
+        written.last()
+    );
+    let (exit, said, _) = run("clean", "");
+    assert_eq!(exit, 0, "The second probe run on slot 05 refused the slot that the first run marked: {said}");
+
+    // The mark is the last certificate that a run creates, so the plan fails the creation of the
+    // certificate whose number is the count of certificates that the run on slot 05 created.
+    let marks = calls.iter().filter(certificate).count();
+    let plan = format!(
+        "[[rule]]\nfn = \"C_CreateObject\"\nclass = \"CKO_CERTIFICATE\"\nnth = {marks}\nrv = \"CKR_DEVICE_ERROR\"\n"
+    );
+    let (exit, said, calls) = run("cut", &plan);
+    assert_eq!(exit, 0, "The probe run on slot 06 with the failed mark did not exit 0: {said}");
+    let fired: Vec<&serde_json::Value> = calls.iter().filter(|c| c["rule"] == 1).collect();
+    assert!(
+        matches!(fired[..], [c] if certificate(&c)),
+        "The plan's rule did not fail exactly one certificate creation. It decided these calls: {fired:?}"
+    );
+    // This closure lists the CKA_CLASS of each object in slot 06, in a fixed order.
+    let held = || {
+        let s = open_session(&real, "kmtest", "1234");
+        let mut held: Vec<Vec<Attribute>> = s
+            .find_objects(&[Attribute::Id(vec![0x06])])
+            .unwrap()
+            .into_iter()
+            .map(|h| s.get_attributes(h, &[cryptoki::object::AttributeType::Class]).unwrap())
+            .collect();
+        held.sort_by_key(|a| format!("{a:?}"));
+        held
+    };
+    let before = held();
+    let (exit, said, _) = run("cut", "");
+    assert_eq!(exit, 17, "The probe run on slot 06, which has no mark, was not refused with exit code 17: {said}");
+    assert_eq!(held(), before, "The refused probe run changed the objects in slot 06.");
+}

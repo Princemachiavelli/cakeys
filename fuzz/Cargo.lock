@@ -401,6 +401,7 @@ name = "caprobe"
 version = "0.1.0"
 dependencies = [
  "aes",
+ "aes-kw",
  "anyhow",
  "cakeys-cli-common",
  "cakeys-core",
@@ -411,7 +412,10 @@ dependencies = [
  "clap_complete",
  "cryptoki",
  "getrandom",
+ "p256",
+ "rsa",
  "serde_json",
+ "sha1",
  "sha2",
 ]
 

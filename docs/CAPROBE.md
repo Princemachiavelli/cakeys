@@ -134,8 +134,12 @@ reports it and a regeneration drops it.
 outcome (a signature verified, a key read back or compared, a commitment recomputed, or the
 module's answer found wrong), `module` for the module's own refusal, and `unverified` for a yes
 only the module vouches for (a commitment or a cipher mode the host does not recompute, a secret
-import checked only by the module's own commitment, a sealed export or unwrap the host cannot read
-back). A `yes` is never `module`, a `no` never `unverified`, and a `module` no citing a
+import checked only by the module's own commitment, an unwrap of the module's own blob alone).
+A sealed export wraps toward the imported `rsa-2048` test key and is `host` only when the host
+decodes the blob to the key (RFC 8017 OAEP, then RFC 5649 under the KEK); a blob it cannot decode
+is a `host` no, since another token reads only that encoding (review 2026-11-24 E-3). camigrate
+takes an `unverified` yes and defers rule `capability` to the run. A `yes` is never `module`, a
+`no` never `unverified`, and a `module` no citing a
 device failure is refused at load (`Row::problem`). A step that failed with a device, token or
 session return value (`DEVICE_FAILED_RV`: `CKR_DEVICE_ERROR`, `CKR_GENERAL_ERROR`,
 `CKR_HOST_MEMORY`, ...) is no answer of the module's: the probe writes no row but an `[untested]`
@@ -355,11 +359,14 @@ generated, never edited, and pinned like the baseline:
   Every run destroys what it made. Notes carry `CKR_*` names, stable across binding releases.
 - **SO-only modules** (ykcs11): `tokens.<t>.probe.scratchId` names the one slot write probes may
   generate into. The slot must be empty or hold the probe's own certificate (`CN=cakeys-probe`),
-  which every slot run writes there last, beside at most the device's attestation of the slot;
-  anything else is refused (17) before a write. ykcs11's placeholder certificate is no mark: it
-  writes one for every key it generates, a real key's too. A run stopped before its last step
-  leaves the slot unmarked, refused until it is emptied (`scripts/yubikey-empty-slots.py`). A
-  `scratchId` that is the `CKA_ID` of a locator keys.toml has on that token is invalid at load.
+  which every slot run writes there last, one issued over each key the slot holds (signed by the
+  P-256 test key, the same bytes for the same key), beside those keys (or the probe's own test
+  keys) and at most the device's attestation of the slot; anything else is refused (17) before a
+  write, a marked slot whose key is another too (one `ykman piv keys generate` put there).
+  ykcs11's placeholder certificate is no mark: it writes one for every key it generates, a real
+  key's too. A run stopped before its last step leaves the slot unmarked, refused until it is
+  emptied (`scripts/yubikey-empty-slots.py`). A `scratchId` that is the `CKA_ID` of a locator
+  keys.toml has on that token is invalid at load.
   No delete or wrap probes there: PIV cannot erase a key.
 - **RSA sizes**: an observed size decides; outside the reported range is no; between two that
   generated, with no size tried between them refused, is yes; otherwise unknown (a TPM
