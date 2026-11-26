@@ -215,9 +215,9 @@ pub fn reconcile(
 ///
 /// # Errors
 ///
-/// Returns `HashMismatch` (exit 10) when the token's material hashes to a different ID than the
-/// one that the lock pins. Returns `FirstUse` (exit 18) when the lock pins no ID and the write is
-/// `LockWrite::Compare`. Returns `PreconditionFailed` (exit 14) for a type change, a downgrade, a
+/// Returns `HashMismatch` (10) when the token's material hashes to a different ID than the
+/// one that the lock pins. Returns `FirstUse` (18) when the lock pins no ID and the write is
+/// `LockWrite::Compare`. Returns `PreconditionFailed` (14) for a type change, a downgrade, a
 /// replaced object, a change of the attestation anchor, or matching material whose realisation
 /// the lock does not record, and, with `LockWrite::Compare`, for a changed spec or policy.
 pub fn compare(
@@ -867,7 +867,7 @@ mod tests {
         Lock { version: crate::config::LOCK_VERSION, ..Default::default() }
     }
 
-    /// A first use fails with `FirstUse` (exit 18) when the run only compares. Recording fills the
+    /// A first use fails with `FirstUse` (18) when the run only compares. Recording fills the
     /// lock, and afterwards the same realisation compares without an error and records nothing
     /// new.
     #[test]

@@ -1,24 +1,27 @@
-//! Where a refusal may name no check (`cakeys_core::Reason`): every `Conflict`, `Ambiguous` and
-//! `PreconditionFailed` names the check or the rule that refused it, unless its input does not
-//! parse as the structure it should be. Pure: reads the sources, on every system.
+//! This test checks where a refusal may name no check (`cakeys_core::Reason`). Every `Conflict`,
+//! `Ambiguous` and `PreconditionFailed` names the check or the rule that refused it, unless its
+//! input does not parse as the expected structure. The test only reads the source files, so it
+//! runs on every system.
 
 use std::path::{Path, PathBuf};
 
-/// The modules that parse a structure, where `Reason::malformed` may stand for a refusal: what
-/// does not parse there is no answer to any check. A security check marked malformed would name
-/// no check in its row, and the liar lint could not hold it, so the list is short and each entry
-/// is used.
+/// The modules that parse a structure, where a refusal may use `Reason::malformed`. Input that
+/// does not parse there cannot pass or fail any check. A security check that was marked as
+/// malformed would name no check in its row, and the liar lint
+/// (`crates/cli/tests/liar_lint.rs`) could not verify that a test makes it fire. So the list is
+/// short, and each entry must be used.
 const PARSERS: [&str; 3] = [
-    // X.509 certificates of an attestation chain: DER, the signed part, the extensions.
+    // The X.509 certificates of an attestation chain: the DER, the signed part and the
+    // extensions.
     "core/src/chain.rs",
-    // TPM structures: the store's blobs and wrapped auth values, a public area, the AK's
-    // signature components (tss-esapi unmarshalling).
+    // TPM structures: the store's blobs and wrapped auth values, a public area, and the
+    // components of the AK's signature (unmarshalled by tss-esapi).
     "tpm2-pkcs11/src/attest/esys.rs",
     // The output of CKM_TPM2_CERTIFY: a TPM2B_ATTEST and a TPMT_SIGNATURE.
     "tpm2-pkcs11/src/attest/vendor.rs",
 ];
 
-/// Every `.rs` file under `dir`.
+/// Adds every `.rs` file under `dir` to `out`.
 fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let path = entry.path();
@@ -30,8 +33,8 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// `Reason::malformed` is called only in the modules of [`PARSERS`], outside their tests and
-/// comments, and each of those modules calls it.
+/// Only the modules of [`PARSERS`] call `Reason::malformed`, outside their tests and comments,
+/// and each of those modules calls it.
 #[test]
 fn malformed_only_in_parsers() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
