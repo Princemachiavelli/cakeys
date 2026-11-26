@@ -1,7 +1,8 @@
-//! Helpers shared by the integration tests of `cakeys`, `caprobe` and `camigrate` (each includes
-//! this file): running the package's own binary, the token headers of each suite's keys.toml,
-//! the cross-reference harness ([`xref`]), what a run must leave as it was ([`state`]), the liar
-//! matrix's runner ([`liars`]), CLI output parsing and an independent DER oracle.
+//! Helpers shared by the integration tests of `cakeys`, `caprobe` and `camigrate` (each package
+//! includes this file). The helpers run the package's own binary, write the token headers of each
+//! suite's keys.toml, and provide the cross-reference harness ([`xref`]), the check of what a run
+//! must leave unchanged ([`state`]), the runner of the liar matrix ([`liars`]), CLI output parsing
+//! and an independent DER oracle.
 #![allow(dead_code, reason = "each test binary uses a subset")]
 #![expect(unreachable_pub, reason = "its crate is a test binary: pub and pub(crate) say the same")]
 
@@ -24,8 +25,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-/// The binary under test: the including package's own (Cargo sets `CARGO_BIN_EXE_<name>` only
-/// for the package's binaries).
+/// The binary under test, which is the binary of the package that includes this file (Cargo sets
+/// `CARGO_BIN_EXE_<name>` only for the package's own binaries).
 pub const BIN: &str = match (
     option_env!("CARGO_BIN_EXE_cakeys"),
     option_env!("CARGO_BIN_EXE_caprobe"),
@@ -35,12 +36,14 @@ pub const BIN: &str = match (
     (None, None, None) => panic!("included by a package with no cakeys, caprobe or camigrate binary"),
 };
 
-/// What the tools read from the environment when no flag says it: a developer's real keys.toml
-/// and lock (review common/mod.rs F1), and the Nix build markers, which only a test that sets
-/// them means. The per-test runner (nix/test-tokens.sh) unsets the first two for every test too.
+/// The variables that the tools read from the environment when no flag sets the value: a
+/// developer's real keys.toml and lock (review common/mod.rs F1), and the Nix build markers, which
+/// a run should see only when a test sets them. The per-test runner (nix/test-tokens.sh) also
+/// unsets the first two for every test.
 pub const SCRUBBED: [&str; 4] = ["CAKEYS_CONFIG", "CAKEYS_LOCK", "NIX_BUILD_TOP", "IN_NIX_SHELL"];
 
-/// `bin` to run from a test, with none of [`SCRUBBED`]: every test's run of a tool starts here.
+/// Returns a command that runs `bin` from a test, with none of the variables in [`SCRUBBED`].
+/// Every run of a tool in a test starts here.
 pub fn tool(bin: impl AsRef<OsStr>) -> Command {
     let mut c = Command::new(bin);
     for var in SCRUBBED {
@@ -49,17 +52,18 @@ pub fn tool(bin: impl AsRef<OsStr>) -> Command {
     c
 }
 
-/// A run of a tool on a keys.toml: [`tool`] with `--config`, the environment a test gives it
-/// (variables set and removed), its output logged for the test's own. Every helper that runs a
-/// tool against a keys.toml builds one (review D9: each had its own copy, scrubbing differently).
+/// A run of a tool on a keys.toml: [`tool`] with `--config`, plus the environment that a test
+/// gives it (variables set and removed). The run's output is logged in the test's output. Every
+/// helper that runs a tool against a keys.toml builds a `Run` (review D9: each helper had its own
+/// copy, and the copies removed different variables).
 pub struct Run {
     command: Command,
-    /// What the log names the run by: the binary, and a note (xref's reference).
+    /// The name of the run in the log: the binary, and a note (the reference, for xref).
     name: String,
 }
 
 impl Run {
-    /// `bin --config <config>`.
+    /// Returns a run of `bin --config <config>`.
     pub fn new(bin: impl AsRef<OsStr>, config: &Path) -> Run {
         let bin = bin.as_ref();
         let mut command = tool(bin);
@@ -82,27 +86,27 @@ impl Run {
         self
     }
 
-    /// `note` beside the binary's name in the log.
+    /// Adds `note` next to the binary's name in the log.
     pub fn note(mut self, note: &str) -> Run {
         self.name = format!("{} ({note})", self.name);
         self
     }
 
-    /// The command with `args`, for a test that drives the process itself.
+    /// Returns the command with `args`, for a test that controls the process itself.
     pub fn command(mut self, args: &[&str]) -> Command {
         self.command.args(args);
         self.command
     }
 
-    /// Run with `args` to the end.
+    /// Runs with `args` until the process exits.
     pub fn output(mut self, args: &[&str]) -> Output {
         let out = self.command.args(args).output().unwrap();
         log_run(&self.name, args, &out);
         out
     }
 
-    /// Run with `args`, bounded in time: on hardware, a touch or PIN prompt fails the test
-    /// instead of hanging it.
+    /// Runs with `args`, with a time limit, so that on hardware a touch or PIN prompt fails the
+    /// test instead of making it wait forever.
     ///
     /// # Panics
     ///
@@ -131,9 +135,10 @@ fn log_run(name: &str, args: &[&str], out: &Output) {
     );
 }
 
-/// `command`'s output, or `None` (the child killed) when it runs longer than `limit`. Both pipes
-/// are read while it runs: a child that writes more than a pipe holds blocks until someone reads,
-/// and read only after it exited, it never did (review common/mod.rs F3).
+/// Returns `command`'s output, or `None` (after the child is killed) when it runs longer than
+/// `limit`. Both pipes are read while the child runs, because a child that writes more than a
+/// pipe holds blocks until someone reads. When the pipes were read only after the child exited,
+/// the child never exited (review common/mod.rs F3).
 pub fn output_within(mut command: Command, limit: Duration) -> Option<Output> {
     fn drain(mut pipe: impl std::io::Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
         std::thread::spawn(move || {
@@ -160,26 +165,27 @@ pub fn output_within(mut command: Command, limit: Duration) -> Option<Output> {
     status.map(|status| Output { status, stdout, stderr })
 }
 
-/// Another binary of this workspace, beside [`BIN`] in the target directory. Cargo gives a test
-/// only its own package's binaries; `cargo test --workspace` (the Nix check phase) builds them
-/// all before any test runs.
+/// Returns the path of another binary of this workspace, next to [`BIN`] in the target directory.
+/// Cargo gives a test only the binaries of its own package, but `cargo test --workspace` (the Nix
+/// check phase) builds all of them before any test runs.
 ///
 /// # Panics
 ///
-/// When that binary is not built (`cargo test -p <package>` alone): build the workspace first.
+/// Panics when that binary is not built (for example, after `cargo test -p <package>` alone).
+/// Build the workspace first.
 pub fn sibling(name: &str) -> PathBuf {
     let path = Path::new(BIN).with_file_name(name);
     assert!(path.exists(), "{} is not built: run `cargo build --workspace` first", path.display());
     path
 }
 
-/// The value of `var` (a module path), else `None` — unless the run requires it ([`required`]:
-/// `require` set, or `CAKEYS_REQUIRE_ALL`), which makes a missing one a failure. Every suite's
-/// gate reads its module through this (review D9).
+/// Returns the value of `var` (a module path), or `None` when it is unset. When the run requires
+/// the variable ([`required`]: `require` is set, or `CAKEYS_REQUIRE_ALL` is set), a missing value
+/// is a failure instead. Every suite's gate reads its module through this function (review D9).
 ///
 /// # Panics
 ///
-/// When `var` is missing and required.
+/// Panics when `var` is missing and required.
 pub fn required_var(var: &str, require: &str) -> Option<String> {
     let v = std::env::var(var).ok();
     if let (None, Some(because)) = (&v, required_here(require)) {
@@ -188,7 +194,8 @@ pub fn required_var(var: &str, require: &str) -> Option<String> {
     v
 }
 
-/// [`required_var`] for the suite `test` belongs to: `None` says it is skipped ([`skip`]).
+/// Works like [`required_var`] for the suite that `test` belongs to. `None` means that the test is
+/// skipped ([`skip`]).
 pub fn suite_var(var: &str, require: &str, test: &str) -> Option<String> {
     let v = std::env::var(var).ok();
     if v.is_none() {
@@ -197,24 +204,26 @@ pub fn suite_var(var: &str, require: &str, test: &str) -> Option<String> {
     v
 }
 
-/// A hardware suite's opt-in: its variables, all set or none, and the variable that makes it
-/// required (a run that means the suite, `scripts/coverage-full.sh`, sets it beside them).
+/// A hardware suite's opt-in: its variables, which must be all set or all unset, and the variable
+/// that makes the suite required (a run that intends to run the suite, such as
+/// `scripts/coverage-full.sh`, sets it together with them).
 #[derive(Clone, Copy)]
 pub struct OptIn<const N: usize> {
     pub vars: [&'static str; N],
     pub require: &'static str,
 }
 
-/// The ftpm suites' opt-in: the module and its pair profile, both or neither.
+/// The opt-in of the ftpm suites: the module and its pair profile, both set or neither set.
 pub const FTPM_OPT_IN: OptIn<2> =
     OptIn { vars: ["CAKEYS_FTPM_MODULE", "CAKEYS_FTPM_PROFILE"], require: "CAKEYS_FTPM_REQUIRE" };
-/// The opt-in of the `YubiKey` suites that log in: the PIN and management-key files, both or
-/// neither. The module alone is the read-only probe's (caprobe).
+/// The opt-in of the `YubiKey` suites that log in: the PIN file and the management-key file, both
+/// set or neither set. The module variable alone opts in only the read-only probe (caprobe).
 pub const YUBIKEY_OPT_IN: OptIn<2> =
     OptIn { vars: ["CAKEYS_TEST_YUBIKEY_PIN", "CAKEYS_TEST_YUBIKEY_MGM"], require: "CAKEYS_YUBIKEY_REQUIRE" };
 
-/// A `YubiKey` suite that logs in: the module, the PIN file and the management-key file, opted
-/// in by [`YUBIKEY_OPT_IN`]; with them, a missing module fails.
+/// Returns the module, the PIN file and the management-key file for a `YubiKey` suite that logs
+/// in, opted in by [`YUBIKEY_OPT_IN`]. When the opt-in variables are set, a missing module is a
+/// failure.
 pub fn yubikey_opted_in(test: &str) -> Option<[String; 3]> {
     let [pin, mgm] = opted_in(test, YUBIKEY_OPT_IN)?;
     let module = std::env::var("CAKEYS_TEST_YUBIKEY_MODULE")
@@ -222,15 +231,17 @@ pub fn yubikey_opted_in(test: &str) -> Option<[String; 3]> {
     Some([module, pin, mgm])
 }
 
-/// A hardware suite's opt-in (review D9), read through `env`: every one of its variables set,
-/// their values; none, `None` (the suite is skipped), unless its require variable is set. Some
-/// but not all is an error naming the missing ones: setting any says the run wants the suite,
-/// and a half-set one must not pass empty; so does the require variable alone (review ftpm.rs
-/// F2: a run that meant the suite, without its variables, passed having run nothing).
+/// Reads a hardware suite's opt-in (review D9) through `env`. When every one of its variables is
+/// set, it returns their values. When none is set, it returns `None` (the suite is skipped),
+/// unless the suite's require variable is set. When some but not all are set, it returns an error
+/// that names the missing ones, because setting any of them shows that the run wants the suite,
+/// and a half-set opt-in must not pass without running anything. The require variable alone,
+/// without the opt-in variables, is also an error (review ftpm.rs F2: a run that intended the
+/// suite, without its variables, passed after running nothing).
 ///
 /// # Errors
 ///
-/// The message for a half-set opt-in, or a required one not set.
+/// Returns the message for a half-set opt-in, or for a required opt-in that is not set.
 pub fn opt_in<const N: usize>(
     o: OptIn<N>,
     env: &dyn Fn(&str) -> Option<String>,
@@ -248,8 +259,8 @@ pub fn opt_in<const N: usize>(
     }
 }
 
-/// [`opt_in`] on the process's environment: `None`, skipped ([`skip`]), or a failure when half
-/// set or required.
+/// Calls [`opt_in`] on the process's environment. It returns `None` when the suite is skipped
+/// ([`skip`]), and it panics when the opt-in is half set or required but not set.
 pub fn opted_in<const N: usize>(test: &str, o: OptIn<N>) -> Option<[String; N]> {
     match opt_in(o, &|v| std::env::var(v).ok()) {
         Ok(Some(values)) => Some(values),
@@ -261,10 +272,10 @@ pub fn opted_in<const N: usize>(test: &str, o: OptIn<N>) -> Option<[String; N]> 
     }
 }
 
-/// The reference suite's tokens: `ref` (scratch: the token is created for the run and thrown
-/// away, which is exactly what the probe's write probes demand, docs/CAPROBE.md) and
-/// `ref-anon`, the same token without a PIN: it sees only public objects, like a PIV token used
-/// without login.
+/// Returns the reference suite's tokens. `ref` is a scratch token: it is created for the run and
+/// discarded afterward, which is what the probe's write probes require (docs/CAPROBE.md).
+/// `ref-anon` is the same token without a PIN, so it sees only public objects, like a PIV token
+/// that is used without a login.
 pub fn reference_tokens(module: &str, dir: &Path) -> String {
     format!(
         "[tokens.ref]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nprobe = {{ scratch = true }}\n\n\
@@ -273,11 +284,11 @@ pub fn reference_tokens(module: &str, dir: &Path) -> String {
     )
 }
 
-/// tpm2-pkcs11 on swtpm: `tpm` (logged in, scratch: the swtpm token is created for the run),
-/// `tpm-anon` (no PIN) and `tpm-generic` (logged in, but without the tpm2-pkcs11 provider's
-/// fix-ups). The native attestation path finds the TPM the way the module does —
-/// `$TPM2_PKCS11_TCTI`, which the harness exports in the TCTI library-path form — and the store
-/// through `$TPM2_PKCS11_STORE`.
+/// Returns the tpm2-pkcs11 tokens on swtpm: `tpm` (logged in, and a scratch token, because the
+/// swtpm token is created for the run), `tpm-anon` (no PIN) and `tpm-generic` (logged in, but
+/// without the fix-ups of the tpm2-pkcs11 provider). The native attestation path finds the TPM
+/// in the same way as the module, through `$TPM2_PKCS11_TCTI`, which the harness exports in the
+/// TCTI library-path form, and it finds the store through `$TPM2_PKCS11_STORE`.
 pub fn tpm2_tokens(module: &str, dir: &Path) -> String {
     let pin = dir.join("pin");
     let token =
@@ -287,23 +298,25 @@ pub fn tpm2_tokens(module: &str, dir: &Path) -> String {
         + &token("tpm-generic", &format!("pinFile = \"{}\"\nprovider = \"generic\"", pin.display()))
 }
 
-/// The tpm2-pkcs11 store of the TPM harnesses (nix/tpm2-test-env.sh, nix/ftpm-test-env.sh).
+/// Returns the tpm2-pkcs11 store of the TPM harnesses (nix/tpm2-test-env.sh,
+/// nix/ftpm-test-env.sh).
 pub fn tpm2_store() -> String {
     std::env::var("TPM2_PKCS11_STORE").expect("TPM2_PKCS11_STORE: the TPM harness's store")
 }
 
-/// `tpm2_ptool <args> --path <store>`, which must succeed.
+/// Runs `tpm2_ptool <args> --path <store>`, which must succeed.
 pub fn ptool_in(store: &str, args: &[&str]) {
     let out = Command::new("tpm2_ptool").args(args).arg(format!("--path={store}")).output().unwrap();
     assert!(out.status.success(), "tpm2_ptool {args:?}: {}", String::from_utf8_lossy(&out.stderr));
 }
 
-/// `tpm2_ptool <args>` on the harness's token `kmtest` ([`tpm2_store`], user PIN 1234).
+/// Runs `tpm2_ptool <args>` on the harness's token `kmtest` ([`tpm2_store`], user PIN 1234).
 pub fn ptool(args: &[&str]) {
     ptool_in(&tpm2_store(), &[args, &["--label=kmtest", "--userpin=1234"]].concat());
 }
 
-/// The host's real TPM: `ftpm` (logged in, scratch: the harness's store is made for the run).
+/// Returns the token on the host's real TPM: `ftpm` (logged in, and a scratch token, because the
+/// harness's store is made for the run).
 pub fn ftpm_tokens(module: &str, dir: &Path) -> String {
     format!(
         "[tokens.ftpm]\nmodule = \"{module}\"\ntokenLabel = \"kmtest\"\npinFile = \"{}\"\nprobe = {{ scratch = true }}\n\n",
@@ -311,8 +324,9 @@ pub fn ftpm_tokens(module: &str, dir: &Path) -> String {
     )
 }
 
-/// p11-kit forwarding: `fwd` (through p11-kit), `fwd-anon` (no PIN), `fwd-softhsm` (provider
-/// named), `fwd-other` (a token the server does not export) and `direct` (`SoftHSM` itself).
+/// Returns the tokens for p11-kit forwarding: `fwd` (through p11-kit), `fwd-anon` (no PIN),
+/// `fwd-softhsm` (with the provider named), `fwd-other` (a token that the server does not export)
+/// and `direct` (`SoftHSM` itself).
 pub fn p11kit_tokens(client: &str, direct: &str, dir: &Path) -> String {
     let pin = format!("pinFile = \"{}\"", dir.join("pin").display());
     let token = |name: &str, module: &str, label: &str, extra: &str| {
@@ -325,28 +339,29 @@ pub fn p11kit_tokens(client: &str, direct: &str, dir: &Path) -> String {
         + &token("direct", direct, "kmp11", &pin)
 }
 
-/// A `YubiKey` test's turn at the device: one test at a time across every test process (an
-/// exclusive lock on a file in the shared target tmpdir), and none after a login failed. The
-/// PIN has three tries, and the hardware rule is to stop after one failed login
-/// (docs/DEVELOPMENT.md, "Hardware rules"): two tests logging in at once with a wrong PIN file
-/// spent two (review yubikey.rs F1). Take it before the test's first run; pass each run's output
-/// through [`YubikeyTurn::checked`].
+/// A `YubiKey` test's turn at the device. Only one test at a time uses the device, across every
+/// test process (through an exclusive lock on a file in the shared target tmpdir), and no test
+/// uses it after a login failed. The PIN has three tries, and the hardware rule is to stop after
+/// one failed login (docs/DEVELOPMENT.md, "Hardware rules"). Two tests that logged in at the same
+/// time with a wrong PIN file used two tries (review yubikey.rs F1). Take the turn before the
+/// test's first run, and pass each run's output through [`YubikeyTurn::checked`].
 pub struct YubikeyTurn {
     _lock: std::fs::File,
 }
 
-/// The file a failed `YubiKey` login leaves: every later `YubiKey` test refuses to run until a
-/// person has fixed the credential and removed it.
+/// Returns the path of the file that a failed `YubiKey` login leaves. Every later `YubiKey` test
+/// refuses to run until a person has fixed the credential and removed the file.
 pub fn yubikey_latch() -> PathBuf {
     PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("yubikey-login-failed")
 }
 
 impl YubikeyTurn {
-    /// Wait for the device, then refuse if a login has failed since the latch was cleared.
+    /// Waits for the device, and then refuses to continue if a login has failed since the latch
+    /// was cleared.
     ///
     /// # Panics
     ///
-    /// When the latch is set.
+    /// Panics when the latch is set.
     pub fn take() -> YubikeyTurn {
         let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
         std::fs::create_dir_all(&dir).unwrap();
@@ -362,11 +377,11 @@ impl YubikeyTurn {
         turn
     }
 
-    /// Refuse if a login has failed since the latch was cleared.
+    /// Refuses to continue if a login has failed since the latch was cleared.
     ///
     /// # Panics
     ///
-    /// When it has.
+    /// Panics when a login has failed since then.
     #[expect(clippy::unused_self, reason = "asked only by the test holding the turn")]
     pub fn refuse_if_latched(&self) {
         let latch = yubikey_latch();
@@ -378,11 +393,12 @@ impl YubikeyTurn {
         );
     }
 
-    /// `out`, after latching every later `YubiKey` test off if its login failed (any `CKR_PIN_*`).
+    /// Returns `out`. If the run's login failed (any `CKR_PIN_*`), it first sets the latch, which
+    /// stops every later `YubiKey` test.
     ///
     /// # Panics
     ///
-    /// When it did.
+    /// Panics when the run's login failed.
     #[expect(clippy::unused_self, reason = "a run is checked by the test holding the turn")]
     pub fn checked(&self, out: Output) -> Output {
         if let Some(rv) = failed_login(&String::from_utf8_lossy(&out.stderr)) {
@@ -396,14 +412,16 @@ impl YubikeyTurn {
     }
 }
 
-/// The `CKR_PIN_*` a run's stderr reports, if its login failed: the tools name a login's return
-/// value by its constant (cryptoki's prose names none), and `cli/tests/fault.rs` holds them to it.
+/// Returns the `CKR_PIN_*` that a run's stderr reports, if its login failed. The tools name a
+/// login's return value by its constant (cryptoki's own message text names no constant), and
+/// `cli/tests/fault.rs` checks that they do.
 pub fn failed_login(said: &str) -> Option<String> {
     let at = said.find("CKR_PIN_")?;
     Some(said[at..].chars().take_while(|c| c.is_ascii_uppercase() || *c == '_').collect())
 }
 
-/// A real `YubiKey`: the token with both credentials (file paths), `extra` added to it.
+/// Returns the token table for a real `YubiKey`, with both credentials (file paths) and with
+/// `extra` added.
 pub fn yubikey_token(module: &str, pin: &str, mgm: &str, extra: &str) -> String {
     format!(
         "[tokens.yubikey]\nmodule = \"{module}\"\ntokenLabel = \"{}\"\npinFile = \"{pin}\"\nsoCredentialFile = \"{mgm}\"\n{extra}\n",
@@ -411,7 +429,8 @@ pub fn yubikey_token(module: &str, pin: &str, mgm: &str, extra: &str) -> String 
     )
 }
 
-/// The label of the first `YubiKey` the module sees, so the config names the right token.
+/// Returns the label of the first `YubiKey` that the module sees, so that the config names the
+/// right token.
 pub fn yubikey_label(module: &str) -> String {
     let ctx = Module::open(module);
     let slot = ctx
@@ -423,32 +442,33 @@ pub fn yubikey_label(module: &str) -> String {
     ctx.get_token_info(slot).unwrap().label().to_string()
 }
 
-/// The binary on `config`, bounded in time ([`Run::within`]).
+/// Runs the binary on `config` with a time limit ([`Run::within`]).
 ///
 /// # Panics
 ///
-/// When the run takes longer than `limit`.
+/// Panics when the run takes longer than `limit`.
 pub fn run_within(config: &Path, args: &[&str], limit: Duration) -> Output {
     Run::new(BIN, config).within(args, limit)
 }
 
-/// Whether the linked cryptoki has the HMAC key type fix (nix/patches/); the Nix build does.
-/// Without it, tests needing SHA-224/384/512 HMAC keys skip, unless `require` (then they fail).
-/// A suite that may skip says which variable requires it through [`hmac_types_fixed`];
-/// `true` is for one that never skips (a hardware suite, once opted in).
+/// Returns whether the linked cryptoki has the HMAC key type fix (nix/patches/), which the Nix
+/// build has. Without the fix, tests that need SHA-224/384/512 HMAC keys skip, unless `require` is
+/// true, in which case they fail. A suite that may skip names the variable that requires it
+/// through [`hmac_types_fixed`]. Pass `true` for a suite that never skips (a hardware suite, after
+/// it is opted in).
 ///
 /// # Panics
 ///
-/// When `require` and the fix is missing.
+/// Panics when `require` is true and the fix is missing.
 pub fn cryptoki_hmac_types_fixed(require: bool) -> bool {
     let fixed = std::os::raw::c_ulong::from(cryptoki::object::KeyType::SHA384_HMAC) == 0x2c;
     assert!(fixed || !require, "cryptoki lacks the HMAC key type fix (nix/patches/cryptoki-hmac-key-types.patch)");
     fixed
 }
 
-/// [`cryptoki_hmac_types_fixed`], skipped ([`skip`]) unless the run requires the suite through
-/// `require_var` (review common/mod.rs F7: callers computing the flag passed `false`, or another
-/// suite's variable).
+/// Calls [`cryptoki_hmac_types_fixed`], and skips ([`skip`]) when the fix is missing, unless the run
+/// requires the suite through `require_var` (review common/mod.rs F7: callers that computed the
+/// flag themselves passed `false`, or another suite's variable).
 pub fn hmac_types_fixed(require_var: &str) -> bool {
     let fixed = cryptoki_hmac_types_fixed(false);
     if !fixed {
@@ -457,33 +477,36 @@ pub fn hmac_types_fixed(require_var: &str) -> bool {
     fixed
 }
 
-/// A software PKCS#11 token the shared suite (`tests/reference/`) runs against: the facts the
-/// suite needs about it, so its tests assert the same verdicts on every reference.
+/// A software PKCS#11 token that the shared suite (`tests/reference/`) runs against. The struct
+/// holds the facts that the suite needs about the token, so that its tests assert the same
+/// results on every reference.
 pub struct Reference {
-    /// Path of the module; the suite skips when it is unset.
+    /// The variable that holds the path of the module. The suite skips when it is unset.
     pub module_var: &'static str,
-    /// When set, a missing module fails instead of skipping.
+    /// The variable that, when set, makes a missing module fail instead of skip.
     pub require_var: &'static str,
-    /// The module's own configuration file.
+    /// The variable that names the module's own configuration file.
     pub conf_var: &'static str,
     /// The provider cakeys detects from `C_GetInfo`.
     pub provider: &'static str,
     /// `C_GetInfo` manufacturer and `C_GetTokenInfo` model, as recorded in provenance.
     pub manufacturer: &'static str,
     pub model: &'static str,
-    /// Curves (`keys.toml` names) it cannot generate: refused as unsupported (15).
+    /// The curves (by their `keys.toml` names) that the module cannot generate. They are refused
+    /// as unsupported (15).
     pub missing_curves: &'static [&'static str],
-    /// Whether it implements Triple DES (`CKM_DES3_ECB`, `CKM_DES3_KEY_GEN`); without it a
-    /// `CKK_DES3` spec is refused as unsupported (15).
+    /// Whether the module implements Triple DES (`CKM_DES3_ECB`, `CKM_DES3_KEY_GEN`). Without it,
+    /// a `CKK_DES3` spec is refused as unsupported (15).
     pub des3: bool,
-    /// Whether it generates the hash-bound HMAC key types (PKCS#11 3.0's `CKM_SHA*_KEY_GEN`).
+    /// Whether the module generates the HMAC key types that are bound to a hash (PKCS#11 3.0's
+    /// `CKM_SHA*_KEY_GEN`).
     pub hmac_key_gen: bool,
-    /// Its committed capability profile: name, and path under profiles/.
+    /// The module's committed capability profile: its name, and its path under profiles/.
     pub profile: (&'static str, &'static str),
-    /// The module's configuration (`conf_var`'s file) with one mechanism hidden.
+    /// Returns the module's configuration (the file in `conf_var`) with one mechanism hidden.
     pub hide_mechanism: fn(conf: &str, mechanism: &str) -> String,
-    /// Whether the suite loads the module through `p11-fault` (`P11_FAULT_MODULE` names it), with no
-    /// fault plan: the forwarder must be transparent.
+    /// Whether the suite loads the module through `p11-fault` (`P11_FAULT_MODULE` names the
+    /// module) with no fault plan. The shim must then forward every call without a change.
     pub through_fault_shim: bool,
 }
 
@@ -502,10 +525,10 @@ pub const SOFTHSM: Reference = Reference {
     through_fault_shim: false,
 };
 
-/// kryoptic 1.5.4 (its `OpenSSL` backend) generates none of secp256k1 or the brainpool curves, and
-/// has no DES mechanism at all (`pkcs11-tool -M` \[run\], 2026-11-15). The harness
-/// (nix/package-common.nix) ends `KRYOPTIC_CONF` with the token's `[[slots]]` table, so an appended key
-/// belongs to it.
+/// kryoptic 1.5.4 (with its `OpenSSL` backend) generates neither secp256k1 nor the brainpool
+/// curves, and it has no DES mechanism (`pkcs11-tool -M` \[run\], 2026-11-15). The harness
+/// (nix/package-common.nix) ends `KRYOPTIC_CONF` with the token's `[[slots]]` table, so a key that
+/// is appended to the file belongs to that table.
 pub const KRYOPTIC: Reference = Reference {
     module_var: "CAKEYS_KRYOPTIC_MODULE",
     require_var: "CAKEYS_KRYOPTIC_REQUIRE",
@@ -521,10 +544,10 @@ pub const KRYOPTIC: Reference = Reference {
     through_fault_shim: false,
 };
 
-/// `SoftHSM` behind `p11-fault` (`docs/FAULT_SHIM.md`) with no fault plan: the whole suite runs a
-/// third time through the shim, and must pass as it does directly. The per-test runner
-/// (nix/test-tokens.sh) points `P11_FAULT_MODULE` at the test's own `SoftHSM` token; the token's
-/// module is the shim.
+/// `SoftHSM` behind `p11-fault` (`docs/FAULT_SHIM.md`) with no fault plan. The whole suite runs a
+/// third time through the shim, and it must pass as it does directly. The per-test runner
+/// (nix/test-tokens.sh) points `P11_FAULT_MODULE` at the test's own `SoftHSM` token, and the
+/// token's module is the shim.
 pub const FAULT: Reference = Reference {
     module_var: "P11_FAULT_MODULE",
     require_var: "CAKEYS_FAULT_REQUIRE",
@@ -532,13 +555,13 @@ pub const FAULT: Reference = Reference {
     ..SOFTHSM
 };
 
-/// `libp11_fault.so`: beside the binaries after a build of the workspace, else among the
-/// dependencies of the tests (`deps/`), where the `cakeys` tests' dev-dependency on `p11-fault`
-/// has every test build put it.
+/// Returns the path of `libp11_fault.so`. It is next to the binaries after a build of the
+/// workspace, and otherwise among the dependencies of the tests (`deps/`), where every test build
+/// puts it because the `cakeys` tests have a dev-dependency on `p11-fault`.
 ///
 /// # Panics
 ///
-/// When it is in neither place.
+/// Panics when the library is in neither place.
 pub fn fault_shim() -> String {
     let beside = Path::new(BIN).with_file_name("libp11_fault.so");
     let path = if beside.exists() { beside } else { Path::new(BIN).with_file_name("deps").join("libp11_fault.so") };
@@ -550,23 +573,25 @@ pub fn code(o: &Output) -> i32 {
     o.status.code().unwrap()
 }
 
-/// A committed capability profile's file (profiles/, docs/CAPROBE.md): what the conformance
-/// tests regenerate and compare byte for byte.
+/// Returns the file of a committed capability profile (profiles/, docs/CAPROBE.md), which the
+/// conformance tests regenerate and compare byte for byte.
 pub fn committed_profile(path: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles").join(path)
 }
 
-/// The conformance check every reference token runs (docs/CAPROBE.md): the committed
-/// module profile `name` (at `path` under profiles/) is exactly what a fresh probe of token
-/// `token` observes, and regenerating it — the maintenance flow — changes no byte. `km` runs
-/// the CLI against the test's keys.toml; `scratch` is a file the regeneration may write.
+/// The conformance check that every reference token runs (docs/CAPROBE.md). The committed module
+/// profile `name` (at `path` under profiles/) must be exactly what a new probe of token `token`
+/// observes, and regenerating it (the maintenance flow) must change no byte. `km` runs the CLI
+/// against the test's keys.toml, and `scratch` is a file that the regeneration may write.
 ///
-/// One write probe only: it diffs and regenerates in the same run. A second would see what the
-/// first left behind on modules that cannot destroy everything they make (tpm2-pkcs11's sealed
-/// derived secrets: profiles/modules/tpm2-pkcs11/1.10+amd-ftpm.toml, `derive.destroy`).
+/// The check runs only one write probe, which compares and regenerates in the same run. A second
+/// write probe would see what the first one left behind on modules that cannot destroy everything
+/// they make (tpm2-pkcs11's sealed derived secrets: profiles/modules/tpm2-pkcs11/1.10+amd-ftpm.toml,
+/// `derive.destroy`).
 ///
-/// `caprobe regenerate`, the command every regeneration runs (profiles/LEDGER.toml, `[regen]`):
-/// the flags are the verb's, so the test regenerates as the scripts do.
+/// The check uses `caprobe regenerate`, the command that every regeneration runs
+/// (profiles/LEDGER.toml, `[regen]`). The verb sets the flags, so the test regenerates in the same
+/// way as the scripts do.
 pub fn assert_profile_conforms(
     km: impl Fn(&[&str]) -> Output,
     token: &str,
@@ -577,8 +602,9 @@ pub fn assert_profile_conforms(
     let committed = std::fs::read(committed_profile(path)).unwrap();
     std::fs::write(scratch, &committed).unwrap();
     let out = scratch.to_str().unwrap();
-    // Accepted: the scratch copy is replaced, so the bytes below compare what the probe made
-    // (without it a drifted profile would wait beside the copy, which would then compare equal).
+    // With `--accept`, the scratch copy is replaced, so the comparison below checks the bytes that
+    // the probe made. Without `--accept`, a profile that drifted would be written next to the
+    // copy, and the unchanged copy would then compare equal.
     let probe = km(&["regenerate", name, "--token", token, "--out", out, "--accept"]);
     assert_eq!(code(&probe), 0, "a fresh probe drifts from {name}: {}", String::from_utf8_lossy(&probe.stderr));
     assert!(
@@ -586,19 +612,20 @@ pub fn assert_profile_conforms(
         "{path} is not what the probe generates: regenerate it as profiles/LEDGER.toml says for profiles/{path}, \
          never by hand"
     );
-    // A read-only probe conforms on what it observes; it may never overwrite the file.
+    // A read-only probe conforms on what it observes, and it may never overwrite the file (17).
     assert_eq!(code(&km(&["probe", "--token", token, "--diff", name])), 0);
     assert_eq!(code(&km(&["probe", "--token", token, "--out", out])), 17);
     assert_eq!(std::fs::read(scratch).unwrap(), committed, "a read-only probe overwrote the file");
 }
 
-/// The writing form of a compare-only `lock`/`delete` argument list: `--dry-run` dropped.
+/// Returns the writing form of a compare-only `lock` or `delete` argument list, which is the list
+/// without `--dry-run`.
 pub fn recording<'a>(args: &[&'a str]) -> Vec<&'a str> {
     args.iter().copied().filter(|a| *a != "--dry-run").collect()
 }
 
-/// What a one-object `lock` run printed: its one row of the JSON array `lock` prints (one per
-/// object, review 2026-11-23 C-7).
+/// Returns what a one-object `lock` run printed: the one row of the JSON array that `lock` prints
+/// (one row per object, review 2026-11-23 C-7).
 pub fn lock_result(o: &Output) -> serde_json::Value {
     let rows: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout).unwrap();
     let [row] = <[serde_json::Value; 1]>::try_from(rows).unwrap_or_else(|rows| panic!("not one lock result: {rows:?}"));
@@ -619,26 +646,27 @@ pub fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
-/// A test's scratch directory — keys.toml, keys.lock (empty: as `--new-lock` starts one) and a
-/// PIN file holding `1234` — and the
-/// runs of the tool against it. A token suite's test holds one in its [`Suite`].
+/// A test's scratch directory, which holds keys.toml, keys.lock (empty, as `--new-lock` starts
+/// one) and a PIN file that holds `1234`, and the runs of the tool against it. A token suite's test
+/// holds one in its [`Suite`].
 pub struct Workdir {
     pub dir: PathBuf,
 }
 
-/// A lock that pins nothing: what `--new-lock` starts from, and every test directory's first.
+/// A lock that pins nothing. `--new-lock` starts from it, and every test directory starts with it.
 pub const EMPTY_LOCK: &str = "version = 1\n";
 
-/// The directory of one test under the integration tests' tmpdir, which every package and test
-/// binary shares: named for both, so suites that run at once (and the shared reference suite,
-/// which two binaries run under the same test names) never meet in one.
+/// Returns the directory of one test under the integration tests' tmpdir, which every package and
+/// test binary shares. The directory name includes both the package and the test binary, so
+/// suites that run at the same time (and the shared reference suite, which two binaries run under
+/// the same test names) never use the same directory.
 pub fn test_dir(name: &str) -> PathBuf {
     let binary = concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_CRATE_NAME"));
     PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{binary}-{name}"))
 }
 
 impl Workdir {
-    /// A fresh directory `name` under the integration tests' tmpdir.
+    /// Creates a new, empty directory `name` under the integration tests' tmpdir.
     pub fn new(name: &str) -> Workdir {
         let dir = test_dir(name);
         let _ = std::fs::remove_dir_all(&dir);
@@ -656,18 +684,20 @@ impl Workdir {
         self.km_env(args, &[])
     }
 
-    /// `cakeys --config keys.toml <args>` with `envs` set, logged for the test's output. The
-    /// suites themselves run in a Nix build: only a test that sets `NIX_BUILD_TOP` means it.
+    /// Runs `cakeys --config keys.toml <args>` with `envs` set, and logs the run in the test's
+    /// output. The suites themselves run inside a Nix build, so `NIX_BUILD_TOP` is removed
+    /// ([`SCRUBBED`]), and a run sees it only when a test sets it.
     pub fn km_env(&self, args: &[&str], envs: &[(&str, &Path)]) -> Output {
         self.run().envs(envs.iter().copied()).output(args)
     }
 
-    /// A run on this keys.toml, for one that removes a variable or is bounded ([`Run`]).
+    /// Returns a run on this keys.toml ([`Run`]), for a run that removes a variable or has a time
+    /// limit.
     pub fn run(&self) -> Run {
         Run::new(BIN, &self.dir.join("keys.toml"))
     }
 
-    /// The exit code of [`Self::km`].
+    /// Returns the exit code of [`Self::km`].
     pub fn code(&self, args: &[&str]) -> i32 {
         code(&self.km(args))
     }
@@ -676,12 +706,12 @@ impl Workdir {
         toml::from_str(&std::fs::read_to_string(self.dir.join("keys.lock")).unwrap()).unwrap()
     }
 
-    /// Replace keys.lock with `lock`: an edit made on the TOML, never on its text.
+    /// Replaces keys.lock with `lock`. Tests edit the parsed TOML, never the text.
     pub fn write_lock(&self, lock: &toml::Value) {
         std::fs::write(self.dir.join("keys.lock"), toml::to_string(lock).unwrap()).unwrap();
     }
 
-    /// The `observations` entry the realisation of `spec` on `token` names.
+    /// Returns the `observations` entry that the realisation of `spec` on `token` names.
     pub fn observation(&self, spec: &str, token: &str) -> toml::Value {
         let lock = self.lock();
         let key = lock["realisations"][spec][token]["observation"].as_str().unwrap().to_owned();
@@ -693,16 +723,18 @@ impl Workdir {
     }
 }
 
-/// A token suite's test (review D9: each suite had its own copy): its [`Workdir`], the module
-/// its tokens load, and the token tables every keys.toml it writes starts with. A suite's gate
-/// makes one once its module is known ([`suite_var`], [`opted_in`]); what one suite alone does
-/// with it is an `impl Suite` in that suite.
+/// A token suite's test (review D9: each suite had its own copy): its [`Workdir`], the module that
+/// its tokens load, and the token tables at the start of every keys.toml that it writes. A suite's
+/// gate makes one after the module is known ([`suite_var`], [`opted_in`]). What only one suite
+/// does with it is in an `impl Suite` in that suite.
 pub struct Suite {
     w: Workdir,
-    /// The module the suite's tokens load, which the test also opens itself ([`Self::session`]).
+    /// The module that the suite's tokens load, which the test also opens itself
+    /// ([`Self::session`]).
     pub module: String,
     tokens: String,
-    /// What every keys.toml the test writes is shown first ([`Self::checking`]).
+    /// The check that every keys.toml goes through before the test writes it
+    /// ([`Self::checking`]).
     check: fn(&str),
 }
 
@@ -714,32 +746,33 @@ impl std::ops::Deref for Suite {
 }
 
 impl Suite {
-    /// Test `name`'s fresh [`Workdir`], its keys.toml starting with `tokens(module, dir)`.
+    /// Returns the suite for test `name`, with a new [`Workdir`]. Every keys.toml that the suite
+    /// writes through [`Self::config`] starts with `tokens(module, dir)`.
     pub fn new(name: &str, module: String, tokens: impl FnOnce(&str, &Path) -> String) -> Suite {
         let w = Workdir::new(name);
         let tokens = tokens(&module, &w.dir);
         Suite { w, module, tokens, check: |_| {} }
     }
 
-    /// The suite with `check` shown every keys.toml before it is written: tpm2's refuses an
-    /// attestation (a persistent TPM object) anywhere but its swtpm.
+    /// Returns the suite with `check`, which sees every keys.toml before it is written. The tpm2
+    /// suite's check refuses an attestation (a persistent TPM object) anywhere except on its swtpm.
     pub fn checking(self, check: fn(&str)) -> Suite {
         Suite { check, ..self }
     }
 
-    /// keys.toml: the suite's tokens and `body`.
+    /// Writes keys.toml with the suite's tokens followed by `body`.
     pub fn config(&self, body: &str) {
         self.write_config(&(self.tokens.clone() + body));
     }
 
-    /// keys.toml as `text`, once [`Self::checking`]'s check has seen it (it shadows
-    /// [`Workdir::write_config`]).
+    /// Writes keys.toml as `text`, after the check of [`Self::checking`] has seen it (this method
+    /// shadows [`Workdir::write_config`]).
     pub fn write_config(&self, text: &str) {
         (self.check)(text);
         self.w.write_config(text);
     }
 
-    /// A logged-in session on the suite's token `kmtest` (PIN 1234).
+    /// Returns a logged-in session on the suite's token `kmtest` (PIN 1234).
     pub fn session(&self) -> TestSession {
         open_session(&self.module, "kmtest", "1234")
     }
@@ -751,7 +784,8 @@ pub fn sri(bytes: &[u8]) -> String {
     format!("sha256-{}", base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(bytes)))
 }
 
-/// Minimal DER writer for the test oracle: independent of the crates the tool uses.
+/// A minimal DER writer for the test oracle, which is independent of the crates that the tool
+/// uses.
 pub fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
     let mut v = vec![tag];
     let n = body.len();
@@ -766,7 +800,8 @@ pub fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
     v
 }
 
-/// One DER element: (tag, contents, rest). Independent of the crates cakeys uses.
+/// Parses one DER element and returns (tag, contents, rest). It is independent of the crates that
+/// cakeys uses.
 pub fn der(input: &[u8]) -> (u8, &[u8], &[u8]) {
     let (tag, first) = (input[0], input[1]);
     let (len, off) = if first < 0x80 {
@@ -778,7 +813,7 @@ pub fn der(input: &[u8]) -> (u8, &[u8], &[u8]) {
     (tag, &input[off..off + len], &input[off + len..])
 }
 
-/// The DER inside a PEM file.
+/// Returns the DER inside a PEM file.
 pub fn pem_der(path: &str) -> Vec<u8> {
     use base64::Engine;
     let text = std::fs::read_to_string(path).unwrap();
@@ -786,7 +821,8 @@ pub fn pem_der(path: &str) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD.decode(b64).unwrap()
 }
 
-/// A PKCS#8 EC key: (curve OID as DER, private scalar, uncompressed public point).
+/// Parses a PKCS#8 EC key and returns (curve OID as DER, private scalar, uncompressed public
+/// point).
 pub fn ec_fixture(pkcs8: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let (_, info, _) = der(pkcs8);
     let (_, _, rest) = der(info); // version
@@ -807,7 +843,7 @@ pub fn ec_fixture(pkcs8: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     }
 }
 
-/// A PKCS#8 Ed25519 key (RFC 8410): its 32-byte seed.
+/// Returns the 32-byte seed of a PKCS#8 Ed25519 key (RFC 8410).
 pub fn ed25519_fixture(pkcs8: &[u8]) -> Vec<u8> {
     let (_, info, _) = der(pkcs8);
     let (_, _, rest) = der(info); // version
@@ -816,7 +852,8 @@ pub fn ed25519_fixture(pkcs8: &[u8]) -> Vec<u8> {
     der(inner).1.to_vec()
 }
 
-/// A PKCS#8 RSA key: modulus, public and private exponents, primes, CRT exponents, coefficient.
+/// Parses a PKCS#8 RSA key and returns the modulus, the public and private exponents, the primes,
+/// the CRT exponents and the coefficient.
 pub fn rsa_fixture(pkcs8: &[u8]) -> Vec<Vec<u8>> {
     let (_, info, _) = der(pkcs8);
     let (_, _, rest) = der(info); // version
@@ -833,7 +870,8 @@ pub fn rsa_fixture(pkcs8: &[u8]) -> Vec<Vec<u8>> {
     ints
 }
 
-/// Token object template for a fixture certificate (`SoftHSM` requires `CKA_SUBJECT`).
+/// Returns the token object template for a fixture certificate (`SoftHSM` requires
+/// `CKA_SUBJECT`).
 pub fn cert_object(der: &[u8], label: &[u8], id: Option<u8>) -> Vec<Attribute> {
     let der = der.to_vec();
     let cert = <x509_cert::Certificate as x509_cert::der::Decode>::from_der(&der).unwrap();
@@ -863,7 +901,7 @@ pub fn spki(algorithm: &[u8], key: &[u8]) -> Vec<u8> {
     tlv(0x30, &[tlv(0x30, algorithm), tlv(0x03, &bits)].concat())
 }
 
-/// `CKA_EC_POINT` is a DER OCTET STRING around the point.
+/// Returns the point inside a `CKA_EC_POINT` value, which is a DER OCTET STRING around the point.
 pub fn unwrap_octets(v: &[u8]) -> Vec<u8> {
     assert_eq!(v[0], 0x04);
     let (len, off) = match v[1] {
@@ -875,7 +913,8 @@ pub fn unwrap_octets(v: &[u8]) -> Vec<u8> {
     v[off..].to_vec()
 }
 
-/// `CKA_EC_PARAMS` (the curve's OID, DER) of each curve the tests name, and the EC key OID.
+/// The DER OID of an EC public key (`id-ecPublicKey`). The constants after it are the
+/// `CKA_EC_PARAMS` (the curve's OID, DER) of each curve that the tests name.
 pub const EC_PUBLIC_KEY: &[u8] = &[0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
 pub const P256: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 pub const P384: &[u8] = &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22];
@@ -883,12 +922,12 @@ pub const P521: &[u8] = &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23];
 pub const ED25519: &[u8] = &[0x06, 0x03, 0x2b, 0x65, 0x70];
 pub const ED448: &[u8] = &[0x06, 0x03, 0x2b, 0x65, 0x71];
 
-/// Replace the private key under `label` with another of its kind, as a token that swapped one
-/// would hold (review reference/mod.rs F2: written five times): a pair generated by `mechanism`
-/// from `public` (the curve or modulus) and `private` (usage and policy); its public half a
-/// session object, so the public key object under the label stays the original's. The original
-/// private key is destroyed and the new one takes the label, with `extra` (a forged
-/// `CKA_PUBLIC_KEY_INFO`).
+/// Replaces the private key under `label` with another key of the same kind, as a token that
+/// swapped the key would hold (review reference/mod.rs F2: this code was written five times). The
+/// function generates a pair with `mechanism` from `public` (the curve or modulus) and `private`
+/// (usage and policy). The new public half is a session object, so the public key object under
+/// the label is still the original's. The original private key is destroyed, and the new private
+/// key takes the label, together with `extra` (for example, a forged `CKA_PUBLIC_KEY_INFO`).
 pub fn swap_private_key(
     s: &Session,
     label: &str,
@@ -907,12 +946,14 @@ pub fn swap_private_key(
     s.update_attributes(other, &[&[labelled], extra].concat()).unwrap();
 }
 
-/// SPKI of the public key object under `label`, built from its raw PKCS#11 attributes.
+/// Returns the SPKI of the public key object under `label`, built from its raw PKCS#11
+/// attributes.
 pub fn oracle_spki(s: &Session, label: &str) -> Vec<u8> {
     oracle_spki_with(s, label, unwrap_octets)
 }
 
-/// As [`oracle_spki`], with a custom `CKA_EC_POINT` unwrapper (for a module's known bug).
+/// Works like [`oracle_spki`], with a custom `CKA_EC_POINT` unwrapper (for a known bug of a
+/// module).
 #[expect(
     clippy::many_single_char_names,
     reason = "the DER-oracle bindings mirror the names in the specs they hand-roll"
@@ -930,8 +971,9 @@ pub fn oracle_spki_with(s: &Session, label: &str, unwrap: fn(&[u8]) -> Vec<u8>) 
     } else {
         let a = s.get_attributes(h, &[AttributeType::EcParams, AttributeType::EcPoint]).unwrap();
         let (Attribute::EcParams(p), Attribute::EcPoint(q)) = (&a[0], &a[1]) else { panic!() };
-        // PKCS#11 3.2 holds Edwards points raw (kryoptic's default); earlier modules wrap them
-        // in an OCTET STRING. The raw length is exact, two bytes short of the wrapped form.
+        // PKCS#11 3.2 stores Edwards points raw (kryoptic's default), and earlier modules wrap
+        // them in an OCTET STRING. The raw form has the exact point length, which is two bytes
+        // shorter than the wrapped form.
         let raw = match p.as_slice() {
             ED25519 => Some(32),
             ED448 => Some(57),
@@ -945,7 +987,7 @@ pub fn oracle_spki_with(s: &Session, label: &str, unwrap: fn(&[u8]) -> Vec<u8>) 
     }
 }
 
-/// Host oracle for the AES commitments (`cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`) of a known
+/// The host oracle for the AES commitments (`cmac`, `kcv-ecb`, `kcv-ecb-dec`, `kw`) of a known
 /// AES-128/192/256 key.
 pub fn aes_commitment(key: &[u8], scheme: &str) -> String {
     use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
@@ -987,8 +1029,8 @@ pub fn aes_commitment(key: &[u8], scheme: &str) -> String {
     sri(&out)
 }
 
-/// The host oracle of a DES3 check value (`kcv-ecb`, `kcv-ecb-dec`): `RustCrypto`'s `des`
-/// (three-key EDE) over the first 8 bytes of SHA-256 of the commitment label.
+/// The host oracle of a DES3 check value (`kcv-ecb`, `kcv-ecb-dec`). It applies `RustCrypto`'s
+/// `des` (three-key EDE) to the first 8 bytes of the SHA-256 of the commitment label.
 pub fn des3_commitment(key: &[u8; 24], scheme: &str) -> String {
     use des::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
     let label = format!("key-management/v1/{scheme}/CKK_DES3/192");
@@ -1004,25 +1046,27 @@ pub fn des3_commitment(key: &[u8; 24], scheme: &str) -> String {
     sri(&block)
 }
 
-/// The test process's one initialized context for a module file, shared by every holder at once
-/// (ISSUES.md: sessions on several test threads each initialized and finalized the module, and
-/// one finalized it under another's session, SIGSEGV, under a plain parallel `cargo test`). The
-/// last holder to go finalizes it, under the lock that initializes, so a holder that comes
-/// after initializes afresh: tpm2-pkcs11 sees objects other processes made only after a new
-/// `C_Initialize` (cryptoki >= 0.11 no longer finalizes on drop).
+/// The test process's one initialized context for a module file, which every current holder
+/// shares. (ISSUES.md: sessions on several test threads each initialized and finalized the
+/// module, and one thread finalized it under another thread's session, which caused a SIGSEGV
+/// under a plain parallel `cargo test`.) The last holder to drop it finalizes it, under the same
+/// lock that initializes it, so a later holder initializes the module again. This matters because
+/// tpm2-pkcs11 sees objects that other processes made only after a new `C_Initialize`
+/// (cryptoki >= 0.11 no longer finalizes on drop).
 pub struct Module {
     path: PathBuf,
     ctx: Pkcs11,
 }
 
-/// The contexts held now, by module file (its canonical path), with how many hold each.
+/// The contexts that are held now, by module file (its canonical path), with the number of
+/// holders of each.
 static MODULES: std::sync::Mutex<std::collections::BTreeMap<PathBuf, (Pkcs11, usize)>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 impl Module {
-    /// Hold `path`'s context, initializing the module if nothing holds it. Keyed by the file, not
-    /// the name: a module named two ways (a symlink, a relative path) is one library in the
-    /// process, and a second `C_Initialize` of it fails (review common/mod.rs F4).
+    /// Holds `path`'s context, and initializes the module if nothing holds it. The key is the file,
+    /// not the name, because a module named in two ways (a symlink, a relative path) is one library
+    /// in the process, and a second `C_Initialize` of it fails (review common/mod.rs F4).
     pub fn open(path: &str) -> Module {
         let file = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
         let mut held = MODULES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1056,7 +1100,7 @@ impl Drop for Module {
     }
 }
 
-/// A logged-in session on `label`, on its module's shared context ([`Module`]).
+/// A logged-in session on the token `label`, on its module's shared context ([`Module`]).
 pub struct TestSession {
     session: Option<Session>,
     ctx: Option<Module>,
@@ -1070,12 +1114,12 @@ impl std::ops::Deref for TestSession {
 }
 
 impl TestSession {
-    /// Every object labelled `label`.
+    /// Returns every object labelled `label`.
     pub fn labelled(&self, label: &str) -> Vec<cryptoki::object::ObjectHandle> {
         self.find_objects(&[Attribute::Label(label.as_bytes().to_vec())]).unwrap()
     }
 
-    /// Destroy every object labelled with one of `labels`.
+    /// Destroys every object labelled with one of `labels`.
     pub fn clear(&self, labels: &[&str]) {
         for h in labels.iter().flat_map(|l| self.labelled(l)) {
             self.destroy_object(h).unwrap();
@@ -1085,7 +1129,7 @@ impl TestSession {
 
 impl Drop for TestSession {
     fn drop(&mut self) {
-        // The session before the context it was opened on.
+        // Drop the session before the context on which it was opened.
         drop(self.session.take());
         drop(self.ctx.take());
     }
@@ -1100,8 +1144,8 @@ pub fn open_session(module: &str, label: &str, pin: &str) -> TestSession {
         .find(|s| ctx.get_token_info(*s).unwrap().label() == label)
         .unwrap();
     let session = ctx.open_rw_session(slot).unwrap();
-    // Login state is the application's (PKCS#11 §5.6): another thread's session on the shared
-    // context may have logged in already.
+    // The login state belongs to the application (PKCS#11 §5.6), so another thread's session on
+    // the shared context may have logged in already.
     match session.login(UserType::User, Some(&AuthPin::new(pin.into()))) {
         Ok(()) | Err(cryptoki::error::Error::Pkcs11(cryptoki::error::RvError::UserAlreadyLoggedIn, _)) => {}
         Err(e) => panic!("login to '{label}': {e}"),
@@ -1109,10 +1153,11 @@ pub fn open_session(module: &str, label: &str, pin: &str) -> TestSession {
     TestSession { session: Some(session), ctx: Some(ctx) }
 }
 
-/// A Security Officer session on `label` (SO PIN `so_pin`), on its module's shared context
-/// ([`Module`]): for a test that plants what only the SO may make (a `CKA_TRUSTED` key), without
-/// initializing and finalizing the module under another holder (review camigrate `dry_run.rs`
-/// F2). No user session of the process may be logged in on the token meanwhile (PKCS#11 §5.6).
+/// Opens a Security Officer session on the token `label` (SO PIN `so_pin`), on its module's shared
+/// context ([`Module`]). It is for a test that plants an object that only the SO may make (a
+/// `CKA_TRUSTED` key), without initializing and finalizing the module under another holder
+/// (review camigrate `dry_run.rs` F2). No user session of the process may be logged in on the
+/// token while this session is open (PKCS#11 §5.6).
 pub fn open_so_session(module: &str, label: &str, so_pin: &str) -> TestSession {
     let ctx = Module::open(module);
     let slot = ctx
@@ -1128,36 +1173,39 @@ pub fn open_so_session(module: &str, label: &str, so_pin: &str) -> TestSession {
     TestSession { session: Some(session), ctx: Some(ctx) }
 }
 
-/// A reference whose material is made through its module (`C_CreateObject`) on token `kmtest`,
-/// in no environment of its own: for a test that sets up its own references ([`xref::Env::over`]).
+/// Returns a reference whose material is made through its module (`C_CreateObject`) on token
+/// `kmtest`, with no environment of its own. It is for a test that sets up its own references
+/// ([`xref::Env::over`]).
 pub fn created_ref(name: &'static str, module: String) -> xref::Ref {
     xref::Ref { name, module, token_label: "kmtest", env: &[], plant: xref::Plant::Create, eddsa: true }
 }
 
-/// `vars` as an [`xref::Ref`]'s environment, which is `'static`: leaked, here alone (review
-/// camigrate `dry_run.rs` F8, `fault.rs` F4: each test leaked its own). An owned environment in
-/// `Ref` would remove the leak.
+/// Returns `vars` as the environment of an [`xref::Ref`], which must be `'static`. The function
+/// leaks the values, and it is the only place that does so (review camigrate `dry_run.rs` F8,
+/// `fault.rs` F4: each test leaked its own). An owned environment in `Ref` would remove the leak.
 pub fn ref_env(vars: &[(&'static str, &str)]) -> &'static [(&'static str, &'static str)] {
     let leak = |v: &str| -> &'static str { Box::leak(v.to_owned().into_boxed_str()) };
     Box::leak(vars.iter().map(|(k, v)| (*k, leak(v))).collect::<Vec<_>>().into_boxed_slice())
 }
 
 impl xref::Env {
-    /// Test `name`'s fresh [`Workdir`] over `refs`: for a test that needs other references than
-    /// [`xref::env`]'s two or more (review camigrate `from_files.rs` F2, `fault.rs` F4).
+    /// Returns an environment over `refs` in the directory of test `name`'s new [`Workdir`]. It is
+    /// for a test that needs references other than the two or more of [`xref::env`] (review
+    /// camigrate `from_files.rs` F2, `fault.rs` F4).
     pub fn over(name: &str, refs: Vec<xref::Ref>) -> xref::Env {
         xref::Env { dir: Workdir::new(name).dir, refs }
     }
 
-    /// The references `names`, in that order, or `None`: skipped ([`skip`]), naming them all
-    /// (review camigrate `dry_run.rs` F3: the same lookup and skip, written once per test). A
-    /// missing one the run requires ([`xref::require_var_of`], [`required`]) fails instead, as
-    /// [`suite_var`] does: [`xref::env`] already fails then, but an [`Self::over`] or a test's own
-    /// set of references does not.
+    /// Returns the references `names`, in that order, or `None` when the test is skipped
+    /// ([`skip`]), with a message that names all of them (review camigrate `dry_run.rs` F3: each
+    /// test had its own copy of the same lookup and skip). When the run requires a missing
+    /// reference ([`xref::require_var_of`], [`required`]), the function fails instead, as
+    /// [`suite_var`] does. [`xref::env`] already fails in that case, but [`Self::over`] or a test's
+    /// own set of references does not.
     ///
     /// # Panics
     ///
-    /// When a missing reference is required, or no reference has one of `names`.
+    /// Panics when a missing reference is required, or when no reference has one of the `names`.
     pub fn needs<const N: usize>(&self, test: &str, names: [&str; N]) -> Option<[&xref::Ref; N]> {
         let found = self.needs_in(names, &|v| std::env::var_os(v).is_some()).unwrap_or_else(|e| panic!("{test}: {e}"));
         if let Err(missing) = found {
@@ -1166,8 +1214,9 @@ impl xref::Env {
         found.ok()
     }
 
-    /// [`Self::needs`] in the environment `set` says which variables are set in: the references,
-    /// or the first missing one's name (skip); `Err` for a missing reference the run requires.
+    /// Works like [`Self::needs`] in an environment where `set` says which variables are set. It
+    /// returns the references, or the name of the first missing one (to skip), and `Err` for a
+    /// missing reference that the run requires.
     pub fn needs_in<'a, const N: usize>(
         &self,
         names: [&'a str; N],
