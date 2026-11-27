@@ -45,7 +45,9 @@ p11-names = { path = "crates/p11-names", version = "0.1.0" }
 anyhow = "1"
 base16ct = { version = "1", features = ["alloc"] }
 base64 = "0.23"
-clap = { version = "4", features = ["derive", "env"] }
+# `wrap_help` wraps `--help` at the terminal's width (cli-common's `with_exit_codes` caps it).
+# Without it, clap prints each paragraph of help as one line, however long.
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 # Tab completion from the binaries themselves (`COMPLETE=bash cakeys`): the verbs, flags and value
 # enums come from the clap definition, so there is no list to keep in step. The dynamic engine is
 # the one the derive API supports; upstream still marks the feature unstable, so Cargo.lock holds it.
