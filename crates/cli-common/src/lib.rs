@@ -102,11 +102,12 @@ pub fn main(dispatch: impl FnOnce(&mut Notes) -> anyhow::Result<()>) -> ExitCode
 }
 
 /// Returns `cmd` with the exit-code table ([`EXIT_CODES`]) after its help, which is the same in
-/// every tool (review 2026-11-23 C-10).
+/// every tool (review 2026-11-23 C-10). The help is wrapped at the terminal's width, but at no more
+/// than 100 columns, so that a paragraph stays readable on a wide terminal.
 #[must_use]
 pub fn with_exit_codes(cmd: clap::Command) -> clap::Command {
     let rows: Vec<String> = EXIT_CODES.iter().map(|(code, means)| format!("  {code:>2}  {means}")).collect();
-    cmd.after_help(format!("Exit codes (docs/CAKEYS.md):\n{}", rows.join("\n")))
+    cmd.max_term_width(100).after_help(format!("Exit codes (docs/CAKEYS.md):\n{}", rows.join("\n")))
 }
 
 /// Returns the arguments of this process, parsed by `cmd` (the tool's [`with_exit_codes`]

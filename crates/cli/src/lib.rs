@@ -23,76 +23,95 @@ struct Cli {
     /// Declarative input (keys.toml).
     #[arg(short, long, env = "CAKEYS_CONFIG")]
     config: PathBuf,
-    /// Lock file (keys.lock). It defaults to the config path with a `.lock` extension. It must
-    /// exist, unless --new-lock is given.
+    /// Lock file (default: the config path with `.lock`).
     #[arg(short, long, env = "CAKEYS_LOCK")]
     lock: Option<PathBuf>,
-    /// Override a token's PKCS#11 module: `<token>=<path>` (repeatable).
+    /// Override a token's PKCS#11 module (repeatable).
     #[arg(long = "module", value_name = "TOKEN=PATH")]
     modules: Vec<String>,
-    /// Start a new lock file when none exists. Without this flag, a missing lock file is refused
-    /// (exit 17), so a mistyped --lock path never creates a second lock.
-    #[arg(long, global = true)]
+    /// Start a new lock file when none exists, instead of exiting 17.
+    #[arg(long, global = true, help_heading = "Global options")]
     new_lock: bool,
-    /// Print the reports (`validate`, `gc`) as JSON.
-    #[arg(long, global = true)]
+    /// Print the `validate` and `gc` reports as JSON.
+    #[arg(long, global = true, help_heading = "Global options")]
     json: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
 
+/// The verbs. The first paragraph of each doc comment is the one line that `cakeys --help` and
+/// `-h` show; `cakeys <verb> --help` shows every paragraph.
 #[derive(Subcommand)]
 enum Cmd {
-    /// Check the spec statically (identity modes, opt-ins, types). Touches no token.
+    /// Check keys.toml statically, without opening any token.
+    ///
+    /// Check each spec's identity modes, opt-ins and types.
     Validate,
-    /// Find the object by its locator and print its identity as JSON. Never writes.
+    /// Find an object by its locator, and print its identity as JSON.
+    ///
+    /// Never write to the lock or to the token.
     Resolve {
         #[command(flatten)]
         at: Address,
     },
+    /// Compare objects with the lock, and record what the lock lacks.
+    ///
     /// Find each object and compare it with the lock. Record what the lock lacks (missing
     /// hashes, realisation details) and what changed around the object, but never overwrite a
-    /// hash. Never create an object; `create` does that. Print each object's identity as a JSON
-    /// array.
+    /// hash. Never create an object; `create` does that.
+    ///
+    /// Print each object's identity as a JSON array.
     Lock {
         #[command(flatten)]
         at: Addresses,
-        /// Compare with the lock only, and write nothing. A first use then exits 18, and its
-        /// message shows the identity after `got:`.
+        /// Compare with the lock only, and write nothing.
+        ///
+        /// A first use then exits 18, and its message shows the identity after `got:`.
         #[arg(long)]
         dry_run: bool,
     },
-    /// Create the keys that keys.toml declares. No other verb creates them; `lock` creates only
-    /// the TPM Attestation Key that a realisation needs. For every selected (spec, token) pair
-    /// with origin = "create" whose object the lock does not pin yet, create the object, and then
-    /// record it as `lock` does. A pair whose object the lock already pins is verified as `check`
-    /// verifies it, and is otherwise left alone. The other pairs are skipped with a note. When
-    /// nothing is named, every pair is selected. Before any token is opened, each pair is checked
-    /// against the capability profiles. If the profiles say that a pair cannot be created, the
-    /// whole run is refused (exit 15), and nothing is created. When one pair is named (an object
-    /// or --spec, and --token), create or verify it, or say why not. If a key that the lock does
-    /// not pin already exists under the pair's locator, the run stops (exit 19); `lock` records
-    /// such a key. Print the created objects as JSON.
+    /// Create the keys that keys.toml declares, and record them in the lock.
+    ///
+    /// No other verb creates keys; `lock` creates only the TPM Attestation Key that a realisation
+    /// needs. For every selected (spec, token) pair with origin = "create" whose object the lock
+    /// does not pin yet, create the object, and then record it as `lock` does. A pair whose object
+    /// the lock already pins is verified as `check` verifies it, and is otherwise left alone. The
+    /// other pairs are skipped with a note.
+    ///
+    /// When nothing is named, every pair is selected. When one pair is named (an object or
+    /// --spec, and --token), create or verify it, or say why not.
+    ///
+    /// Before any token is opened, each pair is checked against the capability profiles. If the
+    /// profiles say that a pair cannot be created, the whole run is refused (exit 15), and nothing
+    /// is created. If a key that the lock does not pin already exists under the pair's locator,
+    /// the run stops (exit 19); `lock` records such a key.
+    ///
+    /// Print the created objects as JSON.
     Create {
         #[command(flatten)]
         at: Addresses,
-        /// Print, as JSON, what would be created, verified, skipped or refused, and why. Write
-        /// nothing, and open the tokens read-only. Exit 15 when a pair is refused (0 with
-        /// --skip-unsupported).
+        /// Print what would be done and why, as JSON, and write nothing.
+        ///
+        /// Each pair would be created, verified, skipped or refused. The tokens are opened
+        /// read-only. Exit 15 when a pair is refused (0 with --skip-unsupported).
         #[arg(long)]
         dry_run: bool,
         /// Create the pairs that the profiles allow, and warn about the pairs that they refuse,
         /// instead of refusing the whole run.
         #[arg(long)]
         skip_unsupported: bool,
-        /// Create the keys, but record nothing in the lock. The run is then a first use, which a
-        /// person can review before `lock` records it.
+        /// Create the keys, but record nothing in the lock.
+        ///
+        /// The run is then a first use, which a person can review before `lock` records it.
         #[arg(long, conflicts_with = "dry_run")]
         no_update_lock: bool,
     },
+    /// Delete objects that hold the expected identity.
+    ///
     /// Delete each object by its locator if it holds the expected identity, and remove its
-    /// realisation from the lock. An absent object counts as success. Print what happened to each
-    /// object as a JSON array.
+    /// realisation from the lock. An absent object counts as success.
+    ///
+    /// Print what happened to each object as a JSON array.
     Delete {
         #[command(flatten)]
         at: Addresses,
@@ -103,32 +122,35 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Remove the lock entries whose spec or object is gone from the config, printing each.
+    /// Remove the lock entries whose spec or object is gone from keys.toml.
+    ///
+    /// Print each entry that is removed.
     Gc {
         /// Print the stale entries, and remove nothing.
         #[arg(long)]
         dry_run: bool,
     },
-    /// Verify the object against the lock before it is used, in a read-only session, and print
-    /// its URI. `<object>.id.<scheme>` asks for one identity scheme, which the lock must pin.
-    /// Never write to the lock or to the token. With --token alone (no object and no --spec),
-    /// check every object that keys.toml places on that token, and print the token's module file.
-    /// When any object fails, write each failure to stderr with its own exit code, and exit 20.
+    /// Verify an object against the lock, and print its URI.
+    ///
+    /// Verify the object before it is used, in a read-only session. Never write to the lock or to
+    /// the token. `<object>.id.<scheme>` asks for one identity scheme, which the lock must pin.
+    ///
+    /// With --token alone (no object and no --spec), check every object that keys.toml places on
+    /// that token, and print the token's module file. When any object fails, write each failure to
+    /// stderr with its own exit code, and exit 20.
     Check {
         #[command(flatten)]
         at: Address,
-        /// `uri`, or `pkcs11-provider-pem`. The second format is pkcs11-provider's key file that
-        /// wraps the URI (the file that its `uri2pem.py` writes), for programs that take a
-        /// private key only as a PEM file and load it through OpenSSL with pkcs11-provider.
+        /// The output format.
         #[arg(long, value_enum, default_value_t = Format::Uri)]
         format: Format,
-        /// Add `module-path=` with the module file that the check loaded. p11-kit and libp11 read
-        /// it; pkcs11-provider takes its module from its own configuration.
+        /// Add `module-path=` with the module file that the check loaded.
+        ///
+        /// p11-kit and libp11 read it; pkcs11-provider takes its module from its own
+        /// configuration.
         #[arg(long)]
         uri_module: bool,
-        /// Add the user PIN. `source` refers to keys.toml's pinEnv (`pin-source=env:`, a
-        /// pkcs11-provider extension) or pinFile (`pin-source=file:`). `value` writes the PIN
-        /// itself (`pin-value=`) into the output, wherever the output goes.
+        /// Add the user PIN.
         #[arg(long, value_enum)]
         uri_pin: Option<UriPin>,
         #[command(flatten)]
@@ -141,9 +163,11 @@ enum Cmd {
 /// within its validity period at that time.
 #[derive(clap::Args)]
 struct ValidityArgs {
-    /// Check the dates of the attestation chain's certificates at this time instead of now (for
-    /// a host clock that is wrong, or for the time at which the lock was recorded). The format
-    /// is RFC 3339 in UTC: YYYY-MM-DDTHH:MM:SSZ.
+    /// Check the attestation chain's dates at this time instead of now.
+    ///
+    /// The dates are those of the chain's certificates. The format is RFC 3339 in UTC:
+    /// YYYY-MM-DDTHH:MM:SSZ. It is meant for a host clock that is wrong, or for the time at which
+    /// the lock was recorded.
     #[arg(long, value_name = "TIME", conflicts_with = "ignore_validity")]
     at: Option<String>,
     /// Do not check the attestation chain's certificate dates; a note says so.
@@ -169,8 +193,10 @@ impl ValidityArgs {
 /// with exit 17.
 #[derive(clap::Args)]
 struct Address {
-    /// The object (`[objects.<name>]`). `check` also takes `<object>.id.<scheme>`. The object may
-    /// be left out when --spec names it, or for a `check` of every object on --token.
+    /// The object (`[objects.<name>]`), which may be left out when --spec names it.
+    ///
+    /// `check` also takes `<object>.id.<scheme>`. A `check` of every object on --token leaves the
+    /// object out.
     object: Option<String>,
     /// The spec that realises the object, when several specs do.
     #[arg(long)]
@@ -194,8 +220,10 @@ impl Address {
 struct Addresses {
     /// The objects (`[objects.<name>]`). They may be left out when --spec names them.
     objects: Vec<String>,
-    /// A spec that realises one of the objects, when the object has several specs (repeatable).
-    /// When no object is named, the spec selects its own object.
+    /// A spec that realises one of the objects (repeatable).
+    ///
+    /// Name one when the object has several specs. When no object is named, the spec selects its
+    /// own object.
     #[arg(long)]
     spec: Vec<String>,
     /// The token that holds the objects, when several tokens do.
@@ -270,17 +298,24 @@ fn plain(object: Option<&str>) -> Result<Option<&str>, KmError> {
     }
 }
 
-/// What `check` prints.
+/// What `check` prints. `check --help` lists each value with its doc comment.
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum Format {
+    /// The PKCS#11 URI.
     Uri,
+    /// pkcs11-provider's key file that wraps the URI (the file that its `uri2pem.py` writes), for
+    /// programs that take a private key only as a PEM file and load it through OpenSSL with
+    /// pkcs11-provider.
     Pkcs11ProviderPem,
 }
 
-/// How `check` puts the user PIN in the URI.
+/// How `check` puts the user PIN in the URI. `check --help` lists each value with its doc comment.
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum UriPin {
+    /// Refer to keys.toml's pinEnv (`pin-source=env:`, a pkcs11-provider extension) or pinFile
+    /// (`pin-source=file:`).
     Source,
+    /// Write the PIN itself (`pin-value=`) into the output, wherever the output goes.
     Value,
 }
 
