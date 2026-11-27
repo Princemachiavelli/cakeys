@@ -555,17 +555,19 @@ pub const FAULT: Reference = Reference {
     ..SOFTHSM
 };
 
-/// Returns the path of `libp11_fault.so`. It is next to the binaries after a build of the
-/// workspace, and otherwise among the dependencies of the tests (`deps/`), where every test build
-/// puts it because the `cakeys` tests have a dev-dependency on `p11-fault`.
+/// Returns the path of `libp11_fault.so`, whose suffix is the platform's own (dylib on darwin,
+/// from `DLL_SUFFIX`). It is next to the binaries after a build of the workspace, and otherwise
+/// among the dependencies of the tests (`deps/`), where every test build puts it because the
+/// `cakeys` tests have a dev-dependency on `p11-fault`.
 ///
 /// # Panics
 ///
 /// Panics when the library is in neither place.
 pub fn fault_shim() -> String {
-    let beside = Path::new(BIN).with_file_name("libp11_fault.so");
-    let path = if beside.exists() { beside } else { Path::new(BIN).with_file_name("deps").join("libp11_fault.so") };
-    assert!(path.exists(), "libp11_fault.so is built neither beside {BIN} nor in deps/");
+    let file = format!("libp11_fault{}", std::env::consts::DLL_SUFFIX);
+    let beside = Path::new(BIN).with_file_name(&file);
+    let path = if beside.exists() { beside } else { Path::new(BIN).with_file_name("deps").join(&file) };
+    assert!(path.exists(), "{file} is built neither beside {BIN} nor in deps/");
     path.to_str().unwrap().to_owned()
 }
 

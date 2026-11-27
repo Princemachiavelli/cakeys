@@ -178,9 +178,14 @@ jobs:
           fi
           shard=null
           if [ -n "$SHARD" ]; then shard="\"$SHARD\""; fi
+          # download-artifact puts each matching artifact in a directory of its own name, except
+          # when the pattern matches one artifact only (an unsharded first pass, as `calibrate`
+          # runs it): then the report's scope directories are in first/ itself.
           iterate=
           if [ -d "$RUNNER_TEMP/first" ]; then
-            iterate="iterate = [$(for d in "$RUNNER_TEMP"/first/*/; do printf ' (builtins.path { path = "%s"; })' "${d%/}"; done) ];"
+            earlier=("$RUNNER_TEMP"/first/report-*/)
+            [ -d "${earlier[0]}" ] || earlier=("$RUNNER_TEMP/first/")
+            iterate="iterate = [$(for d in "${earlier[@]}"; do printf ' (builtins.path { path = "%s"; })' "${d%/}"; done) ];"
           fi
           nix build -L --out-link result --impure --expr \
             "(builtins.getFlake \"git+file://$PWD?shallow=1\").packages.x86_64-linux.cakeys-crane.mutantsTier { tier = \"$TIER\"; diff = $diff; shard = $shard; $iterate }"

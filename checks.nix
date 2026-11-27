@@ -213,10 +213,11 @@
       python3 -I ${src}/nix/mutants-scopes-tests.py
       python3 -I ${src}/nix/mutants-scopes.py ${src} | tee $out
     '';
-  # CI builds the three parts flake.nix splits the checks into, each once
-  # (.github/workflows/checks.yml): a part the workflow stops naming is never built there.
+  # CI builds the three parts flake.nix splits the checks into, each once, and the checks that
+  # need no VM once more on darwin (.github/workflows/checks.yml): a part the workflow stops
+  # naming is never built there.
   ci-jobs = pkgs.runCommand "cakeys-ci-jobs" { nativeBuildInputs = [ pkgs.ripgrep ]; } ''
-    for part in '.#checks-no-vm' '.#checks-vm' '.#checks.x86_64-linux.kani'; do
+    for part in '.#checks-no-vm' '.#checks-vm' '.#checks.x86_64-linux.kani' '.#packages.aarch64-darwin.checks-no-vm'; do
       if [ "$(rg -c -F "build: $part" ${./.github/workflows/checks.yml})" != 1 ]; then
         echo "ci-jobs: .github/workflows/checks.yml should build $part once" >&2
         exit 1
